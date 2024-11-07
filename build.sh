@@ -34,8 +34,8 @@ cmake .. -DCMAKE_BUILD_TYPE=Release # add OpenCV_DIR definitions if needed, exam
 #cmake .. -DCMAKE_BUILD_TYPE=Release -DOpenCV_DIR=/home/rapidlab/libs/opencv/lib/cmake/opencv4
 make -j8
 
-# Photo-SLAM
-echo "Building Photo-SLAM ..."
+# large_scale_gaussian_slam
+echo "Building large_scale_gaussian_slam ..."
 cd ../..
 mkdir build
 cd build
