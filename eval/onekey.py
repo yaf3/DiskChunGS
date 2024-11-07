@@ -18,17 +18,28 @@ args = parser.parse_args()
 dataset_center_path = args.dataset_center_path
 result_main_folder = args.result_main_folder
 
-gt_dataset = {"replica": {"path": os.path.join(dataset_center_path, "/Replica/"),
-                           "scenes": ['office0', 'office1', 'office2', 'office3', 'office4', 'room0', 'room1', 'room2' ]}, 
-            "tum": {"path": os.path.join(dataset_center_path, "/TUM"),
-                    "scenes": ['rgbd_dataset_freiburg3_long_office_household', 'rgbd_dataset_freiburg2_xyz', 'rgbd_dataset_freiburg1_desk']},
-            "eth3d": {"path": os.path.join(dataset_center_path, "/ETH3D"),
-                        "scenes": ["desk_3", "mannequin_1", "mannequin_3", "planar_2", "planar_3", "table_7"]},
-            "kitti": {"path": os.path.join(dataset_center_path, "/KITTI"),
-                        "scenes": ["00", "01","02","03","04","05","06","07","08","09","10"]},
-            "euroc": {"path": os.path.join(dataset_center_path, "/EuRoC"),
-                      "scenes": ["MH_01_easy", "MH_02_easy","V1_01_easy","V2_01_easy"]}
-            }
+gt_dataset = {
+    "replica": {
+        "path": os.path.join(dataset_center_path, "Replica"),
+        "scenes": ['office0', 'office1', 'office2', 'office3', 'office4', 'room0', 'room1', 'room2']
+    }, 
+    "tum": {
+        "path": os.path.join(dataset_center_path, "TUM"),
+        "scenes": ['rgbd_dataset_freiburg3_long_office_household', 'rgbd_dataset_freiburg2_xyz', 'rgbd_dataset_freiburg1_desk']
+    },
+    "eth3d": {
+        "path": os.path.join(dataset_center_path, "ETH3D"),
+        "scenes": ["desk_3", "mannequin_1", "mannequin_3", "planar_2", "planar_3", "table_7"]
+    },
+    "kitti": {
+        "path": os.path.join(dataset_center_path, "KITTI"),
+        "scenes": ["00", "01","02","03","04","05","06","07","08","09","10"]
+    },
+    "euroc": {
+        "path": os.path.join(dataset_center_path, "EuRoC"),
+        "scenes": ["MH_01_easy", "MH_02_easy","V1_01_easy","V2_01_easy"]
+    }
+}
 
 # path the all results
 results = [m for m in sorted(os.listdir(result_main_folder)) if os.path.isdir(os.path.join(result_main_folder, m))]
@@ -44,9 +55,9 @@ for result in results:
         gt_path = os.path.join(gt_dataset_path, scene)
         if not os.path.exists(os.path.join(result_path, "eval.txt")):
             if "mono" in result.lower():
-                os.system("python run.py {} {} --correct_scale".format(result_path, gt_path))
+                os.system("python3 run.py {} {} --correct_scale".format(result_path, gt_path))
             else:
-                os.system("python run.py {} {}".format(result_path, gt_path))
+                os.system("python3 run.py {} {}".format(result_path, gt_path))
 
 
 logs = [] 

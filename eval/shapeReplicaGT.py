@@ -36,7 +36,7 @@ def save_pose_as_tum(path, poses):
 
 folders = os.listdir(args.replica_dataset_path)
 for folder in folders:
-    path = os.path.join(args.replica_dataset_path, folder, "/traj.txt")
+    path = os.path.join(args.replica_dataset_path, folder, "traj.txt")
     if os.path.exists(path):
         poses = load_poses(path)
         save_pose_as_kitti(path.replace("traj.txt", "pose.txt"), poses)
