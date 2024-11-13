@@ -1,3 +1,9 @@
+#!/bin/bash
+
+# Default to Release if no build type specified
+BUILD_TYPE=${1:-Release}
+echo "Building with CMAKE_BUILD_TYPE=$BUILD_TYPE"
+
 # DBoW2
 cd ./ORB-SLAM3/Thirdparty/DBoW2
 mkdir build
@@ -39,6 +45,6 @@ echo "Building large_scale_gaussian_slam ..."
 cd ../..
 mkdir build
 cd build
-cmake .. # add Torch_DIR and/or OpenCV_DIR definitions if needed, example:
+cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE # add Torch_DIR and/or OpenCV_DIR definitions if needed, example:
 #cmake .. -DTorch_DIR=/home/rapidlab/libs/libtorch/share/cmake/Torch -DOpenCV_DIR=/home/rapidlab/libs/opencv/lib/cmake/opencv4
 make -j8
