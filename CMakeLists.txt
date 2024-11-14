@@ -234,6 +234,13 @@ target_link_libraries(kitti_stereo
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
 
+# KITTI Monocular
+add_executable(kitti_mono examples/kitti_mono.cpp)
+target_link_libraries(kitti_mono
+    gaussian_viewer    
+    gaussian_mapper
+    ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
+
 ##################################################################################
 ##  Build the mapping examples to ${PROJECT_SOURCE_DIR}/bin
 ##################################################################################
