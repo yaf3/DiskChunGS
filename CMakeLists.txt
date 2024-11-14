@@ -227,6 +227,13 @@ target_link_libraries(euroc_stereo
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
 
+# KITTI Stereo
+add_executable(kitti_stereo examples/kitti_stereo.cpp)
+target_link_libraries(kitti_stereo
+    gaussian_viewer    
+    gaussian_mapper
+    ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
+
 ##################################################################################
 ##  Build the mapping examples to ${PROJECT_SOURCE_DIR}/bin
 ##################################################################################
