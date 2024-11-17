@@ -13,11 +13,11 @@ Model.eval: 0  # 0:false, 1 or other integer:true
 # Pipeline Parameters
 #--------------------------------------------------------------------------------------------
 
-Camera.z_near: 0.01
-Camera.z_far: 40.0
+Camera.z_near: 2.0
+Camera.z_far: 65.0
 Monocular.inactive_geo_densify_max_pixel_dist: 1.0 # (squared distance)
-Stereo.min_disparity: 96
-Stereo.num_disparity: 128
+Stereo.min_disparity: 0
+Stereo.num_disparity: 256
 RGBD.min_depth: 0.0000000001
 RGBD.max_depth: 40.0
 
@@ -53,14 +53,16 @@ Record.record_loop_ply: 0 # 0:false, 1 or other integer:true
 
 # Learning rate
 Optimization.max_num_iterations: 60100
-Optimization.position_lr_init: 0.00032 #0.00016
-Optimization.position_lr_final: 0.00032
+Optimization.position_lr_init: 0.00016
+Optimization.position_lr_final: 0.00008
 Optimization.position_lr_delay_mult: 0.01
 Optimization.position_lr_max_steps: 24
 Optimization.feature_lr: 0.0025
-Optimization.opacity_lr: 0.05 #0.05
-Optimization.scaling_lr: 0.005 #0.005
-Optimization.rotation_lr: 0.001 #0.001
+Optimization.opacity_lr: 0.05
+Optimization.scaling_lr: 0.005
+Optimization.rotation_lr: 0.001
+Optimization.smooth_l1: 0
+Optimization.opacity_reg: 0.0005
 
 # Densification
 Optimization.percent_dense: 0.01
@@ -68,10 +70,11 @@ Optimization.lambda_dssim: 0.2
 Optimization.densification_interval: 100
 Optimization.opacity_reset_interval: 0  # 0:never, 1:always, others:periodically
 Optimization.prune_big_point_after_iter: 1000
-Optimization.densify_min_opacity: 0.005 #0.005
+Optimization.densify_min_opacity: 0.005
 Optimization.densify_from_iter: 1000
 Optimization.densify_until_iter: 60000
 Optimization.densify_grad_threshold: 0.0004
+Optimization.auto_distribute: 1
 
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters
