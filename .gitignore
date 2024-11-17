@@ -32,17 +32,27 @@
 *.app
 
 # Build files
-/build/
-/bin/
-/lib/
+build/
+bin/
+lib/
+install/
 
 # VS Code
-# /.vscode/
+# .vscode/
+.VSCodeCounter/
 
 # results
-/results/
+results/
+debug/
 
 # ImGui .ini
 *imgui.ini
 
+# libtorch
+libtorch*
+
+# docs
+docs/
+
+#data
 data

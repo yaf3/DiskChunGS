@@ -5,14 +5,30 @@
             "name": "Debug",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/bin/kitti_stereo",
+            // "program": "${workspaceFolder}/bin/replica_rgbd",
+            // "args": [
+            //     "${workspaceFolder}/third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt",
+            //     "${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/Replica/office0.yaml",
+            //     "${workspaceFolder}/cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml",
+            //     "/data/Replica/office0",
+            //     "${workspaceFolder}/results/replica/office0"
+            // ],
+            "program": "${workspaceFolder}/bin/kitti_mono",
             "args": [
-                "${workspaceFolder}/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-                "${workspaceFolder}/cfg/ORB_SLAM3/Stereo/KITTI/KITTI00-02.yaml",
-                "${workspaceFolder}/cfg/gaussian_mapper/Stereo/KITTI/KITTI.yaml",
+                "${workspaceFolder}/third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt",
+                "${workspaceFolder}/cfg/ORB_SLAM3/Monocular/KITTI/KITTI00-02.yaml",
+                "${workspaceFolder}/cfg/gaussian_mapper/Monocular/KITTI/KITTI_tuned.yaml",
                 "/data/kitti/data_odometry_color/dataset/sequences/00",
                 "${workspaceFolder}/results/kitti/00"
             ],
+            // "program": "${workspaceFolder}/bin/kitti_stereo",
+            // "args": [
+            //     "${workspaceFolder}/third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt",
+            //     "${workspaceFolder}/cfg/ORB_SLAM3/Stereo/KITTI/KITTI00-02.yaml",
+            //     "${workspaceFolder}/cfg/gaussian_mapper/Stereo/KITTI/KITTI.yaml",
+            //     "/data/kitti/data_odometry_color/dataset/sequences/00",
+            //     "${workspaceFolder}/results/kitti/00"
+            // ],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [

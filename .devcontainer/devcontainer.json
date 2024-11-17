@@ -1,5 +1,5 @@
 {
-    "name": "LSGS-SLAM Development",
+    "name": "CARTGS Development",
     "build": {
         "dockerfile": "../Dockerfile",
         "context": ".."

@@ -1,18 +1,14 @@
-# Photo-SLAM
-### [Homepage](https://huajianup.github.io/research/Photo-SLAM/) | [Paper](https://arxiv.org/abs/2311.16728)
+# CaRtGS
+### [Homepage](https://dapengfeng.github.io/cartgs/) | [Paper](https://arxiv.org/abs/2410.00486)
 
-**Photo-SLAM: Real-time Simultaneous Localization and Photorealistic Mapping for Monocular, Stereo, and RGB-D Cameras** <br>
-[Huajian Huang](https://huajianup.github.io)<sup>1</sup>, [Longwei Li](https://github.com/liquorleaf)<sup>2</sup>, Hui Cheng<sup>2</sup>, and [Sai-Kit Yeung](https://saikit.org/)<sup>1</sup> <br>
-The Hong Kong University of Science and Technology<sup>1</sup>, Sun Yat-Sen University<sup>2</sup> <br>
-In Proceedings of Computer Vision and Pattern Recognition Conference (CVPR), 2024<br>
-![image](https://huajianup.github.io/thumbnails/Photo-SLAM_v2.gif "photo-slam")
+**CaRtGS: Computational Alignment for Real-Time Gaussian Splatting SLAM** <br>
+[Dapeng Feng](https://github.com/DapengFeng)<sup>1</sup>, [Zhiqiang Chen](https://github.com/thisparticle)<sup>2</sup>, Yizhen Yin<sup>1</sup>, [Shipeng Zhong](https://github.com/zhongshp)<sup>3</sup>, Yuhua Qi<sup>1</sup>, and Hongbo Chen<sup>1</sup> <br>
+Sun Yat-Sen University<sup>1</sup>, The University of Hong Kong<sup>2</sup>, WeRide Inc.<sup>3</sup> <br>
+<br>
+![image](https://github.com/DapengFeng/cartgs/blob/gh_pages/docs/images/teaser.png?raw=true "cartgs")
 
 
 ## Prerequisites
-
-### (Optional) Using Docker
-
-[#2@XuYinzhe](https://github.com/HuajianUP/Photo-SLAM/issues/2#issuecomment-2089933703) provides a Docker example.
 
 ### Dependencies
 
@@ -20,167 +16,46 @@ In Proceedings of Computer Vision and Pattern Recognition Conference (CVPR), 202
 sudo apt install libeigen3-dev libboost-all-dev libjsoncpp-dev libopengl-dev mesa-utils libglfw3-dev libglm-dev
 ```
 
-<table>
-    <thead>
-        <tr>
-            <th>Dependencies</th>
-            <th colspan=3>Tested with</th>
-        </tr>
-    </thead>
-    <tbody>
-        <tr>
-            <td>OS</td>
-            <td>Ubuntu 20.04 LTS</td>
-            <td>Ubuntu 22.04 LTS</td>
-            <td>Jetpack 5.1.2</td>
-        </tr>
-        <tr>
-            <td>gcc</td>
-            <td>10.5.0</td>
-            <td>11.4.0</td>
-            <td>9.4.0</td>
-        </tr>
-        <tr>
-            <td>cmake</td>
-            <td>3.27.5</td>
-            <td>3.22.1</td>
-            <td>3.26.4</td>
-        </tr>
-        <tr>
-            <td><a href="https://developer.nvidia.com/cuda-toolkit-archive">CUDA</a> </td>
-            <td>11.8</td>
-            <td>11.8</td>
-            <td>11.4</td>
-        </tr>
-        <tr>
-            <td><a href="https://developer.nvidia.com/rdp/cudnn-archive">cuDNN</a> </td>
-            <td>8.9.3</td>
-            <td>8.7.0</td>
-            <td>8.6.0</td>
-        </tr>
-        <tr>
-            <td><a href="https://opencv.org/releases">OpenCV</a> built with opencv_contrib and CUDA</td>
-            <td>4.7.0</td>
-            <td>4.8.0</td>
-            <td>4.7.0</td>
-        </tr>
-        <tr>
-            <td><a href="https://pytorch.org/get-started/locally">LibTorch</a> <2.1.2 </td>
-            <td colspan=2>cxx11-abi-shared-with-deps-2.0.1+cu118</td>
-            <td>2.0.0+nv23.05-cp38-linux_aarch64</td>
-        </tr>
-        <tr>
-            <td colspan=4>(optional) <a href="https://github.com/IntelRealSense/librealsense">Intel® RealSense™ SDK 2.0</a> </td>
-        </tr>
-        <tr>
-            <td colspan=4>(Remark) Jetson AGX Orin Developer Kit we used is with 64GB and its power model was set to MAXN.</td>
-        </tr>
-    </tbody>
-</table>
-
-### Using LibTorch
-***The supported LibTorch version is up to 2.1.2***.
-If you do not have the LibTorch installed in the system search paths for CMake, you need to add additional options to `build.sh` help CMake find LibTorch. See `build.sh` for details. Otherwise, you can also add one line before `find_package(Torch REQUIRED)` of `CMakeLists.txt`:
-
-[Option 1] You can download the libtorch, e.g., [cu118](https://download.pytorch.org/libtorch/cu118) and then extract them to the folder `./the_path_to_where_you_extracted_LibTorch`. 
-```
-# In a Terminal
-wget https://download.pytorch.org/libtorch/cu118/libtorch-cxx11-abi-shared-with-deps-2.0.1%2Bcu118.zip -O libtorch-cu118.zip
-unzip libtorch-cu118.zip -d ./the_path_to_where_you_extracted_LibTorch
-rm libtorch-cu118.zip
-
-# In CMakeLists.txt
-set(Torch_DIR ./the_path_to_where_you_extracted_LibTorch/libtorch/share/cmake/Torch)
-```
-
-[Option 2] Conda. If you are using Conda to manage your python packages and have installed compatible Pytorch, you could set the 
-```
-# [For Jatson Orin] To install Pytorch in Jatson developer kit, you can run the below commands
-# export TORCH_INSTALL=https://developer.download.nvidia.com/compute/redist/jp/v511/pytorch/torch-2.0.0+nv23.05-cp38-cp38-linux_aarch64.whl
-# pip install --no-cache $TORCH_INSTALL
-
-set(Torch_DIR /the_path_to_conda/python3.x/site-packages/torch/share/cmake/Torch)
-```
-
-
-
-### Using OpenCV with opencv_contrib and CUDA
-Take version 4.7.0 for example, look into [OpenCV realeases](https://github.com/opencv/opencv/releases) and [opencv_contrib](https://github.com/opencv/opencv_contrib/tags), you will find [OpenCV 4.7.0](https://github.com/opencv/opencv/archive/refs/tags/4.7.0.tar.gz) and the corresponding [opencv_contrib 4.7.0](https://github.com/opencv/opencv_contrib/archive/refs/tags/4.7.0.tar.gz), download them to the same directory (for example, `~/opencv`) and extract them. Then open a terminal and run:
-```
-cd ~/opencv
-cd opencv-4.7.0/
-mkdir build
-cd build
-
-# The build options we used in our tests:
-cmake -DCMAKE_BUILD_TYPE=RELEASE -DWITH_CUDA=ON -DWITH_CUDNN=ON -DOPENCV_DNN_CUDA=ON -DWITH_NVCUVID=ON -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-11.8 -DOPENCV_EXTRA_MODULES_PATH="../../opencv_contrib-4.7.0/modules" -DBUILD_TIFF=ON -DBUILD_ZLIB=ON -DBUILD_JASPER=ON -DBUILD_CCALIB=ON -DBUILD_JPEG=ON -DWITH_FFMPEG=ON ..
-
-# Take a moment to check the cmake output, see if there are any packages needed by OpenCV but not installed on your device
-
-make -j8
-# NOTE: We found that the compilation of OpenCV may stuck at 99%, this may be caused by the final linking process. We just waited for a while until it was completed and exited without errors.
-```
-To install OpenCV into the system path:
-```
-sudo make install
-```
-If you prefer installing OpenCV to a custom path by adding `-DCMAKE_INSTALL_PREFIX=/your_preferred_path` option to the `cmake` command, remember to help Photo-SLAM find OpenCV by adding additional cmake options. See `build.sh` for details. Otherwise, you can also add the following line to `CMakeLists.txt`, `ORB-SLAM3/CMakeLists.txt` and `ORB-SLAM3/Thirdparty/DBoW2/CMakeLists.txt`, just like what we did for LibTorch.
-```
-set(OpenCV_DIR /your_preferred_path/lib/cmake/opencv4)
-```
-
-## Installation of Photo-SLAM
-```
-git clone https://github.com/HuajianUP/Photo-SLAM.git
-cd Photo-SLAM/
-chmod +x ./build.sh
+## Installation of CaRtGS
+``` bash
+git clone --recursive https://github.com/DapengFeng/cartgs.git
+cd cartgs/
 ./build.sh
 ```
 
-## Photo-SLAM Examples on Some Benchmark Datasets
+## CaRtGS Examples on Some Benchmark Datasets
 
-The benchmark datasets mentioned in our paper: [Replica (NICE-SLAM Version)](https://github.com/cvg/nice-slam), [TUM RGB-D](https://cvg.cit.tum.de/data/datasets/rgbd-dataset/download), [EuRoC](https://projects.asl.ethz.ch/datasets/doku.php?id=kmavvisualinertialdatasets).
+The benchmark datasets mentioned in our paper: [Replica (NICE-SLAM Version)](https://github.com/cvg/nice-slam) and [TUM RGB-D](https://cvg.cit.tum.de/data/datasets/rgbd-dataset/download).
 
 0. (optional) Download the dataset.
 ```
-cd scripts
-chmod +x ./*.sh
-./download_replica.sh
-./download_tum.sh
-./download_euroc.sh
+scripts/download_replica.sh
+scripts/download_tum.sh
 ```
 
 1. For testing, you could use the below commands to run the system after specifying the `PATH_TO_Replica` and `PATH_TO_SAVE_RESULTS`. We would disable the viewer by adding `no_viewer` during the evaluation.
-```
-./bin/replica_rgbd \
-    ./ORB-SLAM3/Vocabulary/ORBvoc.txt \
-    ./cfg/ORB_SLAM3/RGB-D/Replica/office0.yaml \
-    ./cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml \
+``` bash
+bin/replica_rgbd \
+    ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    cfg/ORB_SLAM3/RGB-D/Replica/office0.yaml \
+    cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml \
     PATH_TO_Replica/office0 \
     PATH_TO_SAVE_RESULTS
-    # no_viewer 
+    # no_viewer
 ```
 
 2. We also provide scripts to conduct experiments on all benchmark datasets mentioned in our paper. We ran each sequence five times to lower the effect of the nondeterministic nature of the system. You need to change the dataset root lines in scripts/*.sh then run:
-```
-cd scripts
-chmod +x ./*.sh
-./replica_mono.sh
-./replica_rgbd.sh
-./tum_mono.sh
-./tum_rgbd.sh
-./euroc_stereo.sh
+``` bash
+scripts/replica_mono.sh
+scripts/replica_rgbd.sh
+scripts/tum_mono.sh
+scripts/tum_rgbd.sh
 # etc.
 ```
 
 
 
-## Photo-SLAM Evaluation
-```
-git clone https://github.com/HuajianUP/Photo-SLAM-eval.git
-```
-<details>
-
+## CaRtGS Evaluation
 To use this toolkit, you have to ensure your results on each dataset are stored in the correct format. If you use our `./xxx.sh` scripts to conduct experiments, the results are stored in
 ```
 results
@@ -193,7 +68,7 @@ results
 │   ├── ....
 │   └── room2
 │
-└── [replica/tum/euroc]_[mono/stereo/rgbd]_num  ....
+└── [replica/tum]_[mono/rgbd]_num  ....
     ├── scene_1
     ├── ....
     └── scene_n
@@ -201,52 +76,47 @@ results
 
 
 ### Install required python package
-```
-pip install evo numpy scipy scikit-image lpips pillow tqdm plyfile
+``` bash
+conda create -n cartgs python=3.10.12 pytorch=2.3.1 torchvision pytorch-cuda=12.1 opencv -c pytorch -c nvidia -c conda-forge
+conda activate cartgs
+pip install -r python/requirement.txt
 ```
 
-### (Optional) install submodel for rendering
-```
-# If you have installed original GS submodel, you can skip these steps.
-
-pip install submodules/simple-knn/ 
-pip install submodules/diff-gaussian-rasterization/
+### install submodel for rendering
+``` bash
+pip install -e python/diff-gaussian-rasterization/
 ```
 
 ### Convert Replica GT camera pose files to suitable pose files to run EVO package
-```
-python ./Photo-SLAM-eval/shapeReplicaGT.py --replica_dataset_path PATH_TO_REPLICA_DATASET
-```
-
-### Copy TUM camera.yaml to the corresponding dataset path
-Since images on some sequences of TUM dataset contain distortion, we need to undistort the ground truth images before evaluation.
-In addition, the file `camera.yaml` is used as an indicator in `run.py`.
-```
-cp ./Photo-SLAM-eval/TUM/fr1/camera.yaml PATH_TO_TUM_DATASET/rgbd_dataset_freiburg1_desk
-cp ./Photo-SLAM-eval/TUM/fr2/camera.yaml PATH_TO_TUM_DATASET/rgbd_dataset_freiburg2_xyz
+``` bash
+python python/shapeReplicaGT.py --replica_dataset_path PATH_TO_REPLICA_DATASET
 ```
 
-### To get all metrics, you can run 
-```
-python ./Photo-SLAM-eval/onekey.py --dataset_center_path PATH_TO_ALL_DATASET --result_main_folder RESULTS_PATH
+### To get all metrics, you can run
+``` bash
+python python/eval.py --dataset_center_path PATH_TO_ALL_DATASET --result_main_folder RESULTS_PATH
 ```
 Finally, you are supposed to get two files including `RESULTS_PATH/log.txt` and `RESULTS_PATH/log.csv`.
 
-</details>
-
-
-## Photo-SLAM Examples with Real Cameras
+## CaRtGS Examples with Real Cameras
 
 We provide an example with the Intel RealSense D455 at `examples/realsense_rgbd.cpp`. Please see `scripts/realsense_d455.sh` for running it.
 
+## Acknowledgement
+This work incorporates many open-source codes. We extend our gratitude to the authors of the software.
+- [Photo-SLAM](https://github.com/HuajianUP/Photo-SLAM)
+- [Taming 3DGS](https://github.com/humansensinglab/taming-3dgs)
 
-
-
-
-<h3>Citation</h3>
-			<pre class="citation-code"><code><span>@inproceedings</span>{hhuang2024photoslam,
-	title = {Photo-SLAM: Real-time Simultaneous Localization and Photorealistic Mapping for Monocular, Stereo, and RGB-D Cameras},
-	author = {Huang, Huajian and Li, Longwei and Cheng Hui and Yeung, Sai-Kit},
-	booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition},
-	year = {2024}
-}</code></pre>
+# Citation
+If you find this work useful in your research, consider citing it:
+```
+@misc{feng2024CaRtGS,
+      title={CaRtGS: Computational Alignment for Real-Time Gaussian Splatting SLAM},
+      author={Dapeng Feng and Zhiqiang Chen and Yizhen Yin and Shipeng Zhong and Yuhua Qi and Hongbo Chen},
+      year={2024},
+      eprint={2410.00486},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2410.00486},
+}
+```

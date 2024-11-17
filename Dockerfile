@@ -45,37 +45,12 @@ RUN wget https://github.com/Kitware/CMake/releases/download/v3.22.1/cmake-3.22.1
     chmod +x /cmake-3.22.1.sh && \
     /cmake-3.22.1.sh --skip-license --prefix=/usr/local
 
-# opencv
-RUN mkdir /opencv && cd /opencv && \
-	wget https://github.com/opencv/opencv/archive/refs/tags/4.8.0.zip -O opencv-4.8.0.zip && \
-    wget https://github.com/opencv/opencv_contrib/archive/refs/tags/4.8.0.zip -O opencv_contrib-4.8.0.zip && \
-    unzip opencv-4.8.0.zip && \
-    unzip opencv_contrib-4.8.0.zip && \
-    rm opencv-4.8.0.zip && rm opencv_contrib-4.8.0.zip
-    
-RUN mkdir /opencv/opencv-4.8.0/build && cd /opencv/opencv-4.8.0/build && \
-	cmake -DCMAKE_BUILD_TYPE=RELEASE \
-          -DWITH_CUDA=ON \
-          -DWITH_CUDNN=ON \
-          -DOPENCV_DNN_CUDA=ON \
-          -DWITH_NVCUVID=ON \
-          -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-11.8 \
-          -DOPENCV_EXTRA_MODULES_PATH=/opencv/opencv_contrib-4.8.0/modules \
-          -DBUILD_TIFF=ON \
-          -DBUILD_ZLIB=ON \
-          -DBUILD_JASPER=ON \
-          -DBUILD_JPEG=ON \
-          -DWITH_FFMPEG=ON \
-          .. && \
-    make -j$(nproc) && \
-    make install && \
-    ldconfig
+RUN apt-get update && apt-get install -y ninja-build
 
-# libtorch
-RUN cd / && \
-	wget https://download.pytorch.org/libtorch/cu118/libtorch-cxx11-abi-shared-with-deps-2.0.1%2Bcu118.zip -O libtorch-cu118.zip && \
-	unzip libtorch-cu118.zip && rm libtorch-cu118.zip
+RUN sed -i 's/library_version_type/item_version_type/g' /usr/include/boost/serialization/list.hpp
 
-ENV Torch_DIR=/libtorch/share/cmake/Torch
+RUN apt-get install python3-tk -y
+RUN pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+RUN pip3 install evo torchmetrics numpy scipy scikit-image lpips pillow tqdm plyfile opencv-python
 
-WORKDIR /large_scale_gaussian_slam
+WORKDIR /cartgs

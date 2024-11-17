@@ -7,7 +7,7 @@ File.version: "1.0"
 
 Camera.type: "PinHole"
 
-# Camera calibration and distortion parameters (OpenCV) 
+# Camera calibration and distortion parameters (OpenCV)
 Camera1.fx: 600.0
 Camera1.fy: 600.0
 Camera1.cx: 599.5
@@ -36,7 +36,7 @@ Camera.height: 680
 # ORB Extractor: Number of features per image
 ORBextractor.nFeatures: 2000
 
-# ORB Extractor: Scale factor between levels in the scale pyramid      
+# ORB Extractor: Scale factor between levels in the scale pyramid
 ORBextractor.scaleFactor: 1.2
 
 # ORB Extractor: Number of levels in the scale pyramid
@@ -62,4 +62,3 @@ Viewer.ViewpointX: 0.0
 Viewer.ViewpointY: -0.7
 Viewer.ViewpointZ: -1.8
 Viewer.ViewpointF: 500.0
-

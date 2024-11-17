@@ -24,7 +24,7 @@ RGBD.max_depth: 40.0
 Mapper.inactive_geo_densify: 1  # 0:false, 1 or other integer:true
 Mapper.depth_cache: 10
 Mapper.min_num_initial_map_kfs: 20
-Mapper.new_keyframe_times_of_use: 20
+Mapper.new_keyframe_times_of_use: 200
 Mapper.local_BA_increased_times_of_use: 0
 Mapper.loop_closure_increased_times_of_use_: 2
 Mapper.cull_keyframes: 0  # 0:false, 1 or other integer:true

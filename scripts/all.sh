@@ -1,9 +1,8 @@
 #!/bin/bash
+exp=$1
 
-./replica_mono.sh
-./replica_rgbd.sh
+scripts/replica_mono.sh $exp
+scripts/replica_rgbd.sh $exp
 
-./tum_mono.sh
-./tum_rgbd.sh
-
-./euroc_stereo.sh
+scripts/tum_mono.sh $exp
+scripts/tum_rgbd.sh $exp
