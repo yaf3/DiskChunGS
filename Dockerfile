@@ -51,6 +51,6 @@ RUN sed -i 's/library_version_type/item_version_type/g' /usr/include/boost/seria
 
 RUN apt-get install python3-tk -y
 RUN pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-RUN pip3 install evo torchmetrics numpy scipy scikit-image lpips pillow tqdm plyfile opencv-python
+RUN pip3 install evo torchmetrics numpy scipy scikit-image lpips pillow tqdm plyfile opencv-python optuna optuna-dashboard
 
 WORKDIR /cartgs
