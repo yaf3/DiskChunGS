@@ -21,7 +21,8 @@
                 "ms-vscode.cpptools",
                 "ms-vscode.cmake-tools",
                 "twxs.cmake",
-                "ms-vscode.cpptools-extension-pack"
+                "ms-vscode.cpptools-extension-pack",
+                "xaver.clang-format"
             ],
             "settings": {
                 "cmake.buildDirectory": "${workspaceFolder}/build",
@@ -29,6 +30,6 @@
             }
         }
     },
-    "postCreateCommand": "apt-get update && apt-get install -y gdb",
+    "postCreateCommand": "apt-get update && apt-get install -y gdb && pip install clang-format",
     "remoteUser": "root"
 }

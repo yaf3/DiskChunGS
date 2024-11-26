@@ -73,6 +73,12 @@
         "typeinfo": "cpp",
         "valarray": "cpp",
         "variant": "cpp",
-        "__nullptr": "cpp"
-    }
+        "__nullptr": "cpp",
+        "*.ipp": "cpp",
+        "any": "cpp",
+        "csetjmp": "cpp",
+        "regex": "cpp",
+        "future": "cpp",
+        "span": "cpp"
+    },
 }
