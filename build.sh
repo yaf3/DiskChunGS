@@ -61,7 +61,9 @@ cmake --build third_party/ORB-SLAM3/build
 
 # CaRtGS
 echo "Building CaRtGS ..."
-cmake -B build -G Ninja -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+cmake -B build -G Ninja \
+      -DCMAKE_BUILD_TYPE=Debug \
+      -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
       -DCMAKE_CUDA_ARCHITECTURES="86" \
       -DTorch_DIR=$workdir/third_party/libtorch/share/cmake/Torch \
       -DOpenCV_DIR=$workdir/third_party/install/opencv/lib/cmake/opencv4
