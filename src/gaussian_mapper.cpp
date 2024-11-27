@@ -527,7 +527,12 @@ void GaussianMapper::run() {
     if (SLAM_ended_) break;
   }
 
-  // Third loop: Tail gaussian optimization
+  // Third loop: After SLAM training
+  // while (getIteration() < 2000) {
+  //   trainForOneIteration();
+  // }
+
+  // Fourth loop: Tail gaussian optimization
   int densify_interval = densifyInterval();
   int n_delay_iters = densify_interval * 0.8;
   while (getIteration() - SLAM_stop_iter < n_delay_iters ||
@@ -1030,6 +1035,8 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   pkf->kps_point_local_ = std::move(std::get<7>(kf));
   if (isdoingInactiveGeoDensify()) increasePcdByKeyframeInactiveGeoDensify(pkf);
 
+  // increasePcdByStereoReprojection(pkf);
+
   // Prepare multi resolution images for training
   if (device_type_ == torch::kCUDA) {
     cv::cuda::GpuMat img_gpu;
@@ -1387,6 +1394,159 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
   }
 
   pkf->done_inactive_geo_densify_ = true;
+  ++depth_cached_;
+
+  if (depth_cached_ >= max_depth_cached_) {
+    depth_cached_ = 0;
+    // Add new points to the model
+    std::unique_lock<std::mutex> lock_render(mutex_render_);
+    gaussians_->increasePcd(depth_cache_points_, depth_cache_colors_,
+                            getIteration());
+  }
+
+  // auto end_timing = std::chrono::steady_clock::now();
+  // auto completion_time =
+  // std::chrono::duration_cast<std::chrono::milliseconds>(
+  //                 end_timing - start_timing).count();
+  // std::cout << "[Gaussian Mapper]increasePcdByKeyframeInactiveGeoDensify()
+  // takes "
+  //             << completion_time
+  //             << " ms"
+  //             << std::endl;
+}
+
+void GaussianMapper::increasePcdByStereoReprojection(
+    std::shared_ptr<GaussianKeyframe> pkf) {
+  // auto start_timing = std::chrono::steady_clock::now();
+  torch::NoGradGuard no_grad;
+
+  Sophus::SE3f Twc = pkf->getPosef().inverse();
+
+  switch (this->sensor_type_) {
+    case MONOCULAR: {
+      throw std::runtime_error("Can't densify with mono");
+    } break;
+    case STEREO: {
+      // Get original image dimensions
+      int orig_height = pkf->img_undist_.rows;
+      int orig_width = pkf->img_undist_.cols;
+
+      // Compute downsampling factor (adjust these values based on your memory
+      // constraints) For example, scale = 4 means we use 1/16th of the pixels
+      const int scale = 1;
+      int new_height = orig_height / scale;
+      int new_width = orig_width / scale;
+
+      // Resize images before stereo matching
+      cv::cuda::GpuMat rgb_left_gpu, rgb_right_gpu;
+      cv::cuda::GpuMat rgb_left_small, rgb_right_small;
+
+      // Upload and resize left image
+      rgb_left_gpu.upload(pkf->img_undist_);
+      cv::cuda::resize(rgb_left_gpu, rgb_left_small,
+                       cv::Size(new_width, new_height));
+
+      // Upload and resize right image
+      rgb_right_gpu.upload(pkf->img_auxiliary_undist_);
+      cv::cuda::resize(rgb_right_gpu, rgb_right_small,
+                       cv::Size(new_width, new_height));
+
+      // Convert to grayscale for disparity computation
+      cv::cuda::GpuMat gray_left_gpu, gray_right_gpu;
+      cv::cuda::cvtColor(rgb_left_small, gray_left_gpu, cv::COLOR_RGB2GRAY);
+      cv::cuda::cvtColor(rgb_right_small, gray_right_gpu, cv::COLOR_RGB2GRAY);
+
+      // Convert to uint8 format required by stereo matching
+      gray_left_gpu.convertTo(gray_left_gpu, CV_8UC1, 255.0);
+      gray_right_gpu.convertTo(gray_right_gpu, CV_8UC1, 255.0);
+
+      // Scale stereo parameters for the downsampled images
+      cv::Mat Q_scaled = stereo_Q_.clone();
+      Q_scaled.at<float>(0, 0) /= scale;  // fx
+      Q_scaled.at<float>(1, 1) /= scale;  // fy
+      Q_scaled.at<float>(0, 3) /= scale;  // cx
+      Q_scaled.at<float>(1, 3) /= scale;  // cy
+
+      // Compute disparity
+      cv::cuda::GpuMat disparity_gpu;
+      stereo_cv_sgm_->compute(gray_left_gpu, gray_right_gpu, disparity_gpu);
+      disparity_gpu.convertTo(disparity_gpu, CV_32F, 1.0 / 16.0);
+
+      // Reproject to 3D using scaled Q matrix
+      cv::cuda::GpuMat points3D_gpu;
+      cv::cuda::reprojectImageTo3D(disparity_gpu, points3D_gpu, Q_scaled, 3);
+
+      // Convert to torch tensors
+      torch::Tensor disparity =
+          tensor_utils::cvGpuMat2TorchTensor_Float32(disparity_gpu);
+      disparity = disparity.flatten(0, 1).contiguous();
+
+      torch::Tensor points3D =
+          tensor_utils::cvGpuMat2TorchTensor_Float32(points3D_gpu);
+      points3D = points3D.permute({1, 2, 0}).flatten(0, 1).contiguous();
+
+      torch::Tensor colors =
+          tensor_utils::cvGpuMat2TorchTensor_Float32(rgb_left_small);
+      colors = colors.permute({1, 2, 0}).flatten(0, 1).contiguous();
+
+      // Filter points
+      torch::Tensor valid_points = torch::logical_and(
+          disparity > static_cast<float>(stereo_cv_sgm_->getMinDisparity()),
+          disparity < static_cast<float>(stereo_cv_sgm_->getNumDisparities()));
+
+      // Depth range filtering (adjust these thresholds as needed)
+      valid_points = torch::logical_and(
+          valid_points, points3D.index({torch::indexing::Slice(), 2}) > 4.0f);
+      valid_points = torch::logical_and(
+          valid_points, points3D.index({torch::indexing::Slice(), 2}) < 50.0f);
+
+      // Further random subsampling if needed
+      // Keep only 25% of the valid points randomly
+      const float keep_probability = 0.5f;
+      torch::Tensor random_mask =
+          torch::rand_like(valid_points.to(torch::kFloat)) < keep_probability;
+      valid_points = torch::logical_and(valid_points, random_mask);
+
+      // Keep only valid points
+      points3D = points3D.index({valid_points});
+      colors = colors.index({valid_points});
+
+      // Transform to world coordinates
+      torch::Tensor Twc_tensor =
+          tensor_utils::EigenMatrix2TorchTensor(Twc.matrix(), device_type_)
+              .transpose(0, 1);
+      transformPoints(points3D, Twc_tensor);
+
+      // Cache the points
+      if (depth_cached_ == 0) {
+        depth_cache_points_ = points3D;
+        depth_cache_colors_ = colors;
+      } else {
+        depth_cache_points_ =
+            torch::cat({depth_cache_points_, points3D}, /*dim=*/0);
+        depth_cache_colors_ =
+            torch::cat({depth_cache_colors_, colors}, /*dim=*/0);
+      }
+
+      ++depth_cached_;
+
+      // Add to g{aussian model when cache is full
+      if (depth_cached_ >= max_depth_cached_) {
+        depth_cached_ = 0;
+        std::unique_lock<std::mutex> lock_render(mutex_render_);
+        gaussians_->increasePcd(depth_cache_points_, depth_cache_colors_,
+                                getIteration());
+      }
+
+    } break;
+    case RGBD: {
+      throw std::runtime_error("Not implemented yet");
+    } break;
+    default: {
+      throw std::runtime_error("[Gaussian Mapper]Unsupported sensor type!");
+    } break;
+  }
+
   ++depth_cached_;
 
   if (depth_cached_ >= max_depth_cached_) {

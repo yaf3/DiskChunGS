@@ -185,6 +185,8 @@ class GaussianMapper {
   void increasePcdByKeyframeInactiveGeoDensify(
       std::shared_ptr<GaussianKeyframe> pkf);
 
+  void increasePcdByStereoReprojection(std::shared_ptr<GaussianKeyframe> pkf);
+
   // bool needInterruptTraining();
   // void setInterruptTraining(const bool interrupt_training);
 
