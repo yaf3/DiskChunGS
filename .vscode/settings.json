@@ -81,4 +81,5 @@
         "future": "cpp",
         "span": "cpp"
     },
+    "editor.formatOnSave": true,
 }
