@@ -28,7 +28,6 @@ std::
         std::shared_ptr<GaussianKeyframe> viewpoint_camera,
         int image_height,
         int image_width,
-        std::shared_ptr<GaussianModel> pc,
         GaussianPipelineParams& pipe,
         torch::Tensor& bg_color,
         torch::Tensor& override_color,
@@ -38,6 +37,8 @@ std::
 
      Background tensor (bg_color) must be on GPU!
    */
+
+  int active_sh_degree = models[0]->active_sh_degree_;
 
   std::vector<torch::Tensor> means3D_vec;
   std::vector<torch::Tensor> means2D_vec;
@@ -161,7 +162,7 @@ std::
   GaussianRasterizationSettings raster_settings(
       image_height, image_width, tanfovx, tanfovy, bg_color, scaling_modifier,
       viewpoint_camera->world_view_transform_,
-      viewpoint_camera->full_proj_transform_, pc->active_sh_degree_,
+      viewpoint_camera->full_proj_transform_, active_sh_degree,
       viewpoint_camera->camera_center_, false, false);
 
   GaussianRasterizer rasterizer(raster_settings);

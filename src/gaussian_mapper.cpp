@@ -88,8 +88,7 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   override_color_ =
       torch::empty(0, torch::TensorOptions().device(device_type_));
 
-  // Initialize scene and model
-  gaussians_ = std::make_shared<GaussianModel>(model_params_);
+  // Initialize scene
   scene_ = std::make_shared<GaussianScene>(model_params_);
 
   // Mode
@@ -712,11 +711,11 @@ void GaussianMapper::trainForOneIteration() {
   }
 
   // Render
-  std::cout << "\r[Gaussian Mapper] Rendering "
-            << gaussians_->getXYZ().sizes()[0] << "..." << std::flush;
-  auto render_pkg = GaussianRenderer::render(
-      models, viewpoint_cam, image_height, image_width, gaussians_,
-      pipe_params_, background_, override_color_);
+  // std::cout << "\r[Gaussian Mapper] Rendering "
+  //           << gaussians_->getXYZ().sizes()[0] << "..." << std::flush;
+  auto render_pkg =
+      GaussianRenderer::render(models, viewpoint_cam, image_height, image_width,
+                               pipe_params_, background_, override_color_);
   auto rendered_image = std::get<0>(render_pkg);
   std::vector<torch::Tensor> screenspace_points_vec = std::get<1>(render_pkg);
   std::vector<torch::Tensor> radii_vec = std::get<2>(render_pkg);
@@ -794,11 +793,12 @@ void GaussianMapper::trainForOneIteration() {
                          .count();
 
     // Log and save
-    if (training_report_interval_ &&
-        (getIteration() % training_report_interval_ == 0))
-      trainingReport(getIteration(), opt_params_.iterations_, Ll1, loss,
-                     ema_loss_for_log_, iter_time, *gaussians_, *scene_,
-                     pipe_params_, background_);
+    // Todo fix for multiple
+    // if (training_report_interval_ &&
+    //     (getIteration() % training_report_interval_ == 0))
+    //   trainingReport(getIteration(), opt_params_.iterations_, Ll1, loss,
+    //                  ema_loss_for_log_, iter_time, *gaussians_, *scene_,
+    //                  pipe_params_, background_);
     if ((all_keyframes_record_interval_ &&
          getIteration() % all_keyframes_record_interval_ == 0)) {
       renderAndRecordAllKeyframes();
@@ -1734,9 +1734,8 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
   {
     std::unique_lock<std::mutex> lock_render(mutex_render_);
     // Render
-    render_pkg =
-        GaussianRenderer::render(models, pkf, height, width, gaussians_,
-                                 pipe_params_, background_, override_color_);
+    render_pkg = GaussianRenderer::render(
+        models, pkf, height, width, pipe_params_, background_, override_color_);
   }
 
   // Result
@@ -1775,9 +1774,9 @@ void GaussianMapper::renderAndRecordKeyframe(
     return;  // Early return if no valid models
   }
 
-  auto render_pkg = GaussianRenderer::render(
-      models, pkf, pkf->image_height_, pkf->image_width_, gaussians_,
-      pipe_params_, background_, override_color_);
+  auto render_pkg = GaussianRenderer::render(models, pkf, pkf->image_height_,
+                                             pkf->image_width_, pipe_params_,
+                                             background_, override_color_);
   auto rendered_image = std::get<0>(render_pkg);
   torch::cuda::synchronize();
   auto end_timing = std::chrono::steady_clock::now();
@@ -1867,8 +1866,9 @@ void GaussianMapper::savePly(std::filesystem::path result_dir) {
   ply_dir = ply_dir / ("iteration_" + std::to_string(getIteration()));
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(ply_dir)
 
-  gaussians_->savePly(ply_dir / "point_cloud.ply");
-  gaussians_->saveSparsePointsPly(result_dir / "input.ply");
+  // Todo fix
+  // gaussians_->savePly(ply_dir / "point_cloud.ply");
+  // gaussians_->saveSparsePointsPly(result_dir / "input.ply");
 }
 
 void GaussianMapper::keyframesToJson(std::filesystem::path result_dir) {
@@ -2071,7 +2071,7 @@ void GaussianMapper::setRotationLearningRate(const float lr) {
 void GaussianMapper::setPercentDense(const float percent_dense) {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   opt_params_.percent_dense_ = percent_dense;
-  gaussians_->setPercentDense(percent_dense);
+  // gaussians_->setPercentDense(percent_dense);
 }
 void GaussianMapper::setLambdaDssim(const float lambda_dssim) {
   std::unique_lock<std::mutex> lock(mutex_settings_);
@@ -2139,7 +2139,7 @@ void GaussianMapper::setVaribleParameters(const VariableParameters& params) {
   opt_params_.scaling_lr_ = params.scaling_lr;
   opt_params_.rotation_lr_ = params.rotation_lr;
   opt_params_.percent_dense_ = params.percent_dense;
-  gaussians_->setPercentDense(params.percent_dense);
+  // gaussians_->setPercentDense(params.percent_dense);
   opt_params_.lambda_dssim_ = params.lambda_dssim;
   opt_params_.opacity_reset_interval_ = params.opacity_reset_interval;
   opt_params_.densify_grad_threshold_ = params.densify_grad_th;
@@ -2153,7 +2153,7 @@ void GaussianMapper::setVaribleParameters(const VariableParameters& params) {
 
 void GaussianMapper::loadPly(std::filesystem::path ply_path,
                              std::filesystem::path camera_path) {
-  this->gaussians_->loadPly(ply_path);
+  // this->gaussians_->loadPly(ply_path);
 
   // Camera
   if (!camera_path.empty() && std::filesystem::exists(camera_path)) {
@@ -2596,7 +2596,7 @@ void GaussianMapper::addPoints(
           chunk_gaussians->createFromPcd(filtered_points, filtered_colors,
                                          scene_->cameras_extent_);
           std::unique_lock<std::mutex> lock(mutex_settings_);
-          gaussians_->trainingSetup(opt_params_);
+          chunk_gaussians->trainingSetup(opt_params_);
         }
 
       } else {

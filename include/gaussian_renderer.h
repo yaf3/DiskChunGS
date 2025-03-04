@@ -35,7 +35,6 @@ class GaussianRenderer {
          std::shared_ptr<GaussianKeyframe> viewpoint_camera,
          int image_height,
          int image_width,
-         std::shared_ptr<GaussianModel> gaussians,
          GaussianPipelineParams& pipe,
          torch::Tensor& bg_color,
          torch::Tensor& override_color,
