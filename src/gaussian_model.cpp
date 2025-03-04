@@ -101,27 +101,11 @@ void GaussianModel::setShDegree(const int sh) {
       (sh > this->max_sh_degree_ ? this->max_sh_degree_ : sh);
 }
 
-void GaussianModel::createFromPcd(std::map<point3D_id_t, Point3D> pcd,
+void GaussianModel::createFromPcd(torch::Tensor& fused_point_cloud,
+                                  torch::Tensor& color,
                                   const float spatial_lr_scale) {
   this->spatial_lr_scale_ = spatial_lr_scale;
-  int num_points = static_cast<int>(pcd.size());
-  torch::Tensor fused_point_cloud = torch::zeros(
-      {num_points, 3},
-      torch::TensorOptions().dtype(torch::kFloat).device(device_type_));
-  torch::Tensor color = torch::zeros(
-      {num_points, 3},
-      torch::TensorOptions().dtype(torch::kFloat).device(device_type_));
-  auto pcd_it = pcd.begin();
-  for (int point_idx = 0; point_idx < num_points; ++point_idx) {
-    auto& point = (*pcd_it).second;
-    fused_point_cloud.index({point_idx, 0}) = point.xyz_(0);
-    fused_point_cloud.index({point_idx, 1}) = point.xyz_(1);
-    fused_point_cloud.index({point_idx, 2}) = point.xyz_(2);
-    color.index({point_idx, 0}) = point.color_(0);
-    color.index({point_idx, 1}) = point.color_(1);
-    color.index({point_idx, 2}) = point.color_(2);
-    ++pcd_it;
-  }
+  int num_points = static_cast<int>(fused_point_cloud.sizes()[0]);
 
   sparse_points_xyz_ = fused_point_cloud;
   sparse_points_color_ = color;
@@ -184,99 +168,6 @@ void GaussianModel::createFromPcd(std::map<point3D_id_t, Point3D> pcd,
 
   this->max_radii2D_ = torch::zeros(
       {this->getXYZ().size(0)}, torch::TensorOptions().device(device_type_));
-}
-
-void GaussianModel::increasePcd(std::vector<float> points,
-                                std::vector<float> colors,
-                                const int iteration) {
-  // auto time1 = std::chrono::steady_clock::now();
-  assert(points.size() == colors.size());
-  assert(points.size() % 3 == 0);
-  auto num_new_points = static_cast<int>(points.size() / 3);
-  if (num_new_points == 0) return;
-
-  torch::Tensor new_point_cloud =
-      torch::from_blob(points.data(), {num_new_points, 3},
-                       torch::TensorOptions().dtype(torch::kFloat32))
-          .to(device_type_);
-  // torch::zeros({num_new_points, 3}, xyz_.options());
-  torch::Tensor new_colors =
-      torch::from_blob(colors.data(), {num_new_points, 3},
-                       torch::TensorOptions().dtype(torch::kFloat32))
-          .to(device_type_);
-  // torch::zeros({num_new_points, 3}, xyz_.options());
-
-  sparse_points_xyz_ =
-      torch::cat({sparse_points_xyz_, new_point_cloud}, /*dim=*/0);
-  sparse_points_color_ =
-      torch::cat({sparse_points_color_, new_colors}, /*dim=*/0);
-
-  torch::Tensor new_fused_colors = sh_utils::RGB2SH(new_colors);
-  auto temp = this->max_sh_degree_ + 1;
-  torch::Tensor features = torch::zeros(
-      {new_fused_colors.size(0), 3, temp * temp},
-      torch::TensorOptions().dtype(torch::kFloat).device(device_type_));
-  features.index({torch::indexing::Slice(), torch::indexing::Slice(0, 3), 0}) =
-      new_fused_colors;
-  features.index({torch::indexing::Slice(),
-                  torch::indexing::Slice(3, features.size(1)),
-                  torch::indexing::Slice(1, features.size(2))}) = 0.0f;
-
-  // std::cout << "[Gaussian Model]Number of points increase : "
-  //           << num_new_points << std::endl;
-
-  torch::Tensor dist2 =
-      torch::clamp_min(distCUDA2(new_point_cloud.clone()), 0.0000001);
-  torch::Tensor scales = torch::log(torch::sqrt(dist2) * 0.1);
-  auto scales_ndimension = scales.ndimension();
-  scales = scales.unsqueeze(scales_ndimension).repeat({1, 3});
-  torch::Tensor rots =
-      torch::zeros({new_point_cloud.size(0), 4},
-                   torch::TensorOptions().device(device_type_));
-  rots.index({torch::indexing::Slice(), 0}) = 1;
-  torch::Tensor opacities = general_utils::inverse_sigmoid(
-      0.5f *
-      torch::ones(
-          {new_point_cloud.size(0), 1},
-          torch::TensorOptions().dtype(torch::kFloat).device(device_type_)));
-
-  torch::Tensor new_exist_since_iter = torch::full(
-      {new_point_cloud.size(0)}, iteration,
-      torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
-
-  auto new_xyz = new_point_cloud;
-  auto new_features_dc =
-      features
-          .index({torch::indexing::Slice(), torch::indexing::Slice(),
-                  torch::indexing::Slice(0, 1)})
-          .transpose(1, 2)
-          .contiguous();
-  auto new_features_rest =
-      features
-          .index({torch::indexing::Slice(), torch::indexing::Slice(),
-                  torch::indexing::Slice(1, features.size(2))})
-          .transpose(1, 2)
-          .contiguous();
-  auto new_opacities = opacities;
-  auto new_scaling = scales;
-  auto new_rotation = rots;
-
-  // auto time2 = std::chrono::steady_clock::now();
-  // auto time =
-  // std::chrono::duration_cast<std::chrono::milliseconds>(time2-time1).count();
-  // std::cout << "increasePcd(umap) preparation time: " << time << " ms"
-  // <<std::endl;
-
-  densificationPostfix(new_xyz, new_features_dc, new_features_rest,
-                       new_opacities, new_scaling, new_rotation,
-                       new_exist_since_iter);
-
-  c10::cuda::CUDACachingAllocator::emptyCache();
-  // auto time3 = std::chrono::steady_clock::now();
-  // time =
-  // std::chrono::duration_cast<std::chrono::milliseconds>(time3-time2).count();
-  // std::cout << "increasePcd(umap) postfix time: " << time << " ms"
-  // <<std::endl;
 }
 
 void GaussianModel::increasePcd(torch::Tensor& new_point_cloud,

@@ -79,12 +79,10 @@ class GaussianModel {
   void oneUpShDegree();
   void setShDegree(const int sh);
 
-  void createFromPcd(std::map<point3D_id_t, Point3D> pcd,
+  void createFromPcd(torch::Tensor& fused_point_cloud,
+                     torch::Tensor& color,
                      const float spatial_lr_scale);
 
-  void increasePcd(std::vector<float> points,
-                   std::vector<float> colors,
-                   const int iteration);
   void increasePcd(torch::Tensor& new_point_cloud,
                    torch::Tensor& new_colors,
                    const int iteration);

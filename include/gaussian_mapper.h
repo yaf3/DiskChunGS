@@ -89,6 +89,53 @@ struct VariableParameters {
   bool do_inactive_geo_densify;
 };
 
+struct ChunkCoord {
+  int64_t x, y, z;
+
+  bool operator==(const ChunkCoord &other) const {
+    return x == other.x && y == other.y && z == other.z;
+  }
+
+  bool operator<(const ChunkCoord &other) const {
+    if (x != other.x) return x < other.x;
+    if (y != other.y) return y < other.y;
+    return z < other.z;
+  }
+};
+
+// Custom hash function for ChunkCoord
+struct ChunkCoordHash {
+  std::size_t operator()(const ChunkCoord &coord) const {
+    // Simple hash combining function
+    std::size_t h1 = std::hash<int>{}(coord.x);
+    std::size_t h2 = std::hash<int>{}(coord.y);
+    std::size_t h3 = std::hash<int>{}(coord.z);
+    return h1 ^ (h2 << 1) ^ (h3 << 2);
+  }
+};
+
+class Chunk {
+ public:
+  // Original constructor
+  Chunk(const GaussianModelParams &model_params) {
+    gaussians_ = std::make_shared<GaussianModel>(model_params);
+  }
+
+  // Add a default constructor to support cloning
+  Chunk() = default;
+
+  // Clone method
+  // Tod: Implement clone for gaussians
+  // std::shared_ptr<Chunk> clone() const {
+  //   auto cloned_chunk = std::make_shared<Chunk>();
+  //   cloned_chunk->gaussians_ = gaussians_->clone();
+  //   return cloned_chunk;
+  // }
+
+ public:
+  std::shared_ptr<GaussianModel> gaussians_;
+};
+
 class GaussianMapper {
  public:
   GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
@@ -113,6 +160,55 @@ class GaussianMapper {
 
   int getIteration();
   void increaseIteration(const int inc = 1);
+
+  // Core functionality
+  void updateActiveChunks(std::shared_ptr<GaussianKeyframe> keyframe);
+
+  std::filesystem::path getChunkFilename(const ChunkCoord &coord);
+
+  void saveChunk(const ChunkCoord &coord);
+  bool loadChunk(const ChunkCoord &coord);
+
+  // Gaussian management
+  void addPoints(
+      const torch::Tensor &points,
+      const torch::Tensor &colors,
+      std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> keyframes);
+
+  // Utility functions
+  ChunkCoord getChunkCoord(const Eigen::Vector3f &position);
+  bool isChunkActive(const ChunkCoord &coord);
+
+  std::tuple<torch::Tensor, torch::Tensor> filterPointsByDepth(
+      const torch::Tensor &points,
+      const torch::Tensor &colors,
+      const std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>
+          &keyframes);
+
+  std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> groupPointsByChunk(
+      const torch::Tensor &positions);
+
+  float chunk_size_ = 50.0;
+  float overlap_margin_ = 0.0;
+  std::filesystem::path chunk_save_dir_;
+
+  // Active chunks in memory
+  std::unordered_map<ChunkCoord, std::shared_ptr<Chunk>, ChunkCoordHash>
+      active_chunks_;
+  std::unordered_map<ChunkCoord, std::shared_ptr<Chunk>, ChunkCoordHash>
+      render_chunks_;
+
+  void update_render_chunks();
+
+  // Cache of chunk existence to avoid repeated disk checks
+  std::unordered_map<ChunkCoord, bool, ChunkCoordHash> chunk_exists_cache_;
+
+  // Helper functions
+  bool isInViewFrustum(const ChunkCoord &coord,
+                       const Eigen::Vector3f &camera_pos,
+                       const Eigen::Vector3f &view_dir);
+
+  bool chunkExistsOnDisk(const ChunkCoord &coord);
 
   float positionLearningRateInit();
   float featureLearningRate();
@@ -287,6 +383,8 @@ class GaussianMapper {
   int max_depth_cached_ = 1;
   torch::Tensor depth_cache_points_;
   torch::Tensor depth_cache_colors_;
+  std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>
+      depth_cache_keyframes_;
 
   unsigned long min_num_initial_map_kfs_;
   torch::Tensor background_;

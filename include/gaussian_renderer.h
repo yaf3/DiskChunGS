@@ -28,8 +28,11 @@
 
 class GaussianRenderer {
  public:
-  static std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
-  render(std::shared_ptr<GaussianKeyframe> viewpoint_camera,
+  static std::tuple<torch::Tensor,
+                    std::vector<torch::Tensor>,
+                    std::vector<torch::Tensor>>
+  render(const std::vector<std::shared_ptr<GaussianModel>>& models,
+         std::shared_ptr<GaussianKeyframe> viewpoint_camera,
          int image_height,
          int image_width,
          std::shared_ptr<GaussianModel> gaussians,
