@@ -20,6 +20,7 @@
 
 #include "include/gaussian_renderer.h"
 #include "include/loss_utils.h"
+#include "include/profiling.h"
 
 void trainingReport(int iteration,
                     int num_iterations,
@@ -632,6 +633,8 @@ void GaussianMapper::trainColmap() {
  *
  */
 void GaussianMapper::trainForOneIteration() {
+  auto timer_trainForOneIteration =
+      ProfilingUtils::Timer("trainForOneIteration");
   increaseIteration(1);
   auto iter_start_timing = std::chrono::steady_clock::now();
 
@@ -668,8 +671,11 @@ void GaussianMapper::trainForOneIteration() {
                .gaus_pyramid_undistort_mask_[training_level];
   }
 
+  auto timer_waitForMutex = ProfilingUtils::Timer("waitForMutex");
   // Mutex lock for usage of the gaussian model
   std::unique_lock<std::mutex> lock_render(mutex_render_);
+
+  timer_waitForMutex.stop();
 
   if (active_chunks_.empty()) {
     std::cout << "[Optimization] No active chunks to optimize" << std::endl;
@@ -713,9 +719,11 @@ void GaussianMapper::trainForOneIteration() {
   // Render
   // std::cout << "\r[Gaussian Mapper] Rendering "
   //           << gaussians_->getXYZ().sizes()[0] << "..." << std::flush;
+  auto timer_render = ProfilingUtils::Timer("render");
   auto render_pkg =
       GaussianRenderer::render(models, viewpoint_cam, image_height, image_width,
                                pipe_params_, background_, override_color_);
+  timer_render.stop();
   auto rendered_image = std::get<0>(render_pkg);
   std::vector<torch::Tensor> screenspace_points_vec = std::get<1>(render_pkg);
   std::vector<torch::Tensor> radii_vec = std::get<2>(render_pkg);
@@ -733,10 +741,12 @@ void GaussianMapper::trainForOneIteration() {
   //   loss += opt_params_.opacity_reg_ *
   //           gaussians_->getOpacityActivation().abs().mean();
   // }
+  auto timer_backwards = ProfilingUtils::Timer("backwards");
   loss.backward();
+  timer_backwards.stop();
 
   torch::cuda::synchronize();
-
+  auto timer_densification = ProfilingUtils::Timer("densification");
   {
     torch::NoGradGuard no_grad;
     kfs_loss_[viewpoint_cam->fid_] = loss.item().toFloat();
@@ -787,6 +797,8 @@ void GaussianMapper::trainForOneIteration() {
       }
     }
 
+    timer_densification.stop();
+
     auto iter_end_timing = std::chrono::steady_clock::now();
     auto iter_time = std::chrono::duration_cast<std::chrono::milliseconds>(
                          iter_end_timing - iter_start_timing)
@@ -815,6 +827,12 @@ void GaussianMapper::trainForOneIteration() {
         gaussians->optimizer_->zero_grad(true);
       }
     }
+  }
+
+  timer_trainForOneIteration.stop();
+  if (getIteration() % 500 == 0) {
+    ProfilingUtils::getInstance().printStats();
+    ProfilingUtils::getInstance().reset();
   }
 }
 
