@@ -1,10 +1,37 @@
-FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
+FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu20.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Add ROS repository and keys
 RUN apt-get update && apt-get install -y \
     software-properties-common \
-    wget
+    wget \
+    curl \
+    gnupg2 \
+    lsb-release
+
+RUN sh -c 'echo "deb http://packages.ros.org/ros/ubuntu $(lsb_release -sc) main" > /etc/apt/sources.list.d/ros-latest.list'
+RUN curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | apt-key add -
+
+# Remove system OpenCV and all related files
+RUN apt-get update && \
+    apt-get remove -y libopencv* python3-opencv && \
+    apt-get autoremove -y && \
+    rm -rf /usr/include/opencv* /usr/include/opencv2 /usr/include/opencv4 && \
+    rm -rf /lib/x86_64-linux-gnu/libopencv* /usr/lib/x86_64-linux-gnu/libopencv* && \
+    rm -rf /usr/local/include/opencv* /usr/local/include/opencv2
+
+# Install ROS Noetic without recommended packages to avoid OpenCV
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-noetic-desktop-full \
+    python3-rosdep \
+    python3-rosinstall \
+    python3-rosinstall-generator \
+    python3-wstool \
+    build-essential
+
+# Initialize rosdep
+RUN rosdep init && rosdep update
 
 # gcc
 RUN add-apt-repository ppa:ubuntu-toolchain-r/test -y
@@ -38,6 +65,7 @@ RUN apt-get install -y \
     libswscale-dev \
     libswresample-dev \
     libssl-dev \
+    python3-catkin-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # cmake
@@ -47,10 +75,22 @@ RUN wget https://github.com/Kitware/CMake/releases/download/v3.22.1/cmake-3.22.1
 
 RUN apt-get update && apt-get install -y ninja-build
 
-RUN sed -i 's/library_version_type/item_version_type/g' /usr/include/boost/serialization/list.hpp
-
 RUN apt-get install python3-tk -y
-RUN pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-RUN pip3 install evo torchmetrics numpy scipy scikit-image lpips pillow tqdm plyfile opencv-python optuna optuna-dashboard
+RUN pip3 install optuna optuna-dashboard
 
-WORKDIR /cartgs
+# Add ROS setup to bashrc
+RUN echo "source /opt/ros/noetic/setup.bash" >> /root/.bashrc
+
+# Set custom OpenCV environment variables
+ENV OPENCV_PATH=/workspaces/large_scale_gaussian_slam/third_party/opencv
+RUN echo "export OPENCV_PATH=${OPENCV_PATH}" >> /root/.bashrc && \
+    echo "export OpenCV_DIR=${OPENCV_PATH}/build" >> /root/.bashrc && \
+    echo "export LD_LIBRARY_PATH=${OPENCV_PATH}/build/lib:\$LD_LIBRARY_PATH" >> /root/.bashrc
+
+# Other environment variables
+RUN echo "LD_LIBRARY_PATH=/opt/ros/noetic/lib:/workspaces/large_scale_gaussian_slam/third_party/ORB-SLAM3/lib:\$LD_LIBRARY_PATH" >> /root/.bashrc
+
+COPY docker-entrypoint.sh /
+RUN chmod +x /docker-entrypoint.sh
+ENTRYPOINT [ "/docker-entrypoint.sh" ]
+CMD [ "sleep", "infinity" ]

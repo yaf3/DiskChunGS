@@ -395,6 +395,27 @@ Sophus::SE3f System::TrackRGBD(const cv::Mat& im,
   return Tcw;
 }
 
+Sophus::SE3f System::TrackRGBDWithPose(const cv::Mat& im,
+                                       const cv::Mat& depthmap,
+                                       const Sophus::SE3f& pose,
+                                       const double& timestamp,
+                                       string filename) {
+  // Let's also check the pose
+  // std::cout << "Pose matrix:\n" << pose.matrix() << std::endl;
+
+  // Now try the tracking
+  try {
+    return mpTracker->GrabImageRGBDWithPose(im, depthmap, pose, timestamp,
+                                            filename);
+  } catch (const std::exception& e) {
+    cerr << "Exception in tracking: " << e.what() << endl;
+    return Sophus::SE3f();
+  } catch (...) {
+    cerr << "Unknown exception in tracking" << endl;
+    return Sophus::SE3f();
+  }
+}
+
 Sophus::SE3f System::TrackMonocular(const cv::Mat& im,
                                     const double& timestamp,
                                     const vector<IMU::Point>& vImuMeas,

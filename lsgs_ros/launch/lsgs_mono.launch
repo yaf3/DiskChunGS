@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<!-- gaussian_slam_mono.launch -->
+<launch>
+    <!-- Parameters with defaults matching your setup -->
+    <arg name="vocabulary_path" default="/workspaces/large_scale_gaussian_slam/third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt"/>
+    <arg name="orb_settings_path" default="/workspaces/large_scale_gaussian_slam/cfg/ORB_SLAM3/Monocular/VBR/pincio.yaml"/>
+    <arg name="gaussian_settings_path" default="/workspaces/large_scale_gaussian_slam/cfg/gaussian_mapper/Monocular/VBR/pincio_LOD.yaml"/>
+    <arg name="output_directory" default="/workspaces/large_scale_gaussian_slam/results/kitti/LOD"/>
+    <arg name="use_viewer" default="true"/>
+
+    <!-- Gaussian SLAM Node -->
+    <node name="gaussian_slam" pkg="lsgs_ros" type="lsgs_ros_node" output="screen">
+        <param name="mode" value="mono"/>
+        <param name="vocabulary_path" value="$(arg vocabulary_path)"/>
+        <param name="orb_settings_path" value="$(arg orb_settings_path)"/>
+        <param name="gaussian_settings_path" value="$(arg gaussian_settings_path)"/>
+        <param name="output_directory" value="$(arg output_directory)"/>
+        <param name="use_viewer" value="$(arg use_viewer)"/>
+        <param name="mono_topic" value="/camera_left/image_raw"/>
+    </node>
+</launch>

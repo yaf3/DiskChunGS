@@ -1,5 +1,5 @@
 {
-    "name": "CARTGS Development",
+    "name": "LSGS Development",
     "build": {
         "dockerfile": "../Dockerfile",
         "context": ".."
@@ -9,11 +9,16 @@
         "--privileged",
         "--net=host",
         "--shm-size=20G",
-        "-e", "DISPLAY=${env:DISPLAY}",
-        "-e", "NVIDIA_DRIVER_CAPABILITIES=all",
-        "-e", "NVIDIA_VISIBLE_DEVICES=all",
-        "-v", "/tmp/.X11-unix:/tmp/.X11-unix",
-        "-v", "/mnt/auxiliary1/datasets:/data"
+        "-e",
+        "DISPLAY=${env:DISPLAY}",
+        "-e",
+        "NVIDIA_DRIVER_CAPABILITIES=all",
+        "-e",
+        "NVIDIA_VISIBLE_DEVICES=all",
+        "-v",
+        "/tmp/.X11-unix:/tmp/.X11-unix",
+        "-v",
+        "/mnt/auxiliary1/datasets:/data"
     ],
     "customizations": {
         "vscode": {
@@ -22,7 +27,8 @@
                 "ms-vscode.cmake-tools",
                 "twxs.cmake",
                 "ms-vscode.cpptools-extension-pack",
-                "xaver.clang-format"
+                "xaver.clang-format",
+                "mhutchie.git-graph"
             ],
             "settings": {
                 "cmake.buildDirectory": "${workspaceFolder}/build",
@@ -31,5 +37,6 @@
         }
     },
     "postCreateCommand": "apt-get update && apt-get install -y gdb && pip install clang-format",
-    "remoteUser": "root"
+    "remoteUser": "root",
+    "overrideCommand": false
 }

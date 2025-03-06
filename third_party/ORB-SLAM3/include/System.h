@@ -122,6 +122,12 @@ class System {
       const vector<IMU::Point>& vImuMeas = vector<IMU::Point>(),
       string filename = "");
 
+  virtual Sophus::SE3f TrackRGBDWithPose(const cv::Mat& im,
+                                         const cv::Mat& depthmap,
+                                         const Sophus::SE3f& pose,
+                                         const double& timestamp,
+                                         string filename = "");
+
   // Proccess the given monocular frame and optionally imu data
   // Input images: RGB (CV_8UC3) or grayscale (CV_8U). RGB is converted to
   // grayscale. Returns the camera pose (empty if tracking fails).

@@ -5,12 +5,39 @@
             "label": "build",
             "type": "shell",
             "command": "${workspaceFolder}/build.sh",
-            "args": ["Debug"],
+            "args": [
+                "Debug"
+            ],
             "group": {
                 "kind": "build",
                 "isDefault": true
             },
-            "problemMatcher": ["$gcc"]
-        }
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+        {
+            "label": "catkin_build",
+            "type": "shell",
+            "command": "catkin build --cmake-args -DCMAKE_BUILD_TYPE=Debug",
+            "options": {
+                "cwd": "/root/catkin_ws"
+            },
+            "problemMatcher": "$gcc",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "dependsOn": "build"
+        },
+        {
+            "label": "catkin_clean",
+            "type": "shell",
+            "command": "catkin clean --yes",
+            "options": {
+                "cwd": "/root/catkin_ws"
+            },
+            "problemMatcher": []
+        },
     ]
 }

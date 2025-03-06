@@ -3920,6 +3920,294 @@ void Tracking::SaveSubTrajectory(string strNameFile_frames,
 
 float Tracking::GetImageScale() { return mImageScale; }
 
+Sophus::SE3f Tracking::GrabImageRGBDWithPose(const cv::Mat& imRGB,
+                                             const cv::Mat& imD,
+                                             const Sophus::SE3f& pose,
+                                             const double& timestamp,
+                                             string filename) {
+  mImGray = imRGB;
+  cv::Mat imDepth = imD;
+
+  if (mImGray.channels() == 3) {
+    if (mbRGB) {
+      mImGray.copyTo(mImRGB);
+      cvtColor(mImGray, mImGray, cv::COLOR_RGB2GRAY);
+    } else {
+      cvtColor(mImGray, mImRGB, cv::COLOR_BGR2RGB);
+      cvtColor(mImGray, mImGray, cv::COLOR_BGR2GRAY);
+    }
+  } else if (mImGray.channels() == 4) {
+    if (mbRGB) {
+      cvtColor(mImGray, mImRGB, cv::COLOR_RGBA2RGB);
+      cvtColor(mImGray, mImGray, cv::COLOR_RGBA2GRAY);
+    } else {
+      cvtColor(mImGray, mImRGB, cv::COLOR_BGRA2RGB);
+      cvtColor(mImGray, mImGray, cv::COLOR_BGRA2GRAY);
+    }
+  } else if (mImGray.channels() == 1) {
+    cvtColor(mImGray, mImRGB, cv::COLOR_GRAY2RGB);
+  }
+
+  if (mImRGB.type() == CV_8UC3)
+    mImRGB.convertTo(mImRGB, CV_32FC3, 1.0 / 255.0);
+  else if (mImRGB.type() == CV_16UC3)
+    mImRGB.convertTo(mImRGB, CV_32FC3, 1.0 / 65535.0);
+  else if (mImRGB.type() == CV_16FC3 || mImRGB.type() == CV_64FC3)
+    mImRGB.convertTo(mImRGB, CV_32FC3, 1.0);
+
+  if ((fabs(mDepthMapFactor - 1.0f) > 1e-5) || imDepth.type() != CV_32F)
+    imDepth.convertTo(imDepth, CV_32F, mDepthMapFactor);
+
+  if (mSensor == System::RGBD)
+    mCurrentFrame =
+        Frame(mImGray, imDepth, mImRGB, timestamp, mpORBextractorLeft,
+              mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera);
+  else if (mSensor == System::IMU_RGBD)
+    mCurrentFrame = Frame(mImGray, imDepth, mImRGB, timestamp,
+                          mpORBextractorLeft, mpORBVocabulary, mK, mDistCoef,
+                          mbf, mThDepth, mpCamera, &mLastFrame, *mpImuCalib);
+
+  mCurrentFrame.mNameFile = filename;
+  mCurrentFrame.mnDataset = mnNumDataset;
+
+#ifdef REGISTER_TIMES
+  vdORBExtract_ms.push_back(mCurrentFrame.mTimeORB_Ext);
+#endif
+
+  TrackWithExternalPose(pose);  // Use new tracking function
+
+  return mCurrentFrame.GetPose();
+}
+
+void Tracking::TrackWithExternalPose(const Sophus::SE3f& external_pose) {
+  // std::cout << "[Tracking] State: " << mState << std::endl;
+  if (bStepByStep) {
+    std::cout << "Tracking: Waiting to the next step" << std::endl;
+    while (!mbStep && bStepByStep) usleep(500);
+    mbStep = false;
+  }
+
+  Map* pCurrentMap = mpAtlas->GetCurrentMap();
+  if (!pCurrentMap) {
+    cout << "ERROR: There is not an active map in the atlas" << endl;
+  }
+
+  if (mState != NO_IMAGES_YET) {
+    if (mLastFrame.mTimeStamp > mCurrentFrame.mTimeStamp) {
+      cerr
+          << "ERROR: Frame with a timestamp older than previous frame detected!"
+          << endl;
+      unique_lock<mutex> lock(mMutexImuQueue);
+      mlQueueImuData.clear();
+      CreateMapInAtlas();
+      return;
+    }
+  }
+
+  if (mState == NO_IMAGES_YET) {
+    mState = NOT_INITIALIZED;
+  }
+
+  mLastProcessedState = mState;
+  mbCreatedMap = false;
+
+  unique_lock<mutex> lock(pCurrentMap->mMutexMapUpdate);
+  mbMapUpdated = false;
+
+  int nCurMapChangeIndex = pCurrentMap->GetMapChangeIndex();
+  int nMapChangeIndex = pCurrentMap->GetLastMapChange();
+  if (nCurMapChangeIndex > nMapChangeIndex) {
+    pCurrentMap->SetLastMapChange(nCurMapChangeIndex);
+    mbMapUpdated = true;
+  }
+
+  if (mState == NOT_INITIALIZED) {
+    if (mSensor == System::STEREO || mSensor == System::RGBD ||
+        mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD) {
+      StereoInitialization();
+    } else {
+      MonocularInitialization();
+    }
+
+    if (mState != OK) {
+      mLastFrame = Frame(mCurrentFrame);
+      return;
+    }
+
+    if (mpAtlas->GetAllMaps().size() == 1) {
+      mnFirstFrameId = mCurrentFrame.mnId;
+    }
+  } else {
+    bool bOK = false;
+    mCurrentFrame.SetPose(external_pose);
+
+    if (mState == OK) {
+      CheckReplacedInLastFrame();
+
+      mCurrentFrame.ComputeBoW();
+      ORBmatcher matcher(0.7, true);
+      vector<MapPoint*> vpMapPointMatches;
+
+      int nmatches =
+          matcher.SearchByBoW(mpReferenceKF, mCurrentFrame, vpMapPointMatches);
+
+      if (nmatches < 15) {
+        bOK = false;
+      } else {
+        mCurrentFrame.mvpMapPoints = vpMapPointMatches;
+        Optimizer::PoseOptimization(&mCurrentFrame);
+
+        int nmatchesMap = 0;
+        for (int i = 0; i < mCurrentFrame.N; i++) {
+          if (mCurrentFrame.mvpMapPoints[i]) {
+            if (mCurrentFrame.mvbOutlier[i]) {
+              MapPoint* pMP = mCurrentFrame.mvpMapPoints[i];
+              mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint*>(NULL);
+              mCurrentFrame.mvbOutlier[i] = false;
+              if (i < mCurrentFrame.Nleft) {
+                pMP->mbTrackInView = false;
+              } else {
+                pMP->mbTrackInViewR = false;
+              }
+              pMP->mbTrackInView = false;
+              pMP->mnLastFrameSeen = mCurrentFrame.mnId;
+              nmatches--;
+            } else if (mCurrentFrame.mvpMapPoints[i]->Observations() > 0)
+              nmatchesMap++;
+          }
+        }
+
+        bOK = nmatchesMap >= 10;
+      }
+    }
+
+    if (!mCurrentFrame.mpReferenceKF)
+      mCurrentFrame.mpReferenceKF = mpReferenceKF;
+
+    if (bOK) {
+      mTrackedFr++;
+
+      UpdateLocalMap();
+      SearchLocalPoints();
+
+      int aux1 = 0, aux2 = 0;
+      for (int i = 0; i < mCurrentFrame.N; i++)
+        if (mCurrentFrame.mvpMapPoints[i]) {
+          aux1++;
+          if (mCurrentFrame.mvbOutlier[i]) aux2++;
+        }
+
+      int inliers;
+      Optimizer::PoseOptimization(&mCurrentFrame);
+
+      mnMatchesInliers = 0;
+
+      for (int i = 0; i < mCurrentFrame.N; i++) {
+        if (mCurrentFrame.mvpMapPoints[i]) {
+          if (!mCurrentFrame.mvbOutlier[i]) {
+            mCurrentFrame.mvpMapPoints[i]->IncreaseFound();
+            if (!mbOnlyTracking) {
+              if (mCurrentFrame.mvpMapPoints[i]->Observations() > 0)
+                mnMatchesInliers++;
+            } else
+              mnMatchesInliers++;
+          } else if (mSensor == System::STEREO)
+            mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint*>(NULL);
+        }
+      }
+
+      mpLocalMapper->mnMatchesInliers = mnMatchesInliers;
+
+      if (mCurrentFrame.mnId < mnLastRelocFrameId + mMaxFrames &&
+          mnMatchesInliers < 50)
+        bOK = false;
+
+      if ((mnMatchesInliers > 10) && (mState == RECENTLY_LOST)) bOK = true;
+
+      if (mnMatchesInliers < 30)
+        bOK = false;
+      else
+        bOK = true;
+    }
+
+    if (bOK) {
+      mState = OK;
+    } else if (mState == OK) {
+      mState = RECENTLY_LOST;
+      mTimeStampLost = mCurrentFrame.mTimeStamp;
+    } else if (mState == RECENTLY_LOST) {
+      // Force creation of new features even with fewer matches
+      // since we trust the external pose
+      bool bNeedKF = true;  // Force keyframe creation
+      if (bNeedKF) {
+        CreateNewKeyFrame();
+        // This should help rebuild the map with new features
+        mState = OK;  // Transition back to OK state
+      }
+    }
+
+    mpFrameDrawer->Update(this);
+    if (mCurrentFrame.isSet())
+      mpMapDrawer->SetCurrentCameraPose(mCurrentFrame.GetPose());
+
+    if (bOK || mState == RECENTLY_LOST) {
+      for (int i = 0; i < mCurrentFrame.N; i++) {
+        MapPoint* pMP = mCurrentFrame.mvpMapPoints[i];
+        if (pMP)
+          if (pMP->Observations() < 1) {
+            mCurrentFrame.mvbOutlier[i] = false;
+            mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint*>(NULL);
+          }
+      }
+
+      for (list<MapPoint*>::iterator lit = mlpTemporalPoints.begin(),
+                                     lend = mlpTemporalPoints.end();
+           lit != lend; lit++) {
+        MapPoint* pMP = *lit;
+        delete pMP;
+      }
+      mlpTemporalPoints.clear();
+
+      bool bNeedKF = NeedNewKeyFrame();
+      if (bNeedKF && bOK) CreateNewKeyFrame();
+
+      for (int i = 0; i < mCurrentFrame.N; i++) {
+        if (mCurrentFrame.mvpMapPoints[i] && mCurrentFrame.mvbOutlier[i])
+          mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint*>(NULL);
+      }
+    }
+
+    if (!mCurrentFrame.mpReferenceKF)
+      mCurrentFrame.mpReferenceKF = mpReferenceKF;
+
+    mLastFrame = Frame(mCurrentFrame);
+  }
+
+  if (mState == OK || mState == RECENTLY_LOST) {
+    if (mCurrentFrame.isSet()) {
+      Sophus::SE3f Tcr_ = mCurrentFrame.GetPose() *
+                          mCurrentFrame.mpReferenceKF->GetPoseInverse();
+      mlRelativeFramePoses.push_back(Tcr_);
+      mlpReferences.push_back(mCurrentFrame.mpReferenceKF);
+      mlFrameTimes.push_back(mCurrentFrame.mTimeStamp);
+      mlbLost.push_back(mState == LOST);
+    } else {
+      mlRelativeFramePoses.push_back(mlRelativeFramePoses.back());
+      mlpReferences.push_back(mlpReferences.back());
+      mlFrameTimes.push_back(mlFrameTimes.back());
+      mlbLost.push_back(mState == LOST);
+    }
+  }
+
+#ifdef REGISTER_LOOP
+  if (Stop()) {
+    while (isStopped()) {
+      usleep(3000);
+    }
+  }
+#endif
+}
+
 #ifdef REGISTER_LOOP
 void Tracking::RequestStop() {
   unique_lock<mutex> lock(mMutexStop);

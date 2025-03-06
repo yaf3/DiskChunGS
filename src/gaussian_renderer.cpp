@@ -15,10 +15,13 @@
 
 #include "include/gaussian_renderer.h"
 
+#include "include/profiling.h"
+
 /**
  * @brief
  *
- * @return std::tuple<render, viewspace_points, visibility_filter, radii>, which
+ * @return std::tuple<render, viewspace_points, visibility_filter, radii>,
+ which
  * are all `torch::Tensor`
  */
 std::
@@ -38,6 +41,10 @@ std::
      Background tensor (bg_color) must be on GPU!
    */
 
+  // auto timer_render = ProfilingUtils::Timer("render");
+
+  // auto timer_initialization = ProfilingUtils::Timer("initialization");
+
   int active_sh_degree = models[0]->active_sh_degree_;
 
   std::vector<torch::Tensor> means3D_vec;
@@ -56,6 +63,10 @@ std::
   int total_points = 0;
 
   int num_models = models.size();
+
+  // timer_initialization.stop();
+
+  // auto timer_loop = ProfilingUtils::Timer("loop");
 
   for (int model_idx = 0; model_idx < num_models; model_idx++) {
     const auto& pc = models[model_idx];
@@ -80,8 +91,8 @@ std::
     auto means2D = screenspace_points;
     auto opacity = pc->getOpacityActivation();
 
-    /* If precomputed 3d covariance is provided, use it. If not, then it will be
-    computed from scaling / rotation by the rasterizer.
+    /* If precomputed 3d covariance is provided, use it. If not, then it will
+    be computed from scaling / rotation by the rasterizer.
   */
     torch::Tensor scales, rotations, cov3D_precomp;
     if (pipe.compute_cov3D_) {
@@ -91,7 +102,8 @@ std::
       rotations = pc->getRotationActivation();
     }
 
-    /* If precomputed colors are provided, use them. Otherwise, if it is desired
+    /* If precomputed colors are provided, use them. Otherwise, if it is
+    desired
        to precompute colors from SHs in Python, do it. If not, then SH -> RGB
        conversion will be done by rasterizer.
      */
@@ -139,6 +151,10 @@ std::
     screenspace_points_vec.push_back(screenspace_points);
   }
 
+  // timer_loop.stop();
+
+  // auto timer_concat = ProfilingUtils::Timer("concat");
+
   torch::Tensor means3D = torch::cat(means3D_vec, 0);
   torch::Tensor means2D = torch::cat(means2D_vec, 0);
   torch::Tensor opacity = torch::cat(opacity_vec, 0);
@@ -154,6 +170,10 @@ std::
     cov3D_precomp = torch::cat(cov3D_precomp_vec, 0);
 
   torch::Tensor screenspace_points = torch::cat(screenspace_points_vec, 0);
+
+  // timer_concat.stop();
+
+  // auto timer_raster = ProfilingUtils::Timer("raster");
 
   // Set up rasterization configuration
   float tanfovx = std::tan(viewpoint_camera->FoVx_ * 0.5f);
@@ -171,9 +191,12 @@ std::
   auto rasterizer_result =
       rasterizer.forward(means3D, means2D, opacity, dc, shs, colors_precomp,
                          scales, rotations, cov3D_precomp);
+
+  // timer_raster.stop();
   auto rendered_image = std::get<0>(rasterizer_result);
   auto radii = std::get<1>(rasterizer_result);
 
+  // auto timer_final_loop = ProfilingUtils::Timer("final_loop");
   // Split the radii tensor into separate tensors per model
   std::vector<torch::Tensor> radii_vec;
   int offset = 0;
@@ -183,10 +206,14 @@ std::
     offset += size;
   }
 
+  // timer_final_loop.stop();
+
   /* Those Gaussians that were frustum culled or had a radius of 0 were not
      visible. They will be excluded from value updates used in the splitting
      criteria.
    */
+
+  // timer_render.stop();
   return std::make_tuple(rendered_image,         /*render*/
                          screenspace_points_vec, /*viewspace_points*/
                          radii_vec /*radii*/);

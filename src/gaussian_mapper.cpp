@@ -1726,6 +1726,8 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
         "[GaussianMapper::renderFromPose]KeyFrame Camera not found!");
   }
 
+  std::unique_lock<std::mutex> lock_render(mutex_render_);
+
   // Collect valid models for rendering
   std::vector<std::shared_ptr<GaussianModel>> models;
   models.reserve(active_chunks_.size());
@@ -1750,7 +1752,6 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
   std::tuple<at::Tensor, std::vector<at::Tensor>, std::vector<at::Tensor>>
       render_pkg;
   {
-    std::unique_lock<std::mutex> lock_render(mutex_render_);
     // Render
     render_pkg = GaussianRenderer::render(
         models, pkf, height, width, pipe_params_, background_, override_color_);
@@ -2315,6 +2316,8 @@ void GaussianMapper::updateActiveChunks(
     }
   }
 
+  torch::cuda::synchronize();
+
   // Unload chunks that are no longer needed
   std::vector<ChunkCoord> to_unload;
   for (const auto& [coord, chunk] : active_chunks_) {
@@ -2662,12 +2665,42 @@ bool GaussianMapper::chunkExistsOnDisk(const ChunkCoord& coord) {
 }
 
 // void GaussianMapper::update_render_chunks() {
-//   std::unique_lock<std::shared_mutex> lock(mutex_render_);
+//   std::unique_lock<std::mutex> lock_render(mutex_render_);
 //   render_chunks_.clear();
 
 //   // Create deep copies of each active chunk using the clone method
 //   for (const auto& [coord, chunk_ptr] : active_chunks_) {
 //     render_chunks_[coord] = chunk_ptr->clone();
-//     render_chunks_[coord]->setEvalMode();
 //   }
 // }
+
+void GaussianMapper::handleNewFrameExternal(const cv::Mat& rgb_image,
+                                            const cv::Mat& depth_or_right_image,
+                                            const Sophus::SE3f& pose,
+                                            const double timestamp) {
+  return;
+  // std::cout << "New external frame" << std::endl;
+  // frame_queue_.push(Frame(rgb_image, depth_or_right_image, pose, timestamp));
+}
+
+void GaussianMapper::run_external_poses() { return; }
+
+// External mode initialization
+GaussianMapper::GaussianMapper(const SystemSensorType sensor_type,
+                               const string& orb_settings_path,
+                               std::filesystem::path gaussian_config_file_path,
+                               std::filesystem::path result_dir,
+                               int seed,
+                               torch::DeviceType device_type)
+    : pSLAM_(nullptr),
+      initial_mapped_(false),
+      interrupt_training_(false),
+      stopped_(false),
+      iteration_(0),
+      ema_loss_for_log_(0.0f),
+      SLAM_ended_(false),
+      loop_closure_iteration_(false),
+      min_num_initial_map_kfs_(15UL),
+      sensor_type_(sensor_type) {
+  return;
+}

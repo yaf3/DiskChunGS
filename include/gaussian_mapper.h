@@ -144,6 +144,14 @@ class GaussianMapper {
                  int seed = 0,
                  torch::DeviceType device_type = torch::kCUDA);
 
+  // External mode initialization
+  GaussianMapper(const SystemSensorType sensor_type,
+                 const string &orb_settings_path,
+                 std::filesystem::path gaussian_config_file_path,
+                 std::filesystem::path result_dir,
+                 int seed,
+                 torch::DeviceType device_type);
+
   void readConfigFromFile(std::filesystem::path cfg_path);
 
   void run();
@@ -255,6 +263,12 @@ class GaussianMapper {
 
   void loadPly(std::filesystem::path ply_path,
                std::filesystem::path camera_path = "");
+
+  void handleNewFrameExternal(const cv::Mat &rgb_image,
+                              const cv::Mat &depth_or_right_image,
+                              const Sophus::SE3f &pose,
+                              const double timestamp);
+  void run_external_poses();
 
  protected:
   bool hasMetInitialMappingConditions();

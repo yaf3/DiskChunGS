@@ -57,7 +57,8 @@ class ImGuiViewer {
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
   ImGuiViewer(std::shared_ptr<ORB_SLAM3::System> pSLAM,
               std::shared_ptr<GaussianMapper> pGausMapper,
-              bool training = true);
+              bool training = true,
+              bool external_mode = false);
   void readConfigFromFile(std::filesystem::path cfg_path);
 
   void run();
@@ -121,7 +122,7 @@ class ImGuiViewer {
   float keyboard_anglular_velocity_ = 0.05;
 
   bool reset_main_to_init_ = false;
-  bool tracking_vision_ = true;
+  bool tracking_vision_ = false;
   bool show_keyframes_ = false;
   bool show_sparse_mappoints_ = false;
   bool show_main_rendered_ = true;
@@ -151,6 +152,7 @@ class ImGuiViewer {
 
   // Status
   bool stopped_ = false;
+  bool external_mode_;
 
   // Mutex
   std::mutex mutex_status_;

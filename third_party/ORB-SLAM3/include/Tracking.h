@@ -199,6 +199,14 @@ class Tracking {
 
   bool mbWriteStats;
 
+  Sophus::SE3f GrabImageRGBDWithPose(const cv::Mat& imRGB,
+                                     const cv::Mat& imD,
+                                     const Sophus::SE3f& pose,
+                                     const double& timestamp,
+                                     string filename = "");
+
+  void TrackWithExternalPose(const Sophus::SE3f& external_pose);
+
 #ifdef REGISTER_TIMES
   void LocalMapStats2File();
   void TrackStats2File();

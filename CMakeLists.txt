@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20 FATAL_ERROR)
-project(photo-slam LANGUAGES CXX CUDA)
+project(lsgs LANGUAGES CXX CUDA)
 
 if(NOT CMAKE_BUILD_TYPE)
     # set(CMAKE_BUILD_TYPE Debug)
@@ -17,6 +17,7 @@ set(CAFFE2_USE_CUDNN on)
 # Uncomment the following line if you want to solve CMake Warning "Failed to compute shorthash for libnvrtc.so"
 # set(PYTHON_EXECUTABLE "/usr/bin/python3")
 
+set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libtorch")
 find_package(Torch REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS} -pthread")
 
@@ -88,7 +89,7 @@ add_library(
     cuda_rasterizer/adam.h
     cuda_rasterizer/conv.cu
 )
-set_target_properties(cuda_rasterizer PROPERTIES CUDA_ARCHITECTURES "75;86")
+set_target_properties(cuda_rasterizer PROPERTIES CUDA_ARCHITECTURES "86")
 # target_compile_features(cuda_rasterizer PUBLIC cxx_std_17)
 target_include_directories(
     cuda_rasterizer
@@ -148,6 +149,7 @@ add_library(
     include/point2d.h
     include/point3d.h
     include/types.h
+    include/profiling.h
     src/gaussian_keyframe.cpp
     src/gaussian_model.cpp
     src/gaussian_parameters.cpp
