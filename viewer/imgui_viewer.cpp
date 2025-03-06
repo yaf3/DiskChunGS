@@ -341,30 +341,32 @@ void ImGuiViewer::run() {
       }
 
       //--------------Draw current gaussian mapper frame image--------------
-      // Render gaussian mapper frame
-      cv::Mat rendered_img = pGausMapper_->renderFromPose(
-          Tcw, rendered_image_width_, rendered_image_height_, false);
-      cv::Mat rendered_img_to_show =
-          cv::Mat(rendered_image_height_, padded_sub_image_width_, CV_32FC3,
-                  cv::Vec3f(0.0f, 0.0f, 0.0f));
-      rendered_img.copyTo(rendered_img_to_show(image_rect_sub));
-      // Upload rendered frame
-      glBindTexture(GL_TEXTURE_2D, rendered_img_texture);
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, rendered_img_to_show.cols,
-                   rendered_img_to_show.rows, 0, GL_RGB, GL_FLOAT,
-                   (float*)rendered_img_to_show.data);
-      // Create an ImGui window to show the rendered frame
-      ImGui::SetNextWindowPos(ImVec2(0, SLAM_img_to_show.rows + 40),
-                              ImGuiCond_Once);
-      ImGui::SetNextWindowSize(
-          ImVec2(rendered_image_width_ + 12, rendered_img_to_show.rows + 40),
-          ImGuiCond_Once);
-      {
-        ImGui::Begin("Current Rendered Frame");
-        ImGui::Image(
-            (void*)(intptr_t)rendered_img_texture,
-            ImVec2(rendered_img_to_show.cols, rendered_img_to_show.rows));
-        ImGui::End();
+      if (show_current_rendered_) {
+        // Render gaussian mapper frame
+        cv::Mat rendered_img = pGausMapper_->renderFromPose(
+            Tcw, rendered_image_width_, rendered_image_height_, false);
+        cv::Mat rendered_img_to_show =
+            cv::Mat(rendered_image_height_, padded_sub_image_width_, CV_32FC3,
+                    cv::Vec3f(0.0f, 0.0f, 0.0f));
+        rendered_img.copyTo(rendered_img_to_show(image_rect_sub));
+        // Upload rendered frame
+        glBindTexture(GL_TEXTURE_2D, rendered_img_texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, rendered_img_to_show.cols,
+                     rendered_img_to_show.rows, 0, GL_RGB, GL_FLOAT,
+                     (float*)rendered_img_to_show.data);
+        // Create an ImGui window to show the rendered frame
+        ImGui::SetNextWindowPos(ImVec2(0, SLAM_img_to_show.rows + 40),
+                                ImGuiCond_Once);
+        ImGui::SetNextWindowSize(
+            ImVec2(rendered_image_width_ + 12, rendered_img_to_show.rows + 40),
+            ImGuiCond_Once);
+        {
+          ImGui::Begin("Current Rendered Frame");
+          ImGui::Image(
+              (void*)(intptr_t)rendered_img_texture,
+              ImVec2(rendered_img_to_show.cols, rendered_img_to_show.rows));
+          ImGui::End();
+        }
       }
     }
 
@@ -424,6 +426,7 @@ void ImGuiViewer::run() {
         ImGui::Checkbox("Show sparse MapPoints", &show_sparse_mappoints_);
       }
       ImGui::Checkbox("Show main window rendered", &show_main_rendered_);
+      ImGui::Checkbox("Show current window rendered", &show_current_rendered_);
 
       ImGui::Text("Viewer average FPS %.1f", io.Framerate);
       ImGui::End();

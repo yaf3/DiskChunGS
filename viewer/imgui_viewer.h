@@ -125,6 +125,7 @@ class ImGuiViewer {
   bool show_keyframes_ = false;
   bool show_sparse_mappoints_ = false;
   bool show_main_rendered_ = true;
+  bool show_current_rendered_ = false;
 
   float position_lr_init_;
   float feature_lr_;
