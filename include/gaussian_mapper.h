@@ -221,6 +221,16 @@ class GaussianMapper {
 
   bool chunkExistsOnDisk(const ChunkCoord &coord);
 
+  std::array<Eigen::Vector4f, 6> computeFrustumPlanes(
+      std::shared_ptr<GaussianKeyframe> keyframe);
+  Eigen::Vector4f planeFromPoints(const Eigen::Vector3f &p1,
+                                  const Eigen::Vector3f &p2,
+                                  const Eigen::Vector3f &p3);
+  bool isChunkInFrustum(const ChunkCoord &coord,
+                        const std::array<Eigen::Vector4f, 6> &frustum_planes);
+  std::array<Eigen::Vector3f, 8> getChunkCorners(const ChunkCoord &coord);
+  Eigen::Vector3f getChunkCenter(const ChunkCoord &coord);
+
   std::vector<std::shared_ptr<Chunk>> getVisibleActiveChunks(
       std::shared_ptr<GaussianKeyframe> keyframe);
 

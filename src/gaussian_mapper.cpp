@@ -1774,19 +1774,37 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
         "[GaussianMapper::renderFromPose]KeyFrame Camera not found!");
   }
 
+  Sophus::SE3d camera_pose = pkf->getPose();
+  Sophus::SE3d Twc = camera_pose.inverse();  // World to camera transform
+  Eigen::Vector3f camera_position = Twc.translation().cast<float>();
+  ChunkCoord camera_chunk = getChunkCoord(camera_position);
+  std::cout << "[RenderFromPose] Inside Chunk: " << camera_chunk.x << " "
+            << camera_chunk.y << " " << camera_chunk.z << std::endl;
+
   std::unique_lock<std::mutex> lock_render(mutex_render_);
 
   // Collect valid models for rendering
+  // std::vector<std::shared_ptr<GaussianModel>> models;
+  // models.reserve(active_chunks_.size());
+  // for (const auto& [coord, chunk] : active_chunks_) {
+  //   if (chunk && chunk->gaussians_) {
+  //     models.push_back(chunk->gaussians_);
+  //   } else {
+  //     std::cerr << "[renderFromPose] Chunk/Model " << coord.x << " " <<
+  //     coord.y
+  //               << " " << coord.z << " invalid" << std::endl;
+  //     exit(1);
+  //     // Skip this chunk - don't add it to models
+  //   }
+  // }
+
+  auto chunks = getVisibleActiveChunks(pkf);
+
   std::vector<std::shared_ptr<GaussianModel>> models;
-  models.reserve(active_chunks_.size());
-  for (const auto& [coord, chunk] : active_chunks_) {
+  models.reserve(chunks.size());
+  for (const auto& chunk : chunks) {
     if (chunk && chunk->gaussians_) {
       models.push_back(chunk->gaussians_);
-    } else {
-      std::cerr << "[renderFromPose] Chunk/Model " << coord.x << " " << coord.y
-                << " " << coord.z << " invalid" << std::endl;
-      exit(1);
-      // Skip this chunk - don't add it to models
     }
   }
 
@@ -2366,48 +2384,202 @@ std::vector<std::shared_ptr<Chunk>> GaussianMapper::getVisibleActiveChunks(
     std::shared_ptr<GaussianKeyframe> keyframe) {
   // Called by trainForOneIteration, renderFromPose & renderAndRecordKeyframe
   if (!keyframe) {
-    throw "Error: Null keyframe passed to updateActiveChunks";
+    throw "Error: Null keyframe passed to getVisibleActiveChunks";
   }
-  // Extract camera pose
-  Sophus::SE3d camera_pose = keyframe->getPose();
 
-  // The camera position is the translation part of the inverse transform
-  // Since Tcw_ is camera-to-world, we need its inverse to get world-to-camera
-  Sophus::SE3d Twc = camera_pose.inverse();
+  // Extract camera parameters
+  Sophus::SE3d camera_pose = keyframe->getPose();
+  Sophus::SE3d Twc = camera_pose.inverse();  // World to camera transform
   Eigen::Vector3f camera_position = Twc.translation().cast<float>();
 
-  // The view direction is the negative z-axis of the camera frame transformed
-  // to world frame We use the rotation matrix from camera to world transform
-  Eigen::Vector3f view_direction =
-      -(camera_pose.rotationMatrix() * Eigen::Vector3d(0, 0, 1)).cast<float>();
-  view_direction.normalize();
+  // Create camera frustum planes in world space
+  std::array<Eigen::Vector4f, 6> frustum_planes =
+      computeFrustumPlanes(keyframe);
 
-  // Find which chunks should be active based on view frustum
+  // Find visible chunks
   std::vector<std::shared_ptr<Chunk>> visible_chunks;
+
+  // Determine search radius based on far plane distance
+  int search_radius = std::ceil(keyframe->zfar_ / chunk_size_);
+  search_radius = std::min(search_radius, 10);  // Limit search radius
 
   // Get chunk coordinate for camera position
   ChunkCoord camera_chunk = getChunkCoord(camera_position);
 
-  for (int dx = -1; dx <= 1; dx++) {
-    for (int dy = -1; dy <= 1; dy++) {
-      for (int dz = -1; dz <= 1; dz++) {
+  // Search chunks in the vicinity
+  for (int dx = -search_radius; dx <= search_radius; dx++) {
+    for (int dy = -search_radius; dy <= search_radius; dy++) {
+      for (int dz = -search_radius; dz <= search_radius; dz++) {
         ChunkCoord check_coord{camera_chunk.x + dx, camera_chunk.y + dy,
                                camera_chunk.z + dz};
-        if (isInViewFrustum(check_coord, camera_position, view_direction)) {
-          visible_chunks.push_back(getChunkAt(check_coord));
+
+        // Skip chunks that are too far from camera (rough distance check)
+        Eigen::Vector3f chunk_center = getChunkCenter(check_coord);
+        float dist_to_camera = (chunk_center - camera_position).norm();
+        if (dist_to_camera >
+            keyframe->zfar_ + chunk_size_ * 1.732f) {  // sqrt(3) for diagonal
+          continue;
+        }
+
+        // Check if chunk is inside or intersects view frustum
+        if (isChunkInFrustum(check_coord, frustum_planes)) {
+          auto chunk = getChunkAt(check_coord);
+          if (chunk && chunk->gaussians_) {
+            visible_chunks.push_back(chunk);
+          }
         }
       }
     }
   }
 
-  std::vector<std::shared_ptr<Chunk>> valid_visible_chunks;
-  for (auto chunk : visible_chunks) {
-    if (chunk && chunk->gaussians_) {
-      valid_visible_chunks.push_back(chunk);
+  return visible_chunks;
+}
+
+// Compute the 6 planes of the view frustum in world space
+std::array<Eigen::Vector4f, 6> GaussianMapper::computeFrustumPlanes(
+    std::shared_ptr<GaussianKeyframe> keyframe) {
+  // Frustum planes: left, right, bottom, top, near, far
+  std::array<Eigen::Vector4f, 6> planes;
+
+  // Get camera parameters
+  Sophus::SE3d camera_pose = keyframe->getPose();
+  Sophus::SE3d Twc = camera_pose.inverse();  // World to camera transform
+  Eigen::Vector3f camera_pos = Twc.translation().cast<float>();
+  Eigen::Matrix3f R_wc = Twc.rotationMatrix().cast<float>();
+
+  // Camera basis vectors in world space
+  Eigen::Vector3f cam_right = R_wc.col(0);  // x-axis
+  Eigen::Vector3f cam_up = R_wc.col(1);     // y-axis
+  Eigen::Vector3f cam_forward =
+      R_wc.col(2);             // z-axis (but we need -z for camera forward)
+  cam_forward = -cam_forward;  // Camera looks down the negative z-axis
+
+  // Compute frustum corners using FOV
+  float near_z = keyframe->znear_;
+  float far_z = keyframe->zfar_;
+
+  // Calculate frustum dimensions at near and far planes
+  float near_height = 2.0f * near_z * std::tan(keyframe->FoVy_ * 0.5f);
+  float near_width = 2.0f * near_z * std::tan(keyframe->FoVx_ * 0.5f);
+  float far_height = 2.0f * far_z * std::tan(keyframe->FoVy_ * 0.5f);
+  float far_width = 2.0f * far_z * std::tan(keyframe->FoVx_ * 0.5f);
+
+  // Compute frustum corners in world space
+  Eigen::Vector3f near_center = camera_pos + cam_forward * near_z;
+  Eigen::Vector3f far_center = camera_pos + cam_forward * far_z;
+
+  // Near plane corners
+  Eigen::Vector3f ntl = near_center + (cam_up * near_height * 0.5f) -
+                        (cam_right * near_width * 0.5f);
+  Eigen::Vector3f ntr = near_center + (cam_up * near_height * 0.5f) +
+                        (cam_right * near_width * 0.5f);
+  Eigen::Vector3f nbl = near_center - (cam_up * near_height * 0.5f) -
+                        (cam_right * near_width * 0.5f);
+  Eigen::Vector3f nbr = near_center - (cam_up * near_height * 0.5f) +
+                        (cam_right * near_width * 0.5f);
+
+  // Far plane corners
+  Eigen::Vector3f ftl = far_center + (cam_up * far_height * 0.5f) -
+                        (cam_right * far_width * 0.5f);
+  Eigen::Vector3f ftr = far_center + (cam_up * far_height * 0.5f) +
+                        (cam_right * far_width * 0.5f);
+  Eigen::Vector3f fbl = far_center - (cam_up * far_height * 0.5f) -
+                        (cam_right * far_width * 0.5f);
+  Eigen::Vector3f fbr = far_center - (cam_up * far_height * 0.5f) +
+                        (cam_right * far_width * 0.5f);
+
+  // Compute frustum planes (normal points inward)
+  // Left plane
+  planes[0] = planeFromPoints(camera_pos, ntl, ftl);
+
+  // Right plane
+  planes[1] = planeFromPoints(camera_pos, ftr, ntr);
+
+  // Bottom plane
+  planes[2] = planeFromPoints(camera_pos, nbr, fbr);
+
+  // Top plane
+  planes[3] = planeFromPoints(camera_pos, ftl, ntl);
+
+  // Near plane
+  planes[4] = planeFromPoints(ntl, ntr, nbl);
+
+  // Far plane
+  planes[5] = planeFromPoints(ftr, ftl, fbr);
+
+  return planes;
+}
+
+// Create a plane from 3 points
+Eigen::Vector4f GaussianMapper::planeFromPoints(const Eigen::Vector3f& p1,
+                                                const Eigen::Vector3f& p2,
+                                                const Eigen::Vector3f& p3) {
+  Eigen::Vector3f v1 = p2 - p1;
+  Eigen::Vector3f v2 = p3 - p1;
+  Eigen::Vector3f normal = v1.cross(v2).normalized();
+  float d = -normal.dot(p1);
+  return Eigen::Vector4f(normal.x(), normal.y(), normal.z(), d);
+}
+
+// Check if a chunk is inside or intersects the frustum
+bool GaussianMapper::isChunkInFrustum(
+    const ChunkCoord& coord,
+    const std::array<Eigen::Vector4f, 6>& frustum_planes) {
+  // Get chunk corners (AABB)
+  std::array<Eigen::Vector3f, 8> corners = getChunkCorners(coord);
+
+  // Check each plane
+  for (const auto& plane : frustum_planes) {
+    bool all_outside = true;
+
+    // If all corners are on the negative side of a plane, the chunk is outside
+    // the frustum
+    for (const auto& corner : corners) {
+      float dist = plane.x() * corner.x() + plane.y() * corner.y() +
+                   plane.z() * corner.z() + plane.w();
+      if (dist >= -chunk_size_ *
+                      0.1f) {  // Add a small margin to prevent culling at edges
+        all_outside = false;
+        break;
+      }
+    }
+
+    if (all_outside) {
+      return false;  // Completely outside this plane, thus outside frustum
     }
   }
 
-  return valid_visible_chunks;
+  return true;  // Inside or intersects the frustum
+}
+
+// Get the 8 corners of a chunk
+std::array<Eigen::Vector3f, 8> GaussianMapper::getChunkCorners(
+    const ChunkCoord& coord) {
+  float effective_size = chunk_size_ - overlap_margin_;
+  float x = coord.x * effective_size;
+  float y = coord.y * effective_size;
+  float z = coord.z * effective_size;
+
+  std::array<Eigen::Vector3f, 8> corners;
+  corners[0] = Eigen::Vector3f(x, y, z);
+  corners[1] = Eigen::Vector3f(x + chunk_size_, y, z);
+  corners[2] = Eigen::Vector3f(x, y + chunk_size_, z);
+  corners[3] = Eigen::Vector3f(x + chunk_size_, y + chunk_size_, z);
+  corners[4] = Eigen::Vector3f(x, y, z + chunk_size_);
+  corners[5] = Eigen::Vector3f(x + chunk_size_, y, z + chunk_size_);
+  corners[6] = Eigen::Vector3f(x, y + chunk_size_, z + chunk_size_);
+  corners[7] =
+      Eigen::Vector3f(x + chunk_size_, y + chunk_size_, z + chunk_size_);
+
+  return corners;
+}
+
+// Get the center of a chunk
+Eigen::Vector3f GaussianMapper::getChunkCenter(const ChunkCoord& coord) {
+  float effective_size = chunk_size_ - overlap_margin_;
+  return Eigen::Vector3f((coord.x + 0.5f) * effective_size,
+                         (coord.y + 0.5f) * effective_size,
+                         (coord.z + 0.5f) * effective_size);
 }
 
 void GaussianMapper::updateActiveChunks(
