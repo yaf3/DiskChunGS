@@ -74,6 +74,16 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
 
   result_dir_ = result_dir;
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
+
+  chunk_save_dir_ = result_dir / "chunks";
+  if (!chunk_save_dir_.empty() && std::filesystem::exists(chunk_save_dir_)) {
+    for (const auto& entry :
+         std::filesystem::directory_iterator(chunk_save_dir_)) {
+      std::filesystem::remove_all(entry.path());
+    }
+  }
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
+
   config_file_path_ = gaussian_config_file_path;
   readConfigFromFile(gaussian_config_file_path);
 
@@ -677,24 +687,47 @@ void GaussianMapper::trainForOneIteration() {
 
   timer_waitForMutex.stop();
 
+  // updateActiveChunks(viewpoint_cam);
+
   if (active_chunks_.empty()) {
     std::cout << "[Optimization] No active chunks to optimize" << std::endl;
     return;  // Early return if there are no chunks
   }
 
-  // Collect valid models for rendering
+  auto timer_chunkSelection = ProfilingUtils::Timer("chunkSelection");
+
+  auto chunks = getVisibleActiveChunks(viewpoint_cam);
+
   std::vector<std::shared_ptr<GaussianModel>> models;
-  models.reserve(active_chunks_.size());
-  for (const auto& [coord, chunk] : active_chunks_) {
+  models.reserve(chunks.size());
+  for (const auto& chunk : chunks) {
     if (chunk && chunk->gaussians_) {
       models.push_back(chunk->gaussians_);
-    } else {
-      std::cerr << "[Optimization] Chunk/Model " << coord.x << " " << coord.y
-                << " " << coord.z << " invalid" << std::endl;
-      exit(1);
-      // Skip this chunk - don't add it to models
     }
   }
+
+  // std::vector<std::shared_ptr<GaussianModel>> models;
+  // models.reserve(active_chunks_.size());
+  // for (const auto& [coord, chunk] : active_chunks_) {
+  //   if (chunk && chunk->gaussians_) {
+  //     models.push_back(chunk->gaussians_);
+  //   } else {
+  //     std::cerr << "[Optimization] Chunk/Model " << coord.x << " " << coord.y
+  //               << " " << coord.z << " invalid" << std::endl;
+  //     exit(1);
+  //   }
+  // }
+
+  // Get a random subset (e.g., 3 random models)
+  // const size_t subset_size = 3;
+  // models = selectRandomModelSubset(models, subset_size);
+
+  // torch::cuda::synchronize();
+
+  timer_chunkSelection.stop();
+
+  // std::cout << "[Optimization] Optimizing " << models.size() << " chunks"
+  //           << std::endl;
 
   // Check if we have any valid models to render
   if (models.empty()) {
@@ -716,6 +749,15 @@ void GaussianMapper::trainForOneIteration() {
     gaussians->setRotationLearningRate(rotationLearningRate());
   }
 
+  // torch::cuda::synchronize();
+
+  // int total_gaussians = 0;
+  // for (auto& gaussians : models) {
+  //   total_gaussians += gaussians->getXYZ().sizes()[0];
+  // }
+  // std::cout << "\r[Gaussian Mapper] Gaussians " << total_gaussians <<
+  // std::endl;
+
   // Render
   // std::cout << "\r[Gaussian Mapper] Rendering "
   //           << gaussians_->getXYZ().sizes()[0] << "..." << std::flush;
@@ -723,8 +765,10 @@ void GaussianMapper::trainForOneIteration() {
   auto render_pkg =
       GaussianRenderer::render(models, viewpoint_cam, image_height, image_width,
                                pipe_params_, background_, override_color_);
+  // c10::cuda::CUDACachingAllocator::emptyCache();
   timer_render.stop();
   auto rendered_image = std::get<0>(render_pkg);
+
   std::vector<torch::Tensor> screenspace_points_vec = std::get<1>(render_pkg);
   std::vector<torch::Tensor> radii_vec = std::get<2>(render_pkg);
 
@@ -797,6 +841,8 @@ void GaussianMapper::trainForOneIteration() {
       }
     }
 
+    // pruneActiveChunks();
+
     timer_densification.stop();
 
     auto iter_end_timing = std::chrono::steady_clock::now();
@@ -825,6 +871,8 @@ void GaussianMapper::trainForOneIteration() {
           opt_params_.iterations_ == -1) {
         gaussians->optimizer_->step();
         gaussians->optimizer_->zero_grad(true);
+
+        // torch::cuda::synchronize();
       }
     }
   }
@@ -2276,6 +2324,92 @@ bool GaussianMapper::isInViewFrustum(const ChunkCoord& coord,
   return angle < M_PI / 3.0f;  // Within 60 degree cone
 }
 
+void GaussianMapper::pruneActiveChunks() {
+  torch::cuda::synchronize();
+
+  std::vector<ChunkCoord> to_prune;
+
+  for (const auto& [coord, chunk] : active_chunks_) {
+    if (!chunk || !chunk->gaussians_) {
+      throw "Error: Chunk/Gaussian not defined";
+    }
+
+    int chunk_gaussians_prune_threshold = 10;
+
+    auto& gaussians = chunk->gaussians_;
+    if (gaussians->getXYZ().sizes()[0] < chunk_gaussians_prune_threshold) {
+      to_prune.push_back(coord);
+    }
+  }
+
+  torch::cuda::synchronize();
+
+  for (const auto& coord : to_prune) {
+    auto chunk_to_delete = active_chunks_[coord];
+    active_chunks_.erase(coord);
+  }
+
+  // Clear CUDA cache after removing chunks
+  c10::cuda::CUDACachingAllocator::emptyCache();
+}
+
+std::shared_ptr<Chunk> GaussianMapper::getChunkAt(
+    const ChunkCoord& coord) const {
+  auto it = active_chunks_.find(coord);
+  if (it != active_chunks_.end()) {
+    return it->second;
+  }
+  return nullptr;  // Return nullptr if chunk not found at given coordinate
+}
+
+std::vector<std::shared_ptr<Chunk>> GaussianMapper::getVisibleActiveChunks(
+    std::shared_ptr<GaussianKeyframe> keyframe) {
+  // Called by trainForOneIteration, renderFromPose & renderAndRecordKeyframe
+  if (!keyframe) {
+    throw "Error: Null keyframe passed to updateActiveChunks";
+  }
+  // Extract camera pose
+  Sophus::SE3d camera_pose = keyframe->getPose();
+
+  // The camera position is the translation part of the inverse transform
+  // Since Tcw_ is camera-to-world, we need its inverse to get world-to-camera
+  Sophus::SE3d Twc = camera_pose.inverse();
+  Eigen::Vector3f camera_position = Twc.translation().cast<float>();
+
+  // The view direction is the negative z-axis of the camera frame transformed
+  // to world frame We use the rotation matrix from camera to world transform
+  Eigen::Vector3f view_direction =
+      -(camera_pose.rotationMatrix() * Eigen::Vector3d(0, 0, 1)).cast<float>();
+  view_direction.normalize();
+
+  // Find which chunks should be active based on view frustum
+  std::vector<std::shared_ptr<Chunk>> visible_chunks;
+
+  // Get chunk coordinate for camera position
+  ChunkCoord camera_chunk = getChunkCoord(camera_position);
+
+  for (int dx = -1; dx <= 1; dx++) {
+    for (int dy = -1; dy <= 1; dy++) {
+      for (int dz = -1; dz <= 1; dz++) {
+        ChunkCoord check_coord{camera_chunk.x + dx, camera_chunk.y + dy,
+                               camera_chunk.z + dz};
+        if (isInViewFrustum(check_coord, camera_position, view_direction)) {
+          visible_chunks.push_back(getChunkAt(check_coord));
+        }
+      }
+    }
+  }
+
+  std::vector<std::shared_ptr<Chunk>> valid_visible_chunks;
+  for (auto chunk : visible_chunks) {
+    if (chunk && chunk->gaussians_) {
+      valid_visible_chunks.push_back(chunk);
+    }
+  }
+
+  return valid_visible_chunks;
+}
+
 void GaussianMapper::updateActiveChunks(
     std::shared_ptr<GaussianKeyframe> keyframe) {
   // Called by trainForOneIteration, renderFromPose & renderAndRecordKeyframe
@@ -2331,12 +2465,13 @@ void GaussianMapper::updateActiveChunks(
     // Remove from active chunks
 
     auto chunk_to_delete = active_chunks_[coord];
-    std::cout << "Current reference count: " << chunk_to_delete.use_count()
-              << std::endl;
-    active_chunks_.erase(coord);
-    std::cout << "Current reference count: " << chunk_to_delete.use_count()
-              << std::endl;
+    // std::cout << "Current reference count: " << chunk_to_delete.use_count()
+    //           << std::endl;
+    // active_chunks_.erase(coord);
+    // std::cout << "Current reference count: " << chunk_to_delete.use_count()
+    //           << std::endl;
   }
+
   // Clear CUDA cache after removing chunks
   c10::cuda::CUDACachingAllocator::emptyCache();
 
@@ -2346,15 +2481,15 @@ void GaussianMapper::updateActiveChunks(
     }
   }
 
-  // // Load newly needed chunks
-  // for (const auto& coord : needed_chunks) {
-  //   if (active_chunks_.find(coord) == active_chunks_.end()) {
-  //     if (!loadChunk(coord)) {
-  //       // std::cout << "Chunk visible but can't load: " << coord.x << " "
-  //       //           << coord.y << " " << coord.z << " " << std::endl;
-  //     }
-  //   }
-  // }
+  // Load newly needed chunks
+  for (const auto& coord : needed_chunks) {
+    if (active_chunks_.find(coord) == active_chunks_.end()) {
+      if (!loadChunk(coord)) {
+        // std::cout << "Chunk visible but can't load: " << coord.x << " "
+        //           << coord.y << " " << coord.z << " " << std::endl;
+      }
+    }
+  }
 }
 
 std::filesystem::path GaussianMapper::getChunkFilename(
@@ -2377,12 +2512,10 @@ void GaussianMapper::saveChunk(const ChunkCoord& coord) {
   auto chunk_filename = getChunkFilename(coord);
 
   // Save the gaussian model
-  // Todo implement
-  // chunk_it->second->gaussians_->save_checkpoint(chunk_filename.string());
+  chunk_it->second->gaussians_->save_checkpoint(chunk_filename.string());
 }
 
 bool GaussianMapper::loadChunk(const ChunkCoord& coord) {
-  // Called by updateActiveChunks & addPoints
   auto chunk_filename = getChunkFilename(coord);
   if (active_chunks_.find(coord) != active_chunks_.end()) {
     std::cout << "Chunk already in active memory: " << coord.x << " " << coord.y
@@ -2411,8 +2544,7 @@ bool GaussianMapper::loadChunk(const ChunkCoord& coord) {
       return false;
     }
 
-    // Todo implement
-    // chunk->gaussians_->load_checkpoint(chunk_filename.string(), opt_params_);
+    chunk->gaussians_->load_checkpoint(chunk_filename.string(), opt_params_);
     std::cout << "Setting train mode for just loaded chunk" << std::endl;
     active_chunks_[coord] = chunk;
     std::cout << "Chunk loaded successfully: " << coord.x << " " << coord.y
@@ -2587,11 +2719,11 @@ void GaussianMapper::addPoints(
     auto [filtered_points, filtered_colors] =
         filterPointsByDepth(chunk_points, chunk_colors, keyframes);
 
-    std::cout << "Num points after depth filter: " << chunk_points.sizes()[0]
+    std::cout << "Num points after depth filter: " << filtered_points.sizes()[0]
               << std::endl;
 
     int min_new_points_threshold = 10;
-    if (chunk_points.sizes()[0] < min_new_points_threshold) {
+    if (filtered_points.sizes()[0] < min_new_points_threshold) {
       std::cout << "Too little points, skipping" << std::endl;
       continue;
     }
@@ -2703,4 +2835,35 @@ GaussianMapper::GaussianMapper(const SystemSensorType sensor_type,
       min_num_initial_map_kfs_(15UL),
       sensor_type_(sensor_type) {
   return;
+}
+
+std::vector<std::shared_ptr<GaussianModel>>
+GaussianMapper::selectRandomModelSubset(
+    const std::vector<std::shared_ptr<GaussianModel>>& allModels,
+    size_t subset_size) {
+  // torch::cuda::synchronize();
+  // Create a vector for the result
+  std::vector<std::shared_ptr<GaussianModel>> subset;
+
+  // Make sure we don't try to select more elements than available
+  subset_size = std::min(subset_size, allModels.size());
+  if (subset_size == 0) return subset;
+
+  // Create a vector of indices
+  std::vector<size_t> indices(allModels.size());
+  std::iota(indices.begin(), indices.end(), 0);  // Fill with 0, 1, 2, ...
+
+  // Shuffle the indices
+  std::random_device rd;
+  std::mt19937 g(rd());
+  std::shuffle(indices.begin(), indices.end(), g);
+
+  // Select the first subset_size elements
+  subset.reserve(subset_size);
+  for (size_t i = 0; i < subset_size; ++i) {
+    subset.push_back(allModels[indices[i]]);
+  }
+  // torch::cuda::synchronize();
+
+  return subset;
 }

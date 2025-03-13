@@ -207,6 +207,9 @@ class GaussianMapper {
       render_chunks_;
 
   void update_render_chunks();
+  void pruneActiveChunks();
+
+  std::shared_ptr<Chunk> getChunkAt(const ChunkCoord &coord) const;
 
   // Cache of chunk existence to avoid repeated disk checks
   std::unordered_map<ChunkCoord, bool, ChunkCoordHash> chunk_exists_cache_;
@@ -217,6 +220,9 @@ class GaussianMapper {
                        const Eigen::Vector3f &view_dir);
 
   bool chunkExistsOnDisk(const ChunkCoord &coord);
+
+  std::vector<std::shared_ptr<Chunk>> getVisibleActiveChunks(
+      std::shared_ptr<GaussianKeyframe> keyframe);
 
   float positionLearningRateInit();
   float featureLearningRate();
@@ -323,6 +329,10 @@ class GaussianMapper {
   void saveModelParams(std::filesystem::path result_dir);
   void writeKeyframeUsedTimes(std::filesystem::path result_dir,
                               std::string name_suffix = "");
+
+  std::vector<std::shared_ptr<GaussianModel>> selectRandomModelSubset(
+      const std::vector<std::shared_ptr<GaussianModel>> &allModels,
+      size_t subset_size);
 
  public:
   // Parameters
