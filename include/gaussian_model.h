@@ -151,6 +151,10 @@ class GaussianModel {
   float percentDense();
   void setPercentDense(const float percent_dense);
 
+  void save_checkpoint(const std::string& path);
+  void load_checkpoint(const std::string& path,
+                       const GaussianOptimizationParams& training_args);
+
  protected:
   float exponLrFunc(int step);
 

@@ -1036,3 +1036,185 @@ float GaussianModel::exponLrFunc(int step) {
       std::exp(std::log(lr_init_) * (1 - t) + std::log(lr_final_) * t);
   return delay_rate * log_lerp;
 }
+
+void GaussianModel::save_checkpoint(const std::string& path) {
+  // Create directory if it doesn't exist
+  std::filesystem::create_directories(std::filesystem::path(path));
+
+  // Save Tensors using OutputArchive
+  torch::serialize::OutputArchive tensors_archive;
+  tensors_archive.write("anchor_", xyz_);
+  tensors_archive.write("level_", features_dc_);
+  tensors_archive.write("extra_level_", features_rest_);
+  tensors_archive.write("offset_", scaling_);
+  tensors_archive.write("anchor_feat_", rotation_);
+  tensors_archive.write("scaling_", opacity_);
+  tensors_archive.write("rotation_", max_radii2D_);
+  tensors_archive.write("opacity_", xyz_gradient_accum_);
+  tensors_archive.write("positions_", denom_);
+  tensors_archive.write("init_pos_", exist_since_iter_);
+  tensors_archive.write("positions_", sparse_points_xyz_);
+  tensors_archive.write("init_pos_", sparse_points_color_);
+
+  tensors_archive.save_to(path + "/tensors.pt");
+
+  // Save model configuration parameters
+  torch::serialize::OutputArchive config_archive;
+  config_archive.write("active_sh_degree_",
+                       torch::tensor(static_cast<int>(active_sh_degree_)));
+  config_archive.write("max_sh_degree_",
+                       torch::tensor(static_cast<int>(max_sh_degree_)));
+  config_archive.write("percent_dense_",
+                       torch::tensor(static_cast<float>(percent_dense_)));
+  config_archive.write("spatial_lr_scale_",
+                       torch::tensor(static_cast<float>(spatial_lr_scale_)));
+  config_archive.write("lr_init_", torch::tensor(static_cast<float>(lr_init_)));
+  config_archive.write("lr_final_",
+                       torch::tensor(static_cast<float>(lr_final_)));
+  config_archive.write("lr_delay_steps_",
+                       torch::tensor(static_cast<int>(lr_delay_steps_)));
+  config_archive.write("lr_delay_mult_",
+                       torch::tensor(static_cast<float>(lr_delay_mult_)));
+  config_archive.write("max_steps_",
+                       torch::tensor(static_cast<int>(max_steps_)));
+
+  config_archive.save_to(path + "/config.pt");
+
+  // Save optimizer state using the built-in torch serialization
+  torch::save(*optimizer_, path + "/optimizer.pt");
+
+  std::cout << "Checkpoint saved to " << path << std::endl;
+}
+
+void GaussianModel::load_checkpoint(
+    const std::string& path,
+    const GaussianOptimizationParams& training_args) {
+  if (!std::filesystem::exists(path)) {
+    throw std::runtime_error("Checkpoint directory does not exist: " + path);
+  }
+
+  // Load tensors
+  torch::serialize::InputArchive tensors_archive;
+
+  if (std::filesystem::exists(path + "/tensors.pt")) {
+    try {
+      tensors_archive.load_from(path + "/tensors.pt");
+    } catch (const std::exception& e) {
+      std::cerr << "Warning: Failed to load chunk tensors: " << e.what()
+                << std::endl;
+    }
+  } else {
+    std::cerr << "Warning: Chunk tensors not found at " << path + "/tensors.pt"
+              << std::endl;
+  }
+
+  tensors_archive.read("xyz_", xyz_);
+  tensors_archive.read("features_dc_", features_dc_);
+  tensors_archive.read("features_rest_", features_rest_);
+  tensors_archive.read("scaling_", scaling_);
+  tensors_archive.read("rotation_", rotation_);
+  tensors_archive.read("opacity_", opacity_);
+  tensors_archive.read("max_radii2D_", max_radii2D_);
+  tensors_archive.read("xyz_gradient_accum_", xyz_gradient_accum_);
+  tensors_archive.read("denom_", denom_);
+  tensors_archive.read("exist_since_iter_", exist_since_iter_);
+  tensors_archive.read("sparse_points_xyz_", sparse_points_xyz_);
+  tensors_archive.read("sparse_points_color_", sparse_points_color_);
+
+  // Load model configuration
+  torch::serialize::InputArchive config_archive;
+  if (std::filesystem::exists(path + "/config.pt")) {
+    try {
+      config_archive.load_from(path + "/config.pt");
+    } catch (const std::exception& e) {
+      std::cerr << "Warning: Failed to load chunk config: " << e.what()
+                << std::endl;
+    }
+  } else {
+    std::cerr << "Warning: Chunk config not found at " << path + "/config.pt"
+              << std::endl;
+  }
+
+  torch::Tensor temp_tensor;
+
+  config_archive.read("active_sh_degree_", temp_tensor);
+  active_sh_degree_ = temp_tensor.item<int>();
+
+  config_archive.read("max_sh_degree_", temp_tensor);
+  max_sh_degree_ = temp_tensor.item<int>();
+
+  config_archive.read("percent_dense_", temp_tensor);
+  percent_dense_ = temp_tensor.item<float>();
+
+  config_archive.read("spatial_lr_scale_", temp_tensor);
+  spatial_lr_scale_ = temp_tensor.item<float>();
+
+  config_archive.read("lr_init_", temp_tensor);
+  lr_init_ = temp_tensor.item<float>();
+
+  config_archive.read("lr_final_", temp_tensor);
+  lr_final_ = temp_tensor.item<float>();
+
+  config_archive.read("lr_delay_steps_", temp_tensor);
+  lr_delay_steps_ = temp_tensor.item<int>();
+
+  config_archive.read("lr_delay_mult_", temp_tensor);
+  lr_delay_mult_ = temp_tensor.item<float>();
+
+  config_archive.read("max_steps_", temp_tensor);
+  max_steps_ = temp_tensor.item<int>();
+
+  xyz_ = xyz_.requires_grad_(true);
+  features_dc_ = features_dc_.requires_grad_(true);
+  features_rest_ = features_rest_.requires_grad_(true);
+  scaling_ = scaling_.requires_grad_(true);
+  rotation_ = rotation_.requires_grad_(true);
+  opacity_ = opacity_.requires_grad_(true);
+
+  // Convert tensors to vectors using the macro
+  GAUSSIAN_MODEL_TENSORS_TO_VEC
+
+  // Setup optimizer with initial parameters
+  torch::optim::AdamOptions adam_options;
+  adam_options.set_lr(0.0);
+  adam_options.eps() = 1e-15;
+
+  this->optimizer_.reset(new SparseGaussianAdam(Tensor_vec_xyz_, adam_options));
+  optimizer_->param_groups()[0].options().set_lr(
+      training_args.position_lr_init_ * this->spatial_lr_scale_);
+
+  optimizer_->add_param_group(Tensor_vec_feature_dc_);
+  optimizer_->param_groups()[1].options().set_lr(training_args.feature_lr_);
+
+  optimizer_->add_param_group(Tensor_vec_feature_rest_);
+  optimizer_->param_groups()[2].options().set_lr(training_args.feature_lr_ /
+                                                 20.0);
+
+  optimizer_->add_param_group(Tensor_vec_opacity_);
+  optimizer_->param_groups()[3].options().set_lr(training_args.opacity_lr_);
+
+  optimizer_->add_param_group(Tensor_vec_scaling_);
+  optimizer_->param_groups()[4].options().set_lr(training_args.scaling_lr_);
+
+  optimizer_->add_param_group(Tensor_vec_rotation_);
+  optimizer_->param_groups()[5].options().set_lr(training_args.rotation_lr_);
+
+  if (std::filesystem::exists(path + "/optimizer.pt")) {
+    try {
+      std::cout << "Loading optimizer state from " << path + "/optimizer.pt"
+                << std::endl;
+      torch::load(*optimizer_, path + "/optimizer.pt");
+      std::cout << "Optimizer state loaded successfully" << std::endl;
+    } catch (const std::exception& e) {
+      std::cerr << "Warning: Failed to load optimizer state: " << e.what()
+                << std::endl;
+      std::cerr << "Continuing with newly initialized optimizer" << std::endl;
+    }
+  } else {
+    std::cout << "No optimizer state found at " << path + "/optimizer.pt"
+              << std::endl;
+    std::cout << "Continuing with newly initialized optimizer" << std::endl;
+  }
+
+  std::cout << "Checkpoint loaded from " << path << std::endl;
+}
