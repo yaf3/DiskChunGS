@@ -124,9 +124,9 @@ __global__ void checkFrustum(int P,
   present[idx] =
       in_frustum(idx, orig_points, viewmatrix, projmatrix, false, p_view);
 }
-
 // Generates one key/value pair for all Gaussian / tile overlaps.
-// Run once per Gaussian (1:N mapping).
+// Run once per Gaussian (1:N mapping). Modified to allow matching of gaussians
+// to tiles even when opaicty too low
 __global__ void duplicateWithKeys(int P,
                                   const float2* points_xy,
                                   const float4* __restrict__ conic_opacity,
@@ -157,6 +157,9 @@ __global__ void duplicateWithKeys(int P,
     const float opacity_threshold = 1.0f / 255.0f;
     const float opacity_factor_threshold = logf(co.w / opacity_threshold);
 
+    // Flag to track if the Gaussian was assigned to any tile
+    bool assigned_to_any_tile = false;
+
     // For each tile that the bounding rect overlaps, emit a
     // key/value pair. The key is |  tile ID  |      depth      |,
     // and the value is the ID of the Gaussian. Sorting the values
@@ -180,10 +183,28 @@ __global__ void duplicateWithKeys(int P,
           gaussian_keys_unsorted[off] = key;
           gaussian_values_unsorted[off] = idx;
           off++;
+          assigned_to_any_tile = true;
         }
       }
     }
 
+    // If the Gaussian wasn't assigned to any tile but is visible,
+    // assign it to the closest valid tile to its actual position
+    if (!assigned_to_any_tile) {
+      // Calculate the closest valid tile coordinates
+      int closest_x = max(0, min(grid.x - 1, (int)(xy.x / BLOCK_X)));
+      int closest_y = max(0, min(grid.y - 1, (int)(xy.y / BLOCK_Y)));
+
+      uint64_t key = closest_y * grid.x + closest_x;
+      key <<= 32;
+      key |= *((uint32_t*)&depths[idx]);
+
+      gaussian_keys_unsorted[off] = key;
+      gaussian_values_unsorted[off] = idx;
+      off++;
+    }
+
+    // Fill remaining slots with invalid data
     for (; off < offset_to; ++off) {
       uint64_t key = (uint32_t)-1;
       key <<= 32;
