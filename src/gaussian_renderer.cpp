@@ -45,7 +45,15 @@ std::
 
   // auto timer_initialization = ProfilingUtils::Timer("initialization");
 
-  int active_sh_degree = models[0]->active_sh_degree_;
+  // int active_sh_degree = models[0]->active_sh_degree_;
+
+  int active_sh_degree = 0;
+  for (size_t i = 0; i < models.size(); i++) {
+    const auto& pc = models[i];
+    if (pc) {  // Safety check
+      active_sh_degree = std::max(active_sh_degree, pc->active_sh_degree_);
+    }
+  }
 
   std::vector<torch::Tensor> means3D_vec;
   std::vector<torch::Tensor> means2D_vec;
