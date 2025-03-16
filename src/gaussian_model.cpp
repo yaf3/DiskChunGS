@@ -1043,18 +1043,18 @@ void GaussianModel::save_checkpoint(const std::string& path) {
 
   // Save Tensors using OutputArchive
   torch::serialize::OutputArchive tensors_archive;
-  tensors_archive.write("anchor_", xyz_);
-  tensors_archive.write("level_", features_dc_);
-  tensors_archive.write("extra_level_", features_rest_);
-  tensors_archive.write("offset_", scaling_);
-  tensors_archive.write("anchor_feat_", rotation_);
-  tensors_archive.write("scaling_", opacity_);
-  tensors_archive.write("rotation_", max_radii2D_);
-  tensors_archive.write("opacity_", xyz_gradient_accum_);
-  tensors_archive.write("positions_", denom_);
-  tensors_archive.write("init_pos_", exist_since_iter_);
-  tensors_archive.write("positions_", sparse_points_xyz_);
-  tensors_archive.write("init_pos_", sparse_points_color_);
+  tensors_archive.write("xyz_", xyz_);
+  tensors_archive.write("features_dc_", features_dc_);
+  tensors_archive.write("features_rest_", features_rest_);
+  tensors_archive.write("scaling_", scaling_);
+  tensors_archive.write("rotation_", rotation_);
+  tensors_archive.write("opacity_", opacity_);
+  tensors_archive.write("max_radii2D_", max_radii2D_);
+  tensors_archive.write("xyz_gradient_accum_", xyz_gradient_accum_);
+  tensors_archive.write("denom_", denom_);
+  tensors_archive.write("exist_since_iter_", exist_since_iter_);
+  tensors_archive.write("sparse_points_xyz_", sparse_points_xyz_);
+  tensors_archive.write("sparse_points_color_", sparse_points_color_);
 
   tensors_archive.save_to(path + "/tensors.pt");
 
