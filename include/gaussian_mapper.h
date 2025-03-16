@@ -45,11 +45,16 @@
 
 #include "ORB-SLAM3/Thirdparty/Sophus/sophus/se3.hpp"
 #include "ORB-SLAM3/include/System.h"
+#include "chunk_manager.h"
+#include "chunk_types.h"
 #include "gaussian_keyframe.h"
 #include "gaussian_scene.h"
 #include "operate_points.h"
 #include "stereo_vision.h"
 #include "tensor_utils.h"
+
+class ChunkManager;      // Forward declaration
+class KeyframeSelector;  // Forward declaration
 
 #define CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(dir)                 \
   if (!dir.empty() && !std::filesystem::exists(dir))                  \
@@ -89,53 +94,6 @@ struct VariableParameters {
   bool do_inactive_geo_densify;
 };
 
-struct ChunkCoord {
-  int64_t x, y, z;
-
-  bool operator==(const ChunkCoord &other) const {
-    return x == other.x && y == other.y && z == other.z;
-  }
-
-  bool operator<(const ChunkCoord &other) const {
-    if (x != other.x) return x < other.x;
-    if (y != other.y) return y < other.y;
-    return z < other.z;
-  }
-};
-
-// Custom hash function for ChunkCoord
-struct ChunkCoordHash {
-  std::size_t operator()(const ChunkCoord &coord) const {
-    // Simple hash combining function
-    std::size_t h1 = std::hash<int>{}(coord.x);
-    std::size_t h2 = std::hash<int>{}(coord.y);
-    std::size_t h3 = std::hash<int>{}(coord.z);
-    return h1 ^ (h2 << 1) ^ (h3 << 2);
-  }
-};
-
-class Chunk {
- public:
-  // Original constructor
-  Chunk(const GaussianModelParams &model_params) {
-    gaussians_ = std::make_shared<GaussianModel>(model_params);
-  }
-
-  // Add a default constructor to support cloning
-  Chunk() = default;
-
-  // Clone method
-  // Tod: Implement clone for gaussians
-  // std::shared_ptr<Chunk> clone() const {
-  //   auto cloned_chunk = std::make_shared<Chunk>();
-  //   cloned_chunk->gaussians_ = gaussians_->clone();
-  //   return cloned_chunk;
-  // }
-
- public:
-  std::shared_ptr<GaussianModel> gaussians_;
-};
-
 class GaussianMapper {
  public:
   GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
@@ -169,70 +127,17 @@ class GaussianMapper {
   int getIteration();
   void increaseIteration(const int inc = 1);
 
-  // Core functionality
-  void updateActiveChunks(std::shared_ptr<GaussianKeyframe> keyframe);
-
-  std::filesystem::path getChunkFilename(const ChunkCoord &coord);
-
-  void saveChunk(const ChunkCoord &coord);
-  bool loadChunk(const ChunkCoord &coord);
-
   // Gaussian management
   void addPoints(
       const torch::Tensor &points,
       const torch::Tensor &colors,
       std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> keyframes);
 
-  // Utility functions
-  ChunkCoord getChunkCoord(const Eigen::Vector3f &position);
-  bool isChunkActive(const ChunkCoord &coord);
-
   std::tuple<torch::Tensor, torch::Tensor> filterPointsByDepth(
       const torch::Tensor &points,
       const torch::Tensor &colors,
       const std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>
           &keyframes);
-
-  std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> groupPointsByChunk(
-      const torch::Tensor &positions);
-
-  float chunk_size_ = 50.0;
-  float overlap_margin_ = 0.0;
-  std::filesystem::path chunk_save_dir_;
-
-  // Active chunks in memory
-  std::unordered_map<ChunkCoord, std::shared_ptr<Chunk>, ChunkCoordHash>
-      active_chunks_;
-  std::unordered_map<ChunkCoord, std::shared_ptr<Chunk>, ChunkCoordHash>
-      render_chunks_;
-
-  void update_render_chunks();
-  void pruneActiveChunks();
-
-  std::shared_ptr<Chunk> getChunkAt(const ChunkCoord &coord) const;
-
-  // Cache of chunk existence to avoid repeated disk checks
-  std::unordered_map<ChunkCoord, bool, ChunkCoordHash> chunk_exists_cache_;
-
-  // Helper functions
-  bool isInViewFrustum(const ChunkCoord &coord,
-                       const Eigen::Vector3f &camera_pos,
-                       const Eigen::Vector3f &view_dir);
-
-  bool chunkExistsOnDisk(const ChunkCoord &coord);
-
-  std::array<Eigen::Vector4f, 6> computeFrustumPlanes(
-      std::shared_ptr<GaussianKeyframe> keyframe);
-  Eigen::Vector4f planeFromPoints(const Eigen::Vector3f &p1,
-                                  const Eigen::Vector3f &p2,
-                                  const Eigen::Vector3f &p3);
-  bool isChunkInFrustum(const ChunkCoord &coord,
-                        const std::array<Eigen::Vector4f, 6> &frustum_planes);
-  std::array<Eigen::Vector3f, 8> getChunkCorners(const ChunkCoord &coord);
-  Eigen::Vector3f getChunkCenter(const ChunkCoord &coord);
-
-  std::vector<std::shared_ptr<Chunk>> getVisibleActiveChunks(
-      std::shared_ptr<GaussianKeyframe> keyframe);
 
   float positionLearningRateInit();
   float featureLearningRate();
@@ -304,8 +209,12 @@ class GaussianMapper {
   void generateKfidRandomShuffle();
   std::shared_ptr<GaussianKeyframe> useOneRandomSlidingWindowKeyframe();
   std::shared_ptr<GaussianKeyframe> useOneRandomKeyframe();
+
+ public:
   void increaseKeyframeTimesOfUse(std::shared_ptr<GaussianKeyframe> pkf,
                                   int times);
+
+ protected:
   void cullKeyframes();
 
   void increasePcdByKeyframeInactiveGeoDensify(
@@ -344,16 +253,33 @@ class GaussianMapper {
       const std::vector<std::shared_ptr<GaussianModel>> &allModels,
       size_t subset_size);
 
+ private:
+  // Chunk manager for efficient memory handling
+  std::shared_ptr<ChunkManager> chunk_manager_;
+
+  // Keyframe selector for intelligent keyframe selection
+  std::shared_ptr<KeyframeSelector> keyframe_selector_;
+
+  // Updated function declarations:
+  std::shared_ptr<GaussianKeyframe> selectLocalityAwareKeyframe();
+  std::vector<std::shared_ptr<GaussianKeyframe>> predictUpcomingKeyframes(
+      int count = 5);
+  void initializeChunkManagement();
+
  public:
   // Parameters
   std::filesystem::path config_file_path_;
 
-  // Model
-  std::shared_ptr<GaussianModel> gaussians_;
+  // Scene
   std::shared_ptr<GaussianScene> scene_;
 
   // SLAM system
   std::shared_ptr<ORB_SLAM3::System> pSLAM_;
+
+  float chunk_size_ = 50.0;
+  float overlap_margin_ = 0.0;
+  int max_chunks_in_memory_ = 50;
+  std::filesystem::path chunk_save_dir_;
 
   // Settings
   torch::DeviceType device_type_;
@@ -386,8 +312,10 @@ class GaussianMapper {
       viewpoint_sliding_window_;
   std::vector<std::size_t> kfid_shuffle_;
   std::size_t kfid_shuffle_idx_ = 0;
-  std::map<std::size_t, int> kfs_used_times_;
+
+ public:
   std::map<std::size_t, float> kfs_loss_;
+  std::map<std::size_t, int> kfs_used_times_;
 
   // Status
   bool initial_mapped_;

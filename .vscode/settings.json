@@ -79,7 +79,15 @@
         "csetjmp": "cpp",
         "regex": "cpp",
         "future": "cpp",
-        "span": "cpp"
+        "span": "cpp",
+        "ranges": "cpp",
+        "hash_map": "cpp",
+        "hash_set": "cpp",
+        "__bit_reference": "cpp",
+        "__hash_table": "cpp",
+        "__string": "cpp",
+        "__tree": "cpp",
+        "__tuple": "cpp"
     },
     "editor.formatOnSave": true,
 }

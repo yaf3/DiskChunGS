@@ -150,6 +150,9 @@ add_library(
     include/point3d.h
     include/types.h
     include/profiling.h
+    include/chunk_types.h
+    include/chunk_manager.h
+    include/keyframe_selector.h
     src/gaussian_keyframe.cpp
     src/gaussian_model.cpp
     src/gaussian_parameters.cpp
@@ -157,6 +160,8 @@ add_library(
     src/gaussian_renderer.cpp
     src/gaussian_scene.cpp
     src/gaussian_mapper.cpp
+    src/chunk_manager.cpp
+    src/keyframe_selector.cpp
 )
 target_link_libraries(
     gaussian_mapper

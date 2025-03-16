@@ -1,0 +1,203 @@
+#pragma once
+
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <filesystem>
+#include <memory>
+#include <mutex>
+#include <queue>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#include "chunk_types.h"
+#include "gaussian_keyframe.h"
+#include "gaussian_model.h"
+
+// Removed forward declaration of GaussianMapper
+
+// Metadata for managing chunks lifecycle
+struct ChunkMetadata {
+  std::chrono::time_point<std::chrono::steady_clock> last_used;
+  std::chrono::time_point<std::chrono::steady_clock> load_time;
+  int usage_count;
+  bool dirty;    // Has been modified since last save
+  bool loading;  // Currently being loaded
+  bool saving;   // Currently being saved
+
+  ChunkMetadata()
+      : last_used(std::chrono::steady_clock::now()),
+        load_time(std::chrono::steady_clock::now()),
+        usage_count(0),
+        dirty(false),
+        loading(false),
+        saving(false) {}
+};
+
+// Chunk I/O operation
+enum class ChunkOperation { LOAD, SAVE, NONE };
+
+// Chunk I/O request
+struct ChunkIORequest {
+  ChunkCoord coord;
+  ChunkOperation operation;
+  int priority;  // Higher number means higher priority
+
+  ChunkIORequest(const ChunkCoord& c, ChunkOperation op, int p = 0)
+      : coord(c), operation(op), priority(p) {}
+
+  // Compare for priority queue (higher priority comes first)
+  bool operator<(const ChunkIORequest& other) const {
+    return priority < other.priority;
+  }
+};
+
+class ChunkManager {
+ public:
+  ChunkManager(const GaussianModelParams& model_params,
+               const GaussianOptimizationParams& opt_params,
+               std::filesystem::path chunk_save_dir,
+               float chunk_size = 50.0f,
+               float overlap_margin = 0.0f,
+               int max_chunks = 50);
+
+  ~ChunkManager();
+
+  // Main interface methods
+  std::vector<std::shared_ptr<Chunk>> getVisibleChunks(
+      std::shared_ptr<GaussianKeyframe> keyframe);
+  void preloadChunksForKeyframes(
+      const std::vector<std::shared_ptr<GaussianKeyframe>>& upcoming);
+  void evictUnusedChunks(int keep_count = -1);
+
+  // Mark chunks as used (update metadata)
+  void markChunkUsed(const ChunkCoord& coord);
+
+  // Schedule chunk save
+  void scheduleChunkSave(const ChunkCoord& coord, int priority = 0);
+
+  std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> groupPointsByChunk(
+      const torch::Tensor& positions);
+
+  // Add points to appropriate chunks (simplified interface)
+  void addPointsToChunks(
+      const torch::Tensor& points,
+      const torch::Tensor& colors,
+      std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> keyframes,
+      float cameras_extent);
+
+  // Moved filterPointsByDepth from GaussianMapper to ChunkManager
+  std::tuple<torch::Tensor, torch::Tensor> filterPointsByDepth(
+      const torch::Tensor& points,
+      const torch::Tensor& colors,
+      const std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>&
+          keyframes);
+
+  // Get chunk at specific coordinate
+  std::shared_ptr<Chunk> getChunkAt(const ChunkCoord& coord);
+
+  // Check if chunk exists on disk
+  bool chunkExistsOnDisk(const ChunkCoord& coord);
+
+  // Get chunk coordinate from 3D position
+  ChunkCoord getChunkCoord(const Eigen::Vector3f& position);
+
+  // Compute frustum planes for a keyframe
+  std::array<Eigen::Vector4f, 6> computeFrustumPlanes(
+      std::shared_ptr<GaussianKeyframe> keyframe);
+
+  // Check if a chunk is inside or intersects with a view frustum
+  bool isChunkInFrustum(const ChunkCoord& coord,
+                        const std::array<Eigen::Vector4f, 6>& frustum_planes);
+
+  // Load a chunk
+  bool loadChunk(const ChunkCoord& coord, bool background = false);
+
+  // Save a chunk
+  bool saveChunk(const ChunkCoord& coord, bool background = false);
+
+  // Find chunks to evict based on LRU policy
+  std::vector<ChunkCoord> findChunksToEvict(int count);
+
+  // Shutdown the manager (stops background threads)
+  void shutdown();
+
+  // Stats for debugging/monitoring
+  struct Stats {
+    int active_chunks;
+    int disk_loads;
+    int disk_saves;
+    int cache_hits;
+    int prefetched;
+  };
+
+  Stats getStats() const;
+
+  // Access to model parameters
+  const GaussianModelParams& getModelParams() const { return model_params_; }
+  const GaussianOptimizationParams& getOptParams() const { return opt_params_; }
+
+  // Update current iteration
+  void setCurrentIteration(int iteration) { current_iteration_ = iteration; }
+  int getCurrentIteration() const { return current_iteration_; }
+
+ private:
+  // No-lock versions of methods that are called within locked sections
+  void markChunkUsedNoLock(const ChunkCoord& coord);
+  void scheduleChunkSaveNoLock(const ChunkCoord& coord, int priority = 0);
+  bool chunkExistsOnDiskNoLock(const ChunkCoord& coord);
+  bool loadChunkNoLock(const ChunkCoord& coord, bool background = false);
+  bool saveChunkNoLock(const ChunkCoord& coord, bool background = false);
+  std::vector<ChunkCoord> findChunksToEvictNoLock(int count);
+
+  // Store model parameters directly
+  GaussianModelParams model_params_;
+  GaussianOptimizationParams opt_params_;
+  int current_iteration_ = 0;
+
+  // Core data
+  std::unordered_map<ChunkCoord, std::shared_ptr<Chunk>, ChunkCoordHash>
+      active_chunks_;
+  std::unordered_map<ChunkCoord, ChunkMetadata, ChunkCoordHash> chunk_metadata_;
+
+  // Cache of chunk existence to avoid repeated disk checks
+  std::unordered_map<ChunkCoord, bool, ChunkCoordHash> chunk_exists_cache_;
+
+  // I/O thread and synchronization
+  std::thread io_thread_;
+  std::priority_queue<ChunkIORequest> io_queue_;
+  std::mutex io_mutex_;
+  std::condition_variable io_cv_;
+  std::atomic<bool> should_terminate_;
+
+  // Settings
+  std::filesystem::path chunk_save_dir_;
+  float chunk_size_;
+  float overlap_margin_;
+  int max_chunks_in_memory_;
+  std::chrono::seconds min_retention_time_{
+      5};  // Minimum time to keep a chunk after loading
+
+  // Statistics
+  mutable std::mutex stats_mutex_;
+  Stats stats_{0, 0, 0, 0, 0};
+
+  // Background I/O thread function
+  void ioThreadFunc();
+
+  // Private helper methods
+  std::filesystem::path getChunkFilename(const ChunkCoord& coord);
+
+  // Helper geometry functions
+  std::array<Eigen::Vector3f, 8> getChunkCorners(const ChunkCoord& coord);
+  Eigen::Vector3f getChunkCenter(const ChunkCoord& coord);
+  Eigen::Vector4f planeFromPoints(const Eigen::Vector3f& p1,
+                                  const Eigen::Vector3f& p2,
+                                  const Eigen::Vector3f& p3);
+
+  // Update statistics
+  void incrementStat(int& stat);
+  void decrementStat(int& stat);
+};
