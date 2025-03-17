@@ -154,6 +154,14 @@ class GaussianModel {
   void save_checkpoint(const std::string& path);
   void load_checkpoint(const std::string& path,
                        const GaussianOptimizationParams& training_args);
+  void load_checkpoint_incremental(
+      const std::string& path,
+      const GaussianOptimizationParams& training_args,
+      bool load_auxiliary_tensors = false,
+      bool load_optimizer_state = false,
+      bool load_existence_info = false,
+      bool normalize_quaternions = true,
+      bool clear_cache_after_load = true);
 
  protected:
   float exponLrFunc(int step);
