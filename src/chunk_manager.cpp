@@ -122,6 +122,8 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
 
   // Get chunk coordinate for camera position
   ChunkCoord camera_chunk = getChunkCoord(camera_position);
+  std::cout << "Keyframe camera in chunk: " << camera_chunk.x << " "
+            << camera_chunk.y << " " << camera_chunk.z << " " << std::endl;
 
   // Search chunks in the vicinity
   {
@@ -133,27 +135,36 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
           ChunkCoord check_coord{camera_chunk.x + dx, camera_chunk.y + dy,
                                  camera_chunk.z + dz};
 
+          std::cout << "Checking chunk for visibility: " << check_coord.x << " "
+                    << check_coord.y << " " << check_coord.z << " "
+                    << std::endl;
+
           // Skip chunks that are too far from camera (rough distance check)
           Eigen::Vector3f chunk_center = getChunkCenter(check_coord);
           float dist_to_camera = (chunk_center - camera_position).norm();
           if (dist_to_camera >
               keyframe->zfar_ + chunk_size_ * 1.732f) {  // sqrt(3) for diagonal
+            std::cout << "Skipping as " << dist_to_camera << "is too far away"
+                      << std::endl;
             continue;
           }
 
           // Check if chunk is inside or intersects view frustum
           if (isChunkInFrustum(check_coord, frustum_planes)) {
             auto it = active_chunks_.find(check_coord);
+            std::cout << "Chunk is in viewing frustum" << std::endl;
 
             // If chunk is active, add to visible chunks
             if (it != active_chunks_.end() && it->second &&
                 it->second->gaussians_) {
+              std::cout << "Chunk already in memory" << std::endl;
               visible_chunks.push_back(it->second);
               markChunkUsedNoLock(check_coord);  // Use no-lock version
             }
             // If chunk exists on disk but not loaded, queue for loading
             else if (chunkExistsOnDiskNoLock(
                          check_coord)) {  // Use no-lock version
+              std::cout << "Chunk exists on disk, load soon" << std::endl;
               chunks_to_load.push_back(check_coord);
             }
           }
@@ -188,6 +199,8 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
         visible_chunks.push_back(chunk);
         markChunkUsed(coord);  // Use public version
       }
+    } else {
+      throw std::runtime_error("Not able to load chunk from disk");
     }
   }
 
@@ -421,14 +434,14 @@ void ChunkManager::ioThreadFunc() {
                 << request.coord.x << " " << request.coord.y << " "
                 << request.coord.z << " " << std::endl;
       if (!loadChunk(request.coord, true)) {
-        throw "Failed to load chunk";
+        throw std::runtime_error("Failed to load chunk");
       }
     } else if (request.operation == ChunkOperation::SAVE) {
       std::cout << "[IO Thread] Processing request to save chunk: "
                 << request.coord.x << " " << request.coord.y << " "
                 << request.coord.z << " " << std::endl;
       if (!saveChunk(request.coord, true)) {
-        throw "Failed to save chunk";
+        throw std::runtime_error("Failed to save chunk");
       }
     }
   }
@@ -500,7 +513,10 @@ bool ChunkManager::loadChunkNoLock(const ChunkCoord& coord, bool background) {
     }
 
     // Load from file
-    chunk->gaussians_->load_checkpoint(chunk_filename.string(), getOptParams());
+    // chunk->gaussians_->load_checkpoint(chunk_filename.string(),
+    // getOptParams());
+    chunk->gaussians_->load_checkpoint_incremental(
+        chunk_filename.string(), getOptParams(), true, true, true);
 
     // Update in-memory structures
     active_chunks_[coord] = chunk;
@@ -522,6 +538,7 @@ bool ChunkManager::loadChunkNoLock(const ChunkCoord& coord, bool background) {
     return true;
   } catch (const std::exception& e) {
     std::cerr << "Exception loading chunk: " << e.what() << std::endl;
+    throw std::runtime_error("Chunk could not be loaded");
 
     if (background) {
       auto meta_it = chunk_metadata_.find(coord);
@@ -569,6 +586,8 @@ bool ChunkManager::saveChunkNoLock(const ChunkCoord& coord, bool background) {
       meta_it->second.saving = false;
     }
 
+    chunk_exists_cache_[coord] = true;
+
     incrementStat(stats_.disk_saves);
 
     // Remove from memory if was a background save for eviction
@@ -583,6 +602,7 @@ bool ChunkManager::saveChunkNoLock(const ChunkCoord& coord, bool background) {
     return true;
   } catch (const std::exception& e) {
     std::cerr << "Exception saving chunk: " << e.what() << std::endl;
+    throw std::runtime_error("Exception saving chunk");
 
     // Update metadata
     auto meta_it = chunk_metadata_.find(coord);
@@ -615,6 +635,8 @@ bool ChunkManager::chunkExistsOnDiskNoLock(const ChunkCoord& coord) {
   // Check cache first
   auto it = chunk_exists_cache_.find(coord);
   if (it != chunk_exists_cache_.end()) {
+    std::cout << "Chunk exists in disk cache with status: " << it->second
+              << std::endl;
     return it->second;
   }
 
