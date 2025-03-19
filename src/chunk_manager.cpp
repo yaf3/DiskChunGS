@@ -122,8 +122,8 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
 
   // Get chunk coordinate for camera position
   ChunkCoord camera_chunk = getChunkCoord(camera_position);
-  std::cout << "Keyframe camera in chunk: " << camera_chunk.x << " "
-            << camera_chunk.y << " " << camera_chunk.z << " " << std::endl;
+  // std::cout << "Keyframe camera in chunk: " << camera_chunk.x << " "
+  //           << camera_chunk.y << " " << camera_chunk.z << " " << std::endl;
 
   // Search chunks in the vicinity
   {
@@ -135,36 +135,38 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
           ChunkCoord check_coord{camera_chunk.x + dx, camera_chunk.y + dy,
                                  camera_chunk.z + dz};
 
-          std::cout << "Checking chunk for visibility: " << check_coord.x << " "
-                    << check_coord.y << " " << check_coord.z << " "
-                    << std::endl;
+          // std::cout << "Checking chunk for visibility: " << check_coord.x <<
+          // " "
+          //           << check_coord.y << " " << check_coord.z << " "
+          //           << std::endl;
 
           // Skip chunks that are too far from camera (rough distance check)
           Eigen::Vector3f chunk_center = getChunkCenter(check_coord);
           float dist_to_camera = (chunk_center - camera_position).norm();
           if (dist_to_camera >
               keyframe->zfar_ + chunk_size_ * 1.732f) {  // sqrt(3) for diagonal
-            std::cout << "Skipping as " << dist_to_camera << "is too far away"
-                      << std::endl;
+            // std::cout << "Skipping as " << dist_to_camera << "is too far
+            // away"
+            //           << std::endl;
             continue;
           }
 
           // Check if chunk is inside or intersects view frustum
           if (isChunkInFrustum(check_coord, frustum_planes)) {
             auto it = active_chunks_.find(check_coord);
-            std::cout << "Chunk is in viewing frustum" << std::endl;
+            // std::cout << "Chunk is in viewing frustum" << std::endl;
 
             // If chunk is active, add to visible chunks
             if (it != active_chunks_.end() && it->second &&
                 it->second->gaussians_) {
-              std::cout << "Chunk already in memory" << std::endl;
+              // std::cout << "Chunk already in memory" << std::endl;
               visible_chunks.push_back(it->second);
               markChunkUsedNoLock(check_coord);  // Use no-lock version
             }
             // If chunk exists on disk but not loaded, queue for loading
             else if (chunkExistsOnDiskNoLock(
                          check_coord)) {  // Use no-lock version
-              std::cout << "Chunk exists on disk, load soon" << std::endl;
+              // std::cout << "Chunk exists on disk, load soon" << std::endl;
               chunks_to_load.push_back(check_coord);
             }
           }
@@ -175,11 +177,11 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
 
   // If we're near memory limit, evict some chunks before loading new ones
   if (active_chunks_.size() + chunks_to_load.size() > max_chunks_in_memory_) {
-    std::cout << "Need to evict chunks. Have " << active_chunks_.size()
-              << std::endl;
-    std::cout << "Want to load " << chunks_to_load.size() << std::endl;
-    std::cout << "Which goes over " << max_chunks_in_memory_ << " limit"
-              << std::endl;
+    // std::cout << "Need to evict chunks. Have " << active_chunks_.size()
+    //           << std::endl;
+    // std::cout << "Want to load " << chunks_to_load.size() << std::endl;
+    // std::cout << "Which goes over " << max_chunks_in_memory_ << " limit"
+    //           << std::endl;
     int to_evict = std::min(
         static_cast<int>(chunks_to_load.size()),
         static_cast<int>(active_chunks_.size() + chunks_to_load.size() -
@@ -190,9 +192,9 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
   // Load necessary chunks (synchronously for now, as we need them for
   // rendering)
   for (const auto& coord : chunks_to_load) {
-    std::cout << "[Synchronous Request] Processing request to load chunk: "
-              << coord.x << " " << coord.y << " " << coord.z << " "
-              << std::endl;
+    // std::cout << "[Synchronous Request] Processing request to load chunk: "
+    //           << coord.x << " " << coord.y << " " << coord.z << " "
+    //           << std::endl;
     if (loadChunk(coord)) {  // Use the public version which handles locking
       auto chunk = getChunkAt(coord);  // Use accessor method
       if (chunk && chunk->gaussians_) {
@@ -443,6 +445,33 @@ void ChunkManager::ioThreadFunc() {
       if (!saveChunk(request.coord, true)) {
         throw std::runtime_error("Failed to save chunk");
       }
+    } else if (request.operation == ChunkOperation::DELETE) {
+      std::cout << "[IO Thread] Processing request to delete chunk: "
+                << request.coord.x << " " << request.coord.y << " "
+                << request.coord.z << " " << std::endl;
+
+      // Delete the file if it exists
+      auto chunk_filename = getChunkFilename(request.coord);
+      std::lock_guard<std::mutex> lock(io_mutex_);
+
+      if (std::filesystem::exists(chunk_filename)) {
+        try {
+          std::filesystem::remove(chunk_filename);
+        } catch (const std::exception& e) {
+          std::cerr << "Error deleting chunk file: " << e.what() << std::endl;
+        }
+      }
+
+      // Update metadata
+      auto meta_it = chunk_metadata_.find(request.coord);
+      if (meta_it != chunk_metadata_.end()) {
+        // Clear the metadata or mark as not dirty/saving
+        meta_it->second.dirty = false;
+        meta_it->second.saving = false;
+      }
+
+      // Update the disk cache to reflect the deletion
+      chunk_exists_cache_[request.coord] = false;
     }
   }
 
@@ -506,7 +535,7 @@ bool ChunkManager::loadChunkNoLock(const ChunkCoord& coord, bool background) {
 
   try {
     // Create new chunk with mapper's GaussianModelParams
-    auto chunk = std::make_shared<Chunk>(getModelParams());
+    auto chunk = std::make_shared<Chunk>(getModelParams(), coord);
     if (!chunk || !chunk->gaussians_) {
       std::cerr << "Failed to create chunk object" << std::endl;
       return false;
@@ -532,8 +561,9 @@ bool ChunkManager::loadChunkNoLock(const ChunkCoord& coord, bool background) {
     incrementStat(stats_.active_chunks);
     incrementStat(stats_.disk_loads);
 
-    std::cout << "Successfully loaded chunk from disk: " << coord.x << " "
-              << coord.y << " " << coord.z << " " << std::endl;
+    // std::cout << "Successfully loaded chunk from disk: " << coord.x << "
+    // "
+    //           << coord.y << " " << coord.z << " " << std::endl;
 
     return true;
   } catch (const std::exception& e) {
@@ -635,8 +665,8 @@ bool ChunkManager::chunkExistsOnDiskNoLock(const ChunkCoord& coord) {
   // Check cache first
   auto it = chunk_exists_cache_.find(coord);
   if (it != chunk_exists_cache_.end()) {
-    std::cout << "Chunk exists in disk cache with status: " << it->second
-              << std::endl;
+    // std::cout << "Chunk exists in disk cache with status: " << it->second
+    //           << std::endl;
     return it->second;
   }
 
@@ -943,7 +973,7 @@ void ChunkManager::addPointsToChunks(
           std::cout << "Chunk loaded from disk" << std::endl;
         } else {
           // Loading failed, create new
-          chunk = std::make_shared<Chunk>(model_params_);
+          chunk = std::make_shared<Chunk>(model_params_, coord);
           active_chunks_[coord] = chunk;
           is_new_chunk = true;
         }
@@ -951,7 +981,7 @@ void ChunkManager::addPointsToChunks(
       // Create new chunk
       else {
         std::cout << "Creating new chunk" << std::endl;
-        chunk = std::make_shared<Chunk>(model_params_);
+        chunk = std::make_shared<Chunk>(model_params_, coord);
         active_chunks_[coord] = chunk;
 
         // Initialize metadata
@@ -1015,4 +1045,54 @@ void ChunkManager::incrementStat(int& stat) {
 void ChunkManager::decrementStat(int& stat) {
   std::lock_guard<std::mutex> lock(stats_mutex_);
   if (stat > 0) stat--;
+}
+
+// Cull chunks with too few points to ensure rendering stability
+bool ChunkManager::cullSparseChunks(int min_points_threshold) {
+  std::vector<ChunkCoord> chunks_to_cull;
+  bool any_culled = false;
+
+  {
+    std::lock_guard<std::mutex> lock(io_mutex_);
+
+    // Examine all active chunks
+    for (const auto& [coord, chunk] : active_chunks_) {
+      if (!chunk || !chunk->gaussians_) continue;
+
+      // Get number of active points in chunk
+      int num_points = chunk->gaussians_->getXYZ().size(0);
+
+      // If below threshold, mark for culling
+      if (num_points < min_points_threshold) {
+        chunks_to_cull.push_back(coord);
+      }
+    }
+  }
+
+  // Remove culled chunks
+  for (const auto& coord : chunks_to_cull) {
+    // Just remove from active chunks
+    {
+      std::lock_guard<std::mutex> lock(io_mutex_);
+      active_chunks_.erase(coord);
+      decrementStat(stats_.active_chunks);
+
+      // Update disk cache to prevent reloading
+      chunk_exists_cache_[coord] = false;
+
+      // Mark for background deletion if needed
+      auto meta_it = chunk_metadata_.find(coord);
+      if (meta_it != chunk_metadata_.end()) {
+        if (meta_it->second.dirty) {
+          // Queue for background deletion rather than handling now
+          io_queue_.push(ChunkIORequest(coord, ChunkOperation::DELETE, 5));
+          io_cv_.notify_one();
+        }
+      }
+    }
+
+    any_culled = true;
+  }
+
+  return any_culled;
 }

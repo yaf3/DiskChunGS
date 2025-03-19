@@ -37,7 +37,7 @@ struct ChunkMetadata {
 };
 
 // Chunk I/O operation
-enum class ChunkOperation { LOAD, SAVE, NONE };
+enum class ChunkOperation { LOAD, SAVE, DELETE, NONE };
 
 // Chunk I/O request
 struct ChunkIORequest {
@@ -123,6 +123,13 @@ class ChunkManager {
 
   // Shutdown the manager (stops background threads)
   void shutdown();
+
+  std::unordered_map<ChunkCoord, std::shared_ptr<Chunk>, ChunkCoordHash>
+  getActiveChunks() const {
+    return active_chunks_;
+  }
+
+  bool cullSparseChunks(int min_points_threshold);
 
   // Stats for debugging/monitoring
   struct Stats {
