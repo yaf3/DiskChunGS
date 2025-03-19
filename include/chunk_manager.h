@@ -141,6 +141,7 @@ class ChunkManager {
           keyframes);
 
   // Get chunk at specific coordinate
+  std::shared_ptr<Chunk> getChunkAtNoLock(const ChunkCoord& coord);
   std::shared_ptr<Chunk> getChunkAt(const ChunkCoord& coord);
 
   // Check if chunk exists on disk
@@ -151,6 +152,21 @@ class ChunkManager {
 
   std::vector<std::shared_ptr<Chunk>> getVisibleChunks(
       std::shared_ptr<GaussianKeyframe> keyframe);
+
+  Eigen::Matrix4f createProjectionMatrix(
+      std::shared_ptr<GaussianKeyframe> keyframe);
+
+  std::pair<std::vector<std::shared_ptr<Chunk>>, std::vector<ChunkCoord>>
+  findVisibleChunks(const ChunkCoord& camera_chunk,
+                    int search_radius,
+                    const Eigen::Vector3f& camera_position,
+                    float zfar,
+                    const Eigen::Matrix4f& vp_matrix);
+
+  void manageMemoryForNewChunks(size_t chunks_to_load_count);
+
+  void loadVisibleChunks(const std::vector<ChunkCoord>& chunks_to_load,
+                         std::vector<std::shared_ptr<Chunk>>& visible_chunks);
 
   // std::vector<std::shared_ptr<Chunk>> getChunksInFrustumWithMargin(
   //     std::shared_ptr<GaussianKeyframe> keyframe,

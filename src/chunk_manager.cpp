@@ -631,13 +631,17 @@ bool ChunkManager::saveChunk(const ChunkCoord& coord, bool background) {
 }
 
 // Get chunk at specific coordinate
-std::shared_ptr<Chunk> ChunkManager::getChunkAt(const ChunkCoord& coord) {
-  std::lock_guard<std::mutex> lock(io_mutex_);
+std::shared_ptr<Chunk> ChunkManager::getChunkAtNoLock(const ChunkCoord& coord) {
   auto it = active_chunks_.find(coord);
   if (it != active_chunks_.end()) {
     return it->second;
   }
   return nullptr;
+}
+// Get chunk at specific coordinate
+std::shared_ptr<Chunk> ChunkManager::getChunkAt(const ChunkCoord& coord) {
+  std::lock_guard<std::mutex> lock(io_mutex_);
+  return getChunkAtNoLock(coord);
 }
 
 // Private version that assumes lock is already held
@@ -698,22 +702,110 @@ AABB ChunkManager::getChunkAABB(const ChunkCoord& coord) {
   return AABB(min_corner, max_corner);
 }
 
+// std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
+//     std::shared_ptr<GaussianKeyframe> keyframe) {
+//   std::vector<std::shared_ptr<Chunk>> visible_chunks;
+
+//   if (active_chunks_.empty()) {
+//     return visible_chunks;
+//   }
+
+//   bool use_simd = false;
+
+//   // Calculate view-projection matrix from the keyframe
+//   Eigen::Matrix4f view_matrix =
+//       keyframe->getWorld2View2(keyframe->trans_, keyframe->scale_);
+
+//   // Create projection matrix using Eigen (based on the keyframe's
+//   // getProjectionMatrix method)
+//   Eigen::Matrix4f proj_matrix = Eigen::Matrix4f::Zero();
+//   float fovX = keyframe->FoVx_;
+//   float fovY = keyframe->FoVy_;
+//   float znear = keyframe->znear_;
+//   float zfar = keyframe->zfar_;
+
+//   float tanHalfFovY = std::tan(fovY / 2);
+//   float tanHalfFovX = std::tan(fovX / 2);
+//   float top = tanHalfFovY * znear;
+//   float bottom = -top;
+//   float right = tanHalfFovX * znear;
+//   float left = -right;
+
+//   proj_matrix(0, 0) = 2.0f * znear / (right - left);
+//   proj_matrix(1, 1) = 2.0f * znear / (top - bottom);
+//   proj_matrix(0, 2) = (right + left) / (right - left);
+//   proj_matrix(1, 2) = (top + bottom) / (top - bottom);
+//   proj_matrix(3, 2) = 1.0f;  // z_sign
+//   proj_matrix(2, 2) = zfar / (zfar - znear);
+//   proj_matrix(2, 3) = -(zfar * znear) / (zfar - znear);
+
+//   // Calculate the view-projection matrix
+//   Eigen::Matrix4f vp_matrix = proj_matrix * view_matrix;
+
+//   // Test each active chunk against the frustum
+//   for (const auto& [chunk_coord, chunk] : active_chunks_) {
+//     AABB chunk_aabb = getChunkAABB(chunk_coord);
+
+//     bool visible;
+//     if (use_simd) {
+//       // visible = test_AABB_against_frustum_256(vp_matrix, chunk_aabb);
+//     } else {
+//       visible = test_AABB_against_frustum_eigen(vp_matrix, chunk_aabb);
+//     }
+
+//     if (visible) {
+//       visible_chunks.push_back(chunk);
+//     }
+//   }
+
+//   return visible_chunks;
+// }
+
+// Main function that returns visible chunks, handling both active and on-disk
+// chunks
 std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
     std::shared_ptr<GaussianKeyframe> keyframe) {
-  std::vector<std::shared_ptr<Chunk>> visible_chunks;
+  auto timer = ProfilingUtils::Timer("ChunkManager::getVisibleChunks");
 
-  if (active_chunks_.empty()) {
-    return visible_chunks;
+  if (!keyframe) {
+    std::cerr << "Error: Null keyframe passed to getVisibleChunks" << std::endl;
+    return {};
   }
 
-  bool use_simd = false;
-
-  // Calculate view-projection matrix from the keyframe
+  // Get camera parameters and calculate view-projection matrix
   Eigen::Matrix4f view_matrix =
       keyframe->getWorld2View2(keyframe->trans_, keyframe->scale_);
+  Eigen::Matrix4f proj_matrix = createProjectionMatrix(keyframe);
+  Eigen::Matrix4f vp_matrix = proj_matrix * view_matrix;
 
-  // Create projection matrix using Eigen (based on the keyframe's
-  // getProjectionMatrix method)
+  // Get camera position to calculate chunk search radius
+  Sophus::SE3d camera_pose = keyframe->getPose();
+  Sophus::SE3d Twc = camera_pose.inverse();  // World to camera transform
+  Eigen::Vector3f camera_position = Twc.translation().cast<float>();
+  ChunkCoord camera_chunk = getChunkCoord(camera_position);
+
+  // Determine search radius based on far plane distance (with limit)
+  int search_radius = std::min(std::ceil(keyframe->zfar_ / chunk_size_), 10.0f);
+
+  // Find visible chunks (both active and on-disk)
+  std::lock_guard<std::mutex> lock(io_mutex_);
+  auto [visible_active_chunks, chunks_to_load] = findVisibleChunks(
+      camera_chunk, search_radius, camera_position, keyframe->zfar_, vp_matrix);
+
+  // Manage memory if needed before loading new chunks
+  manageMemoryForNewChunks(chunks_to_load.size());
+
+  // Load necessary chunks from disk and add to visible chunks
+  std::vector<std::shared_ptr<Chunk>> all_visible_chunks =
+      visible_active_chunks;
+  loadVisibleChunks(chunks_to_load, all_visible_chunks);
+
+  return all_visible_chunks;
+}
+
+// Helper function to create the projection matrix from keyframe parameters
+Eigen::Matrix4f ChunkManager::createProjectionMatrix(
+    std::shared_ptr<GaussianKeyframe> keyframe) {
   Eigen::Matrix4f proj_matrix = Eigen::Matrix4f::Zero();
   float fovX = keyframe->FoVx_;
   float fovY = keyframe->FoVy_;
@@ -735,59 +827,88 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
   proj_matrix(2, 2) = zfar / (zfar - znear);
   proj_matrix(2, 3) = -(zfar * znear) / (zfar - znear);
 
-  // Calculate the view-projection matrix
-  Eigen::Matrix4f vp_matrix = proj_matrix * view_matrix;
+  return proj_matrix;
+}
 
-  // Test each active chunk against the frustum
-  for (const auto& [chunk_coord, chunk] : active_chunks_) {
-    AABB chunk_aabb = getChunkAABB(chunk_coord);
+// Helper function to find visible chunks within search radius
+std::pair<std::vector<std::shared_ptr<Chunk>>, std::vector<ChunkCoord>>
+ChunkManager::findVisibleChunks(const ChunkCoord& camera_chunk,
+                                int search_radius,
+                                const Eigen::Vector3f& camera_position,
+                                float zfar,
+                                const Eigen::Matrix4f& vp_matrix) {
+  std::vector<std::shared_ptr<Chunk>> visible_active_chunks;
+  std::vector<ChunkCoord> chunks_to_load;
 
-    bool visible;
-    if (use_simd) {
-      // visible = test_AABB_against_frustum_256(vp_matrix, chunk_aabb);
-    } else {
-      visible = test_AABB_against_frustum_eigen(vp_matrix, chunk_aabb);
-    }
+  for (int dx = -search_radius; dx <= search_radius; dx++) {
+    for (int dy = -search_radius; dy <= search_radius; dy++) {
+      for (int dz = -search_radius; dz <= search_radius; dz++) {
+        ChunkCoord check_coord{camera_chunk.x + dx, camera_chunk.y + dy,
+                               camera_chunk.z + dz};
 
-    if (visible) {
-      visible_chunks.push_back(chunk);
+        // Skip chunks that are too far from camera (rough distance check)
+        Eigen::Vector3f chunk_center = getChunkCenter(check_coord);
+        float dist_to_camera = (chunk_center - camera_position).norm();
+        if (dist_to_camera >
+            zfar + chunk_size_ * 1.732f) {  // sqrt(3) for diagonal
+          continue;
+        }
+
+        // Get AABB for the chunk and test against frustum
+        AABB chunk_aabb = getChunkAABB(check_coord);
+        bool visible = test_AABB_against_frustum_eigen(vp_matrix, chunk_aabb);
+
+        if (visible) {
+          auto it = active_chunks_.find(check_coord);
+
+          // If chunk is active, add to visible chunks
+          if (it != active_chunks_.end() && it->second &&
+              it->second->gaussians_) {
+            visible_active_chunks.push_back(it->second);
+            markChunkUsedNoLock(check_coord);
+          }
+          // If chunk exists on disk but not loaded, queue for loading
+          else if (chunkExistsOnDiskNoLock(check_coord)) {
+            chunks_to_load.push_back(check_coord);
+          }
+        }
+      }
     }
   }
 
-  return visible_chunks;
+  return {visible_active_chunks, chunks_to_load};
 }
 
-// std::vector<std::shared_ptr<Chunk>>
-// ChunkManager::getChunksInFrustumWithMargin(
-//     std::shared_ptr<GaussianKeyframe> keyframe,
-//     float margin_factor) {
-//   std::vector<std::shared_ptr<Chunk>> potential_chunks;
+// Helper function to manage memory before loading new chunks
+void ChunkManager::manageMemoryForNewChunks(size_t chunks_to_load_count) {
+  if (active_chunks_.size() + chunks_to_load_count > max_chunks_in_memory_) {
+    int to_evict =
+        std::min(static_cast<int>(chunks_to_load_count),
+                 static_cast<int>(active_chunks_.size() + chunks_to_load_count -
+                                  max_chunks_in_memory_));
+    evictUnusedChunks(to_evict);
+  }
+}
 
-//   // Get camera position in world space
-//   Sophus::SE3f cam_pose = keyframe->getPosef();
-//   Eigen::Vector3f cam_position = cam_pose.inverse().translation();
-
-//   // Define a region around the camera based on view distance
-//   float view_distance = keyframe->zfar_ * margin_factor;
-
-//   // Find range of chunks that could be in this region
-//   ChunkCoord min_chunk =
-//       getChunkCoord(cam_position - Eigen::Vector3f::Constant(view_distance));
-//   ChunkCoord max_chunk =
-//       getChunkCoord(cam_position + Eigen::Vector3f::Constant(view_distance));
-
-//   // Collect all chunks in this range
-//   for (int64_t x = min_chunk.x; x <= max_chunk.x; ++x) {
-//     for (int64_t y = min_chunk.y; y <= max_chunk.y; ++y) {
-//       for (int64_t z = min_chunk.z; z <= max_chunk.z; ++z) {
-//         potential_chunks.push_back(getChunkAt(ChunkCoord({x, y, z})));
-//       }
-//     }
-//   }
-
-//   // Filter chunks using the frustum culling
-//   return getVisibleChunks(keyframe, potential_chunks);
-// }
+// Helper function to load visible chunks from disk
+void ChunkManager::loadVisibleChunks(
+    const std::vector<ChunkCoord>& chunks_to_load,
+    std::vector<std::shared_ptr<Chunk>>& visible_chunks) {
+  for (const auto& coord : chunks_to_load) {
+    if (loadChunkNoLock(
+            coord)) {  // Use no-lock version since we already have the lock
+      auto chunk = getChunkAtNoLock(coord);
+      if (chunk && chunk->gaussians_) {
+        visible_chunks.push_back(chunk);
+        markChunkUsedNoLock(coord);
+      }
+    } else {
+      // Consider logging the error instead of throwing exception
+      std::cerr << "Warning: Unable to load chunk from disk: " << coord.x << ","
+                << coord.y << "," << coord.z << std::endl;
+    }
+  }
+}
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
 ChunkManager::groupPointsByChunk(const torch::Tensor& positions) {
