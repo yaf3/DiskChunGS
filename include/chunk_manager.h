@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Eigen/Core>
+#include <Eigen/Geometry>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -17,6 +19,53 @@
 #include "gaussian_model.h"
 
 // Removed forward declaration of GaussianMapper
+
+// Type definitions
+using u32 = uint32_t;
+
+// Axis-aligned bounding box
+struct AABB {
+  Eigen::Vector3f min;
+  Eigen::Vector3f max;
+
+  AABB() : min(Eigen::Vector3f::Zero()), max(Eigen::Vector3f::Zero()) {}
+  AABB(const Eigen::Vector3f& min_val, const Eigen::Vector3f& max_val)
+      : min(min_val), max(max_val) {}
+};
+
+// Camera structure
+struct Cam {
+  Eigen::Matrix4f view;
+  Eigen::Matrix4f projection;
+  // Additional camera properties can be added here
+};
+
+// Helper macros for SIMD operations
+#define SPLAT(v, c) _mm_permute_ps(v, _MM_SHUFFLE(c, c, c, c))
+
+// Helper function to check if a value is within a range
+inline bool within(float min, float val, float max) {
+  return (min <= val) && (val <= max);
+}
+
+// Non-SIMD implementation of AABB frustum culling using Eigen
+bool test_AABB_against_frustum(const Eigen::Matrix4f& MVP, const AABB& aabb);
+
+// SIMD-optimized implementation of AABB frustum culling
+// bool test_AABB_against_frustum_256(const Eigen::Matrix4f& transform,
+//                                    const AABB& aabb);
+
+// Pure Eigen implementation without explicit SIMD (relies on Eigen's
+// optimizations)
+bool test_AABB_against_frustum_eigen(const Eigen::Matrix4f& MVP,
+                                     const AABB& aabb);
+
+// Main culling function using Eigen types
+void cull_AABBs_against_frustum(const Cam& camera,
+                                const std::vector<Eigen::Matrix4f>& transforms,
+                                const std::vector<AABB>& aabb_list,
+                                std::vector<u32>& out_visible_list,
+                                bool use_simd = true);
 
 // Metadata for managing chunks lifecycle
 struct ChunkMetadata {
@@ -66,10 +115,6 @@ class ChunkManager {
   ~ChunkManager();
 
   // Main interface methods
-  std::vector<std::shared_ptr<Chunk>> getVisibleChunks(
-      std::shared_ptr<GaussianKeyframe> keyframe);
-  void preloadChunksForKeyframes(
-      const std::vector<std::shared_ptr<GaussianKeyframe>>& upcoming);
   void evictUnusedChunks(int keep_count = -1);
 
   // Mark chunks as used (update metadata)
@@ -104,13 +149,15 @@ class ChunkManager {
   // Get chunk coordinate from 3D position
   ChunkCoord getChunkCoord(const Eigen::Vector3f& position);
 
-  // Compute frustum planes for a keyframe
-  std::array<Eigen::Vector4f, 6> computeFrustumPlanes(
+  std::vector<std::shared_ptr<Chunk>> getVisibleChunks(
       std::shared_ptr<GaussianKeyframe> keyframe);
 
+  // std::vector<std::shared_ptr<Chunk>> getChunksInFrustumWithMargin(
+  //     std::shared_ptr<GaussianKeyframe> keyframe,
+  //     float margin_factor = 1.2);
+
   // Check if a chunk is inside or intersects with a view frustum
-  bool isChunkInFrustum(const ChunkCoord& coord,
-                        const std::array<Eigen::Vector4f, 6>& frustum_planes);
+  AABB getChunkAABB(const ChunkCoord& coord);
 
   // Load a chunk
   bool loadChunk(const ChunkCoord& coord, bool background = false);
@@ -197,12 +244,7 @@ class ChunkManager {
   // Private helper methods
   std::filesystem::path getChunkFilename(const ChunkCoord& coord);
 
-  // Helper geometry functions
-  std::array<Eigen::Vector3f, 8> getChunkCorners(const ChunkCoord& coord);
   Eigen::Vector3f getChunkCenter(const ChunkCoord& coord);
-  Eigen::Vector4f planeFromPoints(const Eigen::Vector3f& p1,
-                                  const Eigen::Vector3f& p2,
-                                  const Eigen::Vector3f& p3);
 
   // Update statistics
   void incrementStat(int& stat);

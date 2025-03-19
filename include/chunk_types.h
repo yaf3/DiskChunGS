@@ -34,21 +34,24 @@ struct ChunkCoordHash {
 class Chunk {
  public:
   // Original constructor
-  Chunk(const GaussianModelParams &model_params) {
+  Chunk(const GaussianModelParams &model_params,
+        const ChunkCoord &coord = ChunkCoord{0, 0, 0})
+      : coord_(coord) {
     gaussians_ = std::make_shared<GaussianModel>(model_params);
   }
 
   // Add a default constructor to support cloning
   Chunk() = default;
 
-  // Clone method
-  // Tod: Implement clone for gaussians
-  // std::shared_ptr<Chunk> clone() const {
-  //   auto cloned_chunk = std::make_shared<Chunk>();
-  //   cloned_chunk->gaussians_ = gaussians_->clone();
-  //   return cloned_chunk;
-  // }
+  // Getter for coordinates
+  const ChunkCoord &getCoord() const { return coord_; }
+
+  // Setter for coordinates
+  void setCoord(const ChunkCoord &coord) { coord_ = coord; }
 
  public:
   std::shared_ptr<GaussianModel> gaussians_;
+
+ private:
+  ChunkCoord coord_{0, 0, 0};
 };

@@ -7,6 +7,186 @@
 
 #include "include/profiling.h"
 
+// Non-SIMD implementation of AABB frustum culling using Eigen
+bool test_AABB_against_frustum(const Eigen::Matrix4f& MVP, const AABB& aabb) {
+  // Define the 8 corners of the AABB
+  Eigen::Vector4f corners[8];
+  corners[0] =
+      Eigen::Vector4f(aabb.min.x(), aabb.min.y(), aabb.min.z(), 1.0f);  // x y z
+  corners[1] =
+      Eigen::Vector4f(aabb.max.x(), aabb.min.y(), aabb.min.z(), 1.0f);  // X y z
+  corners[2] =
+      Eigen::Vector4f(aabb.min.x(), aabb.max.y(), aabb.min.z(), 1.0f);  // x Y z
+  corners[3] =
+      Eigen::Vector4f(aabb.max.x(), aabb.max.y(), aabb.min.z(), 1.0f);  // X Y z
+  corners[4] =
+      Eigen::Vector4f(aabb.min.x(), aabb.min.y(), aabb.max.z(), 1.0f);  // x y Z
+  corners[5] =
+      Eigen::Vector4f(aabb.max.x(), aabb.min.y(), aabb.max.z(), 1.0f);  // X y Z
+  corners[6] =
+      Eigen::Vector4f(aabb.min.x(), aabb.max.y(), aabb.max.z(), 1.0f);  // x Y Z
+  corners[7] =
+      Eigen::Vector4f(aabb.max.x(), aabb.max.y(), aabb.max.z(), 1.0f);  // X Y Z
+
+  bool inside = false;
+
+  for (int i = 0; i < 8; ++i) {
+    // Transform vertex to clip space
+    Eigen::Vector4f transformed = MVP * corners[i];
+
+    // Check vertex against clip space bounds
+    inside =
+        inside || (within(-transformed.w(), transformed.x(), transformed.w()) &&
+                   within(-transformed.w(), transformed.y(), transformed.w()) &&
+                   within(0.0f, transformed.z(), transformed.w()));
+  }
+
+  return inside;
+}
+
+// SIMD-optimized implementation of AABB frustum culling
+// bool test_AABB_against_frustum_256(const Eigen::Matrix4f& transform,
+//                                    const AABB& aabb) {
+//   // Prepare AABB corners for SIMD processing
+//   Eigen::Vector4f min(aabb.min.x(), aabb.min.y(), aabb.min.z(), 1.0f);
+//   Eigen::Vector4f max(aabb.max.x(), aabb.max.y(), aabb.max.z(), 1.0f);
+
+//   // Load AABB min and max into SIMD registers
+//   // Note: We're assuming Eigen uses column-major order by default
+//   const __m128 aabb_min = _mm_load_ps(min.data());
+//   const __m128 aabb_max = _mm_load_ps(max.data());
+
+//   // Shuffle components to prepare for corner calculations
+//   __m128 x_minmax =
+//       _mm_shuffle_ps(aabb_min, aabb_max, _MM_SHUFFLE(0, 0, 0, 0));  // x x X
+//       X
+//   x_minmax = _mm_permute_ps(x_minmax, _MM_SHUFFLE(2, 0, 2, 0));     // x X x
+//   X const __m128 y_minmax =
+//       _mm_shuffle_ps(aabb_min, aabb_max, _MM_SHUFFLE(1, 1, 1, 1));  // y y Y
+//       Y
+//   const __m128 z_min = SPLAT(aabb_min, 2);                          // z z z
+//   z const __m128 z_max = SPLAT(aabb_max, 2);                          // Z Z
+//   Z Z
+
+//   // Combine into 256-bit registers for 8 corners
+//   const __m256 x = _mm256_set_m128(x_minmax, x_minmax);
+//   const __m256 y = _mm256_set_m128(y_minmax, y_minmax);
+//   const __m256 z = _mm256_set_m128(z_min, z_max);
+
+//   // Storage for transformed corner components
+//   __m256 corner_comps[4];
+
+//   // Transform all 8 corners at once using SIMD
+//   for (int i = 0; i < 4; ++i) {
+//     // Load matrix row from Eigen matrix
+//     __m256 res = _mm256_broadcast_ss(&transform(i, 3));  // w component
+//     res = _mm256_add_ps(
+//         res, _mm256_mul_ps(_mm256_broadcast_ss(&transform(i, 0)), x));
+//     res = _mm256_add_ps(
+//         res, _mm256_mul_ps(_mm256_broadcast_ss(&transform(i, 1)), y));
+//     res = _mm256_add_ps(
+//         res, _mm256_mul_ps(_mm256_broadcast_ss(&transform(i, 2)), z));
+//     corner_comps[i] = res;
+//   }
+
+//   // Prepare for clip space tests
+//   const __m256 neg_ws = _mm256_sub_ps(_mm256_setzero_ps(), corner_comps[3]);
+
+//   // Test whether -w < x < w
+//   __m256 inside = _mm256_and_ps(
+//       _mm256_cmp_ps(neg_ws, corner_comps[0], _CMP_LE_OQ),
+//       _mm256_cmp_ps(corner_comps[0], corner_comps[3], _CMP_LE_OQ));
+//   // inside && -w < y < w
+//   inside = _mm256_and_ps(
+//       inside, _mm256_and_ps(
+//                   _mm256_cmp_ps(neg_ws, corner_comps[1], _CMP_LE_OQ),
+//                   _mm256_cmp_ps(corner_comps[1], corner_comps[3],
+//                   _CMP_LE_OQ)));
+//   // inside && 0 < z < w
+//   inside = _mm256_and_ps(
+//       inside,
+//       _mm256_and_ps(
+//           _mm256_cmp_ps(_mm256_setzero_ps(), corner_comps[2], _CMP_LE_OQ),
+//           _mm256_cmp_ps(corner_comps[2], corner_comps[3], _CMP_LE_OQ)));
+
+//   // Reduce our 8 different in/out lanes to a single boolean
+//   __m128 reduction = _mm_or_ps(_mm256_extractf128_ps(inside, 0),
+//                                _mm256_extractf128_ps(inside, 1));
+//   reduction =
+//       _mm_or_ps(reduction, _mm_permute_ps(reduction, _MM_SHUFFLE(2, 3, 0,
+//       1)));
+//   reduction =
+//       _mm_or_ps(reduction, _mm_permute_ps(reduction, _MM_SHUFFLE(1, 0, 3,
+//       2)));
+
+//   // Store our reduction
+//   u32 res = 0u;
+//   _mm_store_ss(reinterpret_cast<float*>(&res), reduction);
+//   return res != 0;
+// }
+
+// Pure Eigen implementation without explicit SIMD (relies on Eigen's
+// optimizations)
+bool test_AABB_against_frustum_eigen(const Eigen::Matrix4f& MVP,
+                                     const AABB& aabb) {
+  // Define the 8 corners of the AABB
+  std::array<Eigen::Vector3f, 8> corners;
+  corners[0] = aabb.min;
+  corners[1] = Eigen::Vector3f(aabb.max.x(), aabb.min.y(), aabb.min.z());
+  corners[2] = Eigen::Vector3f(aabb.min.x(), aabb.max.y(), aabb.min.z());
+  corners[3] = Eigen::Vector3f(aabb.max.x(), aabb.max.y(), aabb.min.z());
+  corners[4] = Eigen::Vector3f(aabb.min.x(), aabb.min.y(), aabb.max.z());
+  corners[5] = Eigen::Vector3f(aabb.max.x(), aabb.min.y(), aabb.max.z());
+  corners[6] = Eigen::Vector3f(aabb.min.x(), aabb.max.y(), aabb.max.z());
+  corners[7] = aabb.max;
+
+  for (const auto& corner : corners) {
+    // Transform to clip space
+    Eigen::Vector4f clipSpace =
+        MVP * Eigen::Vector4f(corner.x(), corner.y(), corner.z(), 1.0f);
+
+    // Check if this corner is inside the view frustum
+    if (clipSpace.x() >= -clipSpace.w() && clipSpace.x() <= clipSpace.w() &&
+        clipSpace.y() >= -clipSpace.w() && clipSpace.y() <= clipSpace.w() &&
+        clipSpace.z() >= 0.0f && clipSpace.z() <= clipSpace.w()) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// Main culling function using Eigen types
+void cull_AABBs_against_frustum(const Cam& camera,
+                                const std::vector<Eigen::Matrix4f>& transforms,
+                                const std::vector<AABB>& aabb_list,
+                                std::vector<u32>& out_visible_list,
+                                bool use_simd) {
+  // Compute view-projection matrix
+  Eigen::Matrix4f VP = camera.projection * camera.view;
+
+  // Reserve space for visible objects
+  out_visible_list.reserve(aabb_list.size());
+  out_visible_list.clear();
+
+  for (size_t i = 0; i < aabb_list.size(); i++) {
+    // Compute model-view-projection matrix
+    Eigen::Matrix4f MVP = VP * transforms[i];
+
+    // Test using appropriate method
+    bool visible;
+    if (use_simd) {
+      // visible = test_AABB_against_frustum_256(MVP, aabb_list[i]);
+    } else {
+      visible = test_AABB_against_frustum_eigen(MVP, aabb_list[i]);
+    }
+
+    if (visible) {
+      out_visible_list.push_back(static_cast<u32>(i));
+    }
+  }
+}
+
 // Constructor
 ChunkManager::ChunkManager(const GaussianModelParams& model_params,
                            const GaussianOptimizationParams& opt_params,
@@ -93,122 +273,6 @@ std::tuple<torch::Tensor, torch::Tensor> ChunkManager::filterPointsByDepth(
   return std::make_tuple(filtered_points, filtered_colors);
 }
 
-// Get chunks visible from a keyframe
-std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
-    std::shared_ptr<GaussianKeyframe> keyframe) {
-  auto timer = ProfilingUtils::Timer("ChunkManager::getVisibleChunks");
-
-  if (!keyframe) {
-    std::cerr << "Error: Null keyframe passed to getVisibleChunks" << std::endl;
-    return {};
-  }
-
-  // Extract camera parameters
-  Sophus::SE3d camera_pose = keyframe->getPose();
-  Sophus::SE3d Twc = camera_pose.inverse();  // World to camera transform
-  Eigen::Vector3f camera_position = Twc.translation().cast<float>();
-
-  // Create camera frustum planes in world space
-  std::array<Eigen::Vector4f, 6> frustum_planes =
-      computeFrustumPlanes(keyframe);
-
-  // Find visible chunks
-  std::vector<std::shared_ptr<Chunk>> visible_chunks;
-  std::vector<ChunkCoord> chunks_to_load;
-
-  // Determine search radius based on far plane distance
-  int search_radius = std::ceil(keyframe->zfar_ / chunk_size_);
-  search_radius = std::min(search_radius, 10);  // Limit search radius
-
-  // Get chunk coordinate for camera position
-  ChunkCoord camera_chunk = getChunkCoord(camera_position);
-  // std::cout << "Keyframe camera in chunk: " << camera_chunk.x << " "
-  //           << camera_chunk.y << " " << camera_chunk.z << " " << std::endl;
-
-  // Search chunks in the vicinity
-  {
-    std::lock_guard<std::mutex> lock(io_mutex_);
-
-    for (int dx = -search_radius; dx <= search_radius; dx++) {
-      for (int dy = -search_radius; dy <= search_radius; dy++) {
-        for (int dz = -search_radius; dz <= search_radius; dz++) {
-          ChunkCoord check_coord{camera_chunk.x + dx, camera_chunk.y + dy,
-                                 camera_chunk.z + dz};
-
-          // std::cout << "Checking chunk for visibility: " << check_coord.x <<
-          // " "
-          //           << check_coord.y << " " << check_coord.z << " "
-          //           << std::endl;
-
-          // Skip chunks that are too far from camera (rough distance check)
-          Eigen::Vector3f chunk_center = getChunkCenter(check_coord);
-          float dist_to_camera = (chunk_center - camera_position).norm();
-          if (dist_to_camera >
-              keyframe->zfar_ + chunk_size_ * 1.732f) {  // sqrt(3) for diagonal
-            // std::cout << "Skipping as " << dist_to_camera << "is too far
-            // away"
-            //           << std::endl;
-            continue;
-          }
-
-          // Check if chunk is inside or intersects view frustum
-          if (isChunkInFrustum(check_coord, frustum_planes)) {
-            auto it = active_chunks_.find(check_coord);
-            // std::cout << "Chunk is in viewing frustum" << std::endl;
-
-            // If chunk is active, add to visible chunks
-            if (it != active_chunks_.end() && it->second &&
-                it->second->gaussians_) {
-              // std::cout << "Chunk already in memory" << std::endl;
-              visible_chunks.push_back(it->second);
-              markChunkUsedNoLock(check_coord);  // Use no-lock version
-            }
-            // If chunk exists on disk but not loaded, queue for loading
-            else if (chunkExistsOnDiskNoLock(
-                         check_coord)) {  // Use no-lock version
-              // std::cout << "Chunk exists on disk, load soon" << std::endl;
-              chunks_to_load.push_back(check_coord);
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // If we're near memory limit, evict some chunks before loading new ones
-  if (active_chunks_.size() + chunks_to_load.size() > max_chunks_in_memory_) {
-    // std::cout << "Need to evict chunks. Have " << active_chunks_.size()
-    //           << std::endl;
-    // std::cout << "Want to load " << chunks_to_load.size() << std::endl;
-    // std::cout << "Which goes over " << max_chunks_in_memory_ << " limit"
-    //           << std::endl;
-    int to_evict = std::min(
-        static_cast<int>(chunks_to_load.size()),
-        static_cast<int>(active_chunks_.size() + chunks_to_load.size() -
-                         max_chunks_in_memory_));
-    evictUnusedChunks(to_evict);
-  }
-
-  // Load necessary chunks (synchronously for now, as we need them for
-  // rendering)
-  for (const auto& coord : chunks_to_load) {
-    // std::cout << "[Synchronous Request] Processing request to load chunk: "
-    //           << coord.x << " " << coord.y << " " << coord.z << " "
-    //           << std::endl;
-    if (loadChunk(coord)) {  // Use the public version which handles locking
-      auto chunk = getChunkAt(coord);  // Use accessor method
-      if (chunk && chunk->gaussians_) {
-        visible_chunks.push_back(chunk);
-        markChunkUsed(coord);  // Use public version
-      }
-    } else {
-      throw std::runtime_error("Not able to load chunk from disk");
-    }
-  }
-
-  return visible_chunks;
-}
-
 // Private version that assumes lock is already held
 void ChunkManager::markChunkUsedNoLock(const ChunkCoord& coord) {
   auto it = chunk_metadata_.find(coord);
@@ -243,90 +307,6 @@ void ChunkManager::scheduleChunkSaveNoLock(const ChunkCoord& coord,
 void ChunkManager::scheduleChunkSave(const ChunkCoord& coord, int priority) {
   std::lock_guard<std::mutex> lock(io_mutex_);
   scheduleChunkSaveNoLock(coord, priority);
-}
-
-// Preload chunks for upcoming keyframes
-void ChunkManager::preloadChunksForKeyframes(
-    const std::vector<std::shared_ptr<GaussianKeyframe>>& upcoming) {
-  if (upcoming.empty()) return;
-
-  std::unordered_set<ChunkCoord, ChunkCoordHash> chunks_to_preload;
-
-  // Find chunks needed for upcoming keyframes
-  for (const auto& keyframe : upcoming) {
-    if (!keyframe) continue;
-
-    Sophus::SE3d camera_pose = keyframe->getPose();
-    Sophus::SE3d Twc = camera_pose.inverse();
-    Eigen::Vector3f camera_position = Twc.translation().cast<float>();
-
-    std::array<Eigen::Vector4f, 6> frustum_planes =
-        computeFrustumPlanes(keyframe);
-
-    // Determine search radius
-    int search_radius =
-        std::min(2, static_cast<int>(std::ceil(keyframe->zfar_ / chunk_size_)));
-
-    // Get chunk coordinate for camera position
-    ChunkCoord camera_chunk = getChunkCoord(camera_position);
-
-    // Find chunks in view frustum (smaller radius for preloading)
-    for (int dx = -search_radius; dx <= search_radius; dx++) {
-      for (int dy = -search_radius; dy <= search_radius; dy++) {
-        for (int dz = -search_radius; dz <= search_radius; dz++) {
-          ChunkCoord check_coord{camera_chunk.x + dx, camera_chunk.y + dy,
-                                 camera_chunk.z + dz};
-
-          // Skip chunks that are too far
-          Eigen::Vector3f chunk_center = getChunkCenter(check_coord);
-          float dist_to_camera = (chunk_center - camera_position).norm();
-          if (dist_to_camera > keyframe->zfar_ + chunk_size_) {
-            continue;
-          }
-
-          // Check if in frustum and not already loaded
-          {
-            std::lock_guard<std::mutex> lock(io_mutex_);
-            if (isChunkInFrustum(check_coord, frustum_planes) &&
-                active_chunks_.find(check_coord) == active_chunks_.end() &&
-                chunkExistsOnDiskNoLock(check_coord)) {  // Use no-lock version
-              chunks_to_preload.insert(check_coord);
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // If we'd exceed memory limit, don't preload
-  {
-    std::lock_guard<std::mutex> lock(io_mutex_);
-    if (active_chunks_.size() + chunks_to_preload.size() >
-        max_chunks_in_memory_) {
-      return;
-    }
-  }
-
-  // Queue preloading with low priority
-  {
-    std::lock_guard<std::mutex> lock(io_mutex_);
-    for (const auto& coord : chunks_to_preload) {
-      auto meta_it = chunk_metadata_.find(coord);
-      if (meta_it == chunk_metadata_.end() ||
-          (!meta_it->second.loading && !meta_it->second.saving)) {
-        if (meta_it == chunk_metadata_.end()) {
-          chunk_metadata_[coord] = ChunkMetadata();
-        }
-        chunk_metadata_[coord].loading = true;
-        io_queue_.push(
-            ChunkIORequest(coord, ChunkOperation::LOAD, -10));  // Low priority
-        incrementStat(stats_.prefetched);
-      }
-    }
-
-    // Notify I/O thread
-    io_cv_.notify_one();
-  }
 }
 
 // Evict least recently used chunks
@@ -695,28 +675,6 @@ ChunkCoord ChunkManager::getChunkCoord(const Eigen::Vector3f& position) {
       static_cast<int64_t>(std::floor(position.z() / effective_size))};
 }
 
-// Get chunk corners (for frustum culling)
-std::array<Eigen::Vector3f, 8> ChunkManager::getChunkCorners(
-    const ChunkCoord& coord) {
-  float effective_size = chunk_size_ - overlap_margin_;
-  float x = coord.x * effective_size;
-  float y = coord.y * effective_size;
-  float z = coord.z * effective_size;
-
-  std::array<Eigen::Vector3f, 8> corners;
-  corners[0] = Eigen::Vector3f(x, y, z);
-  corners[1] = Eigen::Vector3f(x + chunk_size_, y, z);
-  corners[2] = Eigen::Vector3f(x, y + chunk_size_, z);
-  corners[3] = Eigen::Vector3f(x + chunk_size_, y + chunk_size_, z);
-  corners[4] = Eigen::Vector3f(x, y, z + chunk_size_);
-  corners[5] = Eigen::Vector3f(x + chunk_size_, y, z + chunk_size_);
-  corners[6] = Eigen::Vector3f(x, y + chunk_size_, z + chunk_size_);
-  corners[7] =
-      Eigen::Vector3f(x + chunk_size_, y + chunk_size_, z + chunk_size_);
-
-  return corners;
-}
-
 // Get chunk center
 Eigen::Vector3f ChunkManager::getChunkCenter(const ChunkCoord& coord) {
   float effective_size = chunk_size_ - overlap_margin_;
@@ -725,121 +683,111 @@ Eigen::Vector3f ChunkManager::getChunkCenter(const ChunkCoord& coord) {
                          (coord.z + 0.5f) * effective_size);
 }
 
-// Create a plane from 3 points
-Eigen::Vector4f ChunkManager::planeFromPoints(const Eigen::Vector3f& p1,
-                                              const Eigen::Vector3f& p2,
-                                              const Eigen::Vector3f& p3) {
-  Eigen::Vector3f v1 = p2 - p1;
-  Eigen::Vector3f v2 = p3 - p1;
-  Eigen::Vector3f normal = v1.cross(v2).normalized();
-  float d = -normal.dot(p1);
-  return Eigen::Vector4f(normal.x(), normal.y(), normal.z(), d);
+// Calculate AABB for a chunk
+AABB ChunkManager::getChunkAABB(const ChunkCoord& coord) {
+  float effective_size = chunk_size_ - overlap_margin_;
+
+  // Calculate minimum corner of the chunk
+  Eigen::Vector3f min_corner(coord.x * effective_size, coord.y * effective_size,
+                             coord.z * effective_size);
+
+  // Calculate maximum corner of the chunk (including overlap margin)
+  Eigen::Vector3f max_corner =
+      min_corner + Eigen::Vector3f::Constant(chunk_size_);
+
+  return AABB(min_corner, max_corner);
 }
 
-// Compute frustum planes for a keyframe
-std::array<Eigen::Vector4f, 6> ChunkManager::computeFrustumPlanes(
+std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
     std::shared_ptr<GaussianKeyframe> keyframe) {
-  // Frustum planes: left, right, bottom, top, near, far
-  std::array<Eigen::Vector4f, 6> planes;
+  std::vector<std::shared_ptr<Chunk>> visible_chunks;
 
-  // Get camera parameters
-  Sophus::SE3d camera_pose = keyframe->getPose();
-  Sophus::SE3d Twc = camera_pose.inverse();  // World to camera transform
-  Eigen::Vector3f camera_pos = Twc.translation().cast<float>();
-  Eigen::Matrix3f R_wc = Twc.rotationMatrix().cast<float>();
+  if (active_chunks_.empty()) {
+    return visible_chunks;
+  }
 
-  // Camera basis vectors in world space
-  Eigen::Vector3f cam_right = R_wc.col(0);  // x-axis
-  Eigen::Vector3f cam_up = R_wc.col(1);     // y-axis
-  Eigen::Vector3f cam_forward =
-      -R_wc.col(2);  // Camera looks down the negative z-axis
+  bool use_simd = false;
 
-  // Compute frustum corners using FOV
-  float near_z = keyframe->znear_;
-  float far_z = keyframe->zfar_;
+  // Calculate view-projection matrix from the keyframe
+  Eigen::Matrix4f view_matrix =
+      keyframe->getWorld2View2(keyframe->trans_, keyframe->scale_);
 
-  // Calculate frustum dimensions at near and far planes
-  float near_height = 2.0f * near_z * std::tan(keyframe->FoVy_ * 0.5f);
-  float near_width = 2.0f * near_z * std::tan(keyframe->FoVx_ * 0.5f);
-  float far_height = 2.0f * far_z * std::tan(keyframe->FoVy_ * 0.5f);
-  float far_width = 2.0f * far_z * std::tan(keyframe->FoVx_ * 0.5f);
+  // Create projection matrix using Eigen (based on the keyframe's
+  // getProjectionMatrix method)
+  Eigen::Matrix4f proj_matrix = Eigen::Matrix4f::Zero();
+  float fovX = keyframe->FoVx_;
+  float fovY = keyframe->FoVy_;
+  float znear = keyframe->znear_;
+  float zfar = keyframe->zfar_;
 
-  // Compute frustum corners in world space
-  Eigen::Vector3f near_center = camera_pos + cam_forward * near_z;
-  Eigen::Vector3f far_center = camera_pos + cam_forward * far_z;
+  float tanHalfFovY = std::tan(fovY / 2);
+  float tanHalfFovX = std::tan(fovX / 2);
+  float top = tanHalfFovY * znear;
+  float bottom = -top;
+  float right = tanHalfFovX * znear;
+  float left = -right;
 
-  // Near plane corners
-  Eigen::Vector3f ntl = near_center + (cam_up * near_height * 0.5f) -
-                        (cam_right * near_width * 0.5f);
-  Eigen::Vector3f ntr = near_center + (cam_up * near_height * 0.5f) +
-                        (cam_right * near_width * 0.5f);
-  Eigen::Vector3f nbl = near_center - (cam_up * near_height * 0.5f) -
-                        (cam_right * near_width * 0.5f);
-  Eigen::Vector3f nbr = near_center - (cam_up * near_height * 0.5f) +
-                        (cam_right * near_width * 0.5f);
+  proj_matrix(0, 0) = 2.0f * znear / (right - left);
+  proj_matrix(1, 1) = 2.0f * znear / (top - bottom);
+  proj_matrix(0, 2) = (right + left) / (right - left);
+  proj_matrix(1, 2) = (top + bottom) / (top - bottom);
+  proj_matrix(3, 2) = 1.0f;  // z_sign
+  proj_matrix(2, 2) = zfar / (zfar - znear);
+  proj_matrix(2, 3) = -(zfar * znear) / (zfar - znear);
 
-  // Far plane corners
-  Eigen::Vector3f ftl = far_center + (cam_up * far_height * 0.5f) -
-                        (cam_right * far_width * 0.5f);
-  Eigen::Vector3f ftr = far_center + (cam_up * far_height * 0.5f) +
-                        (cam_right * far_width * 0.5f);
-  Eigen::Vector3f fbl = far_center - (cam_up * far_height * 0.5f) -
-                        (cam_right * far_width * 0.5f);
-  Eigen::Vector3f fbr = far_center - (cam_up * far_height * 0.5f) +
-                        (cam_right * far_width * 0.5f);
+  // Calculate the view-projection matrix
+  Eigen::Matrix4f vp_matrix = proj_matrix * view_matrix;
 
-  // Compute frustum planes (normal points inward)
-  // Left plane
-  planes[0] = planeFromPoints(camera_pos, ntl, ftl);
+  // Test each active chunk against the frustum
+  for (const auto& [chunk_coord, chunk] : active_chunks_) {
+    AABB chunk_aabb = getChunkAABB(chunk_coord);
 
-  // Right plane
-  planes[1] = planeFromPoints(camera_pos, ftr, ntr);
-
-  // Bottom plane
-  planes[2] = planeFromPoints(camera_pos, nbr, fbr);
-
-  // Top plane
-  planes[3] = planeFromPoints(camera_pos, ftl, ntl);
-
-  // Near plane
-  planes[4] = planeFromPoints(ntl, ntr, nbl);
-
-  // Far plane
-  planes[5] = planeFromPoints(ftr, ftl, fbr);
-
-  return planes;
-}
-
-// Check if a chunk is inside or intersects the frustum
-bool ChunkManager::isChunkInFrustum(
-    const ChunkCoord& coord,
-    const std::array<Eigen::Vector4f, 6>& frustum_planes) {
-  // Get chunk corners (AABB)
-  std::array<Eigen::Vector3f, 8> corners = getChunkCorners(coord);
-
-  // Check each plane
-  for (const auto& plane : frustum_planes) {
-    bool all_outside = true;
-
-    // If all corners are on the negative side of a plane, the chunk is outside
-    // the frustum
-    for (const auto& corner : corners) {
-      float dist = plane.x() * corner.x() + plane.y() * corner.y() +
-                   plane.z() * corner.z() + plane.w();
-      if (dist >= -chunk_size_ *
-                      0.1f) {  // Add a small margin to prevent culling at edges
-        all_outside = false;
-        break;
-      }
+    bool visible;
+    if (use_simd) {
+      // visible = test_AABB_against_frustum_256(vp_matrix, chunk_aabb);
+    } else {
+      visible = test_AABB_against_frustum_eigen(vp_matrix, chunk_aabb);
     }
 
-    if (all_outside) {
-      return false;  // Completely outside this plane, thus outside frustum
+    if (visible) {
+      visible_chunks.push_back(chunk);
     }
   }
 
-  return true;  // Inside or intersects the frustum
+  return visible_chunks;
 }
+
+// std::vector<std::shared_ptr<Chunk>>
+// ChunkManager::getChunksInFrustumWithMargin(
+//     std::shared_ptr<GaussianKeyframe> keyframe,
+//     float margin_factor) {
+//   std::vector<std::shared_ptr<Chunk>> potential_chunks;
+
+//   // Get camera position in world space
+//   Sophus::SE3f cam_pose = keyframe->getPosef();
+//   Eigen::Vector3f cam_position = cam_pose.inverse().translation();
+
+//   // Define a region around the camera based on view distance
+//   float view_distance = keyframe->zfar_ * margin_factor;
+
+//   // Find range of chunks that could be in this region
+//   ChunkCoord min_chunk =
+//       getChunkCoord(cam_position - Eigen::Vector3f::Constant(view_distance));
+//   ChunkCoord max_chunk =
+//       getChunkCoord(cam_position + Eigen::Vector3f::Constant(view_distance));
+
+//   // Collect all chunks in this range
+//   for (int64_t x = min_chunk.x; x <= max_chunk.x; ++x) {
+//     for (int64_t y = min_chunk.y; y <= max_chunk.y; ++y) {
+//       for (int64_t z = min_chunk.z; z <= max_chunk.z; ++z) {
+//         potential_chunks.push_back(getChunkAt(ChunkCoord({x, y, z})));
+//       }
+//     }
+//   }
+
+//   // Filter chunks using the frustum culling
+//   return getVisibleChunks(keyframe, potential_chunks);
+// }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
 ChunkManager::groupPointsByChunk(const torch::Tensor& positions) {
