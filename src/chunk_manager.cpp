@@ -766,6 +766,7 @@ AABB ChunkManager::getChunkAABB(const ChunkCoord& coord) {
 std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
     std::shared_ptr<GaussianKeyframe> keyframe) {
   auto timer = ProfilingUtils::Timer("ChunkManager::getVisibleChunks");
+  std::cout << "Called getVisibleChunks" << std::endl;
 
   if (!keyframe) {
     std::cerr << "Error: Null keyframe passed to getVisibleChunks" << std::endl;
@@ -787,18 +788,57 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
   // Determine search radius based on far plane distance (with limit)
   int search_radius = std::min(std::ceil(keyframe->zfar_ / chunk_size_), 10.0f);
 
-  // Find visible chunks (both active and on-disk)
-  std::lock_guard<std::mutex> lock(io_mutex_);
-  auto [visible_active_chunks, chunks_to_load] = findVisibleChunks(
-      camera_chunk, search_radius, camera_position, keyframe->zfar_, vp_matrix);
+  // Results to be returned
+  std::vector<std::shared_ptr<Chunk>> all_visible_chunks;
 
-  // Manage memory if needed before loading new chunks
-  manageMemoryForNewChunks(chunks_to_load.size());
+  // ACQUIRE LOCK ONCE AND HOLD IT FOR THE ENTIRE OPERATION
+  {
+    std::lock_guard<std::mutex> lock(io_mutex_);
 
-  // Load necessary chunks from disk and add to visible chunks
-  std::vector<std::shared_ptr<Chunk>> all_visible_chunks =
-      visible_active_chunks;
-  loadVisibleChunks(chunks_to_load, all_visible_chunks);
+    // Find visible chunks (both active and on-disk)
+    auto [visible_active_chunks, chunks_to_load] =
+        findVisibleChunks(camera_chunk, search_radius, camera_position,
+                          keyframe->zfar_, vp_matrix);
+
+    // Manage memory if needed before loading new chunks
+    // Instead of calling the function, inline the memory management logic
+    if (active_chunks_.size() + chunks_to_load.size() > max_chunks_in_memory_) {
+      int to_evict = std::min(
+          static_cast<int>(chunks_to_load.size()),
+          static_cast<int>(active_chunks_.size() + chunks_to_load.size() -
+                           max_chunks_in_memory_));
+
+      // Instead of calling evictUnusedChunks, inline the eviction logic
+      std::vector<ChunkCoord> to_evict_chunks =
+          findChunksToEvictNoLock(to_evict);
+
+      // Schedule saves for chunks to evict
+      for (const auto& coord : to_evict_chunks) {
+        // Use scheduleChunkSaveNoLock to avoid locking the mutex again
+        scheduleChunkSaveNoLock(coord, 10);  // High priority for eviction
+      }
+    }
+
+    // Start with active chunks
+    all_visible_chunks = visible_active_chunks;
+
+    // Load necessary chunks from disk and add to visible chunks
+    for (const auto& coord : chunks_to_load) {
+      if (loadChunkNoLock(
+              coord)) {  // Use no-lock version since we already have the lock
+        auto chunk = getChunkAtNoLock(coord);
+        if (chunk && chunk->gaussians_) {
+          all_visible_chunks.push_back(chunk);
+          markChunkUsedNoLock(coord);
+        }
+      } else {
+        // Log the error instead of throwing exception
+        std::cerr << "Warning: Unable to load chunk from disk: " << coord.x
+                  << "," << coord.y << "," << coord.z << std::endl;
+      }
+    }
+  }
+  // LOCK RELEASED HERE
 
   return all_visible_chunks;
 }
