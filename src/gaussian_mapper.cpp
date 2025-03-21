@@ -556,9 +556,12 @@ void GaussianMapper::run() {
     if (SLAM_ended_) break;
   }
 
-  // Third loop: After SLAM training
-  while (getIteration() < 20000) {
+  // Third loop: After SLAM stopped, keep training
+  while (!isStopped()) {
+    // Invoke training once
     trainForOneIteration();
+
+    if (getIteration() >= opt_params_.iterations_) break;
   }
 
   // Fourth loop: Tail gaussian optimization
@@ -568,6 +571,15 @@ void GaussianMapper::run() {
          getIteration() % densify_interval < n_delay_iters ||
          isKeepingTraining()) {
     trainForOneIteration();
+  }
+
+  auto video_dir = result_dir_ / "flythrough";
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
+  renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30, 30.0f);
+
+  // For debug: basically viewer now
+  while (getIteration() < 100000) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
   }
 
   // Save and clear
@@ -654,6 +666,8 @@ void GaussianMapper::trainForOneIteration() {
       ProfilingUtils::Timer("trainForOneIteration");
   increaseIteration(1);
   chunk_manager_->setCurrentIteration(getIteration());
+  int min_points_chunk_threshold = 10;
+  chunk_manager_->cullSparseChunks(min_points_chunk_threshold);
   auto iter_start_timing = std::chrono::steady_clock::now();
 
   auto timer_selectLocalityAwareKeyframe =
@@ -702,7 +716,20 @@ void GaussianMapper::trainForOneIteration() {
   // Get visible chunks using ChunkManager instead of updateActiveChunks
   std::vector<std::shared_ptr<Chunk>> visible_chunks =
       chunk_manager_->getVisibleChunks(viewpoint_cam);
+  // auto active_chunks = chunk_manager_->getActiveChunks();
+  // std::vector<std::shared_ptr<GaussianModel>> models;
+  // models.reserve(active_chunks.size());
+  // for (const auto& [coord, chunk] : active_chunks) {
+  //   if (chunk && chunk->gaussians_) {
+  //     models.push_back(chunk->gaussians_);
+  //   } else {
+  //     throw std::runtime_error("[renderFromPose] Chunk/Gaussian not valid");
+  //   }
+  // }
   timer_getVisibleChunks.stop();
+
+  std::cout << "[Optimization] Num visible chunks: " << visible_chunks.size()
+            << std::endl;
 
   // Extract models from chunks
   std::vector<std::shared_ptr<GaussianModel>> models;
@@ -711,12 +738,13 @@ void GaussianMapper::trainForOneIteration() {
     if (chunk && chunk->gaussians_) {
       models.push_back(chunk->gaussians_);
     } else {
-      throw "Chunk/Gaussians are null";
+      throw std::runtime_error("Chunk/Gaussians are null");
     }
   }
 
   if (models.empty()) {
     std::cout << "[Optimization] No valid models to render" << std::endl;
+    // throw std::runtime_error("[Optimization] No valid models to render");
     return;  // Early return if no valid models
   }
 
@@ -733,6 +761,24 @@ void GaussianMapper::trainForOneIteration() {
     gaussians->setOpacityLearningRate(opacityLearningRate());
     gaussians->setScalingLearningRate(scalingLearningRate());
     gaussians->setRotationLearningRate(rotationLearningRate());
+    // std::cout << "[0]: "
+    //           << gaussians->optimizer_->param_groups()[0].options().get_lr()
+    //           << std::endl;
+    // std::cout << "[1]: "
+    //           << gaussians->optimizer_->param_groups()[1].options().get_lr()
+    //           << std::endl;
+    // std::cout << "[2]: "
+    //           << gaussians->optimizer_->param_groups()[2].options().get_lr()
+    //           << std::endl;
+    // std::cout << "[3]: "
+    //           << gaussians->optimizer_->param_groups()[3].options().get_lr()
+    //           << std::endl;
+    // std::cout << "[4]: "
+    //           << gaussians->optimizer_->param_groups()[4].options().get_lr()
+    //           << std::endl;
+    // std::cout << "[5]: "
+    //           << gaussians->optimizer_->param_groups()[5].options().get_lr()
+    //           << std::endl;
   }
 
   // Render
@@ -852,6 +898,19 @@ void GaussianMapper::trainForOneIteration() {
     //     ProfilingUtils::Timer("preloadChunksForKeyframes");
     // chunk_manager_->preloadChunksForKeyframes(upcoming_keyframes);
     // timer_preloadChunksForKeyframes.stop();
+
+    // if (getIteration() % 1000 == 0) {
+    //   auto active_chunks = chunk_manager_->getActiveChunks();
+    //   for (const auto& [coord, chunk] : active_chunks) {
+    //     if (chunk && chunk->gaussians_) {
+    //       chunk_manager_->saveChunk(coord, true);
+    //       sleep(1);
+    //       chunk_manager_->loadChunk(coord, true);
+    //     } else {
+    //       throw std::runtime_error("Chunk/Gaussian not valid");
+    //     }
+    //   }
+    // }
 
     // Optimizer step
     for (const auto& gaussians : models) {
@@ -1773,20 +1832,29 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
   // Get visible chunks using ChunkManager instead of updateActiveChunks
   std::vector<std::shared_ptr<Chunk>> visible_chunks =
       chunk_manager_->getVisibleChunks(pkf);
-
-  std::cout << "[renderFromPose] Num visible chunks: " << visible_chunks.size()
-            << std::endl;
-
-  // Extract models from chunks
   std::vector<std::shared_ptr<GaussianModel>> models;
   models.reserve(visible_chunks.size());
   for (const auto& chunk : visible_chunks) {
+    std::cout << "[" << chunk->getCoord().x << " " << chunk->getCoord().y << " "
+              << chunk->getCoord().z << "], ";
     if (chunk && chunk->gaussians_) {
       models.push_back(chunk->gaussians_);
     } else {
       throw "[renderFromPose] Chunk/Gaussian not valid";
     }
   }
+  std::cout << std::endl;
+
+  // auto active_chunks = chunk_manager_->getActiveChunks();
+  // std::vector<std::shared_ptr<GaussianModel>> models;
+  // models.reserve(active_chunks.size());
+  // for (const auto& [coord, chunk] : active_chunks) {
+  //   if (chunk && chunk->gaussians_) {
+  //     models.push_back(chunk->gaussians_);
+  //   } else {
+  //     throw std::runtime_error("[renderFromPose] Chunk/Gaussian not valid");
+  //   }
+  // }
 
   // Check if we have any valid models to render
   if (models.empty()) {
@@ -2352,7 +2420,8 @@ void GaussianMapper::handleNewFrameExternal(const cv::Mat& rgb_image,
                                             const double timestamp) {
   return;
   // std::cout << "New external frame" << std::endl;
-  // frame_queue_.push(Frame(rgb_image, depth_or_right_image, pose, timestamp));
+  // frame_queue_.push(Frame(rgb_image, depth_or_right_image, pose,
+  // timestamp));
 }
 
 void GaussianMapper::run_external_poses() { return; }
@@ -2461,4 +2530,340 @@ GaussianMapper::predictUpcomingKeyframes(int count) {
 
   return keyframe_selector_->predictUpcomingKeyframes(scene_->keyframes(),
                                                       kfs_loss_, count);
+}
+
+/**
+ * Generates a smooth fly-through video along keyframe path with constant speed
+ *
+ * @param output_path Directory where frames and video will be saved
+ * @param width Width of the output video
+ * @param height Height of the output video
+ * @param fps Frames per second
+ * @param duration_seconds Total duration of the video
+ */
+void GaussianMapper::renderFlyThroughVideo(const std::string& output_path,
+                                           int width,
+                                           int height,
+                                           int fps,
+                                           float duration_seconds) {
+  // Create output directory if it doesn't exist
+  std::filesystem::create_directories(output_path);
+
+  // 1. Get all keyframes sorted by fid
+  auto keyframes_map = scene_->getAllKeyframes();
+  std::vector<std::size_t> keyframe_ids;
+  for (const auto& [fid, kf] : keyframes_map) {
+    keyframe_ids.push_back(fid);
+  }
+  std::sort(keyframe_ids.begin(), keyframe_ids.end());
+
+  // Check if we have enough keyframes
+  if (keyframe_ids.size() < 2) {
+    std::cerr << "Need at least 2 keyframes to create a fly-through video"
+              << std::endl;
+    return;
+  }
+
+  // 2. Extract keyframe positions and orientations
+  std::vector<Eigen::Vector3d> keyframe_positions;
+  std::vector<Eigen::Quaterniond> keyframe_orientations;
+  for (const auto& fid : keyframe_ids) {
+    auto kf = keyframes_map[fid];
+    // Get camera-to-world transform and invert to get world-to-camera
+    Sophus::SE3d Tcw = kf->getPose();
+    Sophus::SE3d Twc = Tcw.inverse();
+    keyframe_positions.push_back(Twc.translation());
+    keyframe_orientations.push_back(Twc.unit_quaternion());
+  }
+
+  // 3. Create a smooth path through the keyframe positions
+  std::vector<Eigen::Vector3d> path_points =
+      createSmoothPath(keyframe_positions, 20);
+
+  // 4. Sample the path at equal distances to ensure constant speed
+  std::vector<Eigen::Vector3d> sampled_positions;
+  std::vector<Eigen::Quaterniond> sampled_orientations;
+  samplePathConstantSpeed(path_points, keyframe_positions,
+                          keyframe_orientations,
+                          static_cast<int>(duration_seconds * fps),
+                          sampled_positions, sampled_orientations);
+
+  // 5. Render each frame
+  int total_frames = sampled_positions.size();
+  std::vector<std::string> frame_paths;  // Store frame paths for cleanup later
+
+  for (int i = 0; i < total_frames; i++) {
+    // Create world-to-camera transform
+    Sophus::SE3d Twc(sampled_orientations[i], sampled_positions[i]);
+    Sophus::SE3f Tcw = Twc.inverse().cast<float>();
+
+    // Render frame
+    cv::Mat frame = renderFromPose(Tcw, width, height, true);
+
+    // Convert if needed (assuming renderFromPose returns float image)
+    cv::Mat output_frame;
+    frame.convertTo(output_frame, CV_8UC3, 255.0);
+
+    // Convert from BGR to RGB color space
+    cv::cvtColor(output_frame, output_frame, cv::COLOR_BGR2RGB);
+
+    // Save frame
+    std::string frame_path =
+        output_path + "/frame_" + std::to_string(i + 1) + ".png";
+    cv::imwrite(frame_path, output_frame);
+    frame_paths.push_back(frame_path);  // Store path for later cleanup
+
+    {
+      std::cout << "Rendered frame " << i + 1 << "/" << total_frames
+                << std::endl;
+    }
+  }
+
+  // 6. Combine frames into video using ffmpeg
+  std::string cmd = "ffmpeg -y -framerate " + std::to_string(fps) + " -i " +
+                    output_path + "/frame_%d.png" +
+                    " -c:v libx264 -crf 18 -pix_fmt yuv420p " + output_path +
+                    "/flythrough.mp4";
+
+  std::cout << "Creating video with command: " << cmd << std::endl;
+  int ret = system(cmd.c_str());
+  if (ret != 0) {
+    std::cerr
+        << "Failed to create video using ffmpeg. Check if ffmpeg is installed."
+        << std::endl;
+  } else {
+    std::cout << "Video created successfully at " << output_path
+              << "/flythrough.mp4" << std::endl;
+
+    // 7. Delete all frame files
+    std::cout << "Cleaning up frame files..." << std::endl;
+    int deleted_frames = 0;
+    for (const auto& frame_path : frame_paths) {
+      if (std::filesystem::remove(frame_path)) {
+        deleted_frames++;
+      }
+    }
+    std::cout << "Deleted " << deleted_frames << "/" << frame_paths.size()
+              << " frames." << std::endl;
+  }
+}
+
+/**
+ * Creates a smooth path through the given points using Catmull-Rom splines
+ */
+std::vector<Eigen::Vector3d> GaussianMapper::createSmoothPath(
+    const std::vector<Eigen::Vector3d>& keypoints,
+    int points_per_segment) {
+  std::vector<Eigen::Vector3d> path;
+  if (keypoints.size() < 2) return keypoints;
+
+  // For only 2 points, do linear interpolation
+  if (keypoints.size() == 2) {
+    for (int i = 0; i <= points_per_segment; i++) {
+      double t = static_cast<double>(i) / points_per_segment;
+      path.push_back(keypoints[0] * (1 - t) + keypoints[1] * t);
+    }
+    return path;
+  }
+
+  // Create extended points array with extrapolated endpoints
+  // This handles boundary conditions for Catmull-Rom
+  std::vector<Eigen::Vector3d> extended;
+  extended.push_back(keypoints[0] * 2 - keypoints[1]);  // Extrapolate start
+  extended.insert(extended.end(), keypoints.begin(), keypoints.end());
+  extended.push_back(keypoints.back() * 2 -
+                     keypoints[keypoints.size() - 2]);  // Extrapolate end
+
+  // Interpolate each segment
+  for (size_t i = 1; i < extended.size() - 2; i++) {
+    for (int j = 0; j < points_per_segment; j++) {
+      double t = static_cast<double>(j) / points_per_segment;
+      path.push_back(catmullRomInterpolate(
+          extended[i - 1], extended[i], extended[i + 1], extended[i + 2], t));
+    }
+  }
+
+  // Add the final point
+  path.push_back(keypoints.back());
+
+  return path;
+}
+
+/**
+ * Catmull-Rom spline interpolation for a single point
+ */
+Eigen::Vector3d GaussianMapper::catmullRomInterpolate(const Eigen::Vector3d& p0,
+                                                      const Eigen::Vector3d& p1,
+                                                      const Eigen::Vector3d& p2,
+                                                      const Eigen::Vector3d& p3,
+                                                      double t) {
+  double t2 = t * t;
+  double t3 = t2 * t;
+
+  // Catmull-Rom basis functions
+  double h1 = -0.5 * t3 + t2 - 0.5 * t;
+  double h2 = 1.5 * t3 - 2.5 * t2 + 1.0;
+  double h3 = -1.5 * t3 + 2.0 * t2 + 0.5 * t;
+  double h4 = 0.5 * t3 - 0.5 * t2;
+
+  return h1 * p0 + h2 * p1 + h3 * p2 + h4 * p3;
+}
+
+/**
+ * Compute arc lengths along a path
+ */
+std::vector<double> GaussianMapper::computeArcLengths(
+    const std::vector<Eigen::Vector3d>& path) {
+  std::vector<double> arc_lengths(path.size(), 0.0);
+  for (size_t i = 1; i < path.size(); i++) {
+    double segment_length = (path[i] - path[i - 1]).norm();
+    arc_lengths[i] = arc_lengths[i - 1] + segment_length;
+  }
+  return arc_lengths;
+}
+
+/**
+ * Sample the path at equal distances and interpolate orientations
+ */
+void GaussianMapper::samplePathConstantSpeed(
+    const std::vector<Eigen::Vector3d>& path,
+    const std::vector<Eigen::Vector3d>& keyframe_positions,
+    const std::vector<Eigen::Quaterniond>& keyframe_orientations,
+    int num_samples,
+    std::vector<Eigen::Vector3d>& sampled_positions,
+    std::vector<Eigen::Quaterniond>& sampled_orientations) {
+  sampled_positions.clear();
+  sampled_orientations.clear();
+
+  if (path.empty() || keyframe_positions.empty() ||
+      keyframe_orientations.empty()) {
+    return;
+  }
+
+  // 1. Compute arc lengths
+  std::vector<double> arc_lengths = computeArcLengths(path);
+  double total_length = arc_lengths.back();
+
+  // 2. Map keyframes to path parameters
+  std::vector<double> keyframe_parameters;
+  mapKeyframesToPath(keyframe_positions, path, arc_lengths,
+                     keyframe_parameters);
+
+  // 3. Sample at equal distances
+  for (int i = 0; i < num_samples; i++) {
+    double t = static_cast<double>(i) / (num_samples - 1);  // Normalized [0,1]
+    double target_length = total_length * t;
+
+    // Position at this arc length
+    Eigen::Vector3d position =
+        samplePositionAtArcLength(path, arc_lengths, target_length);
+
+    // Path parameter
+    double path_param = target_length / total_length;
+
+    // Interpolate orientation
+    Eigen::Quaterniond orientation = interpolateOrientation(
+        path_param, keyframe_parameters, keyframe_orientations);
+
+    sampled_positions.push_back(position);
+    sampled_orientations.push_back(orientation);
+  }
+}
+
+/**
+ * Map keyframe positions to their closest corresponding points on the path
+ */
+void GaussianMapper::mapKeyframesToPath(
+    const std::vector<Eigen::Vector3d>& keyframe_positions,
+    const std::vector<Eigen::Vector3d>& path,
+    const std::vector<double>& arc_lengths,
+    std::vector<double>& keyframe_parameters) {
+  keyframe_parameters.clear();
+  double total_length = arc_lengths.back();
+
+  for (const auto& kf_pos : keyframe_positions) {
+    // Find closest point on path
+    size_t closest_idx = 0;
+    double min_dist = std::numeric_limits<double>::max();
+
+    for (size_t i = 0; i < path.size(); i++) {
+      double dist = (kf_pos - path[i]).squaredNorm();
+      if (dist < min_dist) {
+        min_dist = dist;
+        closest_idx = i;
+      }
+    }
+
+    // Parameter is normalized arc length
+    double param = arc_lengths[closest_idx] / total_length;
+    keyframe_parameters.push_back(param);
+  }
+
+  // Ensure parameters are strictly increasing (required for interpolation)
+  for (size_t i = 1; i < keyframe_parameters.size(); i++) {
+    if (keyframe_parameters[i] <= keyframe_parameters[i - 1]) {
+      keyframe_parameters[i] = keyframe_parameters[i - 1] + 0.001;
+    }
+  }
+}
+
+/**
+ * Sample a position at a specific arc length along the path
+ */
+Eigen::Vector3d GaussianMapper::samplePositionAtArcLength(
+    const std::vector<Eigen::Vector3d>& path,
+    const std::vector<double>& arc_lengths,
+    double target_length) {
+  // Find segment containing this arc length
+  auto it =
+      std::lower_bound(arc_lengths.begin(), arc_lengths.end(), target_length);
+  int idx = std::distance(arc_lengths.begin(), it);
+
+  if (idx >= path.size()) {
+    return path.back();  // Beyond the end
+  } else if (idx == 0) {
+    return path.front();  // Before the start
+  } else {
+    // Interpolate within segment
+    double segment_start = arc_lengths[idx - 1];
+    double segment_length = arc_lengths[idx] - segment_start;
+    double t = segment_length > 0
+                   ? (target_length - segment_start) / segment_length
+                   : 0;
+
+    return path[idx - 1] * (1 - t) + path[idx] * t;
+  }
+}
+
+/**
+ * Interpolate orientation using SLERP based on path parameter
+ */
+Eigen::Quaterniond GaussianMapper::interpolateOrientation(
+    double param,
+    const std::vector<double>& keyframe_parameters,
+    const std::vector<Eigen::Quaterniond>& keyframe_orientations) {
+  // Handle boundary cases
+  if (param <= keyframe_parameters.front()) {
+    return keyframe_orientations.front();
+  }
+  if (param >= keyframe_parameters.back()) {
+    return keyframe_orientations.back();
+  }
+
+  // Find the keyframes before and after this parameter
+  size_t idx = 0;
+  while (idx < keyframe_parameters.size() - 1 &&
+         keyframe_parameters[idx + 1] < param) {
+    idx++;
+  }
+
+  // SLERP between these orientations
+  double segment_length =
+      keyframe_parameters[idx + 1] - keyframe_parameters[idx];
+  double t = segment_length > 0
+                 ? (param - keyframe_parameters[idx]) / segment_length
+                 : 0;
+  t = std::max(0.0, std::min(1.0, t));  // Clamp to [0,1]
+
+  return keyframe_orientations[idx].slerp(t, keyframe_orientations[idx + 1]);
 }
