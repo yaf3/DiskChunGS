@@ -49,9 +49,12 @@ class Chunk {
   // Setter for coordinates
   void setCoord(const ChunkCoord &coord) { coord_ = coord; }
 
- public:
-  std::shared_ptr<GaussianModel> gaussians_;
+  // Getter for Gaussians
+  const std::shared_ptr<GaussianModel> &getGaussians() const {
+    return gaussians_;
+  }
 
  private:
   ChunkCoord coord_{0, 0, 0};
+  std::shared_ptr<GaussianModel> gaussians_;
 };

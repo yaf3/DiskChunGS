@@ -516,15 +516,15 @@ bool ChunkManager::loadChunkNoLock(const ChunkCoord& coord, bool background) {
   try {
     // Create new chunk with mapper's GaussianModelParams
     auto chunk = std::make_shared<Chunk>(getModelParams(), coord);
-    if (!chunk || !chunk->gaussians_) {
+    if (!chunk || !chunk->getGaussians()) {
       std::cerr << "Failed to create chunk object" << std::endl;
       return false;
     }
 
     // Load from file
-    // chunk->gaussians_->load_checkpoint(chunk_filename.string(),
+    // chunk->getGaussians()->load_checkpoint(chunk_filename.string(),
     // getOptParams());
-    chunk->gaussians_->load_checkpoint_incremental(
+    chunk->getGaussians()->load_checkpoint_incremental(
         chunk_filename.string(), getOptParams(), true, true, true);
 
     // Update in-memory structures
@@ -573,7 +573,8 @@ bool ChunkManager::saveChunkNoLock(const ChunkCoord& coord, bool background) {
 
   // First check if chunk exists and get it
   auto it = active_chunks_.find(coord);
-  if (it == active_chunks_.end() || !it->second || !it->second->gaussians_) {
+  if (it == active_chunks_.end() || !it->second ||
+      !it->second->getGaussians()) {
     // Update metadata
     auto meta_it = chunk_metadata_.find(coord);
     if (meta_it != chunk_metadata_.end()) {
@@ -587,7 +588,7 @@ bool ChunkManager::saveChunkNoLock(const ChunkCoord& coord, bool background) {
 
   try {
     // Save to file
-    chunk->gaussians_->save_checkpoint(chunk_filename.string());
+    chunk->getGaussians()->save_checkpoint(chunk_filename.string());
 
     // Update metadata
     auto meta_it = chunk_metadata_.find(coord);
@@ -827,7 +828,7 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
       if (loadChunkNoLock(
               coord)) {  // Use no-lock version since we already have the lock
         auto chunk = getChunkAtNoLock(coord);
-        if (chunk && chunk->gaussians_) {
+        if (chunk && chunk->getGaussians()) {
           all_visible_chunks.push_back(chunk);
           markChunkUsedNoLock(coord);
         }
@@ -903,7 +904,7 @@ ChunkManager::findVisibleChunks(const ChunkCoord& camera_chunk,
 
           // If chunk is active, add to visible chunks
           if (it != active_chunks_.end() && it->second &&
-              it->second->gaussians_) {
+              it->second->getGaussians()) {
             visible_active_chunks.push_back(it->second);
             markChunkUsedNoLock(check_coord);
           }
@@ -938,7 +939,7 @@ void ChunkManager::loadVisibleChunks(
     if (loadChunkNoLock(
             coord)) {  // Use no-lock version since we already have the lock
       auto chunk = getChunkAtNoLock(coord);
-      if (chunk && chunk->gaussians_) {
+      if (chunk && chunk->getGaussians()) {
         visible_chunks.push_back(chunk);
         markChunkUsedNoLock(coord);
       }
@@ -1046,7 +1047,7 @@ void ChunkManager::addPointsToChunks(
                      unique_chunks[i][1].item<int64_t>(),
                      unique_chunks[i][2].item<int64_t>()};
 
-    std::cout << "Adding point for chunk: " << coord.x << " " << coord.y << " "
+    std::cout << "Adding points for chunk: " << coord.x << " " << coord.y << " "
               << coord.z << " " << std::endl;
 
     // Create mask for points in this chunk
@@ -1108,15 +1109,15 @@ void ChunkManager::addPointsToChunks(
     if (is_new_chunk) {
       std::cout << "Since new chunk, calling setup" << std::endl;
       // For new chunks, initialize with points
-      chunk->gaussians_->createFromPcd(chunk_points, chunk_colors,
-                                       cameras_extent);
+      chunk->getGaussians()->createFromPcd(chunk_points, chunk_colors,
+                                           cameras_extent);
 
-      chunk->gaussians_->trainingSetup(opt_params_);
+      chunk->getGaussians()->trainingSetup(opt_params_);
     } else {
       // For existing chunks, add new points
       std::cout << "Chunk already exists, adding points" << std::endl;
-      chunk->gaussians_->increasePcd(chunk_points, chunk_colors,
-                                     getCurrentIteration());
+      chunk->getGaussians()->increasePcd(chunk_points, chunk_colors,
+                                         getCurrentIteration());
     }
   }
 }
@@ -1166,10 +1167,10 @@ bool ChunkManager::cullSparseChunks(int min_points_threshold) {
 
     // Examine all active chunks
     for (const auto& [coord, chunk] : active_chunks_) {
-      if (!chunk || !chunk->gaussians_) continue;
+      if (!chunk || !chunk->getGaussians()) continue;
 
       // Get number of active points in chunk
-      int num_points = chunk->gaussians_->getXYZ().size(0);
+      int num_points = chunk->getGaussians()->getXYZ().size(0);
 
       // If below threshold, mark for culling
       if (num_points < min_points_threshold) {

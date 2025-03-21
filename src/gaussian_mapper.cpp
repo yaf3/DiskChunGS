@@ -104,6 +104,9 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   // Initialize scene
   scene_ = std::make_shared<GaussianScene>(model_params_);
 
+  // Initialize chunk manager
+  initializeChunkManagement();
+
   // Mode
   if (!pSLAM) {
     // NO SLAM
@@ -250,8 +253,6 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
     }
     this->scene_->addCamera(camera);
   }
-
-  initializeChunkManagement();
 }
 
 void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
@@ -341,6 +342,8 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       settings_file["Record.training_report_interval"].operator int();
   record_loop_ply_ =
       (settings_file["Record.record_loop_ply"].operator int()) != 0;
+  render_fly_through_ =
+      (settings_file["Record.render_fly_through"].operator int()) != 0;
 
   // Optimization Parameters
   opt_params_.iterations_ =
@@ -573,9 +576,11 @@ void GaussianMapper::run() {
     trainForOneIteration();
   }
 
-  auto video_dir = result_dir_ / "flythrough";
-  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
-  renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30, 30.0f);
+  if (render_fly_through_) {
+    auto video_dir = result_dir_ / "flythrough";
+    CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
+    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30, 30.0f);
+  }
 
   // For debug: basically viewer now
   while (getIteration() < 100000) {
@@ -620,17 +625,32 @@ void GaussianMapper::trainColmap() {
     }
   }
 
-  // Todo: Fix for chunking
-  // // Prepare for training
-  // {
-  //   std::unique_lock<std::mutex> lock_render(mutex_render_);
-  //   scene_->cameras_extent_ = std::get<1>(scene_->getNerfppNorm());
-  //   gaussians_->createFromPcd(scene_->cached_point_cloud_,
-  //                             scene_->cameras_extent_);
-  //   std::unique_lock<std::mutex> lock(mutex_settings_);
-  //   gaussians_->trainingSetup(opt_params_);
-  //   this->initial_mapped_ = true;
-  // }
+  // Prepare for training
+  {
+    std::unique_lock<std::mutex> lock_render(mutex_render_);
+    scene_->cameras_extent_ = std::get<1>(scene_->getNerfppNorm());
+    int num_points = static_cast<int>(scene_->cached_point_cloud_.size());
+    torch::Tensor fused_point_cloud = torch::zeros(
+        {num_points, 3},
+        torch::TensorOptions().dtype(torch::kFloat).device(device_type_));
+    torch::Tensor color = torch::zeros(
+        {num_points, 3},
+        torch::TensorOptions().dtype(torch::kFloat).device(device_type_));
+    auto pcd_it = scene_->cached_point_cloud_.begin();
+    for (int point_idx = 0; point_idx < num_points; ++point_idx) {
+      auto& point = (*pcd_it).second;
+      fused_point_cloud.index({point_idx, 0}) = point.xyz_(0);
+      fused_point_cloud.index({point_idx, 1}) = point.xyz_(1);
+      fused_point_cloud.index({point_idx, 2}) = point.xyz_(2);
+      color.index({point_idx, 0}) = point.color_(0);
+      color.index({point_idx, 1}) = point.color_(1);
+      color.index({point_idx, 2}) = point.color_(2);
+      ++pcd_it;
+    }
+    std::cout << "Adding initial points\n";
+    addPoints(fused_point_cloud, color, scene_->keyframes());
+    this->initial_mapped_ = true;
+  }
 
   // Main loop: gaussian splatting training
   while (!isStopped()) {
@@ -648,6 +668,12 @@ void GaussianMapper::trainColmap() {
     trainForOneIteration();
     densify_interval = densifyInterval();
     n_delay_iters = densify_interval * 0.8;
+  }
+
+  if (render_fly_through_) {
+    auto video_dir = result_dir_ / "flythrough";
+    CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
+    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30, 30.0f);
   }
 
   // Save and clear
@@ -720,8 +746,8 @@ void GaussianMapper::trainForOneIteration() {
   // std::vector<std::shared_ptr<GaussianModel>> models;
   // models.reserve(active_chunks.size());
   // for (const auto& [coord, chunk] : active_chunks) {
-  //   if (chunk && chunk->gaussians_) {
-  //     models.push_back(chunk->gaussians_);
+  //   if (chunk && chunk->getGaussians()) {
+  //     models.push_back(chunk->getGaussians());
   //   } else {
   //     throw std::runtime_error("[renderFromPose] Chunk/Gaussian not valid");
   //   }
@@ -735,8 +761,8 @@ void GaussianMapper::trainForOneIteration() {
   std::vector<std::shared_ptr<GaussianModel>> models;
   models.reserve(visible_chunks.size());
   for (const auto& chunk : visible_chunks) {
-    if (chunk && chunk->gaussians_) {
-      models.push_back(chunk->gaussians_);
+    if (chunk && chunk->getGaussians()) {
+      models.push_back(chunk->getGaussians());
     } else {
       throw std::runtime_error("Chunk/Gaussians are null");
     }
@@ -902,7 +928,7 @@ void GaussianMapper::trainForOneIteration() {
     // if (getIteration() % 1000 == 0) {
     //   auto active_chunks = chunk_manager_->getActiveChunks();
     //   for (const auto& [coord, chunk] : active_chunks) {
-    //     if (chunk && chunk->gaussians_) {
+    //     if (chunk && chunk->getGaussians()) {
     //       chunk_manager_->saveChunk(coord, true);
     //       sleep(1);
     //       chunk_manager_->loadChunk(coord, true);
@@ -1837,8 +1863,8 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
   for (const auto& chunk : visible_chunks) {
     std::cout << "[" << chunk->getCoord().x << " " << chunk->getCoord().y << " "
               << chunk->getCoord().z << "], ";
-    if (chunk && chunk->gaussians_) {
-      models.push_back(chunk->gaussians_);
+    if (chunk && chunk->getGaussians()) {
+      models.push_back(chunk->getGaussians());
     } else {
       throw "[renderFromPose] Chunk/Gaussian not valid";
     }
@@ -1849,8 +1875,8 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
   // std::vector<std::shared_ptr<GaussianModel>> models;
   // models.reserve(active_chunks.size());
   // for (const auto& [coord, chunk] : active_chunks) {
-  //   if (chunk && chunk->gaussians_) {
-  //     models.push_back(chunk->gaussians_);
+  //   if (chunk && chunk->getGaussians()) {
+  //     models.push_back(chunk->getGaussians());
   //   } else {
   //     throw std::runtime_error("[renderFromPose] Chunk/Gaussian not valid");
   //   }
@@ -1891,8 +1917,8 @@ void GaussianMapper::renderAndRecordKeyframe(
   std::vector<std::shared_ptr<GaussianModel>> models;
   models.reserve(visible_chunks.size());
   for (const auto& chunk : visible_chunks) {
-    if (chunk && chunk->gaussians_) {
-      models.push_back(chunk->gaussians_);
+    if (chunk && chunk->getGaussians()) {
+      models.push_back(chunk->getGaussians());
     }
   }
 
@@ -2280,7 +2306,7 @@ void GaussianMapper::setVaribleParameters(const VariableParameters& params) {
 
 void GaussianMapper::loadPly(std::filesystem::path ply_path,
                              std::filesystem::path camera_path) {
-  // this->gaussians_->loadPly(ply_path);
+  // this->getGaussians()->loadPly(ply_path);
 
   // Camera
   if (!camera_path.empty() && std::filesystem::exists(camera_path)) {
@@ -2493,6 +2519,9 @@ void GaussianMapper::addPoints(
     std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> keyframes) {
   std::cout << "addPoints called in GaussianMapper" << std::endl;
   // Make sure chunk manager has current iteration
+  if (!chunk_manager_) {
+    throw std::runtime_error("chunk_manager_ is null");
+  }
   chunk_manager_->setCurrentIteration(getIteration());
 
   // Delegate to chunk manager

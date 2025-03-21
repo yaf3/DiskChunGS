@@ -54,7 +54,7 @@
             // ],
             // "program": "${workspaceFolder}/bin/train_colmap",
             // "args": [
-            //     "${workspaceFolder}/cfg/gaussian_mapper/Colmap/KITTI/KITTI_LOD.yaml",
+            //     "${workspaceFolder}/cfg/gaussian_mapper/Colmap/KITTI/KITTI.yaml",
             //     "/data/kitti_colmap/00",
             //     "${workspaceFolder}/results/kitti/colmap"
             // ],
