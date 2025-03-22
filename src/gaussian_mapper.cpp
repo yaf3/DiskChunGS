@@ -23,6 +23,7 @@
 #include "include/keyframe_selector.h"
 #include "include/loss_utils.h"
 #include "include/profiling.h"
+#include "include/render_flythrough.h"
 
 void trainingReport(int iteration,
                     int num_iterations,
@@ -579,7 +580,10 @@ void GaussianMapper::run() {
   if (render_fly_through_) {
     auto video_dir = result_dir_ / "flythrough";
     CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
-    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30, 30.0f);
+    renderFlyThroughVideo(video_dir / "output_video", 1242, 376, 30, 30.0f,
+                          0.8f, 2);
+    // render3DExplorationVideo(video_dir / "3d_exploration", 1920, 1080, 30,
+    //                          20.0f, 0.05f, false);
   }
 
   // For debug: basically viewer now
@@ -2569,12 +2573,18 @@ GaussianMapper::predictUpcomingKeyframes(int count) {
  * @param height Height of the output video
  * @param fps Frames per second
  * @param duration_seconds Total duration of the video
+ * @param smoothness_factor Controls path smoothness (0.0-1.0, higher = smoother
+ * but deviates more from keyframes)
+ * @param keyframe_subsample Use only every Nth keyframe (1 = use all, 2 = use
+ * every other, etc.)
  */
 void GaussianMapper::renderFlyThroughVideo(const std::string& output_path,
                                            int width,
                                            int height,
                                            int fps,
-                                           float duration_seconds) {
+                                           float duration_seconds,
+                                           float smoothness_factor,
+                                           int keyframe_subsample) {
   // Create output directory if it doesn't exist
   std::filesystem::create_directories(output_path);
 
@@ -2585,6 +2595,25 @@ void GaussianMapper::renderFlyThroughVideo(const std::string& output_path,
     keyframe_ids.push_back(fid);
   }
   std::sort(keyframe_ids.begin(), keyframe_ids.end());
+
+  // Subsample keyframes if requested (for smoother overall path)
+  if (keyframe_subsample > 1 && keyframe_ids.size() > keyframe_subsample * 2) {
+    std::vector<std::size_t> subsampled_ids;
+    // Always keep first and last keyframe
+    subsampled_ids.push_back(keyframe_ids.front());
+
+    for (size_t i = keyframe_subsample; i < keyframe_ids.size() - 1;
+         i += keyframe_subsample) {
+      subsampled_ids.push_back(keyframe_ids[i]);
+    }
+
+    subsampled_ids.push_back(keyframe_ids.back());
+
+    std::cout << "Reduced keyframes from " << keyframe_ids.size() << " to "
+              << subsampled_ids.size() << " for smoother path" << std::endl;
+
+    keyframe_ids = subsampled_ids;
+  }
 
   // Check if we have enough keyframes
   if (keyframe_ids.size() < 2) {
@@ -2606,8 +2635,14 @@ void GaussianMapper::renderFlyThroughVideo(const std::string& output_path,
   }
 
   // 3. Create a smooth path through the keyframe positions
+  // Using 20 points per segment for smoother interpolation
   std::vector<Eigen::Vector3d> path_points =
       createSmoothPath(keyframe_positions, 20);
+
+  // Apply additional smoothing if requested
+  if (smoothness_factor > 0.0f) {
+    smoothPath(path_points, smoothness_factor);
+  }
 
   // 4. Sample the path at equal distances to ensure constant speed
   std::vector<Eigen::Vector3d> sampled_positions;
@@ -2618,8 +2653,8 @@ void GaussianMapper::renderFlyThroughVideo(const std::string& output_path,
                           sampled_positions, sampled_orientations);
 
   // 5. Render each frame
+  std::vector<std::string> frame_paths;
   int total_frames = sampled_positions.size();
-  std::vector<std::string> frame_paths;  // Store frame paths for cleanup later
 
   for (int i = 0; i < total_frames; i++) {
     // Create world-to-camera transform
@@ -2633,14 +2668,13 @@ void GaussianMapper::renderFlyThroughVideo(const std::string& output_path,
     cv::Mat output_frame;
     frame.convertTo(output_frame, CV_8UC3, 255.0);
 
-    // Convert from BGR to RGB color space
     cv::cvtColor(output_frame, output_frame, cv::COLOR_BGR2RGB);
 
     // Save frame
     std::string frame_path =
         output_path + "/frame_" + std::to_string(i + 1) + ".png";
     cv::imwrite(frame_path, output_frame);
-    frame_paths.push_back(frame_path);  // Store path for later cleanup
+    frame_paths.push_back(frame_path);
 
     {
       std::cout << "Rendered frame " << i + 1 << "/" << total_frames
@@ -2678,221 +2712,201 @@ void GaussianMapper::renderFlyThroughVideo(const std::string& output_path,
 }
 
 /**
- * Creates a smooth path through the given points using Catmull-Rom splines
+ * Generates a 3D exploration video that showcases the depth and dimensionality
+ * of the scene by adding camera movements that deviate from the main path
+ *
+ * @param output_path Directory where frames and video will be saved
+ * @param width Width of the output video
+ * @param height Height of the output video
+ * @param fps Frames per second
+ * @param duration_seconds Total duration of the video
+ * @param deviation_scale Scale factor for path deviation (default: 0.15)
+ * @param look_around Enable camera rotation to look around (default: true)
  */
-std::vector<Eigen::Vector3d> GaussianMapper::createSmoothPath(
-    const std::vector<Eigen::Vector3d>& keypoints,
-    int points_per_segment) {
-  std::vector<Eigen::Vector3d> path;
-  if (keypoints.size() < 2) return keypoints;
+void GaussianMapper::render3DExplorationVideo(const std::string& output_path,
+                                              int width,
+                                              int height,
+                                              int fps,
+                                              float duration_seconds,
+                                              float deviation_scale,
+                                              bool look_around) {
+  // Create output directory if it doesn't exist
+  std::filesystem::create_directories(output_path);
 
-  // For only 2 points, do linear interpolation
-  if (keypoints.size() == 2) {
-    for (int i = 0; i <= points_per_segment; i++) {
-      double t = static_cast<double>(i) / points_per_segment;
-      path.push_back(keypoints[0] * (1 - t) + keypoints[1] * t);
-    }
-    return path;
+  // 1. Get all keyframes sorted by fid
+  auto keyframes_map = scene_->getAllKeyframes();
+  std::vector<std::size_t> keyframe_ids;
+  for (const auto& [fid, kf] : keyframes_map) {
+    keyframe_ids.push_back(fid);
   }
+  std::sort(keyframe_ids.begin(), keyframe_ids.end());
 
-  // Create extended points array with extrapolated endpoints
-  // This handles boundary conditions for Catmull-Rom
-  std::vector<Eigen::Vector3d> extended;
-  extended.push_back(keypoints[0] * 2 - keypoints[1]);  // Extrapolate start
-  extended.insert(extended.end(), keypoints.begin(), keypoints.end());
-  extended.push_back(keypoints.back() * 2 -
-                     keypoints[keypoints.size() - 2]);  // Extrapolate end
-
-  // Interpolate each segment
-  for (size_t i = 1; i < extended.size() - 2; i++) {
-    for (int j = 0; j < points_per_segment; j++) {
-      double t = static_cast<double>(j) / points_per_segment;
-      path.push_back(catmullRomInterpolate(
-          extended[i - 1], extended[i], extended[i + 1], extended[i + 2], t));
-    }
-  }
-
-  // Add the final point
-  path.push_back(keypoints.back());
-
-  return path;
-}
-
-/**
- * Catmull-Rom spline interpolation for a single point
- */
-Eigen::Vector3d GaussianMapper::catmullRomInterpolate(const Eigen::Vector3d& p0,
-                                                      const Eigen::Vector3d& p1,
-                                                      const Eigen::Vector3d& p2,
-                                                      const Eigen::Vector3d& p3,
-                                                      double t) {
-  double t2 = t * t;
-  double t3 = t2 * t;
-
-  // Catmull-Rom basis functions
-  double h1 = -0.5 * t3 + t2 - 0.5 * t;
-  double h2 = 1.5 * t3 - 2.5 * t2 + 1.0;
-  double h3 = -1.5 * t3 + 2.0 * t2 + 0.5 * t;
-  double h4 = 0.5 * t3 - 0.5 * t2;
-
-  return h1 * p0 + h2 * p1 + h3 * p2 + h4 * p3;
-}
-
-/**
- * Compute arc lengths along a path
- */
-std::vector<double> GaussianMapper::computeArcLengths(
-    const std::vector<Eigen::Vector3d>& path) {
-  std::vector<double> arc_lengths(path.size(), 0.0);
-  for (size_t i = 1; i < path.size(); i++) {
-    double segment_length = (path[i] - path[i - 1]).norm();
-    arc_lengths[i] = arc_lengths[i - 1] + segment_length;
-  }
-  return arc_lengths;
-}
-
-/**
- * Sample the path at equal distances and interpolate orientations
- */
-void GaussianMapper::samplePathConstantSpeed(
-    const std::vector<Eigen::Vector3d>& path,
-    const std::vector<Eigen::Vector3d>& keyframe_positions,
-    const std::vector<Eigen::Quaterniond>& keyframe_orientations,
-    int num_samples,
-    std::vector<Eigen::Vector3d>& sampled_positions,
-    std::vector<Eigen::Quaterniond>& sampled_orientations) {
-  sampled_positions.clear();
-  sampled_orientations.clear();
-
-  if (path.empty() || keyframe_positions.empty() ||
-      keyframe_orientations.empty()) {
+  // Check if we have enough keyframes
+  if (keyframe_ids.size() < 2) {
+    std::cerr << "Need at least 2 keyframes to create a 3D exploration video"
+              << std::endl;
     return;
   }
 
-  // 1. Compute arc lengths
-  std::vector<double> arc_lengths = computeArcLengths(path);
-  double total_length = arc_lengths.back();
+  // 2. Extract keyframe positions and orientations
+  std::vector<Eigen::Vector3d> keyframe_positions;
+  std::vector<Eigen::Quaterniond> keyframe_orientations;
+  for (const auto& fid : keyframe_ids) {
+    auto kf = keyframes_map[fid];
+    // Get camera-to-world transform and invert to get world-to-camera
+    Sophus::SE3d Tcw = kf->getPose();
+    Sophus::SE3d Twc = Tcw.inverse();
+    keyframe_positions.push_back(Twc.translation());
+    keyframe_orientations.push_back(Twc.unit_quaternion());
+  }
 
-  // 2. Map keyframes to path parameters
+  // 3. Create a smooth path through the keyframe positions
+  std::vector<Eigen::Vector3d> path_points =
+      createSmoothPath(keyframe_positions, 20);
+
+  // 4. Compute arc lengths and camera orientations along the base path
+  std::vector<double> arc_lengths = computeArcLengths(path_points);
   std::vector<double> keyframe_parameters;
-  mapKeyframesToPath(keyframe_positions, path, arc_lengths,
+  mapKeyframesToPath(keyframe_positions, path_points, arc_lengths,
                      keyframe_parameters);
 
-  // 3. Sample at equal distances
-  for (int i = 0; i < num_samples; i++) {
-    double t = static_cast<double>(i) / (num_samples - 1);  // Normalized [0,1]
+  // 5. Sample path and generate interesting camera movements
+  int total_frames = static_cast<int>(duration_seconds * fps);
+  double total_length = arc_lengths.back();
+  std::vector<Eigen::Vector3d> exploration_positions;
+  std::vector<Eigen::Quaterniond> exploration_orientations;
+
+  // Compute local coordinate frames along the path (for controlled deviation)
+  std::vector<Eigen::Matrix3d> path_frames = computePathFrames(path_points);
+
+  // Calculate scene scale to properly scale deviations
+  double scene_scale = calculateSceneScale(keyframe_positions);
+  double deviation_amount = scene_scale * deviation_scale;
+
+  for (int i = 0; i < total_frames; i++) {
+    double t = static_cast<double>(i) / (total_frames - 1);  // Normalized [0,1]
     double target_length = total_length * t;
 
-    // Position at this arc length
-    Eigen::Vector3d position =
-        samplePositionAtArcLength(path, arc_lengths, target_length);
-
-    // Path parameter
+    // Get base position and orientation at this path location
+    Eigen::Vector3d base_position =
+        samplePositionAtArcLength(path_points, arc_lengths, target_length);
     double path_param = target_length / total_length;
-
-    // Interpolate orientation
-    Eigen::Quaterniond orientation = interpolateOrientation(
+    Eigen::Quaterniond base_orientation = interpolateOrientation(
         path_param, keyframe_parameters, keyframe_orientations);
 
-    sampled_positions.push_back(position);
-    sampled_orientations.push_back(orientation);
-  }
-}
-
-/**
- * Map keyframe positions to their closest corresponding points on the path
- */
-void GaussianMapper::mapKeyframesToPath(
-    const std::vector<Eigen::Vector3d>& keyframe_positions,
-    const std::vector<Eigen::Vector3d>& path,
-    const std::vector<double>& arc_lengths,
-    std::vector<double>& keyframe_parameters) {
-  keyframe_parameters.clear();
-  double total_length = arc_lengths.back();
-
-  for (const auto& kf_pos : keyframe_positions) {
-    // Find closest point on path
+    // Find closest point on path for local frame
     size_t closest_idx = 0;
     double min_dist = std::numeric_limits<double>::max();
-
-    for (size_t i = 0; i < path.size(); i++) {
-      double dist = (kf_pos - path[i]).squaredNorm();
+    for (size_t j = 0; j < path_points.size(); j++) {
+      double dist = (base_position - path_points[j]).squaredNorm();
       if (dist < min_dist) {
         min_dist = dist;
-        closest_idx = i;
+        closest_idx = j;
       }
     }
 
-    // Parameter is normalized arc length
-    double param = arc_lengths[closest_idx] / total_length;
-    keyframe_parameters.push_back(param);
+    // Apply sinusoidal deviations in local frame coordinates
+    Eigen::Matrix3d local_frame = path_frames[closest_idx];
+    Eigen::Vector3d deviation = Eigen::Vector3d::Zero();
+
+    // Vertical deviation (up/down)
+    deviation +=
+        local_frame.col(1) * sin(t * 2.0 * M_PI * 2.5) * deviation_amount;
+
+    // Horizontal deviation (left/right)
+    deviation += local_frame.col(0) * sin(t * 2.0 * M_PI * 1.7 + 1.0) *
+                 deviation_amount * 5.0;
+
+    // Forward/backward small deviation for dynamic feel
+    // deviation += local_frame.col(2) * sin(t * 2.0 * M_PI * 3.2 + 0.5) *
+    //              deviation_amount * 0.3;
+
+    // Apply deviation to base position
+    Eigen::Vector3d explorer_position = base_position + deviation;
+
+    // Create a modified orientation that occasionally looks toward interesting
+    // features
+    Eigen::Quaterniond explorer_orientation = base_orientation;
+
+    if (look_around) {
+      // Look slightly up/down and left/right based on a different frequency
+      double look_factor = 0.15;  // How much to look around (in radians)
+
+      // Look up/down
+      Eigen::Vector3d look_up_axis = local_frame.col(0);
+      double look_up_angle = sin(t * 2.0 * M_PI * 1.2 + 0.8) * look_factor;
+
+      // Look left/right
+      Eigen::Vector3d look_side_axis = local_frame.col(1);
+      double look_side_angle = sin(t * 2.0 * M_PI * 0.9 + 2.1) * look_factor;
+
+      // Apply these rotations to base orientation
+      Eigen::Quaterniond look_up =
+          Eigen::Quaterniond(Eigen::AngleAxisd(look_up_angle, look_up_axis));
+      Eigen::Quaterniond look_side = Eigen::Quaterniond(
+          Eigen::AngleAxisd(look_side_angle, look_side_axis));
+
+      explorer_orientation = base_orientation * look_up * look_side;
+      explorer_orientation.normalize();
+    }
+
+    exploration_positions.push_back(explorer_position);
+    exploration_orientations.push_back(explorer_orientation);
   }
 
-  // Ensure parameters are strictly increasing (required for interpolation)
-  for (size_t i = 1; i < keyframe_parameters.size(); i++) {
-    if (keyframe_parameters[i] <= keyframe_parameters[i - 1]) {
-      keyframe_parameters[i] = keyframe_parameters[i - 1] + 0.001;
+  // 6. Render each frame with the exploration camera path
+  std::vector<std::string> frame_paths;
+  for (int i = 0; i < total_frames; i++) {
+    // Create world-to-camera transform
+    Sophus::SE3d Twc(exploration_orientations[i], exploration_positions[i]);
+    Sophus::SE3f Tcw = Twc.inverse().cast<float>();
+
+    // Render frame
+    cv::Mat frame = renderFromPose(Tcw, width, height, true);
+
+    // Convert if needed (assuming renderFromPose returns float image)
+    cv::Mat output_frame;
+    frame.convertTo(output_frame, CV_8UC3, 255.0);
+
+    cv::cvtColor(output_frame, output_frame, cv::COLOR_BGR2RGB);
+
+    // Save frame
+    std::string frame_path =
+        output_path + "/frame_" + std::to_string(i + 1) + ".png";
+    cv::imwrite(frame_path, output_frame);
+    frame_paths.push_back(frame_path);
+
+    {
+      std::cout << "Rendered frame " << i + 1 << "/" << total_frames
+                << std::endl;
     }
   }
-}
 
-/**
- * Sample a position at a specific arc length along the path
- */
-Eigen::Vector3d GaussianMapper::samplePositionAtArcLength(
-    const std::vector<Eigen::Vector3d>& path,
-    const std::vector<double>& arc_lengths,
-    double target_length) {
-  // Find segment containing this arc length
-  auto it =
-      std::lower_bound(arc_lengths.begin(), arc_lengths.end(), target_length);
-  int idx = std::distance(arc_lengths.begin(), it);
+  // 7. Combine frames into video using ffmpeg
+  std::string cmd = "ffmpeg -y -framerate " + std::to_string(fps) + " -i " +
+                    output_path + "/frame_%d.png" +
+                    " -c:v libx264 -crf 18 -pix_fmt yuv420p " + output_path +
+                    "/3d_exploration.mp4";
 
-  if (idx >= path.size()) {
-    return path.back();  // Beyond the end
-  } else if (idx == 0) {
-    return path.front();  // Before the start
+  std::cout << "Creating video with command: " << cmd << std::endl;
+  int ret = system(cmd.c_str());
+  if (ret != 0) {
+    std::cerr
+        << "Failed to create video using ffmpeg. Check if ffmpeg is installed."
+        << std::endl;
   } else {
-    // Interpolate within segment
-    double segment_start = arc_lengths[idx - 1];
-    double segment_length = arc_lengths[idx] - segment_start;
-    double t = segment_length > 0
-                   ? (target_length - segment_start) / segment_length
-                   : 0;
+    std::cout << "Video created successfully at " << output_path
+              << "/3d_exploration.mp4" << std::endl;
 
-    return path[idx - 1] * (1 - t) + path[idx] * t;
+    // 7. Delete all frame files
+    std::cout << "Cleaning up frame files..." << std::endl;
+    int deleted_frames = 0;
+    for (const auto& frame_path : frame_paths) {
+      if (std::filesystem::remove(frame_path)) {
+        deleted_frames++;
+      }
+    }
+    std::cout << "Deleted " << deleted_frames << "/" << frame_paths.size()
+              << " frames." << std::endl;
   }
-}
-
-/**
- * Interpolate orientation using SLERP based on path parameter
- */
-Eigen::Quaterniond GaussianMapper::interpolateOrientation(
-    double param,
-    const std::vector<double>& keyframe_parameters,
-    const std::vector<Eigen::Quaterniond>& keyframe_orientations) {
-  // Handle boundary cases
-  if (param <= keyframe_parameters.front()) {
-    return keyframe_orientations.front();
-  }
-  if (param >= keyframe_parameters.back()) {
-    return keyframe_orientations.back();
-  }
-
-  // Find the keyframes before and after this parameter
-  size_t idx = 0;
-  while (idx < keyframe_parameters.size() - 1 &&
-         keyframe_parameters[idx + 1] < param) {
-    idx++;
-  }
-
-  // SLERP between these orientations
-  double segment_length =
-      keyframe_parameters[idx + 1] - keyframe_parameters[idx];
-  double t = segment_length > 0
-                 ? (param - keyframe_parameters[idx]) / segment_length
-                 : 0;
-  t = std::max(0.0, std::min(1.0, t));  // Clamp to [0,1]
-
-  return keyframe_orientations[idx].slerp(t, keyframe_orientations[idx + 1]);
 }

@@ -257,37 +257,17 @@ class GaussianMapper {
                              int width,
                              int height,
                              int fps,
-                             float duration_seconds);
-  std::vector<Eigen::Vector3d> createSmoothPath(
-      const std::vector<Eigen::Vector3d> &keypoints,
-      int points_per_segment);
-  Eigen::Vector3d catmullRomInterpolate(const Eigen::Vector3d &p0,
-                                        const Eigen::Vector3d &p1,
-                                        const Eigen::Vector3d &p2,
-                                        const Eigen::Vector3d &p3,
-                                        double t);
-  std::vector<double> computeArcLengths(
-      const std::vector<Eigen::Vector3d> &path);
-  void samplePathConstantSpeed(
-      const std::vector<Eigen::Vector3d> &path,
-      const std::vector<Eigen::Vector3d> &keyframe_positions,
-      const std::vector<Eigen::Quaterniond> &keyframe_orientations,
-      int num_samples,
-      std::vector<Eigen::Vector3d> &sampled_positions,
-      std::vector<Eigen::Quaterniond> &sampled_orientations);
-  void mapKeyframesToPath(
-      const std::vector<Eigen::Vector3d> &keyframe_positions,
-      const std::vector<Eigen::Vector3d> &path,
-      const std::vector<double> &arc_lengths,
-      std::vector<double> &keyframe_parameters);
-  Eigen::Vector3d samplePositionAtArcLength(
-      const std::vector<Eigen::Vector3d> &path,
-      const std::vector<double> &arc_lengths,
-      double target_length);
-  Eigen::Quaterniond interpolateOrientation(
-      double param,
-      const std::vector<double> &keyframe_parameters,
-      const std::vector<Eigen::Quaterniond> &keyframe_orientations);
+                             float duration_seconds,
+                             float smoothness_factor = 0.5,
+                             int keyframe_subsample = 1);
+
+  void render3DExplorationVideo(const std::string &output_path,
+                                int width,
+                                int height,
+                                int fps,
+                                float duration_seconds,
+                                float deviation_scale = 0.15f,
+                                bool look_around = true);
 
  private:
   // Chunk manager for efficient memory handling

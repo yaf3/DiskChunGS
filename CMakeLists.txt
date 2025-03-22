@@ -12,6 +12,19 @@ set(CMAKE_CUDA_STANDARD 17)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations")
 
+# Check for AVX support
+# include(CheckCXXCompilerFlag)
+# check_cxx_compiler_flag(-mavx COMPILER_SUPPORTS_AVX)
+# check_cxx_compiler_flag(-mavx2 COMPILER_SUPPORTS_AVX2)
+
+# if(COMPILER_SUPPORTS_AVX AND COMPILER_SUPPORTS_AVX2)
+#     message(STATUS "Compiler supports AVX and AVX2 - enabling optimizations")
+#     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mavx -mavx2")
+#     add_definitions(-DUSE_AVX)
+# else()
+#     message(STATUS "Compiler does not support AVX - using fallback implementation")
+# endif()
+
 set(CAFFE2_USE_CUDNN on)
 
 # Uncomment the following line if you want to solve CMake Warning "Failed to compute shorthash for libnvrtc.so"
@@ -153,6 +166,7 @@ add_library(
     include/chunk_types.h
     include/chunk_manager.h
     include/keyframe_selector.h
+    include/render_flythrough.h
     src/gaussian_keyframe.cpp
     src/gaussian_model.cpp
     src/gaussian_parameters.cpp
@@ -162,6 +176,7 @@ add_library(
     src/gaussian_mapper.cpp
     src/chunk_manager.cpp
     src/keyframe_selector.cpp
+    src/render_flythrough.cpp
 )
 target_link_libraries(
     gaussian_mapper
