@@ -40,21 +40,6 @@ struct Cam {
   // Additional camera properties can be added here
 };
 
-// Helper macros for SIMD operations
-#define SPLAT(v, c) _mm_permute_ps(v, _MM_SHUFFLE(c, c, c, c))
-
-// Helper function to check if a value is within a range
-inline bool within(float min, float val, float max) {
-  return (min <= val) && (val <= max);
-}
-
-// Non-SIMD implementation of AABB frustum culling using Eigen
-bool test_AABB_against_frustum(const Eigen::Matrix4f& MVP, const AABB& aabb);
-
-// SIMD-optimized implementation of AABB frustum culling
-// bool test_AABB_against_frustum_256(const Eigen::Matrix4f& transform,
-//                                    const AABB& aabb);
-
 // Pure Eigen implementation without explicit SIMD (relies on Eigen's
 // optimizations)
 bool test_AABB_against_frustum_eigen(const Eigen::Matrix4f& MVP,
@@ -122,6 +107,7 @@ class ChunkManager {
 
   // Schedule chunk save
   void scheduleChunkSave(const ChunkCoord& coord, int priority = 0);
+  void scheduleChunkLoad(const ChunkCoord& coord, int priority = 0);
 
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> groupPointsByChunk(
       const torch::Tensor& positions);
@@ -176,10 +162,10 @@ class ChunkManager {
   AABB getChunkAABB(const ChunkCoord& coord);
 
   // Load a chunk
-  bool loadChunk(const ChunkCoord& coord, bool background = false);
+  bool loadChunk(const ChunkCoord& coord);
 
   // Save a chunk
-  bool saveChunk(const ChunkCoord& coord, bool background = false);
+  bool saveChunk(const ChunkCoord& coord);
 
   // Find chunks to evict based on LRU policy
   std::vector<ChunkCoord> findChunksToEvict(int count);
@@ -193,6 +179,9 @@ class ChunkManager {
   }
 
   bool cullSparseChunks(int min_points_threshold);
+
+  // Cull gaussians that are outside of chunk borders
+  void cullGaussiansOutsideChunkBorders();
 
   // Stats for debugging/monitoring
   struct Stats {
@@ -217,9 +206,10 @@ class ChunkManager {
   // No-lock versions of methods that are called within locked sections
   void markChunkUsedNoLock(const ChunkCoord& coord);
   void scheduleChunkSaveNoLock(const ChunkCoord& coord, int priority = 0);
+  void scheduleChunkLoadNoLock(const ChunkCoord& coord, int priority = 0);
   bool chunkExistsOnDiskNoLock(const ChunkCoord& coord);
-  bool loadChunkNoLock(const ChunkCoord& coord, bool background = false);
-  bool saveChunkNoLock(const ChunkCoord& coord, bool background = false);
+  bool loadChunkNoLock(const ChunkCoord& coord);
+  bool saveChunkNoLock(const ChunkCoord& coord);
   std::vector<ChunkCoord> findChunksToEvictNoLock(int count);
 
   // Store model parameters directly

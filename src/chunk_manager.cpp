@@ -7,153 +7,91 @@
 
 #include "include/profiling.h"
 
-// Non-SIMD implementation of AABB frustum culling using Eigen
-bool test_AABB_against_frustum(const Eigen::Matrix4f& MVP, const AABB& aabb) {
-  // Define the 8 corners of the AABB
-  Eigen::Vector4f corners[8];
-  corners[0] =
-      Eigen::Vector4f(aabb.min.x(), aabb.min.y(), aabb.min.z(), 1.0f);  // x y z
-  corners[1] =
-      Eigen::Vector4f(aabb.max.x(), aabb.min.y(), aabb.min.z(), 1.0f);  // X y z
-  corners[2] =
-      Eigen::Vector4f(aabb.min.x(), aabb.max.y(), aabb.min.z(), 1.0f);  // x Y z
-  corners[3] =
-      Eigen::Vector4f(aabb.max.x(), aabb.max.y(), aabb.min.z(), 1.0f);  // X Y z
-  corners[4] =
-      Eigen::Vector4f(aabb.min.x(), aabb.min.y(), aabb.max.z(), 1.0f);  // x y Z
-  corners[5] =
-      Eigen::Vector4f(aabb.max.x(), aabb.min.y(), aabb.max.z(), 1.0f);  // X y Z
-  corners[6] =
-      Eigen::Vector4f(aabb.min.x(), aabb.max.y(), aabb.max.z(), 1.0f);  // x Y Z
-  corners[7] =
-      Eigen::Vector4f(aabb.max.x(), aabb.max.y(), aabb.max.z(), 1.0f);  // X Y Z
-
-  bool inside = false;
-
-  for (int i = 0; i < 8; ++i) {
-    // Transform vertex to clip space
-    Eigen::Vector4f transformed = MVP * corners[i];
-
-    // Check vertex against clip space bounds
-    inside =
-        inside || (within(-transformed.w(), transformed.x(), transformed.w()) &&
-                   within(-transformed.w(), transformed.y(), transformed.w()) &&
-                   within(0.0f, transformed.z(), transformed.w()));
-  }
-
-  return inside;
-}
-
-// SIMD-optimized implementation of AABB frustum culling
-// bool test_AABB_against_frustum_256(const Eigen::Matrix4f& transform,
-//                                    const AABB& aabb) {
-//   // Prepare AABB corners for SIMD processing
-//   Eigen::Vector4f min(aabb.min.x(), aabb.min.y(), aabb.min.z(), 1.0f);
-//   Eigen::Vector4f max(aabb.max.x(), aabb.max.y(), aabb.max.z(), 1.0f);
-
-//   // Load AABB min and max into SIMD registers
-//   // Note: We're assuming Eigen uses column-major order by default
-//   const __m128 aabb_min = _mm_load_ps(min.data());
-//   const __m128 aabb_max = _mm_load_ps(max.data());
-
-//   // Shuffle components to prepare for corner calculations
-//   __m128 x_minmax =
-//       _mm_shuffle_ps(aabb_min, aabb_max, _MM_SHUFFLE(0, 0, 0, 0));  // x x X
-//       X
-//   x_minmax = _mm_permute_ps(x_minmax, _MM_SHUFFLE(2, 0, 2, 0));     // x X x
-//   X const __m128 y_minmax =
-//       _mm_shuffle_ps(aabb_min, aabb_max, _MM_SHUFFLE(1, 1, 1, 1));  // y y Y
-//       Y
-//   const __m128 z_min = SPLAT(aabb_min, 2);                          // z z z
-//   z const __m128 z_max = SPLAT(aabb_max, 2);                          // Z Z
-//   Z Z
-
-//   // Combine into 256-bit registers for 8 corners
-//   const __m256 x = _mm256_set_m128(x_minmax, x_minmax);
-//   const __m256 y = _mm256_set_m128(y_minmax, y_minmax);
-//   const __m256 z = _mm256_set_m128(z_min, z_max);
-
-//   // Storage for transformed corner components
-//   __m256 corner_comps[4];
-
-//   // Transform all 8 corners at once using SIMD
-//   for (int i = 0; i < 4; ++i) {
-//     // Load matrix row from Eigen matrix
-//     __m256 res = _mm256_broadcast_ss(&transform(i, 3));  // w component
-//     res = _mm256_add_ps(
-//         res, _mm256_mul_ps(_mm256_broadcast_ss(&transform(i, 0)), x));
-//     res = _mm256_add_ps(
-//         res, _mm256_mul_ps(_mm256_broadcast_ss(&transform(i, 1)), y));
-//     res = _mm256_add_ps(
-//         res, _mm256_mul_ps(_mm256_broadcast_ss(&transform(i, 2)), z));
-//     corner_comps[i] = res;
-//   }
-
-//   // Prepare for clip space tests
-//   const __m256 neg_ws = _mm256_sub_ps(_mm256_setzero_ps(), corner_comps[3]);
-
-//   // Test whether -w < x < w
-//   __m256 inside = _mm256_and_ps(
-//       _mm256_cmp_ps(neg_ws, corner_comps[0], _CMP_LE_OQ),
-//       _mm256_cmp_ps(corner_comps[0], corner_comps[3], _CMP_LE_OQ));
-//   // inside && -w < y < w
-//   inside = _mm256_and_ps(
-//       inside, _mm256_and_ps(
-//                   _mm256_cmp_ps(neg_ws, corner_comps[1], _CMP_LE_OQ),
-//                   _mm256_cmp_ps(corner_comps[1], corner_comps[3],
-//                   _CMP_LE_OQ)));
-//   // inside && 0 < z < w
-//   inside = _mm256_and_ps(
-//       inside,
-//       _mm256_and_ps(
-//           _mm256_cmp_ps(_mm256_setzero_ps(), corner_comps[2], _CMP_LE_OQ),
-//           _mm256_cmp_ps(corner_comps[2], corner_comps[3], _CMP_LE_OQ)));
-
-//   // Reduce our 8 different in/out lanes to a single boolean
-//   __m128 reduction = _mm_or_ps(_mm256_extractf128_ps(inside, 0),
-//                                _mm256_extractf128_ps(inside, 1));
-//   reduction =
-//       _mm_or_ps(reduction, _mm_permute_ps(reduction, _MM_SHUFFLE(2, 3, 0,
-//       1)));
-//   reduction =
-//       _mm_or_ps(reduction, _mm_permute_ps(reduction, _MM_SHUFFLE(1, 0, 3,
-//       2)));
-
-//   // Store our reduction
-//   u32 res = 0u;
-//   _mm_store_ss(reinterpret_cast<float*>(&res), reduction);
-//   return res != 0;
-// }
-
 // Pure Eigen implementation without explicit SIMD (relies on Eigen's
 // optimizations)
 bool test_AABB_against_frustum_eigen(const Eigen::Matrix4f& MVP,
                                      const AABB& aabb) {
   // Define the 8 corners of the AABB
-  std::array<Eigen::Vector3f, 8> corners;
-  corners[0] = aabb.min;
-  corners[1] = Eigen::Vector3f(aabb.max.x(), aabb.min.y(), aabb.min.z());
-  corners[2] = Eigen::Vector3f(aabb.min.x(), aabb.max.y(), aabb.min.z());
-  corners[3] = Eigen::Vector3f(aabb.max.x(), aabb.max.y(), aabb.min.z());
-  corners[4] = Eigen::Vector3f(aabb.min.x(), aabb.min.y(), aabb.max.z());
-  corners[5] = Eigen::Vector3f(aabb.max.x(), aabb.min.y(), aabb.max.z());
-  corners[6] = Eigen::Vector3f(aabb.min.x(), aabb.max.y(), aabb.max.z());
-  corners[7] = aabb.max;
+  std::array<Eigen::Vector4f, 8> corners;
+  corners[0] = Eigen::Vector4f(aabb.min.x(), aabb.min.y(), aabb.min.z(), 1.0f);
+  corners[1] = Eigen::Vector4f(aabb.max.x(), aabb.min.y(), aabb.min.z(), 1.0f);
+  corners[2] = Eigen::Vector4f(aabb.min.x(), aabb.max.y(), aabb.min.z(), 1.0f);
+  corners[3] = Eigen::Vector4f(aabb.max.x(), aabb.max.y(), aabb.min.z(), 1.0f);
+  corners[4] = Eigen::Vector4f(aabb.min.x(), aabb.min.y(), aabb.max.z(), 1.0f);
+  corners[5] = Eigen::Vector4f(aabb.max.x(), aabb.min.y(), aabb.max.z(), 1.0f);
+  corners[6] = Eigen::Vector4f(aabb.min.x(), aabb.max.y(), aabb.max.z(), 1.0f);
+  corners[7] = Eigen::Vector4f(aabb.max.x(), aabb.max.y(), aabb.max.z(), 1.0f);
 
-  for (const auto& corner : corners) {
+  // Test 1: Check if any corner is inside the view frustum
+  bool any_corner_inside = false;
+  bool all_corners_outside_same_plane = true;
+
+  // Arrays to track which side of each frustum plane each corner is on
+  bool outside_left[8] = {false};
+  bool outside_right[8] = {false};
+  bool outside_bottom[8] = {false};
+  bool outside_top[8] = {false};
+  bool outside_near[8] = {false};
+  bool outside_far[8] = {false};
+
+  // Transform and test all corners
+  for (int i = 0; i < 8; ++i) {
     // Transform to clip space
-    Eigen::Vector4f clipSpace =
-        MVP * Eigen::Vector4f(corner.x(), corner.y(), corner.z(), 1.0f);
+    Eigen::Vector4f clipSpace = MVP * corners[i];
 
-    // Check if this corner is inside the view frustum
-    if (clipSpace.x() >= -clipSpace.w() && clipSpace.x() <= clipSpace.w() &&
-        clipSpace.y() >= -clipSpace.w() && clipSpace.y() <= clipSpace.w() &&
-        clipSpace.z() >= 0.0f && clipSpace.z() <= clipSpace.w()) {
-      return true;
+    // To handle perspective division properly
+    float w = clipSpace.w();
+    float x = clipSpace.x();
+    float y = clipSpace.y();
+    float z = clipSpace.z();
+
+    // Check which side of each plane this corner is on
+    outside_left[i] = x < -w;
+    outside_right[i] = x > w;
+    outside_bottom[i] = y < -w;
+    outside_top[i] = y > w;
+    outside_near[i] = z < 0;
+    outside_far[i] = z > w;
+
+    // If any corner is inside, we're done
+    if (!outside_left[i] && !outside_right[i] && !outside_bottom[i] &&
+        !outside_top[i] && !outside_near[i] && !outside_far[i]) {
+      any_corner_inside = true;
     }
   }
 
-  return false;
+  if (any_corner_inside) {
+    return true;
+  }
+
+  // Test 2: If all corners are outside the same frustum plane, the AABB is
+  // outside
+  bool all_outside_left = true;
+  bool all_outside_right = true;
+  bool all_outside_bottom = true;
+  bool all_outside_top = true;
+  bool all_outside_near = true;
+  bool all_outside_far = true;
+
+  for (int i = 0; i < 8; ++i) {
+    all_outside_left &= outside_left[i];
+    all_outside_right &= outside_right[i];
+    all_outside_bottom &= outside_bottom[i];
+    all_outside_top &= outside_top[i];
+    all_outside_near &= outside_near[i];
+    all_outside_far &= outside_far[i];
+  }
+
+  // If all corners are outside any single plane, the AABB is outside the
+  // frustum
+  if (all_outside_left || all_outside_right || all_outside_bottom ||
+      all_outside_top || all_outside_near || all_outside_far) {
+    return false;
+  }
+
+  // Test 3: If we reach here, the AABB and frustum intersect
+  // (No corner is inside, but the AABB isn't completely outside any plane)
+  return true;
 }
 
 // Main culling function using Eigen types
@@ -173,13 +111,7 @@ void cull_AABBs_against_frustum(const Cam& camera,
     // Compute model-view-projection matrix
     Eigen::Matrix4f MVP = VP * transforms[i];
 
-    // Test using appropriate method
-    bool visible;
-    if (use_simd) {
-      // visible = test_AABB_against_frustum_256(MVP, aabb_list[i]);
-    } else {
-      visible = test_AABB_against_frustum_eigen(MVP, aabb_list[i]);
-    }
+    bool visible = test_AABB_against_frustum_eigen(MVP, aabb_list[i]);
 
     if (visible) {
       out_visible_list.push_back(static_cast<u32>(i));
@@ -277,6 +209,10 @@ std::tuple<torch::Tensor, torch::Tensor> ChunkManager::filterPointsByDepth(
 void ChunkManager::markChunkUsedNoLock(const ChunkCoord& coord) {
   auto it = chunk_metadata_.find(coord);
   if (it != chunk_metadata_.end()) {
+    if (it->second.loading || it->second.saving) {
+      // Don't allow access to chunks being saved or loaded
+      return;
+    }
     it->second.last_used = std::chrono::steady_clock::now();
     it->second.usage_count++;
     it->second.dirty =
@@ -295,11 +231,13 @@ void ChunkManager::scheduleChunkSaveNoLock(const ChunkCoord& coord,
                                            int priority) {
   // Only schedule if chunk exists and is dirty
   auto meta_it = chunk_metadata_.find(coord);
-  if (meta_it != chunk_metadata_.end() && meta_it->second.dirty &&
-      !meta_it->second.saving) {
-    meta_it->second.saving = true;
-    io_queue_.push(ChunkIORequest(coord, ChunkOperation::SAVE, priority));
-    io_cv_.notify_one();
+  if (meta_it != chunk_metadata_.end()) {
+    if (meta_it->second.dirty && !meta_it->second.saving &&
+        !meta_it->second.loading) {
+      meta_it->second.saving = true;
+      io_queue_.push(ChunkIORequest(coord, ChunkOperation::SAVE, priority));
+      io_cv_.notify_one();
+    }
   }
 }
 
@@ -307,6 +245,25 @@ void ChunkManager::scheduleChunkSaveNoLock(const ChunkCoord& coord,
 void ChunkManager::scheduleChunkSave(const ChunkCoord& coord, int priority) {
   std::lock_guard<std::mutex> lock(io_mutex_);
   scheduleChunkSaveNoLock(coord, priority);
+}
+
+// Private version that assumes lock is already held
+void ChunkManager::scheduleChunkLoadNoLock(const ChunkCoord& coord,
+                                           int priority) {
+  // Only schedule if chunk exists and is dirty
+  auto meta_it = chunk_metadata_.find(coord);
+  if (meta_it != chunk_metadata_.end() && meta_it->second.dirty &&
+      !meta_it->second.saving && !meta_it->second.loading) {
+    meta_it->second.loading = true;
+    io_queue_.push(ChunkIORequest(coord, ChunkOperation::LOAD, priority));
+    io_cv_.notify_one();
+  }
+}
+
+// Public version that acquires the lock
+void ChunkManager::scheduleChunkLoad(const ChunkCoord& coord, int priority) {
+  std::lock_guard<std::mutex> lock(io_mutex_);
+  scheduleChunkLoadNoLock(coord, priority);
 }
 
 // Evict least recently used chunks
@@ -415,16 +372,18 @@ void ChunkManager::ioThreadFunc() {
       std::cout << "[IO Thread] Processing request to load chunk: "
                 << request.coord.x << " " << request.coord.y << " "
                 << request.coord.z << " " << std::endl;
-      if (!loadChunk(request.coord, true)) {
+      if (!loadChunk(request.coord)) {
         throw std::runtime_error("Failed to load chunk");
       }
+      std::cout << "Process done." << std::endl;
     } else if (request.operation == ChunkOperation::SAVE) {
       std::cout << "[IO Thread] Processing request to save chunk: "
                 << request.coord.x << " " << request.coord.y << " "
                 << request.coord.z << " " << std::endl;
-      if (!saveChunk(request.coord, true)) {
+      if (!saveChunk(request.coord)) {
         throw std::runtime_error("Failed to save chunk");
       }
+      std::cout << "Process done." << std::endl;
     } else if (request.operation == ChunkOperation::DELETE) {
       std::cout << "[IO Thread] Processing request to delete chunk: "
                 << request.coord.x << " " << request.coord.y << " "
@@ -452,6 +411,8 @@ void ChunkManager::ioThreadFunc() {
 
       // Update the disk cache to reflect the deletion
       chunk_exists_cache_[request.coord] = false;
+
+      std::cout << "Process done." << std::endl;
     }
   }
 
@@ -469,7 +430,7 @@ void ChunkManager::ioThreadFunc() {
   }
 
   for (const auto& coord : dirty_chunks) {
-    saveChunk(coord, false);
+    saveChunk(coord);
   }
 }
 
@@ -484,19 +445,23 @@ std::filesystem::path ChunkManager::getChunkFilename(const ChunkCoord& coord) {
 }
 
 // Private version that assumes lock is already held
-bool ChunkManager::loadChunkNoLock(const ChunkCoord& coord, bool background) {
+bool ChunkManager::loadChunkNoLock(const ChunkCoord& coord) {
   auto timer = ProfilingUtils::Timer("ChunkManager::loadChunk");
+
+  auto meta_it = chunk_metadata_.find(coord);
+  if (meta_it != chunk_metadata_.end() && meta_it->second.saving) {
+    return false;
+  }
 
   // Check if already loaded
   auto it = active_chunks_.find(coord);
   if (it != active_chunks_.end()) {
-    if (background) {
-      // Update metadata
-      auto meta_it = chunk_metadata_.find(coord);
-      if (meta_it != chunk_metadata_.end()) {
-        meta_it->second.loading = false;
-      }
+    // Update metadata
+    auto meta_it = chunk_metadata_.find(coord);
+    if (meta_it != chunk_metadata_.end()) {
+      meta_it->second.loading = false;
     }
+
     incrementStat(stats_.cache_hits);
     return true;
   }
@@ -504,11 +469,9 @@ bool ChunkManager::loadChunkNoLock(const ChunkCoord& coord, bool background) {
   auto chunk_filename = getChunkFilename(coord);
 
   if (!chunkExistsOnDiskNoLock(coord)) {
-    if (background) {
-      auto meta_it = chunk_metadata_.find(coord);
-      if (meta_it != chunk_metadata_.end()) {
-        meta_it->second.loading = false;
-      }
+    auto meta_it = chunk_metadata_.find(coord);
+    if (meta_it != chunk_metadata_.end()) {
+      meta_it->second.loading = false;
     }
     return false;
   }
@@ -541,20 +504,17 @@ bool ChunkManager::loadChunkNoLock(const ChunkCoord& coord, bool background) {
     incrementStat(stats_.active_chunks);
     incrementStat(stats_.disk_loads);
 
-    // std::cout << "Successfully loaded chunk from disk: " << coord.x << "
-    // "
-    //           << coord.y << " " << coord.z << " " << std::endl;
+    std::cout << "Successfully loaded chunk from disk: " << coord.x << " "
+              << coord.y << " " << coord.z << " " << std::endl;
 
     return true;
   } catch (const std::exception& e) {
     std::cerr << "Exception loading chunk: " << e.what() << std::endl;
     throw std::runtime_error("Chunk could not be loaded");
 
-    if (background) {
-      auto meta_it = chunk_metadata_.find(coord);
-      if (meta_it != chunk_metadata_.end()) {
-        meta_it->second.loading = false;
-      }
+    auto meta_it = chunk_metadata_.find(coord);
+    if (meta_it != chunk_metadata_.end()) {
+      meta_it->second.loading = false;
     }
 
     return false;
@@ -562,14 +522,21 @@ bool ChunkManager::loadChunkNoLock(const ChunkCoord& coord, bool background) {
 }
 
 // Public version that acquires the lock
-bool ChunkManager::loadChunk(const ChunkCoord& coord, bool background) {
+bool ChunkManager::loadChunk(const ChunkCoord& coord) {
   std::lock_guard<std::mutex> lock(io_mutex_);
-  return loadChunkNoLock(coord, background);
+  return loadChunkNoLock(coord);
 }
 
 // Private version that assumes lock is already held
-bool ChunkManager::saveChunkNoLock(const ChunkCoord& coord, bool background) {
+bool ChunkManager::saveChunkNoLock(const ChunkCoord& coord) {
   auto timer = ProfilingUtils::Timer("ChunkManager::saveChunk");
+
+  auto meta_it = chunk_metadata_.find(coord);
+  if (meta_it != chunk_metadata_.end()) {
+    if (meta_it->second.loading) {
+      return false;
+    }
+  }
 
   // First check if chunk exists and get it
   auto it = active_chunks_.find(coord);
@@ -601,14 +568,15 @@ bool ChunkManager::saveChunkNoLock(const ChunkCoord& coord, bool background) {
 
     incrementStat(stats_.disk_saves);
 
-    // Remove from memory if was a background save for eviction
-    if (background) {
-      active_chunks_.erase(coord);
-      decrementStat(stats_.active_chunks);
-    }
+    // Remove from memory
+    active_chunks_.erase(coord);
+    decrementStat(stats_.active_chunks);
 
     // Clear CUDA cache after saving to free memory
     c10::cuda::CUDACachingAllocator::emptyCache();
+
+    std::cerr << "Saved Chunk to disk: " << coord.x << "," << coord.y << ","
+              << coord.z << std::endl;
 
     return true;
   } catch (const std::exception& e) {
@@ -626,13 +594,18 @@ bool ChunkManager::saveChunkNoLock(const ChunkCoord& coord, bool background) {
 }
 
 // Public version that acquires the lock
-bool ChunkManager::saveChunk(const ChunkCoord& coord, bool background) {
+bool ChunkManager::saveChunk(const ChunkCoord& coord) {
   std::lock_guard<std::mutex> lock(io_mutex_);
-  return saveChunkNoLock(coord, background);
+  return saveChunkNoLock(coord);
 }
 
 // Get chunk at specific coordinate
 std::shared_ptr<Chunk> ChunkManager::getChunkAtNoLock(const ChunkCoord& coord) {
+  auto meta_it = chunk_metadata_.find(coord);
+  if (meta_it != chunk_metadata_.end() &&
+      (meta_it->second.saving || meta_it->second.loading)) {
+    return nullptr;  // Don't allow access to chunks pending eviction
+  }
   auto it = active_chunks_.find(coord);
   if (it != active_chunks_.end()) {
     return it->second;
@@ -1070,6 +1043,17 @@ void ChunkManager::addPointsToChunks(
     {
       std::lock_guard<std::mutex> lock(io_mutex_);
 
+      {
+        // If loading or saving this chunk right now, skip (maybe instead
+        // wait?)
+        auto it = chunk_metadata_.find(coord);
+        if (it != chunk_metadata_.end()) {
+          if (it->second.loading || it->second.saving) {
+            continue;
+          }
+        }
+      }
+
       // Check if already in memory
       auto it = active_chunks_.find(coord);
       if (it != active_chunks_.end()) {
@@ -1078,7 +1062,7 @@ void ChunkManager::addPointsToChunks(
       }
       // Try to load from disk
       else if (chunkExistsOnDiskNoLock(coord)) {  // Use no-lock version
-        if (loadChunkNoLock(coord, false)) {      // Use no-lock version
+        if (loadChunkNoLock(coord)) {             // Use no-lock version
           chunk = active_chunks_[coord];
           std::cout << "Chunk loaded from disk" << std::endl;
         } else {
@@ -1190,7 +1174,7 @@ bool ChunkManager::cullSparseChunks(int min_points_threshold) {
       // Update disk cache to prevent reloading
       chunk_exists_cache_[coord] = false;
 
-      // Mark for background deletion if needed
+      // Mark for deletion if needed
       auto meta_it = chunk_metadata_.find(coord);
       if (meta_it != chunk_metadata_.end()) {
         if (meta_it->second.dirty) {
@@ -1205,4 +1189,80 @@ bool ChunkManager::cullSparseChunks(int min_points_threshold) {
   }
 
   return any_culled;
+}
+
+void ChunkManager::cullGaussiansOutsideChunkBorders() {
+  std::lock_guard<std::mutex> lock(io_mutex_);
+
+  for (const auto& [coord, chunk] : active_chunks_) {
+    if (!chunk || !chunk->getGaussians()) {
+      continue;  // No chunk or no gaussians
+    }
+
+    // Check if chunk is being loaded or saved
+    auto meta_it = chunk_metadata_.find(coord);
+    if (meta_it != chunk_metadata_.end() &&
+        (meta_it->second.loading || meta_it->second.saving)) {
+      continue;  // Skip chunks being loaded or saved
+    }
+
+    // Get the AABB for the chunk
+    AABB aabb = getChunkAABB(coord);
+
+    // Get the gaussians from the chunk
+    auto gaussians = chunk->getGaussians();
+    auto points = gaussians->getXYZ();
+
+    int num_points = points.size(0);
+    if (num_points == 0) {
+      continue;  // No points to cull
+    }
+
+    // Create a mask for points that are outside the AABB
+    torch::Tensor outside_mask =
+        ((points.index({torch::indexing::Slice(), 0}) < aabb.min.x()) |
+         (points.index({torch::indexing::Slice(), 0}) > aabb.max.x()) |
+         (points.index({torch::indexing::Slice(), 1}) < aabb.min.y()) |
+         (points.index({torch::indexing::Slice(), 1}) > aabb.max.y()) |
+         (points.index({torch::indexing::Slice(), 2}) < aabb.min.z()) |
+         (points.index({torch::indexing::Slice(), 2}) > aabb.max.z()));
+
+    int num_outside = outside_mask.sum().item<int>();
+
+    // If no points are outside, no culling needed
+    if (num_outside == 0) {
+      continue;
+    }
+
+    // If all points are outside, remove the chunk entirely
+    if (num_outside == num_points) {
+      // Remove from active chunks
+      active_chunks_.erase(coord);
+      decrementStat(stats_.active_chunks);
+
+      // Update disk cache to prevent reloading
+      chunk_exists_cache_[coord] = false;
+
+      // Mark for deletion if needed
+      if (meta_it != chunk_metadata_.end() && meta_it->second.dirty) {
+        // Queue for background deletion
+        io_queue_.push(ChunkIORequest(coord, ChunkOperation::DELETE, 5));
+        io_cv_.notify_one();
+      }
+    } else {
+      // Otherwise, prune the outside points
+      try {
+        gaussians->prunePoints(outside_mask);
+
+        // Mark the chunk as dirty
+        if (meta_it != chunk_metadata_.end()) {
+          meta_it->second.dirty = true;
+        }
+      } catch (const std::exception& e) {
+        std::cerr << "Error pruning gaussians for chunk " << coord.x << ","
+                  << coord.y << "," << coord.z << ": " << e.what() << std::endl;
+        continue;
+      }
+    }
+  }
 }

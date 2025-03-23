@@ -950,11 +950,12 @@ void GaussianMapper::trainForOneIteration() {
         gaussians->optimizer_->zero_grad(true);
       }
     }
-  }
 
-  // Periodically evict unused chunks (every 50 iterations)
-  if (getIteration() % 50 == 0) {
-    chunk_manager_->evictUnusedChunks();
+    // Periodically cull gaussians outside of borders & evict unused chunks
+    if (getIteration() % 50 == 0) {
+      chunk_manager_->cullGaussiansOutsideChunkBorders();
+      chunk_manager_->evictUnusedChunks();
+    }
   }
 
   timer_trainForOneIteration.stop();
