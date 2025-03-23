@@ -1332,7 +1332,7 @@ void GaussianModel::load_checkpoint_incremental(
         }
 
         learning_rates.push_back(lr);
-        std::cout << "  Group " << i << " LR: " << lr << std::endl;
+        // std::cout << "  Group " << i << " LR: " << lr << std::endl;
       }
     } catch (const std::exception& e) {
       std::cerr << "Error loading config: " << e.what() << std::endl;
@@ -1448,13 +1448,28 @@ void GaussianModel::load_checkpoint_incremental(
             for (int d = 0; d < param.dim(); ++d) {
               if (param.size(d) != shape[d]) {
                 sizes_match = false;
-                throw std::runtime_error("Sizes don't match");
                 break;
               }
             }
           }
 
           if (!sizes_match) {
+            // Print the expected shape from the archive
+            std::cerr << "Expected shape: [";
+            for (size_t d = 0; d < shape.size(); ++d) {
+              std::cerr << shape[d];
+              if (d < shape.size() - 1) std::cerr << ", ";
+            }
+            std::cerr << "]" << std::endl;
+
+            // Print the actual shape of the parameter
+            std::cerr << "Actual shape: [";
+            for (int d = 0; d < param.dim(); ++d) {
+              std::cerr << param.size(d);
+              if (d < param.dim() - 1) std::cerr << ", ";
+            }
+            std::cerr << "]" << std::endl;
+
             std::cerr << "Warning: Parameter shape mismatch for param "
                       << param_idx << std::endl;
             throw std::runtime_error("Parameter shape mismatch");
