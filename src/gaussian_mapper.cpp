@@ -79,12 +79,6 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
 
   chunk_save_dir_ = result_dir / "chunks";
-  if (!chunk_save_dir_.empty() && std::filesystem::exists(chunk_save_dir_)) {
-    for (const auto& entry :
-         std::filesystem::directory_iterator(chunk_save_dir_)) {
-      std::filesystem::remove_all(entry.path());
-    }
-  }
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
 
   config_file_path_ = gaussian_config_file_path;
@@ -404,6 +398,14 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
 }
 
 void GaussianMapper::run() {
+  // Delete existing chunks since training
+  if (!chunk_save_dir_.empty() && std::filesystem::exists(chunk_save_dir_)) {
+    for (const auto& entry :
+         std::filesystem::directory_iterator(chunk_save_dir_)) {
+      std::filesystem::remove_all(entry.path());
+    }
+  }
+
   // First loop: Initial gaussian mapping
   while (!isStopped()) {
     // Check conditions for initial mapping
@@ -587,19 +589,30 @@ void GaussianMapper::run() {
   }
 
   // For debug: basically viewer now
-  while (getIteration() < 100000) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-  }
+  // while (getIteration() < 100000) {
+  //   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+  // }
 
   // Save and clear
   renderAndRecordAllKeyframes("_shutdown");
-  savePly(result_dir_ / (std::to_string(getIteration()) + "_shutdown") / "ply");
+  // savePly(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
+  // "ply");
+  saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
+            "data");
   writeKeyframeUsedTimes(result_dir_ / "used_times", "final");
 
   signalStop();
 }
 
 void GaussianMapper::trainColmap() {
+  // Delete existing chunks since training
+  if (!chunk_save_dir_.empty() && std::filesystem::exists(chunk_save_dir_)) {
+    for (const auto& entry :
+         std::filesystem::directory_iterator(chunk_save_dir_)) {
+      std::filesystem::remove_all(entry.path());
+    }
+  }
+
   // Prepare multi resolution images for training
   for (auto& kfit : scene_->keyframes()) {
     auto pkf = kfit.second;
@@ -682,7 +695,10 @@ void GaussianMapper::trainColmap() {
 
   // Save and clear
   renderAndRecordAllKeyframes("_shutdown");
-  savePly(result_dir_ / (std::to_string(getIteration()) + "_shutdown") / "ply");
+  // savePly(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
+  // "ply");
+  saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
+            "data");
   writeKeyframeUsedTimes(result_dir_ / "used_times", "final");
 
   signalStop();
@@ -913,7 +929,9 @@ void GaussianMapper::trainForOneIteration() {
     if ((all_keyframes_record_interval_ &&
          getIteration() % all_keyframes_record_interval_ == 0)) {
       renderAndRecordAllKeyframes();
-      savePly(result_dir_ / std::to_string(getIteration()) / "ply");
+      // savePly(result_dir_ / std::to_string(getIteration()) / "ply");
+      saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
+                "data");
     }
 
     if (loop_closure_iteration_) loop_closure_iteration_ = false;
@@ -1056,151 +1074,147 @@ void GaussianMapper::combineMappingOperations() {
         }
       } break;
 
-        // case ORB_SLAM3::MappingOperation::OprType::LoopClosingBA: {
-        //   std::cout << "[Gaussian Mapper]Loop Closure Detected." <<
-        //   std::endl;
+      case ORB_SLAM3::MappingOperation::OprType::LoopClosingBA: {
+        // std::cout << "[Gaussian Mapper]Loop Closure Detected." << std::endl;
 
-        //   // Get the loop keyframe scale modification factor
-        //   float loop_kf_scale = opr.mfScale;
+        // // Get the loop keyframe scale modification factor
+        // float loop_kf_scale = opr.mfScale;
 
-        //   // Get new keyframes (scaled transformation applied in ORB-SLAM3)
-        //   auto& associated_kfs = opr.associatedKeyFrames();
-        //   // Mark the transformed points to avoid transforming more than once
-        //   torch::Tensor point_not_transformed_flags = torch::full(
-        //       {gaussians_->xyz_.size(0)}, true,
-        //       torch::TensorOptions().device(device_type_).dtype(torch::kBool));
-        //   if (record_loop_ply_)
-        //     savePly(result_dir_ / (std::to_string(getIteration()) +
-        //                            "_0_before_loop_correction"));
-        //   int num_transformed = 0;
-        //   // Add keyframes to the scene
-        //   for (auto& kf : associated_kfs) {
-        //     // Keyframe Id
-        //     auto kfid = std::get<0>(kf);
-        //     std::shared_ptr<GaussianKeyframe> pkf =
-        //     scene_->getKeyframe(kfid);
-        //     // In case new points are added in handleNewKeyframe()
-        //     int64_t num_new_points =
-        //         gaussians_->xyz_.size(0) -
-        //         point_not_transformed_flags.size(0);
-        //     if (num_new_points > 0)
-        //       point_not_transformed_flags =
-        //           torch::cat({point_not_transformed_flags,
-        //                       torch::full({num_new_points}, true,
-        //                                   point_not_transformed_flags.options())},
-        //                      /*dim=*/0);
-        //     // If kf is already in the scene, evaluate the change in pose,
-        //     // if too large we perform loop correction on its visible model
-        //     // points. If not in the scene, create a new one.
-        //     if (pkf) {
-        //       auto& pose = std::get<2>(kf);
-        //       Sophus::SE3f original_pose =
-        //           pkf->getPosef();  // original_pose = old, inv_pose = new
-        //       Sophus::SE3f inv_pose = pose.inverse();
-        //       Sophus::SE3f diff_pose = inv_pose * original_pose;
-        //       bool large_rot = !diff_pose.rotationMatrix().isApprox(
-        //           Eigen::Matrix3f::Identity(), large_rot_th_);
-        //       bool large_trans = !diff_pose.translation().isMuchSmallerThan(
-        //           1.0, large_trans_th_);
-        //       if (large_rot || large_trans) {
-        //         std::cout << "[Gaussian Mapper]Large loop correction
-        //         detected, "
-        //                      "transforming visible points of kf "
-        //                   << kfid << std::endl;
-        //         diff_pose.translation() -=
-        //             inv_pose
-        //                 .translation();  // t = (R_new * t_old + t_new) -
-        //                 t_new
-        //         diff_pose.translation() *=
-        //             loop_kf_scale;  // t = s * (R_new * t_old)
-        //         diff_pose.translation() +=
-        //             inv_pose.translation();  // t = (s * R_new * t_old) +
-        //             t_new
-        //         torch::Tensor diff_pose_tensor =
-        //             tensor_utils::EigenMatrix2TorchTensor(diff_pose.matrix(),
-        //                                                   device_type_)
-        //                 .transpose(0, 1);
-        //         {
-        //           std::unique_lock<std::mutex> lock_render(mutex_render_);
-        //           gaussians_->scaledTransformVisiblePointsOfKeyframe(
-        //               point_not_transformed_flags, diff_pose_tensor,
-        //               pkf->world_view_transform_, pkf->full_proj_transform_,
-        //               pkf->creation_iter_, stableNumIterExistence(),
-        //               num_transformed,
-        //               loop_kf_scale);  // selected xyz *= s
-        //         }
-        //         // Give loop keyframes times of use
-        //         increaseKeyframeTimesOfUse(pkf,
-        //                                    loop_closure_increased_times_of_use_);
+        // // Get new keyframes (scaled transformation applied in ORB-SLAM3)
+        // auto& associated_kfs = opr.associatedKeyFrames();
+        // // Mark the transformed points to avoid transforming more than once
+        // torch::Tensor point_not_transformed_flags = torch::full(
+        //     {gaussians_->xyz_.size(0)}, true,
+        //     torch::TensorOptions().device(device_type_).dtype(torch::kBool));
+        // if (record_loop_ply_)
+        //   savePly(result_dir_ / (std::to_string(getIteration()) +
+        //                          "_0_before_loop_correction"));
+        // int num_transformed = 0;
+        // // Add keyframes to the scene
+        // for (auto& kf : associated_kfs) {
+        //   // Keyframe Id
+        //   auto kfid = std::get<0>(kf);
+        //   std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
+        //   // In case new points are added in handleNewKeyframe()
+        //   int64_t num_new_points =
+        //       gaussians_->xyz_.size(0) - point_not_transformed_flags.size(0);
+        //   if (num_new_points > 0)
+        //     point_not_transformed_flags =
+        //         torch::cat({point_not_transformed_flags,
+        //                     torch::full({num_new_points}, true,
+        //                                 point_not_transformed_flags.options())},
+        //                    /*dim=*/0);
+        //   // If kf is already in the scene, evaluate the change in pose,
+        //   // if too large we perform loop correction on its visible model
+        //   // points. If not in the scene, create a new one.
+        //   if (pkf) {
+        //     auto& pose = std::get<2>(kf);
+        //     Sophus::SE3f original_pose =
+        //         pkf->getPosef();  // original_pose = old, inv_pose = new
+        //     Sophus::SE3f inv_pose = pose.inverse();
+        //     Sophus::SE3f diff_pose = inv_pose * original_pose;
+        //     bool large_rot = !diff_pose.rotationMatrix().isApprox(
+        //         Eigen::Matrix3f::Identity(), large_rot_th_);
+        //     bool large_trans = !diff_pose.translation().isMuchSmallerThan(
+        //         1.0, large_trans_th_);
+        //     if (large_rot || large_trans) {
+        //       std::cout << "[Gaussian Mapper]Large loop correction
+        //           detected,
+        //           "
+        //           "transforming visible points of kf "
+        //               << kfid << std::endl;
+        //       diff_pose.translation() -=
+        //           inv_pose.translation();  // t = (R_new * t_old + t_new) -
+        //       t_new diff_pose.translation() *=
+        //           loop_kf_scale;  // t = s * (R_new * t_old)
+        //       diff_pose.translation() +=
+        //           inv_pose.translation();  // t = (s * R_new * t_old) +
+        //       t_new torch::Tensor diff_pose_tensor =
+        //           tensor_utils::EigenMatrix2TorchTensor(diff_pose.matrix(),
+        //                                                 device_type_)
+        //               .transpose(0, 1);
+        //       {
+        //         std::unique_lock<std::mutex> lock_render(mutex_render_);
+        //         gaussians_->scaledTransformVisiblePointsOfKeyframe(
+        //             point_not_transformed_flags, diff_pose_tensor,
+        //             pkf->world_view_transform_, pkf->full_proj_transform_,
+        //             pkf->creation_iter_, stableNumIterExistence(),
+        //             num_transformed,
+        //             loop_kf_scale);  // selected xyz *= s
         //       }
-        //       // }
-        //       pkf->setPose(pose.unit_quaternion().cast<double>(),
-        //                    pose.translation().cast<double>());
-        //       pkf->computeTransformTensors();
-        //     } else {
-        //       handleNewKeyframe(kf);
+        //       // Give loop keyframes times of use
+        //       increaseKeyframeTimesOfUse(pkf,
+        //                                  loop_closure_increased_times_of_use_);
         //     }
+        //     // }
+        //     pkf->setPose(pose.unit_quaternion().cast<double>(),
+        //                  pose.translation().cast<double>());
+        //     pkf->computeTransformTensors();
+        //   } else {
+        //     handleNewKeyframe(kf);
         //   }
-        //   if (record_loop_ply_)
-        //     savePly(result_dir_ / (std::to_string(getIteration()) +
-        //                            "_1_after_loop_correction"));
-        //   // Get new points (scaled transformation applied in ORB-SLAM3, so
-        //   this
-        //   // step is performed at last to avoid scaling twice)
-        //   auto& associated_points = opr.associatedMapPoints();
-        //   auto& points = std::get<0>(associated_points);
-        //   auto& colors = std::get<1>(associated_points);
+        // }
+        // if (record_loop_ply_)
+        //   savePly(result_dir_ / (std::to_string(getIteration()) +
+        //                          "_1_after_loop_correction"));
+        // // Get new points (scaled transformation applied in ORB-SLAM3, so
+        // this
+        //     // step is performed at last to avoid scaling twice)
+        //     auto& associated_points = opr.associatedMapPoints();
+        // auto& points = std::get<0>(associated_points);
+        // auto& colors = std::get<1>(associated_points);
 
-        //   // Add new points to the model
-        //   if (initial_mapped_ && points.size() >= 30) {
-        //     torch::NoGradGuard no_grad;
+        // // Add new points to the model
+        // if (initial_mapped_ && points.size() >= 30) {
+        //   torch::NoGradGuard no_grad;
+        //   std::unique_lock<std::mutex> lock_render(mutex_render_);
+        //   gaussians_->increasePcd(points, colors, getIteration());
+        // }
+
+        // // Mark this iteration
+        // loop_closure_iteration_ = true;
+      } break;
+
+      case ORB_SLAM3::MappingOperation::OprType::ScaleRefinement: {
+        // std::cout << "[Gaussian Mapper]Scale refinement Detected.
+        //     Transforming
+        //              "
+        //              "all kfs and points..."
+        //           << std::endl;
+
+        // float s = opr.mfScale;
+        // Sophus::SE3f& T = opr.mT;
+        // if (initial_mapped_) {
+        //   // Apply the scaled transformation on gaussian model points
+        //   {
         //     std::unique_lock<std::mutex> lock_render(mutex_render_);
-        //     gaussians_->increasePcd(points, colors, getIteration());
+        //     gaussians_->applyScaledTransformation(s, T);
         //   }
-
-        //   // Mark this iteration
-        //   loop_closure_iteration_ = true;
-        // } break;
-
-        // case ORB_SLAM3::MappingOperation::OprType::ScaleRefinement: {
-        //   std::cout << "[Gaussian Mapper]Scale refinement Detected.
-        //   Transforming "
-        //                "all kfs and points..."
-        //             << std::endl;
-
-        //   float s = opr.mfScale;
-        //   Sophus::SE3f& T = opr.mT;
-        //   if (initial_mapped_) {
-        //     // Apply the scaled transformation on gaussian model points
-        //     {
-        //       std::unique_lock<std::mutex> lock_render(mutex_render_);
-        //       gaussians_->applyScaledTransformation(s, T);
-        //     }
-        //     // Apply the scaled transformation to the scene
-        //     scene_->applyScaledTransformation(s, T);
-        //   } else {  // TODO: the workflow should not come here, delete this
+        //   // Apply the scaled transformation to the scene
+        //   scene_->applyScaledTransformation(s, T);
+        // } else {  // TODO: the workflow should not come here, delete this
         //   branch
-        //     // Apply the scaled transformation to the cached points
-        //     for (auto& pt : scene_->cached_point_cloud_) {
-        //       // pt <- (s * Ryw * pt + tyw)
-        //       auto& pt_xyz = pt.second.xyz_;
-        //       pt_xyz *= s;
-        //       pt_xyz = T.cast<double>() * pt_xyz;
-        //     }
-
-        //     // Apply the scaled transformation on gaussian keyframes
-        //     for (auto& kfit : scene_->keyframes()) {
-        //       std::shared_ptr<GaussianKeyframe> pkf = kfit.second;
-        //       Sophus::SE3f Twc = pkf->getPosef().inverse();
-        //       Twc.translation() *= s;
-        //       Sophus::SE3f Tyc = T * Twc;
-        //       Sophus::SE3f Tcy = Tyc.inverse();
-        //       pkf->setPose(Tcy.unit_quaternion().cast<double>(),
-        //                    Tcy.translation().cast<double>());
-        //       pkf->computeTransformTensors();
-        //     }
+        //       // Apply the scaled transformation to the cached points
+        //       for (auto& pt : scene_->cached_point_cloud_) {
+        //     // pt <- (s * Ryw * pt + tyw)
+        //     auto& pt_xyz = pt.second.xyz_;
+        //     pt_xyz *= s;
+        //     pt_xyz = T.cast<double>() * pt_xyz;
         //   }
-        // } break;
+
+        //   // Apply the scaled transformation on gaussian keyframes
+        //   for (auto& kfit : scene_->keyframes()) {
+        //     std::shared_ptr<GaussianKeyframe> pkf = kfit.second;
+        //     Sophus::SE3f Twc = pkf->getPosef().inverse();
+        //     Twc.translation() *= s;
+        //     Sophus::SE3f Tyc = T * Twc;
+        //     Sophus::SE3f Tcy = Tyc.inverse();
+        //     pkf->setPose(Tcy.unit_quaternion().cast<double>(),
+        //                  Tcy.translation().cast<double>());
+        //     pkf->computeTransformTensors();
+        //   }
+        // }
+      } break;
 
       default: {
         throw std::runtime_error("MappingOperation type not supported!");
@@ -2909,5 +2923,230 @@ void GaussianMapper::render3DExplorationVideo(const std::string& output_path,
     }
     std::cout << "Deleted " << deleted_frames << "/" << frame_paths.size()
               << " frames." << std::endl;
+  }
+}
+
+bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
+  // Create directory if it doesn't exist
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(scene_dir);
+
+  // Save camera params and scene metadata
+  keyframesToJson(scene_dir);
+  saveModelParams(scene_dir);
+
+  // Save all active chunks
+  auto active_chunks = chunk_manager_->getActiveChunks();
+  bool all_saved = true;
+
+  for (const auto& [coord, chunk] : active_chunks) {
+    if (!chunk_manager_->saveChunk(coord)) {
+      std::cerr << "Failed to save chunk: " << coord.x << "," << coord.y << ","
+                << coord.z << std::endl;
+      all_saved = false;
+    }
+  }
+
+  // Copy chunks over to scene dir
+  std::filesystem::path scene_chunk_dir = scene_dir / "chunks";
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(scene_chunk_dir);
+  copyFolder(chunk_save_dir_, scene_dir / "chunks");
+
+  // Save a manifest of all chunks on disk
+  saveChunkManifest(scene_dir);
+
+  std::cout << "Scene saved to " << scene_dir << std::endl;
+  return all_saved;
+}
+
+// Implementation for loadScene in gaussian_mapper.cpp
+bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
+                               std::filesystem::path camera_path) {
+  if (!std::filesystem::exists(scene_dir)) {
+    throw std::runtime_error("Scene directory does not exist: " +
+                             scene_dir.string());
+  }
+
+  // // Load camera parameters
+  // loadCamerasFromJson(scene_dir / "cameras.json");
+
+  // Load chunk information from the manifest
+  std::vector<ChunkCoord> chunk_coords = loadChunkManifest(scene_dir);
+
+  // Update the chunk manager's cache
+  chunk_manager_->updateChunkExistenceCache(chunk_coords, true);
+
+  // // Load a few chunks for initial visualization if desired
+  // if (load_initial_chunks_ && !chunk_coords.empty()) {
+  //   int max_to_load =
+  //       std::min(static_cast<int>(chunk_coords.size()), max_initial_chunks_);
+
+  //   for (int i = 0; i < max_to_load; i++) {
+  //     chunk_manager_->loadChunk(chunk_coords[i]);
+  //   }
+  // }
+
+  // Camera
+  if (!camera_path.empty() && std::filesystem::exists(camera_path)) {
+    cv::FileStorage camera_file(camera_path.string().c_str(),
+                                cv::FileStorage::READ);
+    if (!camera_file.isOpened())
+      throw std::runtime_error(
+          "[Gaussian Mapper]Failed to open settings file at: " +
+          camera_path.string());
+
+    Camera camera;
+    camera.camera_id_ = 0;
+    camera.width_ = camera_file["Camera.w"].operator int();
+    camera.height_ = camera_file["Camera.h"].operator int();
+
+    std::string camera_type = camera_file["Camera.type"].string();
+    if (camera_type == "Pinhole") {
+      camera.setModelId(Camera::CameraModelType::PINHOLE);
+
+      float fx = camera_file["Camera.fx"].operator float();
+      float fy = camera_file["Camera.fy"].operator float();
+      float cx = camera_file["Camera.cx"].operator float();
+      float cy = camera_file["Camera.cy"].operator float();
+
+      float k1 = camera_file["Camera.k1"].operator float();
+      float k2 = camera_file["Camera.k2"].operator float();
+      float p1 = camera_file["Camera.p1"].operator float();
+      float p2 = camera_file["Camera.p2"].operator float();
+      float k3 = camera_file["Camera.k3"].operator float();
+
+      cv::Mat K =
+          (cv::Mat_<float>(3, 3) << fx, 0.f, cx, 0.f, fy, cy, 0.f, 0.f, 1.f);
+
+      camera.params_[0] = fx;
+      camera.params_[1] = fy;
+      camera.params_[2] = cx;
+      camera.params_[3] = cy;
+
+      std::vector<float> dist_coeff = {k1, k2, p1, p2, k3};
+      camera.dist_coeff_ = cv::Mat(5, 1, CV_32F, dist_coeff.data());
+      camera.initUndistortRectifyMapAndMask(
+          K, cv::Size(camera.width_, camera.height_), K, false);
+
+      undistort_mask_[camera.camera_id_] =
+          tensor_utils::cvMat2TorchTensor_Float32(camera.undistort_mask,
+                                                  device_type_);
+
+      cv::Mat viewer_main_undistort_mask;
+      int viewer_image_height_main_ =
+          camera.height_ * rendered_image_viewer_scale_main_;
+      int viewer_image_width_main_ =
+          camera.width_ * rendered_image_viewer_scale_main_;
+      cv::resize(camera.undistort_mask, viewer_main_undistort_mask,
+                 cv::Size(viewer_image_width_main_, viewer_image_height_main_));
+      viewer_main_undistort_mask_[camera.camera_id_] =
+          tensor_utils::cvMat2TorchTensor_Float32(viewer_main_undistort_mask,
+                                                  device_type_);
+
+    } else {
+      throw std::runtime_error("[Gaussian Mapper]Unsupported camera model: " +
+                               camera_path.string());
+    }
+
+    if (!viewer_camera_id_set_) {
+      viewer_camera_id_ = camera.camera_id_;
+      viewer_camera_id_set_ = true;
+    }
+    this->scene_->addCamera(camera);
+  }
+
+  // Ready
+  this->initial_mapped_ = true;
+  increaseIteration();
+
+  std::cout << "Scene loaded from " << scene_dir << " with "
+            << chunk_coords.size() << " chunks" << std::endl;
+  return true;
+}
+
+void GaussianMapper::saveChunkManifest(std::filesystem::path scene_dir) {
+  std::filesystem::path manifest_path = scene_dir / "chunk_manifest.json";
+
+  Json::Value json_root;
+  Json::StreamWriterBuilder builder;
+  const std::unique_ptr<Json::StreamWriter> writer(builder.newStreamWriter());
+
+  // Get chunks from the chunk manager's cache
+  std::vector<ChunkCoord> chunk_coords =
+      chunk_manager_->getExistingChunkCoords();
+
+  // Write chunk coordinates to JSON
+  for (size_t i = 0; i < chunk_coords.size(); i++) {
+    Json::Value chunk_entry;
+    // Use explicit casts to Json::Value::Int64
+    chunk_entry["x"] = Json::Value::Int64(chunk_coords[i].x);
+    chunk_entry["y"] = Json::Value::Int64(chunk_coords[i].y);
+    chunk_entry["z"] = Json::Value::Int64(chunk_coords[i].z);
+
+    json_root[static_cast<int>(i)] = chunk_entry;
+  }
+
+  // Write to file
+  std::ofstream out_stream(manifest_path);
+  if (!out_stream.is_open()) {
+    throw std::runtime_error("Cannot open manifest file at " +
+                             manifest_path.string());
+  }
+
+  writer->write(json_root, &out_stream);
+  out_stream.close();
+}
+
+// Implementation for loadChunkManifest
+std::vector<ChunkCoord> GaussianMapper::loadChunkManifest(
+    std::filesystem::path scene_dir) {
+  std::filesystem::path manifest_path = scene_dir / "chunk_manifest.json";
+  std::vector<ChunkCoord> result;
+
+  if (!std::filesystem::exists(manifest_path)) {
+    std::cerr << "Warning: Chunk manifest not found at " << manifest_path
+              << std::endl;
+    return result;
+  }
+
+  // Parse the JSON file
+  std::ifstream file(manifest_path);
+  Json::Value root;
+  Json::CharReaderBuilder builder;
+  JSONCPP_STRING errs;
+
+  if (!Json::parseFromStream(builder, file, &root, &errs)) {
+    throw std::runtime_error("Error parsing chunk manifest: " + errs);
+  }
+
+  // Process each chunk entry
+  for (const auto& chunk_entry : root) {
+    int64_t x = chunk_entry["x"].asInt64();
+    int64_t y = chunk_entry["y"].asInt64();
+    int64_t z = chunk_entry["z"].asInt64();
+
+    result.push_back(ChunkCoord{x, y, z});
+  }
+
+  return result;
+}
+
+void copyFolder(const std::filesystem::path& source,
+                const std::filesystem::path& destination) {
+  // Create the destination directory if it doesn't exist
+  std::filesystem::create_directories(destination);
+
+  // Iterate through the source directory
+  for (const auto& entry : std::filesystem::directory_iterator(source)) {
+    const auto& path = entry.path();
+    const auto destPath = destination / path.filename();
+
+    if (std::filesystem::is_directory(path)) {
+      // Recursively copy subdirectories
+      copyFolder(path, destPath);
+    } else {
+      // Copy files
+      std::filesystem::copy_file(
+          path, destPath, std::filesystem::copy_options::overwrite_existing);
+    }
   }
 }

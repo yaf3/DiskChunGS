@@ -183,6 +183,11 @@ class ChunkManager {
   // Cull gaussians that are outside of chunk borders
   void cullGaussiansOutsideChunkBorders();
 
+  void updateChunkExistenceCache(const std::vector<ChunkCoord>& coords,
+                                 bool exists);
+
+  std::vector<ChunkCoord> getExistingChunkCoords();
+
   // Stats for debugging/monitoring
   struct Stats {
     int active_chunks;

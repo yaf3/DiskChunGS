@@ -252,8 +252,8 @@ void ChunkManager::scheduleChunkLoadNoLock(const ChunkCoord& coord,
                                            int priority) {
   // Only schedule if chunk exists and is dirty
   auto meta_it = chunk_metadata_.find(coord);
-  if (meta_it != chunk_metadata_.end() && meta_it->second.dirty &&
-      !meta_it->second.saving && !meta_it->second.loading) {
+  if (meta_it != chunk_metadata_.end() && !meta_it->second.saving &&
+      !meta_it->second.loading) {
     meta_it->second.loading = true;
     io_queue_.push(ChunkIORequest(coord, ChunkOperation::LOAD, priority));
     io_cv_.notify_one();
@@ -873,6 +873,13 @@ ChunkManager::findVisibleChunks(const ChunkCoord& camera_chunk,
         bool visible = test_AABB_against_frustum_eigen(vp_matrix, chunk_aabb);
 
         if (visible) {
+          // Skip if loading or saving this chunk right now
+          auto meta_it = chunk_metadata_.find(check_coord);
+          if (meta_it != chunk_metadata_.end() &&
+              (meta_it->second.loading || meta_it->second.saving)) {
+            continue;
+          }
+
           auto it = active_chunks_.find(check_coord);
 
           // If chunk is active, add to visible chunks
@@ -1040,54 +1047,49 @@ void ChunkManager::addPointsToChunks(
     std::shared_ptr<Chunk> chunk;
     bool is_new_chunk = false;
 
-    {
-      std::lock_guard<std::mutex> lock(io_mutex_);
+    std::lock_guard<std::mutex> lock(io_mutex_);
 
-      {
-        // If loading or saving this chunk right now, skip (maybe instead
-        // wait?)
-        auto it = chunk_metadata_.find(coord);
-        if (it != chunk_metadata_.end()) {
-          if (it->second.loading || it->second.saving) {
-            continue;
-          }
-        }
-      }
+    // If loading or saving this chunk right now, skip (maybe instead
+    // wait?)
+    auto meta_it = chunk_metadata_.find(coord);
+    if (meta_it != chunk_metadata_.end() &&
+        (meta_it->second.loading || meta_it->second.saving)) {
+      continue;
+    }
 
-      // Check if already in memory
-      auto it = active_chunks_.find(coord);
-      if (it != active_chunks_.end()) {
-        chunk = it->second;
-        std::cout << "Chunk found in memory" << std::endl;
-      }
-      // Try to load from disk
-      else if (chunkExistsOnDiskNoLock(coord)) {  // Use no-lock version
-        if (loadChunkNoLock(coord)) {             // Use no-lock version
-          chunk = active_chunks_[coord];
-          std::cout << "Chunk loaded from disk" << std::endl;
-        } else {
-          // Loading failed, create new
-          chunk = std::make_shared<Chunk>(model_params_, coord);
-          active_chunks_[coord] = chunk;
-          is_new_chunk = true;
-        }
-      }
-      // Create new chunk
-      else {
-        std::cout << "Creating new chunk" << std::endl;
+    // Check if already in memory
+    auto it = active_chunks_.find(coord);
+    if (it != active_chunks_.end()) {
+      chunk = it->second;
+      std::cout << "Chunk found in memory" << std::endl;
+    }
+    // Try to load from disk
+    else if (chunkExistsOnDiskNoLock(coord)) {  // Use no-lock version
+      if (loadChunkNoLock(coord)) {             // Use no-lock version
+        chunk = active_chunks_[coord];
+        std::cout << "Chunk loaded from disk" << std::endl;
+      } else {
+        // Loading failed, create new
         chunk = std::make_shared<Chunk>(model_params_, coord);
         active_chunks_[coord] = chunk;
-
-        // Initialize metadata
-        chunk_metadata_[coord] = ChunkMetadata();
         is_new_chunk = true;
-
-        incrementStat(stats_.active_chunks);
       }
-
-      // Mark as used
-      markChunkUsedNoLock(coord);  // Use no-lock version
     }
+    // Create new chunk
+    else {
+      std::cout << "Creating new chunk" << std::endl;
+      chunk = std::make_shared<Chunk>(model_params_, coord);
+      active_chunks_[coord] = chunk;
+
+      // Initialize metadata
+      chunk_metadata_[coord] = ChunkMetadata();
+      is_new_chunk = true;
+
+      incrementStat(stats_.active_chunks);
+    }
+
+    // Mark as used
+    markChunkUsedNoLock(coord);  // Use no-lock version
 
     // Initialize or add points to the chunk
     if (is_new_chunk) {
@@ -1265,4 +1267,27 @@ void ChunkManager::cullGaussiansOutsideChunkBorders() {
       }
     }
   }
+}
+
+void ChunkManager::updateChunkExistenceCache(
+    const std::vector<ChunkCoord>& coords,
+    bool exists) {
+  std::lock_guard<std::mutex> lock(io_mutex_);
+  for (const auto& coord : coords) {
+    chunk_exists_cache_[coord] = exists;
+  }
+}
+
+std::vector<ChunkCoord> ChunkManager::getExistingChunkCoords() {
+  std::lock_guard<std::mutex> lock(io_mutex_);
+  std::vector<ChunkCoord> result;
+
+  // Iterate through the cache and collect all chunks that exist
+  for (const auto& [coord, exists] : chunk_exists_cache_) {
+    if (exists) {
+      result.push_back(coord);
+    }
+  }
+
+  return result;
 }

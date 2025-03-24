@@ -94,6 +94,9 @@ struct VariableParameters {
   bool do_inactive_geo_densify;
 };
 
+void copyFolder(const std::filesystem::path &source,
+                const std::filesystem::path &destination);
+
 class GaussianMapper {
  public:
   GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
@@ -213,6 +216,9 @@ class GaussianMapper {
  public:
   void increaseKeyframeTimesOfUse(std::shared_ptr<GaussianKeyframe> pkf,
                                   int times);
+  bool saveScene(std::filesystem::path scene_dir);
+  bool loadScene(std::filesystem::path scene_dir,
+                 std::filesystem::path camera_path);
 
  protected:
   void cullKeyframes();
@@ -269,13 +275,10 @@ class GaussianMapper {
                                 float deviation_scale = 0.15f,
                                 bool look_around = true);
 
+  void saveChunkManifest(std::filesystem::path scene_dir);
+  std::vector<ChunkCoord> loadChunkManifest(std::filesystem::path scene_dir);
+
  private:
-  // Chunk manager for efficient memory handling
-  std::shared_ptr<ChunkManager> chunk_manager_;
-
-  // Keyframe selector for intelligent keyframe selection
-  std::shared_ptr<KeyframeSelector> keyframe_selector_;
-
   // Updated function declarations:
   std::shared_ptr<GaussianKeyframe> selectLocalityAwareKeyframe();
   std::vector<std::shared_ptr<GaussianKeyframe>> predictUpcomingKeyframes(
@@ -285,6 +288,12 @@ class GaussianMapper {
  public:
   // Parameters
   std::filesystem::path config_file_path_;
+
+  // Chunk manager for efficient memory handling
+  std::shared_ptr<ChunkManager> chunk_manager_;
+
+  // Keyframe selector for intelligent keyframe selection
+  std::shared_ptr<KeyframeSelector> keyframe_selector_;
 
   // Scene
   std::shared_ptr<GaussianScene> scene_;
