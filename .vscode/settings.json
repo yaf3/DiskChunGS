@@ -87,7 +87,13 @@
         "__hash_table": "cpp",
         "__string": "cpp",
         "__tree": "cpp",
-        "__tuple": "cpp"
+        "__tuple": "cpp",
+        "filesystem": "cpp",
+        "*.inc": "cpp",
+        "__config": "cpp",
+        "core": "cpp",
+        "specialfunctions": "cpp",
+        "geometry": "cpp"
     },
     "editor.formatOnSave": true,
 }

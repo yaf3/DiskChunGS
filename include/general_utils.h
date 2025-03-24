@@ -24,11 +24,11 @@
 
 namespace general_utils {
 
-inline torch::Tensor inverse_sigmoid(const torch::Tensor &x) {
+inline torch::Tensor inverse_sigmoid(const torch::Tensor& x) {
   return torch::log(x / (1 - x));
 }
 
-inline torch::Tensor build_rotation(torch::Tensor &r) {
+inline torch::Tensor build_rotation(torch::Tensor& r) {
   auto r0 = r.index({torch::indexing::Slice(), 0});
   auto r1 = r.index({torch::indexing::Slice(), 1});
   auto r2 = r.index({torch::indexing::Slice(), 2});
@@ -55,7 +55,7 @@ inline torch::Tensor build_rotation(torch::Tensor &r) {
   return R;
 }
 
-inline torch::Tensor rgb2gray(const torch::Tensor &rgb,
+inline torch::Tensor rgb2gray(const torch::Tensor& rgb,
                               const float gamma = 2.2) {
   auto r = rgb[0];
   auto g = rgb[1];
