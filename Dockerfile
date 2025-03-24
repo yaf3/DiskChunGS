@@ -77,6 +77,7 @@ RUN apt-get update && apt-get install -y ninja-build
 
 RUN apt-get install python3-tk -y
 RUN pip3 install optuna optuna-dashboard
+RUN apt-get install ffmpeg -y
 
 # Add ROS setup to bashrc
 RUN echo "source /opt/ros/noetic/setup.bash" >> /root/.bashrc
