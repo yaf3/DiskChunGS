@@ -218,7 +218,7 @@ class GaussianMapper {
                                   int times);
   bool saveScene(std::filesystem::path scene_dir);
   bool loadScene(std::filesystem::path scene_dir,
-                 std::filesystem::path camera_path);
+                 std::filesystem::path optional_camera_path = "");
 
  protected:
   void cullKeyframes();
@@ -277,6 +277,7 @@ class GaussianMapper {
 
   void saveChunkManifest(std::filesystem::path scene_dir);
   std::vector<ChunkCoord> loadChunkManifest(std::filesystem::path scene_dir);
+  void loadCamerasFromJson(std::filesystem::path json_path);
 
  private:
   // Updated function declarations:

@@ -1,21 +1,20 @@
 import os
+import sys
 import time
 import numpy as np
 import torch
 from tqdm import trange
 import json
 import glob
-from renderer import render
+import gs_render
 from argparse import ArgumentParser
-from gaussian_model import GaussianModel
 from scipy.spatial.transform import Rotation
-from utils import MiniCam, focal2fov
+from PIL import Image
+
 
 from torchmetrics.image.psnr import PeakSignalNoiseRatio
 from torchmetrics.image.ssim import StructuralSimilarityIndexMeasure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
-
-import cv2
 
 from evo.core.trajectory import PoseTrajectory3D
 from evo.tools import file_interface
@@ -95,49 +94,51 @@ if __name__ == "__main__":
     parser.add_argument("--correct_scale", action="store_true")
     parser.add_argument("--show_plot", action="store_true")
     args = parser.parse_args()
-    sh_degree = 3
-    gaussians = GaussianModel(sh_degree)
-    bg_color = [0, 0, 0]
-    background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
     dirs = os.listdir(args.result_path)
     # load model
-    width, height, fovx, fovy = 0, 0, 0, 0
     ts = []
     Rs = []
+    width, height = 0, 0
     render_time = 0
+    shutdown_name = None    
     for file_name in dirs:
-        if "shutdown" in file_name:
-            iter = file_name.split("_")[0]
-            ply_path = os.path.join(
-                args.result_path,
-                file_name,
-                "ply/point_cloud/iteration_{}".format(iter),
-                "point_cloud.ply",
+        if ("shutdown" in file_name):
+            print("found it")
+            shutdown_name = file_name
+            break
+    if shutdown_name is None:
+        sys.exit("No shutdown dir found, exiting...")
+    model_data_path = os.path.join(
+        args.result_path,
+        shutdown_name,
+        "data",
             )
-            gaussians.load_ply(ply_path)
-            with open(
-                os.path.join(
-                    args.result_path, file_name, "ply", "cameras.json"
-                ),
-                "r",
-            ) as fin:
-                camera_paras = json.load(fin)
+    print(model_data_path)
+    with open(
+        os.path.join(
+            args.result_path, shutdown_name, "data", "cameras.json"
+        ),
+        "r",
+    ) as fin:
+        camera_paras = json.load(fin)
+        print(os.path.join(
+            args.result_path, shutdown_name, "data", "cameras.json"
+        ))
 
-            width, height, fx, fy = (
-                camera_paras[0]["width"],
-                camera_paras[0]["height"],
-                camera_paras[0]["fx"],
-                camera_paras[0]["fy"],
-            )
-            fovx = focal2fov(fx, width)
-            fovy = focal2fov(fy, height)
-
-            render_time = np.loadtxt(
-                os.path.join(args.result_path, file_name, "render_time.txt"),
-                delimiter=" ",
-                dtype=np.str_,
-            )
-            render_time = render_time[:, 1].astype(np.float32)
+    width, height = (
+        camera_paras[0]["width"],
+        camera_paras[0]["height"],
+    )
+    config_path = os.path.join(model_data_path, "gaussian_mapper_cfg.yaml")
+    print("Using:", model_data_path, config_path)
+    
+    success = gs_render.initialize(config_path, model_data_path)
+    render_time = np.loadtxt(
+        os.path.join(args.result_path, shutdown_name, "render_time.txt"),
+        delimiter=" ",
+        dtype=np.str_,
+    )
+    render_time = render_time[:, 1].astype(np.float32)
 
     # load gt
     if "replica" in args.gt_path.lower():
@@ -273,57 +274,56 @@ if __name__ == "__main__":
     ):
         (result_indx, gt_indx) = associations[index]
         w2c = np.linalg.inv(poses[result_indx])
-        cam = MiniCam(width, height, fovx, fovy, w2c)
         t0 = time.time()
-        render_image = render(cam, gaussians, background)["render"]
-        t1 = time.time() - t0
+        w2c_torch = torch.tensor(w2c)
+        render_image = gs_render.render_from_pose(w2c_torch, width, height).clone().detach().to('cuda')
+        t1 = time.time() - t0      
+        
         render_image = render_image.permute(1, 2, 0)
-        gt_image = cv2.imread(gt_color_paths[gt_indx], cv2.IMREAD_COLOR)
-        gt_image = cv2.cvtColor(gt_image, cv2.COLOR_BGR2RGB)
-        if len(gt_image.shape) < 3:
-            gt_image = np.broadcast_to(
-                gt_image[..., None], (gt_image.shape[0], gt_image.shape[1], 3)
-            )
-
         render_image = torch.clamp(render_image, 0.0, 1.0)
-        predict_image_np = render_image.detach().cpu().numpy()
-        predict_image_img = np.uint8(predict_image_np * 255)
-        predict_image_img = cv2.cvtColor(predict_image_img, cv2.COLOR_BGR2RGB)
-
-        gt_image_torch = (
-            torch.from_numpy(np.array(gt_image))
-            .to("cuda")
-            .permute(2, 0, 1)[None]
-            / 255.0
-        )
         render_image_torch = render_image.permute([2, 0, 1])[None]
+    
+        pil_image = Image.open(gt_color_paths[gt_indx])
+        gt_image = np.array(pil_image).astype(np.float32) / 255.0
+        gt_image_torch = torch.from_numpy(gt_image).float().permute(2, 0, 1).unsqueeze(0).to('cuda')
+        
         val_psnr = calc_psnr(render_image_torch, gt_image_torch).item()
         val_ssim = calc_ssim(render_image_torch, gt_image_torch).item()
         val_lpips = calc_lpips(render_image_torch, gt_image_torch).item()
 
-        gt_image = cv2.cvtColor(gt_image, cv2.COLOR_BGR2RGB)
+        gt_image = np.array(pil_image)  # Convert to numpy array if needed
         if "_0" in args.result_path:
-            cv2.imwrite(
+            gt_pil_image = Image.fromarray(gt_image)
+            gt_pil_image.save(
                 os.path.join(
                     args.result_path,
                     "gt",
-                    gt_color_paths[gt_indx].split("/")[-1],
-                ),
-                gt_image,
+                    gt_color_paths[gt_indx].split("/")[-1]
+                )
             )
-        cv2.imwrite(
+            
+        predict_np = render_image.detach().cpu().numpy()
+        # If in [0,1] range, convert to [0,255]
+        if predict_np.max() <= 1.0:
+            predict_np = (predict_np * 255).astype(np.uint8)
+        # Create PIL image and save
+        predict_pil = Image.fromarray(predict_np)
+        predict_pil.save(
             os.path.join(
                 args.result_path,
                 "image",
-                gt_color_paths[gt_indx].split("/")[-1],
-            ),
-            predict_image_img,
+                gt_color_paths[gt_indx].split("/")[-1]
+            )
         )
 
         psnr_list.append(val_psnr)
         ssim_list.append(val_ssim)
         lpips_list.append(val_lpips)
         time_list.append(t1)
+        
+    print("Calling cleanup to properly release resources...")
+    gs_render.cleanup()
+    print("Cleanup finished.")
 
     psnr_list = np.array(psnr_list)
     ssim_list = np.array(ssim_list)

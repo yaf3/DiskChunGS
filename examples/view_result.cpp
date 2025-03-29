@@ -31,9 +31,9 @@ int main(int argc, char** argv) {
   if (argc != 4) {
     std::cerr << std::endl
               << "Usage: " << argv[0]
-              << " path_to_gaussian_mapping_settings" /*1*/
-              << " path_to_camera_parameters"         /*2*/
-              << " path_to_result_ply_file"           /*3*/
+              << " path_to_gaussian_mapping_settings"  /*1*/
+              << " path_to_optional_camera_parameters" /*2*/
+              << " path_to_result_ply_file"            /*3*/
               << std::endl;
     return 1;
   }
@@ -50,12 +50,12 @@ int main(int argc, char** argv) {
 
   // Create GaussianMapper
   std::filesystem::path gaussian_cfg_path(argv[1]);
-  std::filesystem::path camera_path(argv[2]);
+  std::filesystem::path optional_camera_path(argv[2]);
   std::filesystem::path result_path(argv[3]);
   std::shared_ptr<GaussianMapper> pGausMapper =
       std::make_shared<GaussianMapper>(nullptr, gaussian_cfg_path, result_path,
                                        0, device_type);
-  pGausMapper->loadScene(result_path, camera_path);
+  pGausMapper->loadScene(result_path, optional_camera_path);
 
   // Create Gaussian Viewer
   std::thread viewer_thd;

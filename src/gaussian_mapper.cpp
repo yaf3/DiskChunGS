@@ -582,7 +582,7 @@ void GaussianMapper::run() {
   if (render_fly_through_) {
     auto video_dir = result_dir_ / "flythrough";
     CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
-    renderFlyThroughVideo(video_dir / "output_video", 1242, 376, 30, 30.0f,
+    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30, 30.0f,
                           0.8f, 2);
     // render3DExplorationVideo(video_dir / "3d_exploration", 1920, 1080, 30,
     //                          20.0f, 0.05f, false);
@@ -1872,7 +1872,11 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
         "[GaussianMapper::renderFromPose]KeyFrame Camera not found!");
   }
 
+  // std::cout << "Tcw matrix:\n" << Tcw.matrix() << std::endl;
+
   std::unique_lock lock_render(mutex_render_);
+
+  // std::cout << width << " " << height << std::endl;
 
   // Get visible chunks using ChunkManager instead of updateActiveChunks
   std::vector<std::shared_ptr<Chunk>> visible_chunks =
@@ -1880,15 +1884,16 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
   std::vector<std::shared_ptr<GaussianModel>> models;
   models.reserve(visible_chunks.size());
   for (const auto& chunk : visible_chunks) {
-    std::cout << "[" << chunk->getCoord().x << " " << chunk->getCoord().y << " "
-              << chunk->getCoord().z << "], ";
+    // std::cout << "[" << chunk->getCoord().x << " " << chunk->getCoord().y <<
+    // " "
+    //           << chunk->getCoord().z << "], ";
     if (chunk && chunk->getGaussians()) {
       models.push_back(chunk->getGaussians());
     } else {
       throw "[renderFromPose] Chunk/Gaussian not valid";
     }
   }
-  std::cout << std::endl;
+  // std::cout << std::endl;
 
   // auto active_chunks = chunk_manager_->getActiveChunks();
   // std::vector<std::shared_ptr<GaussianModel>> models;
@@ -2096,6 +2101,14 @@ void GaussianMapper::keyframesToJson(std::filesystem::path result_dir) {
 
     json_kf["fy"] = graphics_utils::fov2focal(pkf->FoVy_, pkf->image_height_);
     json_kf["fx"] = graphics_utils::fov2focal(pkf->FoVx_, pkf->image_width_);
+
+    auto& keyframe_cam = scene_->getCamera(pkf->camera_id_);
+
+    json_kf["k1"] = keyframe_cam.dist_coeff_.at<float>(0);
+    json_kf["k2"] = keyframe_cam.dist_coeff_.at<float>(1);
+    json_kf["p1"] = keyframe_cam.dist_coeff_.at<float>(2);
+    json_kf["p2"] = keyframe_cam.dist_coeff_.at<float>(3);
+    json_kf["k3"] = keyframe_cam.dist_coeff_.at<float>(4);
 
     json_root[i] = Json::Value(json_kf);
     ++i;
@@ -2934,6 +2947,16 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
   keyframesToJson(scene_dir);
   saveModelParams(scene_dir);
 
+  // Save config used to train the model
+  try {
+    std::filesystem::copy_file(
+        config_file_path_, scene_dir / "gaussian_mapper_cfg.yaml",
+        std::filesystem::copy_options::overwrite_existing);
+    std::cout << "Config saved successfully" << std::endl;
+  } catch (const std::filesystem::filesystem_error& e) {
+    std::cerr << "Error: " << e.what() << std::endl;
+  }
+
   // Save all active chunks
   auto active_chunks = chunk_manager_->getActiveChunks();
   bool all_saved = true;
@@ -2960,14 +2983,14 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
 
 // Implementation for loadScene in gaussian_mapper.cpp
 bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
-                               std::filesystem::path camera_path) {
+                               std::filesystem::path optional_camera_path) {
   if (!std::filesystem::exists(scene_dir)) {
     throw std::runtime_error("Scene directory does not exist: " +
                              scene_dir.string());
   }
 
   // // Load camera parameters
-  // loadCamerasFromJson(scene_dir / "cameras.json");
+  loadCamerasFromJson(scene_dir / "cameras.json");
 
   // Load chunk information from the manifest
   std::vector<ChunkCoord> chunk_coords = loadChunkManifest(scene_dir);
@@ -2985,14 +3008,15 @@ bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
   //   }
   // }
 
-  // Camera
-  if (!camera_path.empty() && std::filesystem::exists(camera_path)) {
-    cv::FileStorage camera_file(camera_path.string().c_str(),
+  // Optinal new Camera configs
+  if (!optional_camera_path.empty() &&
+      std::filesystem::exists(optional_camera_path)) {
+    cv::FileStorage camera_file(optional_camera_path.string().c_str(),
                                 cv::FileStorage::READ);
     if (!camera_file.isOpened())
       throw std::runtime_error(
           "[Gaussian Mapper]Failed to open settings file at: " +
-          camera_path.string());
+          optional_camera_path.string());
 
     Camera camera;
     camera.camera_id_ = 0;
@@ -3044,7 +3068,7 @@ bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
 
     } else {
       throw std::runtime_error("[Gaussian Mapper]Unsupported camera model: " +
-                               camera_path.string());
+                               optional_camera_path.string());
     }
 
     if (!viewer_camera_id_set_) {
@@ -3128,6 +3152,140 @@ std::vector<ChunkCoord> GaussianMapper::loadChunkManifest(
   }
 
   return result;
+}
+
+void GaussianMapper::loadCamerasFromJson(std::filesystem::path json_path) {
+  if (!std::filesystem::exists(json_path)) {
+    throw std::runtime_error("Camera JSON not found at " + json_path.string());
+  }
+
+  // Parse the JSON file
+  std::ifstream file(json_path);
+  Json::Value root;
+  Json::CharReaderBuilder builder;
+  JSONCPP_STRING errs;
+
+  if (!Json::parseFromStream(builder, file, &root, &errs)) {
+    throw std::runtime_error("Error parsing camera JSON: " + errs);
+  }
+
+  // Clear existing keyframes
+  scene_->keyframes().clear();
+
+  // Process each camera entry
+  for (const auto& camera_entry : root) {
+    // Extract camera ID
+    unsigned long fid = camera_entry["id"].asUInt64();
+
+    // Create a new keyframe
+    std::shared_ptr<GaussianKeyframe> pkf =
+        std::make_shared<GaussianKeyframe>(fid, getIteration());
+
+    // Set image dimensions
+    pkf->image_width_ = camera_entry["width"].asInt();
+    pkf->image_height_ = camera_entry["height"].asInt();
+
+    // Set focal lengths and field of view
+    float fx = camera_entry["fx"].asFloat();
+    float fy = camera_entry["fy"].asFloat();
+
+    float cx = camera_entry["cx"].asFloat();
+    float cy = camera_entry["cy"].asFloat();
+
+    float k1 = camera_entry.get("k1", 0.0f).asFloat();
+    float k2 = camera_entry.get("k2", 0.0f).asFloat();
+    float p1 = camera_entry.get("p1", 0.0f).asFloat();
+    float p2 = camera_entry.get("p2", 0.0f).asFloat();
+    float k3 = camera_entry.get("k3", 0.0f).asFloat();
+
+    // Convert focal length to FoV if needed
+    pkf->FoVy_ = 2.0f * std::atan(pkf->image_height_ / (2.0f * fy));
+    pkf->FoVx_ = 2.0f * std::atan(pkf->image_width_ / (2.0f * fx));
+
+    // Set near and far planes
+    pkf->znear_ = z_near_;
+    pkf->zfar_ = z_far_;
+
+    // Set position and rotation
+    Eigen::Vector3d pos;
+    pos.x() = camera_entry["position"][0].asDouble();
+    pos.y() = camera_entry["position"][1].asDouble();
+    pos.z() = camera_entry["position"][2].asDouble();
+
+    Eigen::Matrix3d rot;
+    rot(0, 0) = camera_entry["rotation"][0][0].asDouble();
+    rot(0, 1) = camera_entry["rotation"][0][1].asDouble();
+    rot(0, 2) = camera_entry["rotation"][0][2].asDouble();
+    rot(1, 0) = camera_entry["rotation"][1][0].asDouble();
+    rot(1, 1) = camera_entry["rotation"][1][1].asDouble();
+    rot(1, 2) = camera_entry["rotation"][1][2].asDouble();
+    rot(2, 0) = camera_entry["rotation"][2][0].asDouble();
+    rot(2, 1) = camera_entry["rotation"][2][1].asDouble();
+    rot(2, 2) = camera_entry["rotation"][2][2].asDouble();
+
+    // Convert rotation matrix to quaternion
+    Eigen::Quaterniond quat(rot);
+
+    // Set the pose (Tcw is inverse of position and rotation)
+    Sophus::SE3d Twc(quat, pos);
+    Sophus::SE3d Tcw = Twc.inverse();
+    pkf->setPose(Tcw.unit_quaternion(), Tcw.translation());
+
+    Camera camera;
+    camera.camera_id_ = 0;
+    camera.width_ = pkf->image_width_;
+    camera.height_ = pkf->image_height_;
+    camera.setModelId(Camera::CameraModelType::PINHOLE);
+
+    cv::Mat K =
+        (cv::Mat_<float>(3, 3) << fx, 0.f, cx, 0.f, fy, cy, 0.f, 0.f, 1.f);
+
+    camera.params_[0] = fx;
+    camera.params_[1] = fy;
+    camera.params_[2] = cx;
+    camera.params_[3] = cy;
+
+    std::vector<float> dist_coeff = {k1, k2, p1, p2, k3};
+    camera.dist_coeff_ = cv::Mat(5, 1, CV_32F, dist_coeff.data());
+    camera.initUndistortRectifyMapAndMask(
+        K, cv::Size(camera.width_, camera.height_), K, false);
+
+    undistort_mask_[camera.camera_id_] =
+        tensor_utils::cvMat2TorchTensor_Float32(camera.undistort_mask,
+                                                device_type_);
+
+    cv::Mat viewer_main_undistort_mask;
+    int viewer_image_height_main_ =
+        camera.height_ * rendered_image_viewer_scale_main_;
+    int viewer_image_width_main_ =
+        camera.width_ * rendered_image_viewer_scale_main_;
+    cv::resize(camera.undistort_mask, viewer_main_undistort_mask,
+               cv::Size(viewer_image_width_main_, viewer_image_height_main_));
+    viewer_main_undistort_mask_[camera.camera_id_] =
+        tensor_utils::cvMat2TorchTensor_Float32(viewer_main_undistort_mask,
+                                                device_type_);
+    if (!viewer_camera_id_set_) {
+      viewer_camera_id_ = camera.camera_id_;
+      viewer_camera_id_set_ = true;
+    }
+    this->scene_->addCamera(camera);
+
+    // Set camera parameters
+    if (scene_->cameras_.find(viewer_camera_id_) != scene_->cameras_.end()) {
+      pkf->setCameraParams(scene_->cameras_.at(viewer_camera_id_));
+    } else {
+      std::cerr << "Warning: No camera found with ID " << viewer_camera_id_
+                << std::endl;
+    }
+
+    // Compute transform tensors
+    pkf->computeTransformTensors();
+
+    // Add keyframe to scene
+    scene_->addKeyframe(pkf, &kfid_shuffled_);
+
+    break;
+  }
 }
 
 void copyFolder(const std::filesystem::path& source,

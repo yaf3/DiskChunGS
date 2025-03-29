@@ -740,7 +740,7 @@ AABB ChunkManager::getChunkAABB(const ChunkCoord& coord) {
 std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
     std::shared_ptr<GaussianKeyframe> keyframe) {
   auto timer = ProfilingUtils::Timer("ChunkManager::getVisibleChunks");
-  std::cout << "Called getVisibleChunks" << std::endl;
+  // std::cout << "Called getVisibleChunks" << std::endl;
 
   if (!keyframe) {
     std::cerr << "Error: Null keyframe passed to getVisibleChunks" << std::endl;

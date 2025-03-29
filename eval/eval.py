@@ -65,13 +65,13 @@ for result in results:
         # if not os.path.exists(os.path.join(result_path, "eval.txt")):
         if "mono" in result.lower():
             os.system(
-                "python python/run.py {} {} --correct_scale".format(
+                "python3 run.py {} {} --correct_scale".format(
                     result_path, gt_path
                 )
             )
         else:
             os.system(
-                "python python/run.py {} {}".format(result_path, gt_path)
+                "python3 run.py {} {}".format(result_path, gt_path)
             )
 
 
