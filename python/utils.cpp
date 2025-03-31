@@ -13,21 +13,23 @@ Sophus::SE3f tensor_to_pose(torch::Tensor pose_tensor) {
   // Convert to CPU and float32 if needed
   pose_tensor = pose_tensor.to(torch::kCPU, torch::kFloat32).contiguous();
 
-  // Extract rotation and translation separately to construct SE3 properly
-  // Extract 3x3 rotation matrix
-  torch::Tensor R_tensor = pose_tensor.slice(0, 0, 3).slice(1, 0, 3);
-  Eigen::Matrix3f R = Eigen::Map<Eigen::Matrix3f>(R_tensor.data_ptr<float>());
+  // Create an Eigen matrix to hold the rotation part
+  Eigen::Matrix3f R = Eigen::Matrix3f::Identity();
 
-  // Extract translation vector
-  torch::Tensor t_tensor =
-      pose_tensor.slice(0, 0, 3).slice(1, 3, 4).reshape({3});
-  Eigen::Vector3f t = Eigen::Map<Eigen::Vector3f>(t_tensor.data_ptr<float>());
+  // Manually copy each element to ensure correct memory layout
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < 3; j++) {
+      R(i, j) = pose_tensor[i][j].item<float>();
+    }
+  }
 
-  // Ensure the rotation matrix is valid
-  Eigen::Quaternionf quat(R);
+  // Extract translation vector manually as well
+  Eigen::Vector3f t(pose_tensor[0][3].item<float>(),
+                    pose_tensor[1][3].item<float>(),
+                    pose_tensor[2][3].item<float>());
 
   // Create Sophus::SE3f from rotation and translation
-  return Sophus::SE3f(quat, t);
+  return Sophus::SE3f(R, t);
 }
 
 torch::Tensor cv_mat_to_tensor(const cv::Mat& mat) {

@@ -273,10 +273,9 @@ if __name__ == "__main__":
         desc="rendering {}".format(args.result_path.split("/")[-1]),
     ):
         (result_indx, gt_indx) = associations[index]
-        w2c = np.linalg.inv(poses[result_indx])
+        w2c = torch.tensor(np.linalg.inv(poses[result_indx]))
         t0 = time.time()
-        w2c_torch = torch.tensor(w2c)
-        render_image = gs_render.render_from_pose(w2c_torch, width, height).clone().detach().to('cuda')
+        render_image = gs_render.render_from_pose(w2c, width, height).clone().detach().to('cuda')
         t1 = time.time() - t0      
         
         render_image = render_image.permute(1, 2, 0)

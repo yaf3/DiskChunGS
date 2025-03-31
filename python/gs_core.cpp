@@ -61,18 +61,19 @@ torch::Tensor renderFromPose(torch::Tensor pose_tensor, int width, int height) {
 
   try {
     // Convert pose tensor to Sophus::SE3f
-    std::cout << "Converting pose tensor to Sophus::SE3f..." << std::endl;
+    // std::cout << "Converting pose tensor to Sophus::SE3f..." << std::endl;
     Sophus::SE3f Tcw = utils::tensor_to_pose(pose_tensor);
 
     // Print the Sophus SE3 pose for debugging
-    std::cout << "Converted SE3 pose:" << std::endl;
-    std::cout << "Rotation matrix:\n" << Tcw.rotationMatrix() << std::endl;
-    std::cout << "Translation vector: " << Tcw.translation().transpose()
-              << std::endl;
+    // std::cout << "Converted SE3 pose:" << std::endl;
+    // std::cout << "Rotation matrix:\n" << Tcw.rotationMatrix() << std::endl;
+    // std::cout << "Translation vector: " << Tcw.translation().transpose()
+    //           << std::endl;
 
     // Render the image
-    std::cout << "Rendering image from pose with dimensions: " << width << "x"
-              << height << std::endl;
+    // std::cout << "Rendering image from pose with dimensions: " << width <<
+    // "x"
+    //           << height << std::endl;
     cv::Mat rendered_image =
         g_pGausMapper->renderFromPose(Tcw, width, height, true);
 
@@ -83,9 +84,9 @@ torch::Tensor renderFromPose(torch::Tensor pose_tensor, int width, int height) {
           "rendering process.");
     }
 
-    std::cout << "Image rendered successfully with size: "
-              << rendered_image.cols << "x" << rendered_image.rows
-              << " and type: " << rendered_image.type() << std::endl;
+    // std::cout << "Image rendered successfully with size: "
+    //           << rendered_image.cols << "x" << rendered_image.rows
+    //           << " and type: " << rendered_image.type() << std::endl;
 
     // Convert the OpenCV Mat to a PyTorch tensor
     // The rendered image is CV_32FC3 (float, 3 channels)
