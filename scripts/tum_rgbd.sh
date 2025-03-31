@@ -1,11 +1,8 @@
 #!/bin/bash
 exp=$1
+num_trials=$2
 
-if [ -d results/tum_rgbd/$exp ]; then
-    rm -rf results/tum_rgbd/$exp
-fi
-
-for i in 0
+for ((i=0; i<num_trials; i++))
 do
 bin/tum_rgbd \
     third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
@@ -13,11 +10,11 @@ bin/tum_rgbd \
     cfg/gaussian_mapper/RGB-D/TUM/tum_rgbd.yaml \
     /data/TUM/rgbd_dataset_freiburg1_desk \
     cfg/ORB_SLAM3/RGB-D/TUM/associations/tum_freiburg1_desk.txt \
-    results/tum_rgbd/$exp/tum_rgbd_$i/rgbd_dataset_freiburg1_desk \
-    # no_viewer
+    results/$exp/tum_rgbd_$i/rgbd_dataset_freiburg1_desk \
+    no_viewer
 done
 
-for i in 0
+for ((i=0; i<num_trials; i++))
 do
 bin/tum_rgbd \
     third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
@@ -25,11 +22,11 @@ bin/tum_rgbd \
     cfg/gaussian_mapper/RGB-D/TUM/tum_rgbd.yaml \
     /data/TUM/rgbd_dataset_freiburg2_xyz \
     cfg/ORB_SLAM3/RGB-D/TUM/associations/tum_freiburg2_xyz.txt \
-    results/tum_rgbd/$exp/tum_rgbd_$i/rgbd_dataset_freiburg2_xyz \
+    results/$exp/tum_rgbd_$i/rgbd_dataset_freiburg2_xyz \
     no_viewer
 done
 
-for i in 0
+for ((i=0; i<num_trials; i++))
 do
 bin/tum_rgbd \
     third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
@@ -37,6 +34,6 @@ bin/tum_rgbd \
     cfg/gaussian_mapper/RGB-D/TUM/tum_rgbd.yaml \
     /data/TUM/rgbd_dataset_freiburg3_long_office_household \
     cfg/ORB_SLAM3/RGB-D/TUM/associations/tum_freiburg3_long_office_household.txt \
-    results/tum_rgbd/$exp/tum_rgbd_$i/rgbd_dataset_freiburg3_long_office_household \
+    results/$exp/tum_rgbd_$i/rgbd_dataset_freiburg3_long_office_household \
     no_viewer
 done
