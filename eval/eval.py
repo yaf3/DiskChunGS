@@ -37,7 +37,7 @@ gt_dataset = {
         ],
     },
     "tum": {
-        "path": os.path.join(dataset_center_path, "TUM_RGBD"),
+        "path": os.path.join(dataset_center_path, "TUM"),
         "scenes": [
             "rgbd_dataset_freiburg1_desk",
             "rgbd_dataset_freiburg2_xyz",
