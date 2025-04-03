@@ -79,6 +79,10 @@ class GaussianModel {
   void oneUpShDegree();
   void setShDegree(const int sh);
 
+  int getLocalIteration() const { return local_iteration_; }
+  void incrementLocalIteration(int inc = 1) { local_iteration_ += inc; }
+  void setLocalIteration(int iter) { local_iteration_ = iter; }
+
   void createFromPcd(torch::Tensor& fused_point_cloud,
                      torch::Tensor& color,
                      const float spatial_lr_scale);
@@ -105,7 +109,7 @@ class GaussianModel {
       const float scale = 1.0f);
 
   void trainingSetup(const GaussianOptimizationParams& training_args);
-  float updateLearningRate(int step);
+  float updateLearningRate();
   void setPositionLearningRate(float position_lr);
   void setFeatureLearningRate(float feature_lr);
   void setOpacityLearningRate(float opacity_lr);
@@ -163,6 +167,17 @@ class GaussianModel {
       bool normalize_quaternions = true,
       bool clear_cache_after_load = true);
 
+  void initializeFromExistingGaussians(
+      torch::Tensor& points,
+      torch::Tensor& features_dc,
+      torch::Tensor& features_rest,
+      torch::Tensor& opacities,
+      torch::Tensor& scaling,
+      torch::Tensor& rotation,
+      torch::Tensor& exist_since_iter,
+      const float spatial_lr_scale,
+      const GaussianOptimizationParams& training_args);
+
  protected:
   float exponLrFunc(int step);
 
@@ -191,10 +206,8 @@ class GaussianModel {
   float percent_dense_;
   float spatial_lr_scale_;
 
-  torch::Tensor sparse_points_xyz_;
-  torch::Tensor sparse_points_color_;
-
  protected:
+  int local_iteration_;
   float lr_init_;
   float lr_final_;
   int lr_delay_steps_;

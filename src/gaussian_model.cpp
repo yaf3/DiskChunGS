@@ -23,7 +23,8 @@ GaussianModel::GaussianModel(const int sh_degree)
       spatial_lr_scale_(0.0),
       lr_delay_steps_(0),
       lr_delay_mult_(1.0),
-      max_steps_(1000000) {
+      max_steps_(1000000),
+      local_iteration_(0) {
   this->max_sh_degree_ = sh_degree;
 
   // Device
@@ -40,7 +41,8 @@ GaussianModel::GaussianModel(const GaussianModelParams& model_params)
       spatial_lr_scale_(0.0),
       lr_delay_steps_(0),
       lr_delay_mult_(1.0),
-      max_steps_(1000000) {
+      max_steps_(1000000),
+      local_iteration_(0) {
   this->max_sh_degree_ = model_params.sh_degree_;
 
   // Device
@@ -92,7 +94,9 @@ torch::Tensor GaussianModel::getCovarianceActivation(int scaling_modifier) {
 }
 
 void GaussianModel::oneUpShDegree() {
-  if (this->active_sh_degree_ < this->max_sh_degree_)
+  // Only increase SH degree every 1000 local iterations
+  if (local_iteration_ % 1000 == 0 &&
+      this->active_sh_degree_ < this->max_sh_degree_)
     this->active_sh_degree_ += 1;
 }
 
@@ -106,9 +110,6 @@ void GaussianModel::createFromPcd(torch::Tensor& fused_point_cloud,
                                   const float spatial_lr_scale) {
   this->spatial_lr_scale_ = spatial_lr_scale;
   int num_points = static_cast<int>(fused_point_cloud.sizes()[0]);
-
-  sparse_points_xyz_ = fused_point_cloud;
-  sparse_points_color_ = color;
 
   torch::Tensor fused_color = sh_utils::RGB2SH(color);
   auto temp = this->max_sh_degree_ + 1;
@@ -176,11 +177,6 @@ void GaussianModel::increasePcd(torch::Tensor& new_point_cloud,
   // auto time1 = std::chrono::steady_clock::now();
   auto num_new_points = new_point_cloud.size(0);
   if (num_new_points == 0) return;
-
-  sparse_points_xyz_ =
-      torch::cat({sparse_points_xyz_, new_point_cloud}, /*dim=*/0);
-  sparse_points_color_ =
-      torch::cat({sparse_points_color_, new_colors}, /*dim=*/0);
 
   torch::Tensor new_fused_colors = sh_utils::RGB2SH(new_colors);
   auto temp = this->max_sh_degree_ + 1;
@@ -381,7 +377,7 @@ void GaussianModel::trainingSetup(
   max_steps_ = training_args.position_lr_max_steps_;
 }
 
-float GaussianModel::updateLearningRate(int step) {
+float GaussianModel::updateLearningRate() {
   // def update_learning_rate(self, iteration):
   //     ''' Learning rate scheduling per step '''
   //     for param_group in self.optimizer.param_groups:
@@ -389,7 +385,7 @@ float GaussianModel::updateLearningRate(int step) {
   //             lr = self.xyz_scheduler_args(iteration)
   //             param_group['lr'] = lr
   //             return lr
-  float lr = this->exponLrFunc(step);
+  float lr = this->exponLrFunc(local_iteration_);
   if (std::isnan(lr) || std::isinf(lr) || lr <= 0.0f || lr > 1.0f) {
     std::cerr << "ERROR: Generated invalid learning rate: " << lr << std::endl;
     throw std::runtime_error("Invalid learning rate generated");
@@ -957,47 +953,6 @@ void GaussianModel::savePly(std::filesystem::path result_path) {
   fb_binary.close();
 }
 
-void GaussianModel::saveSparsePointsPly(std::filesystem::path result_path) {
-  // Prepare data to write
-  torch::Tensor xyz = this->sparse_points_xyz_.detach().cpu();
-  torch::Tensor normals = torch::zeros_like(xyz);
-  torch::Tensor color = (this->sparse_points_color_ * 255.0f)
-                            .toType(torch::kUInt8)
-                            .detach()
-                            .cpu();
-
-  std::filebuf fb_binary;
-  fb_binary.open(result_path, std::ios::out | std::ios::binary);
-  std::ostream outstream_binary(&fb_binary);
-  if (outstream_binary.fail())
-    throw std::runtime_error("failed to open " + result_path.string());
-
-  tinyply::PlyFile result_file;
-
-  // xyz
-  result_file.add_properties_to_element(
-      "vertex", {"x", "y", "z"}, tinyply::Type::FLOAT32, xyz.size(0),
-      reinterpret_cast<uint8_t*>(xyz.data_ptr<float>()), tinyply::Type::INVALID,
-      0);
-
-  // normals
-  result_file.add_properties_to_element(
-      "vertex", {"nx", "ny", "nz"}, tinyply::Type::FLOAT32, normals.size(0),
-      reinterpret_cast<uint8_t*>(normals.data_ptr<float>()),
-      tinyply::Type::INVALID, 0);
-
-  // color
-  result_file.add_properties_to_element(
-      "vertex", {"red", "green", "blue"}, tinyply::Type::UINT8, color.size(0),
-      reinterpret_cast<uint8_t*>(color.data_ptr<uint8_t>()),
-      tinyply::Type::INVALID, 0);
-
-  // Write the file
-  result_file.write(outstream_binary, true);
-
-  fb_binary.close();
-}
-
 float GaussianModel::percentDense() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return percent_dense_;
@@ -1063,8 +1018,6 @@ void GaussianModel::save_checkpoint(const std::string& path) {
   model_archive.write("xyz_gradient_accum_", xyz_gradient_accum_);
   model_archive.write("denom_", denom_);
   model_archive.write("exist_since_iter_", exist_since_iter_);
-  model_archive.write("sparse_points_xyz_", sparse_points_xyz_);
-  model_archive.write("sparse_points_color_", sparse_points_color_);
   model_archive.save_to(path + "/model.pt");
 
   // Save configuration as before
@@ -1073,6 +1026,7 @@ void GaussianModel::save_checkpoint(const std::string& path) {
   config_archive.write("max_sh_degree_", torch::tensor(max_sh_degree_));
   config_archive.write("lr_delay_steps_", torch::tensor(lr_delay_steps_));
   config_archive.write("max_steps_", torch::tensor(max_steps_));
+  config_archive.write("local_iteration_", torch::tensor(local_iteration_));
 
   // Float values
   config_archive.write("percent_dense_", torch::tensor(percent_dense_));
@@ -1203,17 +1157,6 @@ void GaussianModel::load_checkpoint_incremental(
   model_archive.read("rotation_", rotation_);
   model_archive.read("opacity_", opacity_);
 
-  // Try to load sparse points
-  try {
-    model_archive.read("sparse_points_xyz_", sparse_points_xyz_);
-    model_archive.read("sparse_points_color_", sparse_points_color_);
-  } catch (const std::exception&) {
-    sparse_points_xyz_ =
-        torch::empty(0, torch::TensorOptions().device(device_type_));
-    sparse_points_color_ =
-        torch::empty(0, torch::TensorOptions().device(device_type_));
-  }
-
   // Load auxiliary tensors
   try {
     model_archive.read("max_radii2D_", max_radii2D_);
@@ -1241,7 +1184,7 @@ void GaussianModel::load_checkpoint_incremental(
 
   // Temporary tensors to hold the loaded scalar values
   torch::Tensor active_sh_degree_tensor, max_sh_degree_tensor,
-      lr_delay_steps_tensor, max_steps_tensor;
+      lr_delay_steps_tensor, max_steps_tensor, local_iteration_tensor;
   torch::Tensor percent_dense_tensor, spatial_lr_scale_tensor, lr_init_tensor,
       lr_final_tensor, lr_delay_mult_tensor;
 
@@ -1249,6 +1192,7 @@ void GaussianModel::load_checkpoint_incremental(
   config_archive.read("max_sh_degree_", max_sh_degree_tensor);
   config_archive.read("lr_delay_steps_", lr_delay_steps_tensor);
   config_archive.read("max_steps_", max_steps_tensor);
+  config_archive.read("local_iteration_", local_iteration_tensor);
 
   // Load float values
   config_archive.read("percent_dense_", percent_dense_tensor);
@@ -1262,6 +1206,7 @@ void GaussianModel::load_checkpoint_incremental(
   max_sh_degree_ = max_sh_degree_tensor.item<int>();
   lr_delay_steps_ = lr_delay_steps_tensor.item<int>();
   max_steps_ = max_steps_tensor.item<int>();
+  local_iteration_ = local_iteration_tensor.item<int>();
 
   percent_dense_ = percent_dense_tensor.item<float>();
   spatial_lr_scale_ = spatial_lr_scale_tensor.item<float>();
@@ -1659,4 +1604,72 @@ void GaussianModel::load_checkpoint_incremental(
   // std::cout << "Loaded " << xyz_.size(0) << " points from checkpoint"
   //           << std::endl;
   // std::cout << "Checkpoint loaded from " << path << std::endl;
+}
+
+void GaussianModel::initializeFromExistingGaussians(
+    torch::Tensor& points,
+    torch::Tensor& features_dc,
+    torch::Tensor& features_rest,
+    torch::Tensor& opacities,
+    torch::Tensor& scaling,
+    torch::Tensor& rotation,
+    torch::Tensor& exist_since_iter,
+    const float spatial_lr_scale,
+    const GaussianOptimizationParams& training_args) {
+  // Set spatial lr scale
+  this->spatial_lr_scale_ = spatial_lr_scale;
+
+  // Initialize tensors with explicit cloning to ensure independent storage
+  this->xyz_ = points.clone().requires_grad_();
+  this->features_dc_ = features_dc.clone().requires_grad_();
+  this->features_rest_ = features_rest.clone().requires_grad_();
+  this->opacity_ = opacities.clone().requires_grad_();
+  this->scaling_ = scaling.clone().requires_grad_();
+  this->rotation_ = rotation.clone().requires_grad_();
+  this->exist_since_iter_ = exist_since_iter.clone();
+
+  // Initialize tensor vectors
+  GAUSSIAN_MODEL_TENSORS_TO_VEC
+
+  // Initialize tracking variables
+  this->max_radii2D_ = torch::zeros(
+      {this->getXYZ().size(0)}, torch::TensorOptions().device(device_type_));
+
+  // Setup optimizer
+  setPercentDense(training_args.percent_dense_);
+  this->xyz_gradient_accum_ = torch::zeros(
+      {this->getXYZ().size(0), 1}, torch::TensorOptions().device(device_type_));
+  this->denom_ = torch::zeros({this->getXYZ().size(0), 1},
+                              torch::TensorOptions().device(device_type_));
+
+  // Initialize optimizer with properly set learning rates
+  torch::optim::AdamOptions adam_options;
+  adam_options.set_lr(0.0);
+  adam_options.eps() = 1e-15;
+
+  this->optimizer_.reset(new SparseGaussianAdam(Tensor_vec_xyz_, adam_options));
+  optimizer_->param_groups()[0].options().set_lr(
+      training_args.position_lr_init_ * this->spatial_lr_scale_);
+
+  optimizer_->add_param_group(Tensor_vec_feature_dc_);
+  optimizer_->param_groups()[1].options().set_lr(training_args.feature_lr_);
+
+  optimizer_->add_param_group(Tensor_vec_feature_rest_);
+  optimizer_->param_groups()[2].options().set_lr(training_args.feature_lr_ /
+                                                 20.0);
+
+  optimizer_->add_param_group(Tensor_vec_opacity_);
+  optimizer_->param_groups()[3].options().set_lr(training_args.opacity_lr_);
+
+  optimizer_->add_param_group(Tensor_vec_scaling_);
+  optimizer_->param_groups()[4].options().set_lr(training_args.scaling_lr_);
+
+  optimizer_->add_param_group(Tensor_vec_rotation_);
+  optimizer_->param_groups()[5].options().set_lr(training_args.rotation_lr_);
+
+  // Setup learning rate parameters
+  lr_init_ = training_args.position_lr_init_ * this->spatial_lr_scale_;
+  lr_final_ = training_args.position_lr_final_ * this->spatial_lr_scale_;
+  lr_delay_mult_ = training_args.position_lr_delay_mult_;
+  max_steps_ = training_args.position_lr_max_steps_;
 }

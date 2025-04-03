@@ -1291,3 +1291,171 @@ std::vector<ChunkCoord> ChunkManager::getExistingChunkCoords() {
 
   return result;
 }
+
+void ChunkManager::transferGaussiansAcrossChunks() {
+  // For each active chunk
+  for (const auto& [coord, chunk] : active_chunks_) {
+    if (!chunk || !chunk->getGaussians()) continue;
+
+    auto gaussians = chunk->getGaussians();
+    auto points = gaussians->getXYZ();
+    float spatial_lr_scale = gaussians->spatial_lr_scale_;
+
+    // Get AABB for this chunk
+    AABB chunk_aabb = getChunkAABB(coord);
+
+    // Create mask for points outside this chunk
+    torch::Tensor outside_mask =
+        ((points.index({torch::indexing::Slice(), 0}) < chunk_aabb.min.x()) |
+         (points.index({torch::indexing::Slice(), 0}) > chunk_aabb.max.x()) |
+         (points.index({torch::indexing::Slice(), 1}) < chunk_aabb.min.y()) |
+         (points.index({torch::indexing::Slice(), 1}) > chunk_aabb.max.y()) |
+         (points.index({torch::indexing::Slice(), 2}) < chunk_aabb.min.z()) |
+         (points.index({torch::indexing::Slice(), 2}) > chunk_aabb.max.z()));
+
+    // If no points outside, skip
+    if (outside_mask.sum().item<int>() == 0) continue;
+
+    // Extract properties of outside points with explicit cloning
+    torch::Tensor outside_points = points.index({outside_mask}).clone();
+    torch::Tensor outside_features_dc =
+        gaussians->features_dc_.index({outside_mask}).clone();
+    torch::Tensor outside_features_rest =
+        gaussians->features_rest_.index({outside_mask}).clone();
+    torch::Tensor outside_opacities =
+        gaussians->opacity_.index({outside_mask}).clone();
+    torch::Tensor outside_scaling =
+        gaussians->scaling_.index({outside_mask}).clone();
+    torch::Tensor outside_rotation =
+        gaussians->rotation_.index({outside_mask}).clone();
+    torch::Tensor outside_exist_since =
+        gaussians->exist_since_iter_.index({outside_mask}).clone();
+
+    // Group points by their new chunks
+    auto [unique_chunks, inverse_indices, points_per_chunk] =
+        groupPointsByChunk(outside_points);
+
+    // Process each destination chunk
+    for (int i = 0; i < unique_chunks.size(0); i++) {
+      ChunkCoord dest_coord{unique_chunks[i][0].item<int64_t>(),
+                            unique_chunks[i][1].item<int64_t>(),
+                            unique_chunks[i][2].item<int64_t>()};
+
+      // Skip if destination is the same as source (shouldn't happen)
+      if (dest_coord.x == coord.x && dest_coord.y == coord.y &&
+          dest_coord.z == coord.z) {
+        continue;
+      }
+
+      // Mask for points going to this chunk
+      torch::Tensor chunk_mask = (inverse_indices == i);
+
+      // Extract properties of points going to this chunk with explicit cloning
+      torch::Tensor chunk_points = outside_points.index({chunk_mask}).clone();
+      torch::Tensor chunk_features_dc =
+          outside_features_dc.index({chunk_mask}).clone();
+      torch::Tensor chunk_features_rest =
+          outside_features_rest.index({chunk_mask}).clone();
+      torch::Tensor chunk_opacities =
+          outside_opacities.index({chunk_mask}).clone();
+      torch::Tensor chunk_scaling = outside_scaling.index({chunk_mask}).clone();
+      torch::Tensor chunk_rotation =
+          outside_rotation.index({chunk_mask}).clone();
+      torch::Tensor chunk_exist_since =
+          outside_exist_since.index({chunk_mask}).clone();
+
+      // Get or initialize chunk
+      std::shared_ptr<Chunk> dest_chunk;
+      bool is_new_chunk = false;
+
+      std::lock_guard<std::mutex> lock(io_mutex_);
+
+      // If loading or saving this chunk right now, skip (maybe instead
+      // wait?)
+      auto meta_it = chunk_metadata_.find(dest_coord);
+      if (meta_it != chunk_metadata_.end() &&
+          (meta_it->second.loading || meta_it->second.saving)) {
+        continue;
+      }
+
+      // Check if already in memory
+      auto it = active_chunks_.find(dest_coord);
+      if (it != active_chunks_.end()) {
+        dest_chunk = it->second;
+        std::cout << "Chunk found in memory" << std::endl;
+      }
+      // Try to load from disk
+      else if (chunkExistsOnDiskNoLock(dest_coord)) {  // Use no-lock version
+        if (loadChunkNoLock(dest_coord)) {             // Use no-lock version
+          dest_chunk = active_chunks_[dest_coord];
+          std::cout << "Chunk loaded from disk" << std::endl;
+        } else {
+          // Loading failed, create new
+          dest_chunk = std::make_shared<Chunk>(model_params_, dest_coord);
+          active_chunks_[dest_coord] = dest_chunk;
+          is_new_chunk = true;
+        }
+      }
+      // Create new chunk
+      else {
+        // If no points outside, skip
+        const int MIN_TRANSFER_THRESHOLD = 30;
+        if (outside_mask.sum().item<int>() < MIN_TRANSFER_THRESHOLD) continue;
+        std::cout << "Creating new chunk" << std::endl;
+        dest_chunk = std::make_shared<Chunk>(model_params_, dest_coord);
+        active_chunks_[dest_coord] = dest_chunk;
+
+        // Initialize metadata
+        chunk_metadata_[dest_coord] = ChunkMetadata();
+        is_new_chunk = true;
+
+        incrementStat(stats_.active_chunks);
+      }
+
+      // Mark as used
+      markChunkUsedNoLock(dest_coord);  // Use no-lock version
+
+      // Initialize or add points to the chunk
+      if (is_new_chunk) {
+        // std::cout << 0 << " gaussians in dest chunk before" << std::endl;
+        // std::cout << "Since new chunk, calling setup" << std::endl;
+        // std::cout << dest_coord.x << " " << dest_coord.y << " " <<
+        // dest_coord.z
+        //           << std::endl;
+        // // Initialize directly with the existing gaussians
+        dest_chunk->getGaussians()->initializeFromExistingGaussians(
+            chunk_points, chunk_features_dc, chunk_features_rest,
+            chunk_opacities, chunk_scaling, chunk_rotation, chunk_exist_since,
+            spatial_lr_scale, opt_params_);
+        // torch::Tensor featurs_dc = chunk_features_dc.select(1, 0);
+        // torch::Tensor colors = sh_utils::SH2RGB(featurs_dc);
+        // dest_chunk->getGaussians()->createFromPcd(chunk_points, colors,
+        //                                           spatial_lr_scale);
+        // dest_chunk->getGaussians()->trainingSetup(opt_params_);
+
+        // No need for densificationPostfix since we've directly replaced
+        // tensors
+        std::cout << "Initialized new chunk with " << chunk_points.size(0)
+                  << " points directly" << std::endl;
+      } else {
+        // For existing chunks, add new points
+        // std::cout << dest_chunk->getGaussians()->getXYZ().sizes()[0]
+        //           << " gaussians in dest chunk before" << std::endl;
+        // std::cout << "Chunk already exists, adding points" << std::endl;
+        dest_chunk->getGaussians()->densificationPostfix(
+            chunk_points, chunk_features_dc, chunk_features_rest,
+            chunk_opacities, chunk_scaling, chunk_rotation, chunk_exist_since);
+      }
+
+      // Add points to destination chunk using densificationPostfix
+
+      // std::cout << dest_chunk->getGaussians()->getXYZ().sizes()[0]
+      //           << " gaussians in dest chunk after" << std::endl;
+    }
+
+    // Remove migrated points from the source chunk
+    gaussians->prunePoints(outside_mask);
+    // std::cout << gaussians->getXYZ().sizes()[0]
+    //           << " gaussians remaining in original chunk" << std::endl;
+  }
+}

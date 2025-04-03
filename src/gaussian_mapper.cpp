@@ -570,6 +570,10 @@ void GaussianMapper::run() {
     if (getIteration() >= opt_params_.iterations_) break;
   }
 
+  // while (getIteration() < 10000000) {
+  //   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+  // }
+
   // Fourth loop: Tail gaussian optimization
   int densify_interval = densifyInterval();
   int n_delay_iters = densify_interval * 0.8;
@@ -706,14 +710,16 @@ void GaussianMapper::trainColmap() {
 
 // Modified version of trainForOneIteration that uses the chunk manager
 void GaussianMapper::trainForOneIteration() {
-  // std::cout << "[GaussianMapper] Starting Optimization Iteration" <<
-  // std::endl;
+  std::cout << "[GaussianMapper] Starting Optimization Iteration" << std::endl;
   auto timer_trainForOneIteration =
       ProfilingUtils::Timer("trainForOneIteration");
+
   increaseIteration(1);
   chunk_manager_->setCurrentIteration(getIteration());
+
   int min_points_chunk_threshold = 10;
   chunk_manager_->cullSparseChunks(min_points_chunk_threshold);
+
   auto iter_start_timing = std::chrono::steady_clock::now();
 
   auto timer_selectLocalityAwareKeyframe =
@@ -774,8 +780,8 @@ void GaussianMapper::trainForOneIteration() {
   // }
   timer_getVisibleChunks.stop();
 
-  std::cout << "[Optimization] Num visible chunks: " << visible_chunks.size()
-            << std::endl;
+  // std::cout << "[Optimization] Num visible chunks: " << visible_chunks.size()
+  //           << std::endl;
 
   // Extract models from chunks
   std::vector<std::shared_ptr<GaussianModel>> models;
@@ -794,37 +800,19 @@ void GaussianMapper::trainForOneIteration() {
     return;  // Early return if no valid models
   }
 
-  // Update learning rates and SH degrees
   for (const auto& gaussians : models) {
-    // Every 1000 its we increase the levels of SH up to a maximum degree
-    if (getIteration() % 1000 == 0 && default_sh_ < model_params_.sh_degree_)
-      default_sh_ += 1;
-    gaussians->setShDegree(default_sh_);
+    // Call oneUpShDegree for each model - this now uses local_iteration_
+    // internally
+    gaussians->oneUpShDegree();
 
-    // Update learning rate
-    gaussians->updateLearningRate(getIteration());
+    // Update learning rate based on the model's local iteration count
+    gaussians->updateLearningRate();
+
+    // Set feature, opacity, scaling, and rotation learning rates
     gaussians->setFeatureLearningRate(featureLearningRate());
     gaussians->setOpacityLearningRate(opacityLearningRate());
     gaussians->setScalingLearningRate(scalingLearningRate());
     gaussians->setRotationLearningRate(rotationLearningRate());
-    // std::cout << "[0]: "
-    //           << gaussians->optimizer_->param_groups()[0].options().get_lr()
-    //           << std::endl;
-    // std::cout << "[1]: "
-    //           << gaussians->optimizer_->param_groups()[1].options().get_lr()
-    //           << std::endl;
-    // std::cout << "[2]: "
-    //           << gaussians->optimizer_->param_groups()[2].options().get_lr()
-    //           << std::endl;
-    // std::cout << "[3]: "
-    //           << gaussians->optimizer_->param_groups()[3].options().get_lr()
-    //           << std::endl;
-    // std::cout << "[4]: "
-    //           << gaussians->optimizer_->param_groups()[4].options().get_lr()
-    //           << std::endl;
-    // std::cout << "[5]: "
-    //           << gaussians->optimizer_->param_groups()[5].options().get_lr()
-    //           << std::endl;
   }
 
   // Render
@@ -878,8 +866,10 @@ void GaussianMapper::trainForOneIteration() {
       // Calculate visibility filter for this specific model
       auto visibility_filter = (radii > 0).nonzero().reshape({-1});
 
+      int local_iter = gaussians->getLocalIteration();
+
       // Densification
-      if (getIteration() < opt_params_.densify_until_iter_ ||
+      if (local_iter < opt_params_.densify_until_iter_ ||
           opt_params_.densify_until_iter_ == -1) {
         // Keep track of max radii in image-space for pruning
         gaussians->max_radii2D_.index_put_(
@@ -890,9 +880,9 @@ void GaussianMapper::trainForOneIteration() {
         gaussians->addDensificationStats(screenspace_points_vec[model_idx],
                                          visibility_filter);
 
-        if ((getIteration() > opt_params_.densify_from_iter_) &&
-            (getIteration() % densifyInterval() == 0)) {
-          int size_threshold = (getIteration() < prune_big_point_after_iter_ ||
+        if ((local_iter > opt_params_.densify_from_iter_) &&
+            (local_iter % densifyInterval() == 0)) {
+          int size_threshold = (local_iter < prune_big_point_after_iter_ ||
                                 prune_big_point_after_iter_ == -1)
                                    ? 0
                                    : 20;
@@ -902,9 +892,9 @@ void GaussianMapper::trainForOneIteration() {
         }
 
         if (opacityResetInterval() &&
-            (getIteration() % opacityResetInterval() == 0 ||
+            (local_iter % opacityResetInterval() == 0 ||
              (model_params_.white_background_ &&
-              getIteration() == opt_params_.densify_from_iter_)))
+              local_iter == opt_params_.densify_from_iter_)))
           gaussians->resetOpacity();
       }
     }
@@ -966,12 +956,15 @@ void GaussianMapper::trainForOneIteration() {
           opt_params_.iterations_ == -1) {
         gaussians->optimizer_->step();
         gaussians->optimizer_->zero_grad(true);
+
+        gaussians->incrementLocalIteration();
       }
     }
 
     // Periodically cull gaussians outside of borders & evict unused chunks
     if (getIteration() % 50 == 0) {
-      chunk_manager_->cullGaussiansOutsideChunkBorders();
+      // chunk_manager_->transferGaussiansAcrossChunks();
+      // chunk_manager_->cullGaussiansOutsideChunkBorders();
       chunk_manager_->evictUnusedChunks();
     }
   }
@@ -1022,8 +1015,7 @@ void GaussianMapper::combineMappingOperations() {
 
     switch (opr.meOperationType) {
       case ORB_SLAM3::MappingOperation::OprType::LocalMappingBA: {
-        // std::cout << "[Gaussian Mapper]Local BA Detected."
-        //           << std::endl;
+        std::cout << "[Gaussian Mapper]Local BA Detected." << std::endl;
 
         // Get new keyframes
         auto& associated_kfs = opr.associatedKeyFrames();
@@ -1075,7 +1067,7 @@ void GaussianMapper::combineMappingOperations() {
       } break;
 
       case ORB_SLAM3::MappingOperation::OprType::LoopClosingBA: {
-        // std::cout << "[Gaussian Mapper]Loop Closure Detected." << std::endl;
+        std::cout << "[Gaussian Mapper]Loop Closure Detected." << std::endl;
 
         // // Get the loop keyframe scale modification factor
         // float loop_kf_scale = opr.mfScale;
@@ -1118,18 +1110,18 @@ void GaussianMapper::combineMappingOperations() {
         //     bool large_trans = !diff_pose.translation().isMuchSmallerThan(
         //         1.0, large_trans_th_);
         //     if (large_rot || large_trans) {
-        //       std::cout << "[Gaussian Mapper]Large loop correction
-        //           detected,
-        //           "
-        //           "transforming visible points of kf "
-        //               << kfid << std::endl;
+        //       std::cout << "[Gaussian Mapper]Large loop correction detected,
+        //       "
+        //                    "transforming visible points of kf "
+        //                 << kfid << std::endl;
         //       diff_pose.translation() -=
-        //           inv_pose.translation();  // t = (R_new * t_old + t_new) -
-        //       t_new diff_pose.translation() *=
+        //           inv_pose
+        //               .translation();  // t = (R_new * t_old + t_new) - t_new
+        //       diff_pose.translation() *=
         //           loop_kf_scale;  // t = s * (R_new * t_old)
         //       diff_pose.translation() +=
-        //           inv_pose.translation();  // t = (s * R_new * t_old) +
-        //       t_new torch::Tensor diff_pose_tensor =
+        //           inv_pose.translation();  // t = (s * R_new * t_old) + t_new
+        //       torch::Tensor diff_pose_tensor =
         //           tensor_utils::EigenMatrix2TorchTensor(diff_pose.matrix(),
         //                                                 device_type_)
         //               .transpose(0, 1);
@@ -1159,8 +1151,8 @@ void GaussianMapper::combineMappingOperations() {
         //                          "_1_after_loop_correction"));
         // // Get new points (scaled transformation applied in ORB-SLAM3, so
         // this
-        //     // step is performed at last to avoid scaling twice)
-        //     auto& associated_points = opr.associatedMapPoints();
+        // // step is performed at last to avoid scaling twice)
+        // auto& associated_points = opr.associatedMapPoints();
         // auto& points = std::get<0>(associated_points);
         // auto& colors = std::get<1>(associated_points);
 
@@ -1176,11 +1168,9 @@ void GaussianMapper::combineMappingOperations() {
       } break;
 
       case ORB_SLAM3::MappingOperation::OprType::ScaleRefinement: {
-        // std::cout << "[Gaussian Mapper]Scale refinement Detected.
-        //     Transforming
-        //              "
-        //              "all kfs and points..."
-        //           << std::endl;
+        std::cout << "[Gaussian Mapper]Scale refinement Detected. Transforming "
+                     "all kfs and points..."
+                  << std::endl;
 
         // float s = opr.mfScale;
         // Sophus::SE3f& T = opr.mT;
@@ -1193,9 +1183,9 @@ void GaussianMapper::combineMappingOperations() {
         //   // Apply the scaled transformation to the scene
         //   scene_->applyScaledTransformation(s, T);
         // } else {  // TODO: the workflow should not come here, delete this
-        //   branch
-        //       // Apply the scaled transformation to the cached points
-        //       for (auto& pt : scene_->cached_point_cloud_) {
+        // branch
+        //   // Apply the scaled transformation to the cached points
+        //   for (auto& pt : scene_->cached_point_cloud_) {
         //     // pt <- (s * Ryw * pt + tyw)
         //     auto& pt_xyz = pt.second.xyz_;
         //     pt_xyz *= s;

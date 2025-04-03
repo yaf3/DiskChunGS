@@ -54,6 +54,14 @@ class Chunk {
     return gaussians_;
   }
 
+  // Get local iteration count for this chunk
+  int getLocalIteration() const {
+    if (gaussians_) {
+      return gaussians_->getLocalIteration();
+    }
+    return 0;
+  }
+
  private:
   ChunkCoord coord_{0, 0, 0};
   std::shared_ptr<GaussianModel> gaussians_;

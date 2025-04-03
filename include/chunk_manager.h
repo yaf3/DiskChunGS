@@ -188,6 +188,17 @@ class ChunkManager {
 
   std::vector<ChunkCoord> getExistingChunkCoords();
 
+  void transferGaussiansAcrossChunks();
+
+  int getChunkLocalIteration(const ChunkCoord& coord) {
+    std::lock_guard<std::mutex> lock(io_mutex_);
+    auto chunk = getChunkAtNoLock(coord);
+    if (chunk && chunk->getGaussians()) {
+      return chunk->getGaussians()->getLocalIteration();
+    }
+    return 0;
+  }
+
   // Stats for debugging/monitoring
   struct Stats {
     int active_chunks;
