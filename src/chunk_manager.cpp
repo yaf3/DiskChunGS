@@ -1293,6 +1293,7 @@ std::vector<ChunkCoord> ChunkManager::getExistingChunkCoords() {
 }
 
 void ChunkManager::transferGaussiansAcrossChunks() {
+  torch::NoGradGuard no_grad;
   // For each active chunk
   for (const auto& [coord, chunk] : active_chunks_) {
     if (!chunk || !chunk->getGaussians()) continue;
@@ -1317,19 +1318,20 @@ void ChunkManager::transferGaussiansAcrossChunks() {
     if (outside_mask.sum().item<int>() == 0) continue;
 
     // Extract properties of outside points with explicit cloning
-    torch::Tensor outside_points = points.index({outside_mask}).clone();
+    torch::Tensor outside_points =
+        points.index({outside_mask}).detach().clone();
     torch::Tensor outside_features_dc =
-        gaussians->features_dc_.index({outside_mask}).clone();
+        gaussians->features_dc_.index({outside_mask}).detach().clone();
     torch::Tensor outside_features_rest =
-        gaussians->features_rest_.index({outside_mask}).clone();
+        gaussians->features_rest_.index({outside_mask}).detach().clone();
     torch::Tensor outside_opacities =
-        gaussians->opacity_.index({outside_mask}).clone();
+        gaussians->opacity_.index({outside_mask}).detach().clone();
     torch::Tensor outside_scaling =
-        gaussians->scaling_.index({outside_mask}).clone();
+        gaussians->scaling_.index({outside_mask}).detach().clone();
     torch::Tensor outside_rotation =
-        gaussians->rotation_.index({outside_mask}).clone();
+        gaussians->rotation_.index({outside_mask}).detach().clone();
     torch::Tensor outside_exist_since =
-        gaussians->exist_since_iter_.index({outside_mask}).clone();
+        gaussians->exist_since_iter_.index({outside_mask}).detach().clone();
 
     // Group points by their new chunks
     auto [unique_chunks, inverse_indices, points_per_chunk] =

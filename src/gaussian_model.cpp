@@ -1620,13 +1620,13 @@ void GaussianModel::initializeFromExistingGaussians(
   this->spatial_lr_scale_ = spatial_lr_scale;
 
   // Initialize tensors with explicit cloning to ensure independent storage
-  this->xyz_ = points.clone().requires_grad_();
-  this->features_dc_ = features_dc.clone().requires_grad_();
-  this->features_rest_ = features_rest.clone().requires_grad_();
-  this->opacity_ = opacities.clone().requires_grad_();
-  this->scaling_ = scaling.clone().requires_grad_();
-  this->rotation_ = rotation.clone().requires_grad_();
-  this->exist_since_iter_ = exist_since_iter.clone();
+  this->xyz_ = points.detach().clone().requires_grad_();
+  this->features_dc_ = features_dc.detach().clone().requires_grad_();
+  this->features_rest_ = features_rest.detach().clone().requires_grad_();
+  this->opacity_ = opacities.detach().clone().requires_grad_();
+  this->scaling_ = scaling.detach().clone().requires_grad_();
+  this->rotation_ = rotation.detach().clone().requires_grad_();
+  this->exist_since_iter_ = exist_since_iter.detach().clone();
 
   // Initialize tensor vectors
   GAUSSIAN_MODEL_TENSORS_TO_VEC
