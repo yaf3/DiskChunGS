@@ -110,7 +110,8 @@ for gt_dataset_name in gt_dataset:
                         ape_R = lines[17].split()
                         assert ape_R[0] == "rmse", result
                         R = ape_R[-1]
-                PSNR, SSIM, LPIPS, Tracking_fps, Rendering_fps = (
+                PSNR, SSIM, LPIPS, Tracking_fps, Rendering_fps, Num_Gaussians = (
+                    None,
                     None,
                     None,
                     None,
@@ -126,6 +127,7 @@ for gt_dataset_name in gt_dataset:
                         Tracking_fps = fin.readline().split()[-1]
                         Rendering_time = fin.readline().split()[-1]
                         Rendering_fps = fin.readline().split()[-1]
+                        Num_Gaussians = fin.readline().split()[-1]
 
                 render_path = glob.glob(
                     os.path.join(result, scene, "*shutdown", "render_time.txt")
@@ -137,7 +139,7 @@ for gt_dataset_name in gt_dataset:
                     render_time = render_time[:, 1].astype(np.float32)
                     Rendering_fps = 1000 / np.mean(render_time)
 
-                result_str = "{} {} {} {} {} {} {} {} {}\n".format(
+                result_str = "{} {} {} {} {} {} {} {} {} {}\n".format(
                     scene,
                     T,
                     R,
@@ -146,6 +148,7 @@ for gt_dataset_name in gt_dataset:
                     LPIPS,
                     Tracking_fps,
                     Rendering_fps,
+                    Num_Gaussians,
                     T_std,
                 )
                 print(result_str)
@@ -168,6 +171,7 @@ with open(os.path.join(result_main_folder, "log.csv"), "w") as out_file:
             "LPIPS",
             "Tracking FPS",
             "Rendering FPS",
+            "Num Gaussians",
             "T_std",
         )
     )

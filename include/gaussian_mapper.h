@@ -279,6 +279,8 @@ class GaussianMapper {
   std::vector<ChunkCoord> loadChunkManifest(std::filesystem::path scene_dir);
   void loadCamerasFromJson(std::filesystem::path json_path);
 
+  void saveTotalGaussians(std::string name_suffix);
+
  private:
   // Updated function declarations:
   std::shared_ptr<GaussianKeyframe> selectLocalityAwareKeyframe();

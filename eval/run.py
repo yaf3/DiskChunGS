@@ -139,6 +139,13 @@ if __name__ == "__main__":
         dtype=np.str_,
     )
     render_time = render_time[:, 1].astype(np.float32)
+    
+    num_gaussians = np.loadtxt(
+        os.path.join(args.result_path, shutdown_name, "gaussianCount.txt"),
+        delimiter=" ",
+        dtype=np.str_,
+    )
+    num_gaussians = int(num_gaussians.item())
 
     # load gt
     if "replica" in args.gt_path.lower():
@@ -345,3 +352,4 @@ if __name__ == "__main__":
 
         fout.write("rendering ms: {}\n".format(np.mean(render_time)))
         fout.write("rendering FPS: {}\n".format(1000 / np.mean(render_time)))
+        fout.write("num gaussians: {}\n".format(num_gaussians))

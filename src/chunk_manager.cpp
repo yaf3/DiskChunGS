@@ -1069,10 +1069,11 @@ void ChunkManager::addPointsToChunks(
         chunk = active_chunks_[coord];
         std::cout << "Chunk loaded from disk" << std::endl;
       } else {
+        throw std::runtime_error("Loading existing chunk failed");
         // Loading failed, create new
-        chunk = std::make_shared<Chunk>(model_params_, coord);
-        active_chunks_[coord] = chunk;
-        is_new_chunk = true;
+        // chunk = std::make_shared<Chunk>(model_params_, coord);
+        // active_chunks_[coord] = chunk;
+        // is_new_chunk = true;
       }
     }
     // Create new chunk
@@ -1080,6 +1081,7 @@ void ChunkManager::addPointsToChunks(
       std::cout << "Creating new chunk" << std::endl;
       chunk = std::make_shared<Chunk>(model_params_, coord);
       active_chunks_[coord] = chunk;
+      chunk_exists_cache_[coord] = true;
 
       // Initialize metadata
       chunk_metadata_[coord] = ChunkMetadata();
@@ -1393,9 +1395,12 @@ void ChunkManager::transferGaussiansAcrossChunks() {
           std::cout << "Chunk loaded from disk" << std::endl;
         } else {
           // Loading failed, create new
-          dest_chunk = std::make_shared<Chunk>(model_params_, dest_coord);
-          active_chunks_[dest_coord] = dest_chunk;
-          is_new_chunk = true;
+          throw std::runtime_error(
+              "Loading of chunk failed, even though it exists");
+          // dest_chunk = std::make_shared<Chunk>(model_params_, dest_coord);
+          // chunk_exists_cache_[coord] = true;
+          // active_chunks_[dest_coord] = dest_chunk;
+          // is_new_chunk = true;
         }
       }
       // Create new chunk
@@ -1409,6 +1414,7 @@ void ChunkManager::transferGaussiansAcrossChunks() {
 
         // Initialize metadata
         chunk_metadata_[dest_coord] = ChunkMetadata();
+        chunk_exists_cache_[coord] = true;
         is_new_chunk = true;
 
         incrementStat(stats_.active_chunks);

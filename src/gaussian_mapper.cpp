@@ -597,6 +597,7 @@ void GaussianMapper::run() {
   //   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
   // }
 
+  saveTotalGaussians("_shutdown");
   // Save and clear
   renderAndRecordAllKeyframes("_shutdown");
   // savePly(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
@@ -699,6 +700,7 @@ void GaussianMapper::trainColmap() {
 
   // Save and clear
   renderAndRecordAllKeyframes("_shutdown");
+  saveTotalGaussians("_shutdown");
   // savePly(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
   // "ply");
   saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
@@ -971,10 +973,10 @@ void GaussianMapper::trainForOneIteration() {
   }
 
   timer_trainForOneIteration.stop();
-  // if (getIteration() % 500 == 0) {
-  //   ProfilingUtils::getInstance().printStats();
-  //   ProfilingUtils::getInstance().reset();
-  // }
+  if (getIteration() % 500 == 0) {
+    ProfilingUtils::getInstance().printStats();
+    ProfilingUtils::getInstance().reset();
+  }
 }
 
 bool GaussianMapper::isStopped() {
@@ -3378,4 +3380,100 @@ void copyFolder(const std::filesystem::path& source,
           path, destPath, std::filesystem::copy_options::overwrite_existing);
     }
   }
+}
+
+void GaussianMapper::saveTotalGaussians(std::string name_suffix) {
+  int totalGaussians = 0;
+
+  // Get all existing chunk coordinates (both in memory and on disk)
+  std::vector<ChunkCoord> allChunkCoords =
+      chunk_manager_->getExistingChunkCoords();
+
+  // std::cout << "Counting Gaussians in " << allChunkCoords.size() << "
+  // chunks..."
+  //           << std::endl;
+
+  // Remember which chunks were originally active
+  auto activeChunks = chunk_manager_->getActiveChunks();
+  std::unordered_set<ChunkCoord, ChunkCoordHash> activeCoords;
+  for (const auto& [coord, _] : activeChunks) {
+    activeCoords.insert(coord);
+  }
+
+  // Process chunks in batches to avoid VRAM issues
+  const int batchSize = 5;  // Adjust based on VRAM capacity
+  int processed = 0;
+
+  for (size_t i = 0; i < allChunkCoords.size(); i += batchSize) {
+    size_t batchEnd = std::min(i + batchSize, allChunkCoords.size());
+
+    // Process current batch
+    for (size_t j = i; j < batchEnd; j++) {
+      const auto& coord = allChunkCoords[j];
+      bool wasActive = activeCoords.find(coord) != activeCoords.end();
+
+      try {
+        // If chunk is already active, just count its Gaussians
+        if (wasActive) {
+          auto chunk = chunk_manager_->getChunkAt(coord);
+          if (chunk && chunk->getGaussians()) {
+            int chunkGaussians = chunk->getGaussians()->getXYZ().size(0);
+            totalGaussians += chunkGaussians;
+            // std::cout << "Chunk [" << coord.x << "," << coord.y << ","
+            //           << coord.z << "] has " << chunkGaussians << "
+            //           Gaussians"
+            //           << std::endl;
+          }
+        }
+        // Otherwise, load chunk, count Gaussians, then save it back
+        else {
+          if (chunk_manager_->loadChunk(coord)) {
+            auto chunk = chunk_manager_->getChunkAt(coord);
+            if (chunk && chunk->getGaussians()) {
+              int chunkGaussians = chunk->getGaussians()->getXYZ().size(0);
+              totalGaussians += chunkGaussians;
+              // std::cout << "Chunk [" << coord.x << "," << coord.y << ","
+              //           << coord.z << "] has " << chunkGaussians << "
+              //           Gaussians"
+              //           << std::endl;
+            }
+            // Save back to disk and remove from memory
+            chunk_manager_->saveChunk(coord);
+          }
+        }
+      } catch (const std::exception& e) {
+        std::cerr << "Error processing chunk [" << coord.x << "," << coord.y
+                  << "," << coord.z << "]: " << e.what() << std::endl;
+      }
+
+      // Update progress
+      processed++;
+      // float progress = (100.0f * processed) / allChunkCoords.size();
+      // std::cout << "Progress: " << std::fixed << std::setprecision(1)
+      //           << progress << "% (" << processed << "/"
+      //           << allChunkCoords.size() << " chunks processed)" <<
+      //           std::endl;
+    }
+
+    // Clear CUDA cache after each batch to free memory
+    c10::cuda::CUDACachingAllocator::emptyCache();
+  }
+
+  std::filesystem::path result_dir =
+      result_dir_ / (std::to_string(getIteration()) + name_suffix);
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
+
+  std::filesystem::path file_path = result_dir / "gaussianCount.txt";
+
+  std::ofstream outFile(file_path);
+
+  // Check if the file was opened successfully
+  if (!outFile) {
+    std::cerr << "Error: Could not open the file." << std::endl;
+    return;
+  }
+  outFile << totalGaussians;
+
+  // Close the file
+  outFile.close();
 }
