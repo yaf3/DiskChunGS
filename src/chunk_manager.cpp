@@ -397,9 +397,17 @@ void ChunkManager::ioThreadFunc() {
 
       if (std::filesystem::exists(chunk_filename)) {
         try {
-          std::filesystem::remove(chunk_filename);
+          if (std::filesystem::is_directory(chunk_filename)) {
+            // For directories, use remove_all to delete the directory and all
+            // its contents
+            std::filesystem::remove_all(chunk_filename);
+          } else {
+            // For regular files, use remove as before
+            std::filesystem::remove(chunk_filename);
+          }
         } catch (const std::exception& e) {
-          std::cerr << "Error deleting chunk file: " << e.what() << std::endl;
+          std::cerr << "Error deleting chunk file/directory: " << e.what()
+                    << std::endl;
         }
       }
 
