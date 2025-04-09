@@ -17,6 +17,33 @@
 
 #include "include/profiling.h"
 
+void assertTensorDims(const std::vector<torch::Tensor>& tensors,
+                      const std::string& tensor_name) {
+  if (tensors.empty()) return;
+
+  int first_dim = tensors[0].dim();
+  for (size_t i = 1; i < tensors.size(); i++) {
+    if (tensors[i].dim() != first_dim) {
+      std::stringstream ss;
+      ss << "Dimension mismatch in " << tensor_name << " tensors. ";
+      ss << "Expected dim=" << first_dim << ", but tensor at index " << i
+         << " has dim=" << tensors[i].dim() << ". ";
+      ss << "First tensor shape: [";
+      for (size_t d = 0; d < tensors[0].dim(); d++) {
+        ss << tensors[0].size(d);
+        if (d < tensors[0].dim() - 1) ss << ", ";
+      }
+      ss << "], Mismatched tensor shape: [";
+      for (size_t d = 0; d < tensors[i].dim(); d++) {
+        ss << tensors[i].size(d);
+        if (d < tensors[i].dim() - 1) ss << ", ";
+      }
+      ss << "]";
+      throw std::runtime_error(ss.str());
+    }
+  }
+}
+
 /**
  * @brief
  *
@@ -51,6 +78,9 @@ std::
   for (size_t i = 0; i < models.size(); i++) {
     const auto& pc = models[i];
     if (pc) {  // Safety check
+      if (pc->getXYZ().sizes()[0] == 0) {
+        throw std::runtime_error("Empty model");
+      }
       active_sh_degree = std::max(active_sh_degree, pc->active_sh_degree_);
     }
   }
@@ -163,6 +193,151 @@ std::
 
   // auto timer_concat = ProfilingUtils::Timer("concat");
 
+  // Debug statements before concatenation
+  // std::cout << "===== Concatenation Debug Info =====" << std::endl;
+
+  // // Debug means3D dimensions
+  // std::cout << "means3D_vec sizes: " << means3D_vec.size() << std::endl;
+  // for (size_t i = 0; i < means3D_vec.size(); i++) {
+  //   std::cout << "  Model " << i << " means3D dims: [";
+  //   for (size_t d = 0; d < means3D_vec[i].dim(); d++) {
+  //     std::cout << means3D_vec[i].size(d);
+  //     if (d < means3D_vec[i].dim() - 1) std::cout << ", ";
+  //   }
+  //   std::cout << "]" << std::endl;
+  // }
+
+  // // Debug means2D dimensions
+  // std::cout << "means2D_vec sizes: " << means2D_vec.size() << std::endl;
+  // for (size_t i = 0; i < means2D_vec.size(); i++) {
+  //   std::cout << "  Model " << i << " means2D dims: [";
+  //   for (size_t d = 0; d < means2D_vec[i].dim(); d++) {
+  //     std::cout << means2D_vec[i].size(d);
+  //     if (d < means2D_vec[i].dim() - 1) std::cout << ", ";
+  //   }
+  //   std::cout << "]" << std::endl;
+  // }
+
+  // // Debug opacity dimensions
+  // std::cout << "opacity_vec sizes: " << opacity_vec.size() << std::endl;
+  // for (size_t i = 0; i < opacity_vec.size(); i++) {
+  //   std::cout << "  Model " << i << " opacity dims: [";
+  //   for (size_t d = 0; d < opacity_vec[i].dim(); d++) {
+  //     std::cout << opacity_vec[i].size(d);
+  //     if (d < opacity_vec[i].dim() - 1) std::cout << ", ";
+  //   }
+  //   std::cout << "]" << std::endl;
+  // }
+
+  // // Debug dc dimensions
+  // if (!dc_vec.empty()) {
+  //   std::cout << "dc_vec sizes: " << dc_vec.size() << std::endl;
+  //   for (size_t i = 0; i < dc_vec.size(); i++) {
+  //     std::cout << "  Model " << i << " dc dims: [";
+  //     for (size_t d = 0; d < dc_vec[i].dim(); d++) {
+  //       std::cout << dc_vec[i].size(d);
+  //       if (d < dc_vec[i].dim() - 1) std::cout << ", ";
+  //     }
+  //     std::cout << "]" << std::endl;
+  //   }
+  // }
+
+  // // Debug shs dimensions
+  // if (!shs_vec.empty()) {
+  //   std::cout << "shs_vec sizes: " << shs_vec.size() << std::endl;
+  //   for (size_t i = 0; i < shs_vec.size(); i++) {
+  //     std::cout << "  Model " << i << " shs dims: [";
+  //     for (size_t d = 0; d < shs_vec[i].dim(); d++) {
+  //       std::cout << shs_vec[i].size(d);
+  //       if (d < shs_vec[i].dim() - 1) std::cout << ", ";
+  //     }
+  //     std::cout << "]" << std::endl;
+  //   }
+  // }
+
+  // // Debug colors_precomp dimensions
+  // if (!colors_precomp_vec.empty()) {
+  //   std::cout << "colors_precomp_vec sizes: " << colors_precomp_vec.size()
+  //             << std::endl;
+  //   for (size_t i = 0; i < colors_precomp_vec.size(); i++) {
+  //     std::cout << "  Model " << i << " colors_precomp dims: [";
+  //     for (size_t d = 0; d < colors_precomp_vec[i].dim(); d++) {
+  //       std::cout << colors_precomp_vec[i].size(d);
+  //       if (d < colors_precomp_vec[i].dim() - 1) std::cout << ", ";
+  //     }
+  //     std::cout << "]" << std::endl;
+  //   }
+  // }
+
+  // // Debug scales dimensions
+  // if (!scales_vec.empty()) {
+  //   std::cout << "scales_vec sizes: " << scales_vec.size() << std::endl;
+  //   for (size_t i = 0; i < scales_vec.size(); i++) {
+  //     std::cout << "  Model " << i << " scales dims: [";
+  //     for (size_t d = 0; d < scales_vec[i].dim(); d++) {
+  //       std::cout << scales_vec[i].size(d);
+  //       if (d < scales_vec[i].dim() - 1) std::cout << ", ";
+  //     }
+  //     std::cout << "]" << std::endl;
+  //   }
+  // }
+
+  // // Debug rotations dimensions
+  // if (!rotations_vec.empty()) {
+  //   std::cout << "rotations_vec sizes: " << rotations_vec.size() <<
+  //   std::endl; for (size_t i = 0; i < rotations_vec.size(); i++) {
+  //     std::cout << "  Model " << i << " rotations dims: [";
+  //     for (size_t d = 0; d < rotations_vec[i].dim(); d++) {
+  //       std::cout << rotations_vec[i].size(d);
+  //       if (d < rotations_vec[i].dim() - 1) std::cout << ", ";
+  //     }
+  //     std::cout << "]" << std::endl;
+  //   }
+  // }
+
+  // // Debug cov3D_precomp dimensions
+  // if (!cov3D_precomp_vec.empty()) {
+  //   std::cout << "cov3D_precomp_vec sizes: " << cov3D_precomp_vec.size()
+  //             << std::endl;
+  //   for (size_t i = 0; i < cov3D_precomp_vec.size(); i++) {
+  //     std::cout << "  Model " << i << " cov3D_precomp dims: [";
+  //     for (size_t d = 0; d < cov3D_precomp_vec[i].dim(); d++) {
+  //       std::cout << cov3D_precomp_vec[i].size(d);
+  //       if (d < cov3D_precomp_vec[i].dim() - 1) std::cout << ", ";
+  //     }
+  //     std::cout << "]" << std::endl;
+  //   }
+  // }
+
+  // // Debug screenspace_points dimensions
+  // std::cout << "screenspace_points_vec sizes: " <<
+  // screenspace_points_vec.size()
+  //           << std::endl;
+  // for (size_t i = 0; i < screenspace_points_vec.size(); i++) {
+  //   std::cout << "  Model " << i << " screenspace_points dims: [";
+  //   for (size_t d = 0; d < screenspace_points_vec[i].dim(); d++) {
+  //     std::cout << screenspace_points_vec[i].size(d);
+  //     if (d < screenspace_points_vec[i].dim() - 1) std::cout << ", ";
+  //   }
+  //   std::cout << "]" << std::endl;
+  // }
+
+  // std::cout << "===== End Debug Info =====" << std::endl;
+
+  // Check dimensions of all tensor vectors before concatenation
+  assertTensorDims(means3D_vec, "means3D");
+  assertTensorDims(means2D_vec, "means2D");
+  assertTensorDims(opacity_vec, "opacity");
+  if (!dc_vec.empty()) assertTensorDims(dc_vec, "dc");
+  if (!shs_vec.empty()) assertTensorDims(shs_vec, "shs");
+  if (!colors_precomp_vec.empty())
+    assertTensorDims(colors_precomp_vec, "colors_precomp");
+  if (!scales_vec.empty()) assertTensorDims(scales_vec, "scales");
+  if (!rotations_vec.empty()) assertTensorDims(rotations_vec, "rotations");
+  if (!cov3D_precomp_vec.empty())
+    assertTensorDims(cov3D_precomp_vec, "cov3D_precomp");
+  assertTensorDims(screenspace_points_vec, "screenspace_points");
+
   torch::Tensor means3D = torch::cat(means3D_vec, 0);
   torch::Tensor means2D = torch::cat(means2D_vec, 0);
   torch::Tensor opacity = torch::cat(opacity_vec, 0);
@@ -203,6 +378,10 @@ std::
   // timer_raster.stop();
   auto rendered_image = std::get<0>(rasterizer_result);
   auto radii = std::get<1>(rasterizer_result);
+
+  if (viewpoint_camera->has_appearance_params_) {
+    rendered_image = viewpoint_camera->applyAppearanceTransform(rendered_image);
+  }
 
   // auto timer_final_loop = ProfilingUtils::Timer("final_loop");
   // Split the radii tensor into separate tensors per model

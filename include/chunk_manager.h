@@ -271,4 +271,38 @@ class ChunkManager {
   // Update statistics
   void incrementStat(int& stat);
   void decrementStat(int& stat);
+
+  // Cache for keyframe visibility results
+  struct VisibilityCacheEntry {
+    Sophus::SE3d pose;  // Keyframe pose when visibility was calculated
+    std::vector<ChunkCoord> visible_chunks;  // Visible chunk coordinates
+    std::chrono::steady_clock::time_point
+        timestamp;  // When this cache entry was created/updated
+  };
+
+  // Cache mapping keyframe ID to visibility information
+  std::unordered_map<size_t, VisibilityCacheEntry> visibility_cache_;
+  std::mutex cache_mutex_;  // Protect the cache during concurrent access
+
+  // Cache expiration time (in seconds)
+  const std::chrono::seconds cache_expiry_time_{
+      10};  // Can be adjusted based on your needs
+
+  // Maximum number of entries in the cache
+  const size_t max_cache_entries_{
+      100};  // Adjust based on expected number of keyframes
+
+  // Helper to compare poses for cache validity
+  bool pose_nearly_equal(const Sophus::SE3d& a,
+                         const Sophus::SE3d& b,
+                         double tol = 1e-6) {
+    return (a.translation() - b.translation()).norm() < tol &&
+           a.unit_quaternion().angularDistance(b.unit_quaternion()) < tol;
+  }
+
+ public:
+  void clearVisibilityCache() {
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    visibility_cache_.clear();
+  }
 };

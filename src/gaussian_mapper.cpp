@@ -385,6 +385,8 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       settings_file["Optimization.prune_big_point_after_iter"].operator int();
   densify_min_opacity_ =
       settings_file["Optimization.densify_min_opacity"].operator float();
+  appearance_embedding_ =
+      settings_file["Optimization.appearance_embedding"].operator int();
 
   // Viewer Parameters
   rendered_image_viewer_scale_ =
@@ -848,6 +850,25 @@ void GaussianMapper::trainForOneIteration() {
   loss.backward();
   timer_backwards.stop();
 
+  if (viewpoint_cam->has_appearance_params_) {
+    // Update appearance parameters - optimizer already exists
+    viewpoint_cam->appearance_optimizer_->step();
+    viewpoint_cam->appearance_optimizer_->zero_grad();
+
+    if (getIteration() % 100 == 0) {
+      auto scale = viewpoint_cam->appearance_scale_.detach().cpu();
+      auto bias = viewpoint_cam->appearance_bias_.detach().cpu();
+
+      std::cout << "Keyframe " << viewpoint_cam->fid_ << " appearance at iter "
+                << getIteration() << " scale=[" << scale[0].item<float>()
+                << ", " << scale[1].item<float>() << ", "
+                << scale[2].item<float>() << "]"
+                << " bias=[" << bias[0].item<float>() << ", "
+                << bias[1].item<float>() << ", " << bias[2].item<float>() << "]"
+                << std::endl;
+    }
+  }
+
   torch::cuda::synchronize();
   auto timer_densification = ProfilingUtils::Timer("densification");
   {
@@ -1242,16 +1263,59 @@ void GaussianMapper::combineMappingOperations() {
         float s = opr.mfScale;
         Sophus::SE3f& T = opr.mT;
         if (initial_mapped_) {
-          // Apply the scaled transformation on gaussian model points
+          // Apply the scaled transformation on ALL gaussian model points,
+          // including those on disk
           {
             std::unique_lock<std::mutex> lock_render(mutex_render_);
+
+            // Get all existing chunk coordinates (both in memory and on disk)
+            std::vector<ChunkCoord> all_chunks =
+                chunk_manager_->getExistingChunkCoords();
+
+            // Remember which chunks were originally active
+            std::unordered_set<ChunkCoord, ChunkCoordHash> originally_active;
             auto active_chunks = chunk_manager_->getActiveChunks();
-            for (const auto& [coord, chunk] : active_chunks) {
-              if (chunk && chunk->getGaussians()) {
-                chunk->getGaussians()->applyScaledTransformation(s, T);
-                // Mark the chunk as used/dirty
-                chunk_manager_->markChunkUsed(coord);
+            for (const auto& [coord, _] : active_chunks) {
+              originally_active.insert(coord);
+            }
+
+            std::cout << "Applying scale transformation to "
+                      << all_chunks.size() << " chunks ("
+                      << active_chunks.size() << " active)" << std::endl;
+
+            // Process chunks in batches to manage memory
+            const int batch_size = 5;  // Adjust based on memory constraints
+            for (size_t i = 0; i < all_chunks.size(); i += batch_size) {
+              size_t end = std::min(i + batch_size, all_chunks.size());
+
+              // Process current batch
+              for (size_t j = i; j < end; j++) {
+                const auto& coord = all_chunks[j];
+                bool was_active =
+                    originally_active.find(coord) != originally_active.end();
+
+                if (was_active) {
+                  // Already in memory, just transform it
+                  auto chunk = chunk_manager_->getChunkAt(coord);
+                  if (chunk && chunk->getGaussians()) {
+                    chunk->getGaussians()->applyScaledTransformation(s, T);
+                    chunk_manager_->markChunkUsed(coord);
+                  }
+                } else {
+                  // Not in memory, load, transform, save, unload
+                  if (chunk_manager_->loadChunk(coord)) {
+                    auto chunk = chunk_manager_->getChunkAt(coord);
+                    if (chunk && chunk->getGaussians()) {
+                      chunk->getGaussians()->applyScaledTransformation(s, T);
+                      chunk_manager_->markChunkUsed(coord);
+                      chunk_manager_->saveChunk(coord);
+                    }
+                  }
+                }
               }
+
+              // Clear CUDA cache after each batch to free memory
+              c10::cuda::CUDACachingAllocator::emptyCache();
             }
           }
           // Apply the scaled transformation to the scene
@@ -1341,6 +1405,8 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   if (isdoingInactiveGeoDensify()) increasePcdByKeyframeInactiveGeoDensify(pkf);
 
   // increasePcdByStereoReprojection(pkf);
+
+  if (appearance_embedding_) pkf->initAppearanceParams(device_type_);
 
   // Prepare multi resolution images for training
   if (device_type_ == torch::kCUDA) {
@@ -3020,6 +3086,9 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
   keyframesToJson(scene_dir);
   saveModelParams(scene_dir);
 
+  // Save a manifest of all chunks on disk
+  saveChunkManifest(scene_dir);
+
   // Save config used to train the model
   try {
     std::filesystem::copy_file(
@@ -3046,9 +3115,6 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
   std::filesystem::path scene_chunk_dir = scene_dir / "chunks";
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(scene_chunk_dir);
   copyFolder(chunk_save_dir_, scene_dir / "chunks");
-
-  // Save a manifest of all chunks on disk
-  saveChunkManifest(scene_dir);
 
   std::cout << "Scene saved to " << scene_dir << std::endl;
   return all_saved;
@@ -3178,6 +3244,30 @@ void GaussianMapper::saveChunkManifest(std::filesystem::path scene_dir) {
     chunk_entry["x"] = Json::Value::Int64(chunk_coords[i].x);
     chunk_entry["y"] = Json::Value::Int64(chunk_coords[i].y);
     chunk_entry["z"] = Json::Value::Int64(chunk_coords[i].z);
+
+    bool had_to_load = false;
+    auto active_chunks = chunk_manager_->getActiveChunks();
+    auto it = active_chunks.find(chunk_coords[i]);
+    if (it != active_chunks.end()) {
+      had_to_load = true;
+      bool success = chunk_manager_->loadChunk(chunk_coords[i]);
+      if (!success) continue;
+    }
+
+    auto chunk = chunk_manager_->getChunkAt(chunk_coords[i]);
+    if (!chunk || !chunk->getGaussians()) continue;
+
+    chunk_entry["num_gaussians"] =
+        Json::Value::Int64(chunk->getGaussians()->getXYZ().size(0));
+    chunk_entry["local_iteration"] =
+        Json::Value::Int64(chunk->getGaussians()->getLocalIteration());
+    chunk_entry["active_sh_degree"] =
+        Json::Value::Int64(chunk->getGaussians()->active_sh_degree_);
+
+    if (had_to_load) {
+      chunk_manager_->saveChunk(chunk_coords[i]);
+      c10::cuda::CUDACachingAllocator::emptyCache();
+    }
 
     json_root[static_cast<int>(i)] = chunk_entry;
   }

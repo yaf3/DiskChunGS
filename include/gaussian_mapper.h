@@ -404,6 +404,7 @@ class GaussianMapper {
 
   int prune_big_point_after_iter_;
   float densify_min_opacity_ = 20;
+  int appearance_embedding_ = 0;
 
   // Tools
   std::random_device rd_;

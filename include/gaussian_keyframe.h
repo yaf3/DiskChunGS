@@ -77,6 +77,10 @@ class GaussianKeyframe {
 
   int getCurrentGausPyramidLevel();
 
+  void initAppearanceParams(torch::DeviceType device_type,
+                            float appearance_lr = 0.01);
+  torch::Tensor applyAppearanceTransform(torch::Tensor& colors);
+
  public:
   std::size_t fid_;
   int creation_iter_;
@@ -132,4 +136,10 @@ class GaussianKeyframe {
   std::vector<float> kps_point_local_;
 
   bool done_inactive_geo_densify_ = false;
+
+  // Appearance embedding parameters (affine transform)
+  torch::Tensor appearance_scale_;  // 3-channel RGB scale
+  torch::Tensor appearance_bias_;   // 3-channel RGB bias
+  bool has_appearance_params_ = false;
+  std::shared_ptr<torch::optim::Adam> appearance_optimizer_;
 };

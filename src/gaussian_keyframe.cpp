@@ -196,3 +196,42 @@ int GaussianKeyframe::getCurrentGausPyramidLevel() {
   // If all sub levels has been used up
   return num_gaus_pyramid_sub_levels_;
 }
+
+// Initialize appearance parameters with defaults
+void GaussianKeyframe::initAppearanceParams(torch::DeviceType device_type,
+                                            float appearance_lr) {
+  if (!has_appearance_params_) {
+    // Initialize parameters
+    appearance_scale_ = torch::ones(
+        {3}, torch::TensorOptions().dtype(torch::kFloat32).device(device_type));
+    appearance_bias_ = torch::zeros(
+        {3}, torch::TensorOptions().dtype(torch::kFloat32).device(device_type));
+    appearance_scale_.requires_grad_();
+    appearance_bias_.requires_grad_();
+
+    // Create optimizer immediately
+    torch::optim::AdamOptions adam_options;
+    adam_options.set_lr(appearance_lr);
+    std::vector<torch::Tensor> appearance_params = {appearance_scale_,
+                                                    appearance_bias_};
+    appearance_optimizer_ =
+        std::make_shared<torch::optim::Adam>(appearance_params, adam_options);
+
+    has_appearance_params_ = true;
+  }
+}
+
+// Apply appearance transform to rendered colors
+torch::Tensor GaussianKeyframe::applyAppearanceTransform(
+    torch::Tensor& colors) {
+  if (!has_appearance_params_) {
+    return colors;
+  }
+
+  // Reshape for broadcasting
+  auto scale = appearance_scale_.view({3, 1, 1});
+  auto bias = appearance_bias_.view({3, 1, 1});
+
+  // Apply affine transform: color * scale + bias
+  return colors * scale + bias;
+}
