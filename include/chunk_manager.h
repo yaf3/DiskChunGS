@@ -112,7 +112,8 @@ class ChunkManager {
   ChunkCoord getChunkCoord(const Eigen::Vector3f& position);
 
   std::vector<std::shared_ptr<Chunk>> getVisibleChunks(
-      std::shared_ptr<GaussianKeyframe> keyframe);
+      std::shared_ptr<GaussianKeyframe> keyframe,
+      bool use_cache = true);
 
   Eigen::Matrix4f createProjectionMatrix(
       std::shared_ptr<GaussianKeyframe> keyframe);
