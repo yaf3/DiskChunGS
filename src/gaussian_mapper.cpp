@@ -1100,6 +1100,8 @@ void GaussianMapper::combineMappingOperations() {
 
       case ORB_SLAM3::MappingOperation::OprType::LoopClosingBA: {
         std::cout << "[Gaussian Mapper]Loop Closure Detected." << std::endl;
+        std::cout << "[DEBUG] Starting loop closure with scale factor: "
+                  << opr.mfScale << std::endl;
 
         // Get the loop keyframe scale modification factor
         float loop_kf_scale = opr.mfScale;
@@ -1107,15 +1109,18 @@ void GaussianMapper::combineMappingOperations() {
         // Get new keyframes (scaled transformation applied in ORB-SLAM3)
         auto& associated_kfs = opr.associatedKeyFrames();
 
+        std::cout << "[DEBUG] Processing " << associated_kfs.size()
+                  << " keyframes" << std::endl;
+
         if (record_loop_ply_)
           savePly(result_dir_ / (std::to_string(getIteration()) +
                                  "_0_before_loop_correction"));
 
         int num_transformed = 0;
 
-        // Track chunks that have already been processed to avoid
-        // duplicate transformations
-        std::unordered_set<ChunkCoord, ChunkCoordHash> processed_chunks;
+        // Instead of tracking processed chunks as a set
+        std::unordered_map<ChunkCoord, torch::Tensor, ChunkCoordHash>
+            chunk_transformed_flags;
 
         for (auto& kf : associated_kfs) {
           auto kfid = std::get<0>(kf);
@@ -1141,44 +1146,89 @@ void GaussianMapper::combineMappingOperations() {
               std::vector<std::shared_ptr<Chunk>> visible_chunks =
                   chunk_manager_->getVisibleChunks(pkf);
 
-              Sophus::SE3f original_pose = pkf->getPosef();
-              Sophus::SE3f inv_pose = pose.inverse();
-              Sophus::SE3f diff_pose = inv_pose * original_pose;
+              for (const auto& chunk : visible_chunks) {
+                std::cout << "Now processing: " << chunk->getCoord().x << " "
+                          << chunk->getCoord().y << " " << chunk->getCoord().z
+                          << std::endl;
+              }
 
-              // Calculate the transformation to apply
+              // Calculate the transformation
               diff_pose.translation() -= inv_pose.translation();
               diff_pose.translation() *= loop_kf_scale;
               diff_pose.translation() += inv_pose.translation();
 
-              for (auto& chunk : visible_chunks) {
-                if (!chunk || !chunk->getGaussians()) continue;
+              torch::Tensor diff_pose_tensor =
+                  tensor_utils::EigenMatrix2TorchTensor(diff_pose.matrix(),
+                                                        device_type_)
+                      .transpose(0, 1);
 
-                torch::Tensor diff_pose_tensor =
-                    tensor_utils::EigenMatrix2TorchTensor(diff_pose.matrix(),
-                                                          device_type_)
-                        .transpose(0, 1);
+              for (auto& chunk : visible_chunks) {
+                if (!chunk || !chunk->getGaussians()) {
+                  throw std::runtime_error("Chunk or gaussians are null");
+                }
 
                 auto gaussians = chunk->getGaussians();
+                auto chunk_coord = chunk->getCoord();
 
-                // Create flags tensor for this chunk's points
-                torch::Tensor chunk_point_flags =
-                    torch::full({gaussians->xyz_.size(0)}, true,
-                                torch::TensorOptions()
-                                    .device(device_type_)
-                                    .dtype(torch::kBool));
+                // Get or create the transformed flags for this chunk
+                auto it = chunk_transformed_flags.find(chunk_coord);
+                torch::Tensor chunk_point_flags;
+
+                if (it == chunk_transformed_flags.end()) {
+                  // First time seeing this chunk, initialize all flags to "not
+                  // transformed"
+                  std::cout << "First time seeing this chunk, set all flags to "
+                               "not transformed"
+                            << std::endl;
+                  chunk_point_flags =
+                      torch::full({gaussians->xyz_.size(0)}, true,
+                                  torch::TensorOptions()
+                                      .device(device_type_)
+                                      .dtype(torch::kBool));
+                  chunk_transformed_flags[chunk_coord] = chunk_point_flags;
+                } else {
+                  chunk_point_flags = it->second;
+                  // If chunk size has changed (new points added), resize the
+                  // flags tensor
+                  if (chunk_point_flags.size(0) != gaussians->xyz_.size(0)) {
+                    std::cout << "[DEBUG] Resizing flags tensor from "
+                              << chunk_point_flags.size(0) << " to "
+                              << gaussians->xyz_.size(0) << std::endl;
+                    int64_t num_new_points =
+                        gaussians->xyz_.size(0) - chunk_point_flags.size(0);
+                    if (num_new_points > 0) {
+                      chunk_point_flags =
+                          torch::cat({chunk_point_flags,
+                                      torch::full({num_new_points}, true,
+                                                  chunk_point_flags.options())},
+                                     /*dim=*/0);
+                      chunk_transformed_flags[chunk_coord] = chunk_point_flags;
+                    }
+                  }
+                }
+
+                std::cout << "[DEBUG] Before transform - xyz: "
+                          << gaussians->xyz_.sizes()
+                          << ", flags: " << chunk_point_flags.sizes()
+                          << std::endl;
 
                 int chunk_transformed = 0;
+                std::cout << "Calling scaledTransformVisiblePointsOfKeyframe"
+                          << std::endl;
                 gaussians->scaledTransformVisiblePointsOfKeyframe(
                     chunk_point_flags, diff_pose_tensor,
                     pkf->world_view_transform_, pkf->full_proj_transform_,
                     pkf->creation_iter_, stableNumIterExistence(),
                     chunk_transformed, loop_kf_scale);
 
+                std::cout << "[DEBUG] Transformed " << chunk_transformed
+                          << " points successfully" << std::endl;
+
                 num_transformed += chunk_transformed;
 
                 // Mark chunk as dirty since we modified it
-                chunk_manager_->markChunkUsed(chunk->getCoord());
-                processed_chunks.insert(chunk->getCoord());
+                std::cout << "Marking chunk as used" << std::endl;
+                chunk_manager_->markChunkUsed(chunk_coord);
               }
 
               // Give loop keyframes times of use
@@ -1191,10 +1241,13 @@ void GaussianMapper::combineMappingOperations() {
                          pose.translation().cast<double>());
             pkf->computeTransformTensors();
           } else {
+            std::cout << "Actually new keyframe in LC" << std::endl;
             handleNewKeyframe(kf);
           }
         }
 
+        std::cout << "All points transformed, now time to add new points"
+                  << std::endl;
         // Get new points (scaled transformation applied in ORB-SLAM3, so this
         // step is performed at last to avoid scaling twice)
         auto& associated_points = opr.associatedMapPoints();
@@ -1228,6 +1281,7 @@ void GaussianMapper::combineMappingOperations() {
             }
           }
 
+          std::cout << "Adding points to chunks" << std::endl;
           chunk_manager_->addPointsToChunks(points_tensor, colors_tensor,
                                             loop_keyframes,
                                             scene_->cameras_extent_);
@@ -1235,6 +1289,7 @@ void GaussianMapper::combineMappingOperations() {
 
         // Gaussians will be all over the place, transfer them to their
         // respective chunks
+        std::cout << "Transferring gaussians across chunks" << std::endl;
         chunk_manager_->transferGaussiansAcrossChunks(scene_->cameras_extent_);
 
         // Mark this iteration
@@ -3514,7 +3569,7 @@ void GaussianMapper::saveTotalGaussians(std::string name_suffix) {
               //           << std::endl;
             }
             // Save back to disk and remove from memory
-            chunk_manager_->saveChunk(coord);
+            chunk_manager_->loadChunk(coord);
           }
         }
       } catch (const std::exception& e) {

@@ -1,10 +1,9 @@
-#include "include/chunk_manager.h"
-
 #include <torch/cuda.h>
 
 #include <algorithm>
 #include <iostream>
 
+#include "include/chunk_manager.h"
 #include "include/profiling.h"
 
 // Pure Eigen implementation without explicit SIMD (relies on Eigen's
@@ -138,10 +137,6 @@ ChunkManager::ChunkManager(const GaussianModelParams& model_params,
   if (!chunk_save_dir_.empty() && !std::filesystem::exists(chunk_save_dir_)) {
     std::filesystem::create_directories(chunk_save_dir_);
   }
-
-  // Start I/O thread
-  std::cout << "Creating I/O Thread" << std::endl;
-  io_thread_ = std::thread(&ChunkManager::ioThreadFunc, this);
 }
 
 // Destructor
@@ -206,68 +201,16 @@ std::tuple<torch::Tensor, torch::Tensor> ChunkManager::filterPointsByDepth(
 }
 
 // Private version that assumes lock is already held
-void ChunkManager::markChunkUsedNoLock(const ChunkCoord& coord) {
+void ChunkManager::markChunkUsed(const ChunkCoord& coord) {
   auto it = chunk_metadata_.find(coord);
   if (it != chunk_metadata_.end()) {
-    if (it->second.loading || it->second.saving) {
-      // Don't allow access to chunks being saved or loaded
-      return;
-    }
     it->second.last_used = std::chrono::steady_clock::now();
     it->second.usage_count++;
     it->second.dirty =
         true;  // Mark as dirty since it will be used for optimization
-  }
-}
-
-// Public version that acquires the lock
-void ChunkManager::markChunkUsed(const ChunkCoord& coord) {
-  std::lock_guard<std::mutex> lock(io_mutex_);
-  markChunkUsedNoLock(coord);
-}
-
-// Private version that assumes lock is already held
-void ChunkManager::scheduleChunkSaveNoLock(const ChunkCoord& coord,
-                                           int priority) {
-  // Only schedule if chunk exists and is dirty
-  auto meta_it = chunk_metadata_.find(coord);
-  if (meta_it != chunk_metadata_.end()) {
-    if (!meta_it->second.saving && !meta_it->second.loading) {
-      meta_it->second.saving = true;
-      io_queue_.push(ChunkIORequest(coord, ChunkOperation::SAVE, priority));
-      io_cv_.notify_one();
-
-    } else {
-      throw std::runtime_error("No chunk metadata exists");
-    }
-  }
-}
-
-// Public version that acquires the lock
-void ChunkManager::scheduleChunkSave(const ChunkCoord& coord, int priority) {
-  std::lock_guard<std::mutex> lock(io_mutex_);
-  scheduleChunkSaveNoLock(coord, priority);
-}
-
-// Private version that assumes lock is already held
-void ChunkManager::scheduleChunkLoadNoLock(const ChunkCoord& coord,
-                                           int priority) {
-  // Only schedule if chunk exists and is dirty
-  auto meta_it = chunk_metadata_.find(coord);
-  if (meta_it != chunk_metadata_.end() && !meta_it->second.saving &&
-      !meta_it->second.loading) {
-    meta_it->second.loading = true;
-    io_queue_.push(ChunkIORequest(coord, ChunkOperation::LOAD, priority));
-    io_cv_.notify_one();
   } else {
-    throw std::runtime_error("No chunk metadata exists");
+    std::cout << "No metdata entry for this chunk!" << std::endl;
   }
-}
-
-// Public version that acquires the lock
-void ChunkManager::scheduleChunkLoad(const ChunkCoord& coord, int priority) {
-  std::lock_guard<std::mutex> lock(io_mutex_);
-  scheduleChunkLoadNoLock(coord, priority);
 }
 
 // Evict least recently used chunks
@@ -283,18 +226,17 @@ void ChunkManager::evictUnusedChunks(int keep_count) {
 
   std::vector<ChunkCoord> to_evict;
   {
-    std::lock_guard<std::mutex> lock(io_mutex_);
-    to_evict = findChunksToEvictNoLock(keep_count);
+    to_evict = findChunksToEvict(keep_count);
   }
 
   // Schedule saves for evicted chunks
   for (const auto& coord : to_evict) {
-    scheduleChunkSave(coord, 10);  // High priority for eviction
+    saveChunk(coord);
   }
 }
 
 // Private version that assumes lock is already held
-std::vector<ChunkCoord> ChunkManager::findChunksToEvictNoLock(int count) {
+std::vector<ChunkCoord> ChunkManager::findChunksToEvict(int count) {
   // If we have space, don't evict
   if (active_chunks_.size() <= max_chunks_in_memory_ - count) {
     return {};
@@ -311,8 +253,7 @@ std::vector<ChunkCoord> ChunkManager::findChunksToEvictNoLock(int count) {
 
   for (const auto& [coord, chunk] : active_chunks_) {
     auto meta_it = chunk_metadata_.find(coord);
-    if (meta_it != chunk_metadata_.end() && !meta_it->second.loading &&
-        !meta_it->second.saving) {
+    if (meta_it != chunk_metadata_.end()) {
       // Skip recently loaded chunks
       auto time_since_load = std::chrono::duration_cast<std::chrono::seconds>(
           now - meta_it->second.load_time);
@@ -337,117 +278,6 @@ std::vector<ChunkCoord> ChunkManager::findChunksToEvictNoLock(int count) {
   return result;
 }
 
-// Public version that acquires the lock
-std::vector<ChunkCoord> ChunkManager::findChunksToEvict(int count) {
-  std::lock_guard<std::mutex> lock(io_mutex_);
-  return findChunksToEvictNoLock(count);
-}
-
-// Background I/O thread function
-void ChunkManager::ioThreadFunc() {
-  while (!should_terminate_) {
-    ChunkIORequest request{
-        ChunkCoord{0, 0, 0},
-        ChunkOperation::NONE
-    };
-
-    // Get next request
-    {
-      std::unique_lock<std::mutex> lock(io_mutex_);
-
-      if (io_queue_.empty()) {
-        // Wait for new requests or termination signal
-        io_cv_.wait(lock,
-                    [this] { return !io_queue_.empty() || should_terminate_; });
-
-        if (should_terminate_ && io_queue_.empty()) {
-          break;
-        }
-      }
-
-      if (!io_queue_.empty()) {
-        request = io_queue_.top();
-        io_queue_.pop();
-      }
-    }
-
-    // Process request
-    if (request.operation == ChunkOperation::LOAD) {
-      std::cout << "[IO Thread] Processing request to load chunk: "
-                << request.coord.x << " " << request.coord.y << " "
-                << request.coord.z << " " << std::endl;
-      if (!loadChunk(request.coord)) {
-        // throw std::runtime_error("Failed to load chunk");
-        std::cout << "Failed to load chunk" << std::endl;
-      }
-      std::cout << "Process done." << std::endl;
-    } else if (request.operation == ChunkOperation::SAVE) {
-      std::cout << "[IO Thread] Processing request to save chunk: "
-                << request.coord.x << " " << request.coord.y << " "
-                << request.coord.z << " " << std::endl;
-      if (!saveChunk(request.coord)) {
-        // throw std::runtime_error("Failed to save chunk");
-        std::cout << "Failed to save chunk" << std::endl;
-      }
-      std::cout << "Process done." << std::endl;
-    } else if (request.operation == ChunkOperation::DELETE) {
-      std::cout << "[IO Thread] Processing request to delete chunk: "
-                << request.coord.x << " " << request.coord.y << " "
-                << request.coord.z << " " << std::endl;
-
-      // Delete the file if it exists
-      auto chunk_filename = getChunkFilename(request.coord);
-      std::lock_guard<std::mutex> lock(io_mutex_);
-
-      if (std::filesystem::exists(chunk_filename)) {
-        try {
-          if (std::filesystem::is_directory(chunk_filename)) {
-            // For directories, use remove_all to delete the directory and all
-            // its contents
-            std::filesystem::remove_all(chunk_filename);
-          } else {
-            // For regular files, use remove as before
-            std::filesystem::remove(chunk_filename);
-          }
-        } catch (const std::exception& e) {
-          std::cerr << "Error deleting chunk file/directory: " << e.what()
-                    << std::endl;
-        }
-      }
-
-      // Update metadata
-      auto meta_it = chunk_metadata_.find(request.coord);
-      if (meta_it != chunk_metadata_.end()) {
-        // Clear the metadata or mark as not dirty/saving
-        meta_it->second.dirty = false;
-        meta_it->second.saving = false;
-      }
-
-      // Update the disk cache to reflect the deletion
-      chunk_exists_cache_[request.coord] = false;
-
-      std::cout << "Process done." << std::endl;
-    }
-  }
-
-  // Save any remaining dirty chunks on shutdown
-  std::vector<ChunkCoord> dirty_chunks;
-
-  {
-    std::lock_guard<std::mutex> lock(io_mutex_);
-    for (const auto& [coord, meta] : chunk_metadata_) {
-      if (meta.dirty && !meta.saving &&
-          active_chunks_.find(coord) != active_chunks_.end()) {
-        dirty_chunks.push_back(coord);
-      }
-    }
-  }
-
-  for (const auto& coord : dirty_chunks) {
-    saveChunk(coord);
-  }
-}
-
 // Get chunk filename
 std::filesystem::path ChunkManager::getChunkFilename(const ChunkCoord& coord) {
   // Using 'p' for positive and 'n' for negative prefixes
@@ -458,29 +288,42 @@ std::filesystem::path ChunkManager::getChunkFilename(const ChunkCoord& coord) {
   return chunk_save_dir_ / (x_str + "_" + y_str + "_" + z_str);
 }
 
-// Private version that assumes lock is already held
-bool ChunkManager::loadChunkNoLock(const ChunkCoord& coord) {
-  auto timer = ProfilingUtils::Timer("ChunkManager::loadChunk");
-
-  auto meta_it = chunk_metadata_.find(coord);
-  if (meta_it != chunk_metadata_.end()) {
-    if (meta_it->second.saving) {
-      std::cout << "Chunk currently being saved, can't load it" << std::endl;
+bool ChunkManager::deleteChunk(const ChunkCoord& coord) {
+  // Delete the file if it exists
+  auto chunk_filename = getChunkFilename(coord);
+  if (std::filesystem::exists(chunk_filename)) {
+    try {
+      if (std::filesystem::is_directory(chunk_filename)) {
+        // For directories, use remove_all to delete the directory and all
+        // its contents
+        std::filesystem::remove_all(chunk_filename);
+      } else {
+        // For regular files, use remove as before
+        std::filesystem::remove(chunk_filename);
+      }
+    } catch (const std::exception& e) {
+      std::cerr << "Error deleting chunk file/directory: " << e.what()
+                << std::endl;
       return false;
     }
-  } else {
-    std::cout << "No metadata found, can't load chunk securely" << std::endl;
-    return false;
   }
+
+  // Update metadata
+  auto meta_it = chunk_metadata_.find(coord);
+  // Update the disk cache to reflect the deletion
+  chunk_exists_cache_[coord] = false;
+
+  std::cout << "Chunk deleted." << std::endl;
+  return true;
+}
+
+// Private version that assumes lock is already held
+bool ChunkManager::loadChunk(const ChunkCoord& coord) {
+  auto timer = ProfilingUtils::Timer("ChunkManager::loadChunk");
 
   // Check if already loaded
   auto it = active_chunks_.find(coord);
   if (it != active_chunks_.end()) {
-    // Update metadata
-    auto meta_it = chunk_metadata_.find(coord);
-    if (meta_it != chunk_metadata_.end()) {
-      meta_it->second.loading = false;
-    }
     std::cout << "Chunk already in memory can't load it" << std::endl;
     incrementStat(stats_.cache_hits);
     return true;
@@ -488,12 +331,9 @@ bool ChunkManager::loadChunkNoLock(const ChunkCoord& coord) {
 
   auto chunk_filename = getChunkFilename(coord);
 
-  if (!chunkExistsOnDiskNoLock(coord)) {
+  if (!chunkExistsOnDisk(coord)) {
     std::cout << "Chunk doesn't exist on disk can't load it" << std::endl;
     auto meta_it = chunk_metadata_.find(coord);
-    if (meta_it != chunk_metadata_.end()) {
-      meta_it->second.loading = false;
-    }
     return false;
   }
 
@@ -518,8 +358,6 @@ bool ChunkManager::loadChunkNoLock(const ChunkCoord& coord) {
     auto& meta = chunk_metadata_[coord];
     meta.load_time = std::chrono::steady_clock::now();
     meta.last_used = meta.load_time;
-    meta.loading = false;
-    meta.dirty = false;
     meta.usage_count = 0;
 
     incrementStat(stats_.active_chunks);
@@ -533,38 +371,13 @@ bool ChunkManager::loadChunkNoLock(const ChunkCoord& coord) {
     std::cerr << "Exception loading chunk: " << e.what() << std::endl;
     throw std::runtime_error("Chunk could not be loaded");
 
-    auto meta_it = chunk_metadata_.find(coord);
-    if (meta_it != chunk_metadata_.end()) {
-      meta_it->second.loading = false;
-    }
-
     return false;
   }
-}
-
-// Public version that acquires the lock
-bool ChunkManager::loadChunk(const ChunkCoord& coord) {
-  std::lock_guard<std::mutex> lock(io_mutex_);
-  return loadChunkNoLock(coord);
 }
 
 // Private version that assumes lock is already held
-bool ChunkManager::saveChunkNoLock(const ChunkCoord& coord) {
+bool ChunkManager::saveChunk(const ChunkCoord& coord) {
   auto timer = ProfilingUtils::Timer("ChunkManager::saveChunk");
-
-  // Check if currently loading chunk
-  auto meta_it = chunk_metadata_.find(coord);
-  if (meta_it != chunk_metadata_.end()) {
-    if (meta_it->second.loading) {
-      std::cout << "Can't save chunk as currently it is being loaded"
-                << std::endl;
-      return false;
-    }
-  } else {
-    std::cout << "No chunk metadata entry exist, can't save securely"
-              << std::endl;
-    return false;
-  }
 
   // Then check if chunk in memory
   auto it = active_chunks_.find(coord);
@@ -578,9 +391,6 @@ bool ChunkManager::saveChunkNoLock(const ChunkCoord& coord) {
     std::cout << "Can't save chunk as chunk/gaussians are null" << std::endl;
     // Update metadata
     auto meta_it = chunk_metadata_.find(coord);
-    if (meta_it != chunk_metadata_.end()) {
-      meta_it->second.saving = false;
-    }
     return false;
   }
 
@@ -596,7 +406,6 @@ bool ChunkManager::saveChunkNoLock(const ChunkCoord& coord) {
     auto meta_it = chunk_metadata_.find(coord);
     if (meta_it != chunk_metadata_.end()) {
       meta_it->second.dirty = false;
-      meta_it->second.saving = false;
     }
 
     chunk_exists_cache_[coord] = true;
@@ -618,30 +427,12 @@ bool ChunkManager::saveChunkNoLock(const ChunkCoord& coord) {
     std::cerr << "Exception saving chunk: " << e.what() << std::endl;
     throw std::runtime_error("Exception saving chunk");
 
-    // Update metadata
-    auto meta_it = chunk_metadata_.find(coord);
-    if (meta_it != chunk_metadata_.end()) {
-      meta_it->second.saving = false;
-    }
-
     return false;
   }
 }
 
-// Public version that acquires the lock
-bool ChunkManager::saveChunk(const ChunkCoord& coord) {
-  std::lock_guard<std::mutex> lock(io_mutex_);
-  return saveChunkNoLock(coord);
-}
-
 // Get chunk at specific coordinate
-std::shared_ptr<Chunk> ChunkManager::getChunkAtNoLock(const ChunkCoord& coord) {
-  auto meta_it = chunk_metadata_.find(coord);
-  if (meta_it != chunk_metadata_.end() &&
-      (meta_it->second.saving || meta_it->second.loading)) {
-    std::cout << "Chunk loading/saving don't allow access" << std::endl;
-    return nullptr;  // Don't allow access to chunks pending eviction
-  }
+std::shared_ptr<Chunk> ChunkManager::getChunkAt(const ChunkCoord& coord) {
   auto it = active_chunks_.find(coord);
   if (it != active_chunks_.end()) {
     return it->second;
@@ -649,14 +440,9 @@ std::shared_ptr<Chunk> ChunkManager::getChunkAtNoLock(const ChunkCoord& coord) {
   std::cout << "Chunk not in memory don't allow access" << std::endl;
   return nullptr;
 }
-// Get chunk at specific coordinate
-std::shared_ptr<Chunk> ChunkManager::getChunkAt(const ChunkCoord& coord) {
-  std::lock_guard<std::mutex> lock(io_mutex_);
-  return getChunkAtNoLock(coord);
-}
 
 // Private version that assumes lock is already held
-bool ChunkManager::chunkExistsOnDiskNoLock(const ChunkCoord& coord) {
+bool ChunkManager::chunkExistsOnDisk(const ChunkCoord& coord) {
   // Check cache first
   auto it = chunk_exists_cache_.find(coord);
   if (it != chunk_exists_cache_.end()) {
@@ -673,12 +459,6 @@ bool ChunkManager::chunkExistsOnDiskNoLock(const ChunkCoord& coord) {
   chunk_exists_cache_[coord] = exists;
 
   return exists;
-}
-
-// Public version that acquires the lock
-bool ChunkManager::chunkExistsOnDisk(const ChunkCoord& coord) {
-  std::lock_guard<std::mutex> lock(io_mutex_);
-  return chunkExistsOnDiskNoLock(coord);
 }
 
 // Get chunk coordinate from 3D position
@@ -712,65 +492,6 @@ AABB ChunkManager::getChunkAABB(const ChunkCoord& coord) {
 
   return AABB(min_corner, max_corner);
 }
-
-// std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
-//     std::shared_ptr<GaussianKeyframe> keyframe) {
-//   std::vector<std::shared_ptr<Chunk>> visible_chunks;
-
-//   if (active_chunks_.empty()) {
-//     return visible_chunks;
-//   }
-
-//   bool use_simd = false;
-
-//   // Calculate view-projection matrix from the keyframe
-//   Eigen::Matrix4f view_matrix =
-//       keyframe->getWorld2View2(keyframe->trans_, keyframe->scale_);
-
-//   // Create projection matrix using Eigen (based on the keyframe's
-//   // getProjectionMatrix method)
-//   Eigen::Matrix4f proj_matrix = Eigen::Matrix4f::Zero();
-//   float fovX = keyframe->FoVx_;
-//   float fovY = keyframe->FoVy_;
-//   float znear = keyframe->znear_;
-//   float zfar = keyframe->zfar_;
-
-//   float tanHalfFovY = std::tan(fovY / 2);
-//   float tanHalfFovX = std::tan(fovX / 2);
-//   float top = tanHalfFovY * znear;
-//   float bottom = -top;
-//   float right = tanHalfFovX * znear;
-//   float left = -right;
-
-//   proj_matrix(0, 0) = 2.0f * znear / (right - left);
-//   proj_matrix(1, 1) = 2.0f * znear / (top - bottom);
-//   proj_matrix(0, 2) = (right + left) / (right - left);
-//   proj_matrix(1, 2) = (top + bottom) / (top - bottom);
-//   proj_matrix(3, 2) = 1.0f;  // z_sign
-//   proj_matrix(2, 2) = zfar / (zfar - znear);
-//   proj_matrix(2, 3) = -(zfar * znear) / (zfar - znear);
-
-//   // Calculate the view-projection matrix
-//   Eigen::Matrix4f vp_matrix = proj_matrix * view_matrix;
-
-//   // Test each active chunk against the frustum
-//   for (const auto& [chunk_coord, chunk] : active_chunks_) {
-//     AABB chunk_aabb = getChunkAABB(chunk_coord);
-
-//     bool visible;
-//     if (use_simd) {
-//       // visible = test_AABB_against_frustum_256(vp_matrix, chunk_aabb);
-//     } else {
-//       visible = test_AABB_against_frustum_eigen(vp_matrix, chunk_aabb);
-//     }
-
-//     if (visible) {
-//       visible_chunks.push_back(chunk);
-//     }
-//   }
-
-//   return visible_chunks;
-// }
 
 // Main function that returns visible chunks, handling both active and on-disk
 // chunks
@@ -849,7 +570,6 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
     std::vector<ChunkCoord> chunks_to_load;
 
     {
-      std::lock_guard<std::mutex> lock(io_mutex_);
       std::tie(visible_active_chunks, chunks_to_load) =
           findVisibleChunks(camera_chunk, search_radius, camera_position,
                             keyframe->zfar_, vp_matrix);
@@ -883,13 +603,11 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
   std::vector<std::shared_ptr<Chunk>> result_chunks;
 
   {
-    std::lock_guard<std::mutex> lock(io_mutex_);
-
     // Check if we need to manage memory before loading new chunks
     int chunks_to_load_count = 0;
     for (const auto& coord : visible_chunk_coords) {
       if (active_chunks_.find(coord) == active_chunks_.end() &&
-          chunkExistsOnDiskNoLock(coord)) {
+          chunkExistsOnDisk(coord)) {
         chunks_to_load_count++;
       }
     }
@@ -898,10 +616,10 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
     if (active_chunks_.size() + chunks_to_load_count > max_chunks_in_memory_) {
       int to_evict =
           active_chunks_.size() + chunks_to_load_count - max_chunks_in_memory_;
-      auto to_evict_chunks = findChunksToEvictNoLock(to_evict);
+      auto to_evict_chunks = findChunksToEvict(to_evict);
 
       for (const auto& coord : to_evict_chunks) {
-        scheduleChunkSaveNoLock(coord, 10);  // High priority for eviction
+        saveChunk(coord);  // High priority for eviction
       }
     }
 
@@ -912,15 +630,15 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
       if (it != active_chunks_.end() && it->second &&
           it->second->getGaussians()) {
         result_chunks.push_back(it->second);
-        markChunkUsedNoLock(coord);
+        markChunkUsed(coord);
       }
       // Otherwise try to load from disk
-      else if (chunkExistsOnDiskNoLock(coord)) {
-        if (loadChunkNoLock(coord)) {
-          auto chunk = getChunkAtNoLock(coord);
+      else if (chunkExistsOnDisk(coord)) {
+        if (loadChunk(coord)) {
+          auto chunk = getChunkAt(coord);
           if (chunk && chunk->getGaussians()) {
             result_chunks.push_back(chunk);
-            markChunkUsedNoLock(coord);
+            markChunkUsed(coord);
           }
         }
       }
@@ -986,25 +704,16 @@ ChunkManager::findVisibleChunks(const ChunkCoord& camera_chunk,
         bool visible = test_AABB_against_frustum_eigen(vp_matrix, chunk_aabb);
 
         if (visible) {
-          // Skip if loading or saving this chunk right now
-          auto meta_it = chunk_metadata_.find(check_coord);
-          if (meta_it != chunk_metadata_.end() &&
-              (meta_it->second.loading || meta_it->second.saving)) {
-            std::cout << "Chunk is currently loading/saving so skip it"
-                      << std::endl;
-            continue;
-          }
-
           auto it = active_chunks_.find(check_coord);
 
           // If chunk is active, add to visible chunks
           if (it != active_chunks_.end() && it->second &&
               it->second->getGaussians()) {
             visible_active_chunks.push_back(it->second);
-            markChunkUsedNoLock(check_coord);
+            markChunkUsed(check_coord);
           }
           // If chunk exists on disk but not loaded, queue for loading
-          else if (chunkExistsOnDiskNoLock(check_coord)) {
+          else if (chunkExistsOnDisk(check_coord)) {
             chunks_to_load.push_back(check_coord);
           }
         }
@@ -1030,13 +739,12 @@ void ChunkManager::manageMemoryForNewChunks(size_t chunks_to_load_count) {
 void ChunkManager::loadVisibleChunks(
     const std::vector<ChunkCoord>& chunks_to_load,
     std::vector<std::shared_ptr<Chunk>>& visible_chunks) {
-  std::lock_guard<std::mutex> lock(io_mutex_);
   for (const auto& coord : chunks_to_load) {
-    if (loadChunkNoLock(coord)) {  //
-      auto chunk = getChunkAtNoLock(coord);
+    if (loadChunk(coord)) {  //
+      auto chunk = getChunkAt(coord);
       if (chunk && chunk->getGaussians()) {
         visible_chunks.push_back(chunk);
-        markChunkUsedNoLock(coord);
+        markChunkUsed(coord);
       }
     } else {
       // Consider logging the error instead of throwing exception
@@ -1173,17 +881,6 @@ void ChunkManager::addPointsToChunks(
     std::shared_ptr<Chunk> chunk;
     bool is_new_chunk = false;
 
-    std::lock_guard<std::mutex> lock(io_mutex_);
-
-    // If loading or saving this chunk right now, skip (maybe instead
-    // wait?)
-    auto meta_it = chunk_metadata_.find(coord);
-    if (meta_it != chunk_metadata_.end() &&
-        (meta_it->second.loading || meta_it->second.saving)) {
-      std::cout << "Chunk is loading or saving, skip it" << std::endl;
-      continue;
-    }
-
     // Check if already in memory
     auto it = active_chunks_.find(coord);
     if (it != active_chunks_.end()) {
@@ -1191,8 +888,8 @@ void ChunkManager::addPointsToChunks(
       // std::cout << "Chunk found in memory" << std::endl;
     }
     // Try to load from disk
-    else if (chunkExistsOnDiskNoLock(coord)) {  // Use no-lock version
-      if (loadChunkNoLock(coord)) {             // Use no-lock version
+    else if (chunkExistsOnDisk(coord)) {  // Use no-lock version
+      if (loadChunk(coord)) {             // Use no-lock version
         chunk = active_chunks_[coord];
         // std::cout << "Chunk loaded from disk" << std::endl;
       } else {
@@ -1218,7 +915,7 @@ void ChunkManager::addPointsToChunks(
     }
 
     // Mark as used
-    markChunkUsedNoLock(coord);  // Use no-lock version
+    markChunkUsed(coord);  // Use no-lock version
 
     // Initialize or add points to the chunk
     if (is_new_chunk) {
@@ -1249,17 +946,12 @@ void ChunkManager::addPointsToChunks(
 // Shutdown the manager
 void ChunkManager::shutdown() {
   // Signal thread to terminate
-  {
-    std::lock_guard<std::mutex> lock(io_mutex_);
-    should_terminate_ = true;
-  }
+  should_terminate_ = true;
 
-  // Notify waiting thread
-  io_cv_.notify_all();
-
-  // Wait for thread to finish
-  if (io_thread_.joinable()) {
-    io_thread_.join();
+  // Save any remaining dirty chunks on shutdown
+  for (const auto& pair : active_chunks_) {
+    const ChunkCoord& coord = pair.first;
+    saveChunk(coord);
   }
 }
 
@@ -1286,42 +978,36 @@ bool ChunkManager::cullSparseChunks(int min_points_threshold) {
   std::vector<ChunkCoord> chunks_to_cull;
   bool any_culled = false;
 
-  {
-    std::lock_guard<std::mutex> lock(io_mutex_);
+  // Examine all active chunks
+  for (const auto& [coord, chunk] : active_chunks_) {
+    if (!chunk || !chunk->getGaussians()) {
+      throw std::runtime_error("Chunk/Gaussians null");
+    }
 
-    // Examine all active chunks
-    for (const auto& [coord, chunk] : active_chunks_) {
-      if (!chunk || !chunk->getGaussians()) continue;
+    // Get number of active points in chunk
+    int num_points = chunk->getGaussians()->getXYZ().size(0);
 
-      // Get number of active points in chunk
-      int num_points = chunk->getGaussians()->getXYZ().size(0);
-
-      // If below threshold, mark for culling
-      if (num_points < min_points_threshold) {
-        chunks_to_cull.push_back(coord);
-      }
+    // If below threshold, mark for culling
+    if (num_points < min_points_threshold) {
+      chunks_to_cull.push_back(coord);
     }
   }
 
   // Remove culled chunks
   for (const auto& coord : chunks_to_cull) {
     // Just remove from active chunks
-    {
-      std::lock_guard<std::mutex> lock(io_mutex_);
-      active_chunks_.erase(coord);
-      decrementStat(stats_.active_chunks);
 
-      // Update disk cache to prevent reloading
-      chunk_exists_cache_[coord] = false;
+    active_chunks_.erase(coord);
+    decrementStat(stats_.active_chunks);
 
-      // Mark for deletion if needed
-      auto meta_it = chunk_metadata_.find(coord);
-      if (meta_it != chunk_metadata_.end()) {
-        if (meta_it->second.dirty) {
-          // Queue for background deletion rather than handling now
-          io_queue_.push(ChunkIORequest(coord, ChunkOperation::DELETE, 5));
-          io_cv_.notify_one();
-        }
+    // Update disk cache to prevent reloading
+    chunk_exists_cache_[coord] = false;
+
+    // Mark for deletion if needed
+    auto meta_it = chunk_metadata_.find(coord);
+    if (meta_it != chunk_metadata_.end()) {
+      if (meta_it->second.dirty) {
+        deleteChunk(coord);
       }
     }
 
@@ -1332,19 +1018,13 @@ bool ChunkManager::cullSparseChunks(int min_points_threshold) {
 }
 
 void ChunkManager::cullGaussiansOutsideChunkBorders() {
-  std::lock_guard<std::mutex> lock(io_mutex_);
-
   for (const auto& [coord, chunk] : active_chunks_) {
     if (!chunk || !chunk->getGaussians()) {
       continue;  // No chunk or no gaussians
     }
 
-    // Check if chunk is being loaded or saved
     auto meta_it = chunk_metadata_.find(coord);
-    if (meta_it != chunk_metadata_.end() &&
-        (meta_it->second.loading || meta_it->second.saving)) {
-      continue;  // Skip chunks being loaded or saved
-    }
+
     // Get the AABB for the chunk
     AABB aabb = getChunkAABB(coord);
 
@@ -1382,12 +1062,8 @@ void ChunkManager::cullGaussiansOutsideChunkBorders() {
       // Update disk cache to prevent reloading
       chunk_exists_cache_[coord] = false;
 
-      // Mark for deletion if needed
-      if (meta_it != chunk_metadata_.end() && meta_it->second.dirty) {
-        // Queue for background deletion
-        io_queue_.push(ChunkIORequest(coord, ChunkOperation::DELETE, 5));
-        io_cv_.notify_one();
-      }
+      deleteChunk(coord);
+
     } else {
       // Otherwise, prune the outside points
       try {
@@ -1409,14 +1085,12 @@ void ChunkManager::cullGaussiansOutsideChunkBorders() {
 void ChunkManager::updateChunkExistenceCache(
     const std::vector<ChunkCoord>& coords,
     bool exists) {
-  std::lock_guard<std::mutex> lock(io_mutex_);
   for (const auto& coord : coords) {
     chunk_exists_cache_[coord] = exists;
   }
 }
 
 std::vector<ChunkCoord> ChunkManager::getExistingChunkCoords() {
-  std::lock_guard<std::mutex> lock(io_mutex_);
   std::vector<ChunkCoord> result;
 
   // Iterate through the cache and collect all chunks that exist
@@ -1440,7 +1114,6 @@ void ChunkManager::transferGaussiansAcrossChunks(float spatial_lr_scale) {
   std::unordered_map<ChunkCoord, bool, ChunkCoordHash> chunk_was_modified;
 
   {
-    std::lock_guard<std::mutex> lock(io_mutex_);
     for (const auto& [coord, _] : active_chunks_) {
       originally_active.insert(coord);
     }
@@ -1453,13 +1126,12 @@ void ChunkManager::transferGaussiansAcrossChunks(float spatial_lr_scale) {
   // Process chunks in batches to manage memory
   const int batch_size = 5;  // Adjust based on memory constraints
 
-  // First pass: Load chunks, identify and extract Gaussians that need
-  // transfer
+  // First pass: Load chunks, identify and extract Gaussians that need transfer
   std::vector<
       std::tuple<ChunkCoord, torch::Tensor, torch::Tensor, torch::Tensor,
                  torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>>
-      transfers;  // Source chunk, points, features_dc, features_rest,
-                  // opacity, scaling, rotation, exist_since
+      transfers;  // Source chunk, points, features_dc, features_rest, opacity,
+                  // scaling, rotation, exist_since
 
   for (size_t i = 0; i < all_chunks.size(); i += batch_size) {
     size_t end = std::min(i + batch_size, all_chunks.size());
@@ -1470,32 +1142,19 @@ void ChunkManager::transferGaussiansAcrossChunks(float spatial_lr_scale) {
       bool was_active =
           originally_active.find(coord) != originally_active.end();
 
-      // Skip chunks being saved or loaded
-      {
-        std::lock_guard<std::mutex> lock(io_mutex_);
-        auto meta_it = chunk_metadata_.find(coord);
-        if (meta_it != chunk_metadata_.end() &&
-            (meta_it->second.loading || meta_it->second.saving)) {
-          continue;
-        }
-      }
-
       // Load chunk if not active
       std::shared_ptr<Chunk> chunk;
       bool loaded_for_processing = false;
 
-      {
-        std::lock_guard<std::mutex> lock(io_mutex_);
-        if (was_active) {
-          auto it = active_chunks_.find(coord);
-          if (it != active_chunks_.end()) {
-            chunk = it->second;
-          }
-        } else {
-          if (loadChunkNoLock(coord)) {
-            chunk = getChunkAtNoLock(coord);
-            loaded_for_processing = true;
-          }
+      if (was_active) {
+        auto it = active_chunks_.find(coord);
+        if (it != active_chunks_.end()) {
+          chunk = it->second;
+        }
+      } else {
+        if (loadChunk(coord)) {
+          chunk = getChunkAt(coord);
+          loaded_for_processing = true;
         }
       }
 
@@ -1510,8 +1169,7 @@ void ChunkManager::transferGaussiansAcrossChunks(float spatial_lr_scale) {
       if (points.size(0) == 0) {
         // If we loaded it just for processing, save and unload
         if (loaded_for_processing) {
-          std::lock_guard<std::mutex> lock(io_mutex_);
-          saveChunkNoLock(coord);
+          saveChunk(coord);
         }
         continue;
       }
@@ -1533,8 +1191,7 @@ void ChunkManager::transferGaussiansAcrossChunks(float spatial_lr_scale) {
       if (num_outside == 0) {
         // If we loaded it just for processing, save and unload
         if (loaded_for_processing) {
-          std::lock_guard<std::mutex> lock(io_mutex_);
-          saveChunkNoLock(coord);
+          saveChunk(coord);
         }
         continue;
       }
@@ -1608,9 +1265,8 @@ void ChunkManager::transferGaussiansAcrossChunks(float spatial_lr_scale) {
 
       // If we loaded it just for processing, save and unload
       if (loaded_for_processing) {
-        std::lock_guard<std::mutex> lock(io_mutex_);
         if (chunk_was_modified[coord]) {
-          saveChunkNoLock(coord);
+          saveChunk(coord);
         }
       }
     }
@@ -1685,49 +1341,38 @@ void ChunkManager::transferGaussiansAcrossChunks(float spatial_lr_scale) {
         originally_active.find(dest_coord) != originally_active.end();
     bool loaded_for_processing = false;
 
-    {
-      std::lock_guard<std::mutex> lock(io_mutex_);
-
-      // Skip if loading or saving this chunk right now
-      auto meta_it = chunk_metadata_.find(dest_coord);
-      if (meta_it != chunk_metadata_.end() &&
-          (meta_it->second.loading || meta_it->second.saving)) {
+    // Check if already in memory
+    auto it = active_chunks_.find(dest_coord);
+    if (it != active_chunks_.end()) {
+      dest_chunk = it->second;
+    }
+    // Try to load from disk
+    else if (chunkExistsOnDisk(dest_coord)) {
+      if (loadChunk(dest_coord)) {
+        dest_chunk = active_chunks_[dest_coord];
+        loaded_for_processing = !was_active;
+      } else {
+        // If loading fails but the chunk exists on disk, something is wrong
+        std::cerr << "Failed to load existing chunk at " << dest_coord.x << ","
+                  << dest_coord.y << "," << dest_coord.z << std::endl;
         continue;
       }
-
-      // Check if already in memory
-      auto it = active_chunks_.find(dest_coord);
-      if (it != active_chunks_.end()) {
-        dest_chunk = it->second;
-      }
-      // Try to load from disk
-      else if (chunkExistsOnDiskNoLock(dest_coord)) {
-        if (loadChunkNoLock(dest_coord)) {
-          dest_chunk = active_chunks_[dest_coord];
-          loaded_for_processing = !was_active;
-        } else {
-          // If loading fails but the chunk exists on disk, something is wrong
-          std::cerr << "Failed to load existing chunk at " << dest_coord.x
-                    << "," << dest_coord.y << "," << dest_coord.z << std::endl;
-          continue;
-        }
-      }
-      // Create new chunk
-      else {
-        dest_chunk = std::make_shared<Chunk>(model_params_, dest_coord);
-        active_chunks_[dest_coord] = dest_chunk;
-
-        // Initialize metadata
-        chunk_metadata_[dest_coord] = ChunkMetadata();
-        chunk_exists_cache_[dest_coord] = true;
-        is_new_chunk = true;
-
-        incrementStat(stats_.active_chunks);
-      }
-
-      // Mark as used/dirty
-      markChunkUsedNoLock(dest_coord);
     }
+    // Create new chunk
+    else {
+      dest_chunk = std::make_shared<Chunk>(model_params_, dest_coord);
+      active_chunks_[dest_coord] = dest_chunk;
+
+      // Initialize metadata
+      chunk_metadata_[dest_coord] = ChunkMetadata();
+      chunk_exists_cache_[dest_coord] = true;
+      is_new_chunk = true;
+
+      incrementStat(stats_.active_chunks);
+    }
+
+    // Mark as used/dirty
+    markChunkUsed(dest_coord);
 
     if (!dest_chunk || !dest_chunk->getGaussians()) {
       continue;
@@ -1758,21 +1403,17 @@ void ChunkManager::transferGaussiansAcrossChunks(float spatial_lr_scale) {
     // If we loaded it just for processing and it wasn't active originally, save
     // and unload
     if (loaded_for_processing) {
-      std::lock_guard<std::mutex> lock(io_mutex_);
-      saveChunkNoLock(dest_coord);
+      saveChunk(dest_coord);
     }
   }
 
   // Save any remaining modified chunks that were originally active
-  {
-    std::lock_guard<std::mutex> lock(io_mutex_);
-    for (const auto& [coord, modified] : chunk_was_modified) {
-      if (modified &&
-          originally_active.find(coord) != originally_active.end()) {
-        auto it = active_chunks_.find(coord);
-        if (it != active_chunks_.end()) {
-          scheduleChunkSaveNoLock(coord, 5);
-        }
+
+  for (const auto& [coord, modified] : chunk_was_modified) {
+    if (modified && originally_active.find(coord) != originally_active.end()) {
+      auto it = active_chunks_.find(coord);
+      if (it != active_chunks_.end()) {
+        saveChunk(coord);
       }
     }
   }

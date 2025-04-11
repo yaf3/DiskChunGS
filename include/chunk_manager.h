@@ -57,35 +57,13 @@ struct ChunkMetadata {
   std::chrono::time_point<std::chrono::steady_clock> last_used;
   std::chrono::time_point<std::chrono::steady_clock> load_time;
   int usage_count;
-  bool dirty;    // Has been modified since last save
-  bool loading;  // Currently being loaded
-  bool saving;   // Currently being saved
+  bool dirty;  // Has been modified since last save
 
   ChunkMetadata()
       : last_used(std::chrono::steady_clock::now()),
         load_time(std::chrono::steady_clock::now()),
         usage_count(0),
-        dirty(false),
-        loading(false),
-        saving(false) {}
-};
-
-// Chunk I/O operation
-enum class ChunkOperation { LOAD, SAVE, DELETE, NONE };
-
-// Chunk I/O request
-struct ChunkIORequest {
-  ChunkCoord coord;
-  ChunkOperation operation;
-  int priority;  // Higher number means higher priority
-
-  ChunkIORequest(const ChunkCoord& c, ChunkOperation op, int p = 0)
-      : coord(c), operation(op), priority(p) {}
-
-  // Compare for priority queue (higher priority comes first)
-  bool operator<(const ChunkIORequest& other) const {
-    return priority < other.priority;
-  }
+        dirty(false) {}
 };
 
 class ChunkManager {
@@ -105,9 +83,7 @@ class ChunkManager {
   // Mark chunks as used (update metadata)
   void markChunkUsed(const ChunkCoord& coord);
 
-  // Schedule chunk save
-  void scheduleChunkSave(const ChunkCoord& coord, int priority = 0);
-  void scheduleChunkLoad(const ChunkCoord& coord, int priority = 0);
+  std::vector<ChunkCoord> findChunksToEvict(int count);
 
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> groupPointsByChunk(
       const torch::Tensor& positions);
@@ -127,7 +103,6 @@ class ChunkManager {
           keyframes);
 
   // Get chunk at specific coordinate
-  std::shared_ptr<Chunk> getChunkAtNoLock(const ChunkCoord& coord);
   std::shared_ptr<Chunk> getChunkAt(const ChunkCoord& coord);
 
   // Check if chunk exists on disk
@@ -167,9 +142,6 @@ class ChunkManager {
   // Save a chunk
   bool saveChunk(const ChunkCoord& coord);
 
-  // Find chunks to evict based on LRU policy
-  std::vector<ChunkCoord> findChunksToEvict(int count);
-
   // Shutdown the manager (stops background threads)
   void shutdown();
 
@@ -191,8 +163,7 @@ class ChunkManager {
   void transferGaussiansAcrossChunks(float spatial_lr_scale);
 
   int getChunkLocalIteration(const ChunkCoord& coord) {
-    std::lock_guard<std::mutex> lock(io_mutex_);
-    auto chunk = getChunkAtNoLock(coord);
+    auto chunk = getChunkAt(coord);
     if (chunk && chunk->getGaussians()) {
       return chunk->getGaussians()->getLocalIteration();
     }
@@ -219,15 +190,6 @@ class ChunkManager {
   int getCurrentIteration() const { return current_iteration_; }
 
  private:
-  // No-lock versions of methods that are called within locked sections
-  void markChunkUsedNoLock(const ChunkCoord& coord);
-  void scheduleChunkSaveNoLock(const ChunkCoord& coord, int priority = 0);
-  void scheduleChunkLoadNoLock(const ChunkCoord& coord, int priority = 0);
-  bool chunkExistsOnDiskNoLock(const ChunkCoord& coord);
-  bool loadChunkNoLock(const ChunkCoord& coord);
-  bool saveChunkNoLock(const ChunkCoord& coord);
-  std::vector<ChunkCoord> findChunksToEvictNoLock(int count);
-
   // Store model parameters directly
   GaussianModelParams model_params_;
   GaussianOptimizationParams opt_params_;
@@ -242,10 +204,6 @@ class ChunkManager {
   std::unordered_map<ChunkCoord, bool, ChunkCoordHash> chunk_exists_cache_;
 
   // I/O thread and synchronization
-  std::thread io_thread_;
-  std::priority_queue<ChunkIORequest> io_queue_;
-  std::mutex io_mutex_;
-  std::condition_variable io_cv_;
   std::atomic<bool> should_terminate_;
 
   // Settings
@@ -259,9 +217,6 @@ class ChunkManager {
   // Statistics
   mutable std::mutex stats_mutex_;
   Stats stats_{0, 0, 0, 0, 0};
-
-  // Background I/O thread function
-  void ioThreadFunc();
 
   // Private helper methods
   std::filesystem::path getChunkFilename(const ChunkCoord& coord);
@@ -305,4 +260,6 @@ class ChunkManager {
     std::lock_guard<std::mutex> lock(cache_mutex_);
     visibility_cache_.clear();
   }
+
+  bool deleteChunk(const ChunkCoord& coord);
 };
