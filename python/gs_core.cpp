@@ -17,8 +17,16 @@ std::shared_ptr<GaussianMapper> g_pGausMapper = nullptr;
 void cleanup() {
   if (g_pGausMapper) {
     std::cout << "Cleaning up GaussianMapper resources..." << std::endl;
-    g_pGausMapper->signalStop();
-    std::cout << "Cleanup complete." << std::endl;
+    try {
+      // First save chunks and clean up resources
+      g_pGausMapper->signalStop();
+      // Then explicitly release the shared_ptr to trigger destruction
+      // while we're still in control rather than during global destruction
+      g_pGausMapper = nullptr;
+      std::cout << "Cleanup complete." << std::endl;
+    } catch (const std::exception& e) {
+      std::cerr << "Error during cleanup: " << e.what() << std::endl;
+    }
   }
 }
 
