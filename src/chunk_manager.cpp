@@ -232,11 +232,13 @@ void ChunkManager::scheduleChunkSaveNoLock(const ChunkCoord& coord,
   // Only schedule if chunk exists and is dirty
   auto meta_it = chunk_metadata_.find(coord);
   if (meta_it != chunk_metadata_.end()) {
-    if (meta_it->second.dirty && !meta_it->second.saving &&
-        !meta_it->second.loading) {
+    if (!meta_it->second.saving && !meta_it->second.loading) {
       meta_it->second.saving = true;
       io_queue_.push(ChunkIORequest(coord, ChunkOperation::SAVE, priority));
       io_cv_.notify_one();
+
+    } else {
+      throw std::runtime_error("No chunk metadata exists");
     }
   }
 }
@@ -257,6 +259,8 @@ void ChunkManager::scheduleChunkLoadNoLock(const ChunkCoord& coord,
     meta_it->second.loading = true;
     io_queue_.push(ChunkIORequest(coord, ChunkOperation::LOAD, priority));
     io_cv_.notify_one();
+  } else {
+    throw std::runtime_error("No chunk metadata exists");
   }
 }
 
@@ -459,7 +463,13 @@ bool ChunkManager::loadChunkNoLock(const ChunkCoord& coord) {
   auto timer = ProfilingUtils::Timer("ChunkManager::loadChunk");
 
   auto meta_it = chunk_metadata_.find(coord);
-  if (meta_it != chunk_metadata_.end() && meta_it->second.saving) {
+  if (meta_it != chunk_metadata_.end()) {
+    if (meta_it->second.saving) {
+      std::cout << "Chunk currently being saved, can't load it" << std::endl;
+      return false;
+    }
+  } else {
+    std::cout << "No metadata found, can't load chunk securely" << std::endl;
     return false;
   }
 
@@ -471,7 +481,7 @@ bool ChunkManager::loadChunkNoLock(const ChunkCoord& coord) {
     if (meta_it != chunk_metadata_.end()) {
       meta_it->second.loading = false;
     }
-
+    std::cout << "Chunk already in memory can't load it" << std::endl;
     incrementStat(stats_.cache_hits);
     return true;
   }
@@ -479,6 +489,7 @@ bool ChunkManager::loadChunkNoLock(const ChunkCoord& coord) {
   auto chunk_filename = getChunkFilename(coord);
 
   if (!chunkExistsOnDiskNoLock(coord)) {
+    std::cout << "Chunk doesn't exist on disk can't load it" << std::endl;
     auto meta_it = chunk_metadata_.find(coord);
     if (meta_it != chunk_metadata_.end()) {
       meta_it->second.loading = false;
@@ -541,17 +552,30 @@ bool ChunkManager::loadChunk(const ChunkCoord& coord) {
 bool ChunkManager::saveChunkNoLock(const ChunkCoord& coord) {
   auto timer = ProfilingUtils::Timer("ChunkManager::saveChunk");
 
+  // Check if currently loading chunk
   auto meta_it = chunk_metadata_.find(coord);
   if (meta_it != chunk_metadata_.end()) {
     if (meta_it->second.loading) {
+      std::cout << "Can't save chunk as currently it is being loaded"
+                << std::endl;
       return false;
     }
+  } else {
+    std::cout << "No chunk metadata entry exist, can't save securely"
+              << std::endl;
+    return false;
   }
 
-  // First check if chunk exists and get it
+  // Then check if chunk in memory
   auto it = active_chunks_.find(coord);
-  if (it == active_chunks_.end() || !it->second ||
-      !it->second->getGaussians()) {
+  if (it == active_chunks_.end()) {
+    std::cout << "Can't save chunk as it is not in memory" << std::endl;
+    return false;
+  }
+
+  // Then check if chunk valid
+  if (!it->second || !it->second->getGaussians()) {
+    std::cout << "Can't save chunk as chunk/gaussians are null" << std::endl;
     // Update metadata
     auto meta_it = chunk_metadata_.find(coord);
     if (meta_it != chunk_metadata_.end()) {
@@ -559,6 +583,7 @@ bool ChunkManager::saveChunkNoLock(const ChunkCoord& coord) {
     }
     return false;
   }
+
   std::shared_ptr<Chunk> chunk = it->second;
 
   auto chunk_filename = getChunkFilename(coord);
@@ -614,12 +639,14 @@ std::shared_ptr<Chunk> ChunkManager::getChunkAtNoLock(const ChunkCoord& coord) {
   auto meta_it = chunk_metadata_.find(coord);
   if (meta_it != chunk_metadata_.end() &&
       (meta_it->second.saving || meta_it->second.loading)) {
+    std::cout << "Chunk loading/saving don't allow access" << std::endl;
     return nullptr;  // Don't allow access to chunks pending eviction
   }
   auto it = active_chunks_.find(coord);
   if (it != active_chunks_.end()) {
     return it->second;
   }
+  std::cout << "Chunk not in memory don't allow access" << std::endl;
   return nullptr;
 }
 // Get chunk at specific coordinate
@@ -963,6 +990,8 @@ ChunkManager::findVisibleChunks(const ChunkCoord& camera_chunk,
           auto meta_it = chunk_metadata_.find(check_coord);
           if (meta_it != chunk_metadata_.end() &&
               (meta_it->second.loading || meta_it->second.saving)) {
+            std::cout << "Chunk is currently loading/saving so skip it"
+                      << std::endl;
             continue;
           }
 
@@ -997,13 +1026,13 @@ void ChunkManager::manageMemoryForNewChunks(size_t chunks_to_load_count) {
   }
 }
 
-// Helper function to load visible chunks from disk
+// Helper function to load visible chunks from disk (not used)
 void ChunkManager::loadVisibleChunks(
     const std::vector<ChunkCoord>& chunks_to_load,
     std::vector<std::shared_ptr<Chunk>>& visible_chunks) {
+  std::lock_guard<std::mutex> lock(io_mutex_);
   for (const auto& coord : chunks_to_load) {
-    if (loadChunkNoLock(
-            coord)) {  // Use no-lock version since we already have the lock
+    if (loadChunkNoLock(coord)) {  //
       auto chunk = getChunkAtNoLock(coord);
       if (chunk && chunk->getGaussians()) {
         visible_chunks.push_back(chunk);
@@ -1022,14 +1051,14 @@ ChunkManager::groupPointsByChunk(const torch::Tensor& positions) {
   // Called by addPoints
   // Convert positions to chunk coordinates
   torch::Tensor chunk_coords = torch::floor(positions / chunk_size_);
-  std::cout << "New ungrouped points " << positions.size(0) << std::endl;
+  // std::cout << "New ungrouped points " << positions.size(0) << std::endl;
 
   // Convert to int64 for bit operations
   chunk_coords = chunk_coords.to(torch::kInt64);
 
-  std::cout << "Chunk coordinates range: "
-            << torch::min(chunk_coords).item<int64_t>() << " to "
-            << torch::max(chunk_coords).item<int64_t>() << std::endl;
+  // std::cout << "Chunk coordinates range: "
+  //           << torch::min(chunk_coords).item<int64_t>() << " to "
+  //           << torch::max(chunk_coords).item<int64_t>() << std::endl;
 
   // Offset coordinates to ensure they're positive
   auto x = chunk_coords.index({torch::indexing::Slice(), 0}) + 2048;
@@ -1052,8 +1081,8 @@ ChunkManager::groupPointsByChunk(const torch::Tensor& positions) {
   auto [unique_chunk_ids, inverse_indices, points_per_chunk] =
       torch::unique_dim(chunk_ids, 0, true, true, true);
 
-  std::cout << "Number of unique chunks: " << unique_chunk_ids.size(0)
-            << std::endl;
+  // std::cout << "Number of unique chunks: " << unique_chunk_ids.size(0)
+  //           << std::endl;
 
   // Convert unique chunk IDs back to 3D coordinates
   torch::Tensor unique_coords = torch::zeros(
@@ -1074,9 +1103,9 @@ ChunkManager::groupPointsByChunk(const torch::Tensor& positions) {
   unique_coords.index({torch::indexing::Slice(), 2}) =
       torch::bitwise_and(unique_chunk_ids, 8191) - 2048;
 
-  std::cout << "Reconstructed coordinate range: "
-            << torch::min(unique_coords).item<int64_t>() << " to "
-            << torch::max(unique_coords).item<int64_t>() << std::endl;
+  // std::cout << "Reconstructed coordinate range: "
+  //           << torch::min(unique_coords).item<int64_t>() << " to "
+  //           << torch::max(unique_coords).item<int64_t>() << std::endl;
 
   return std::make_tuple(unique_coords, inverse_indices, points_per_chunk);
 }
@@ -1088,10 +1117,10 @@ void ChunkManager::addPointsToChunks(
     std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> keyframes,
     float cameras_extent) {
   int min_new_points_threshold = 10;
-  std::cout << "addPoints called in ChunkManager" << std::endl;
+  // std::cout << "addPoints called in ChunkManager" << std::endl;
 
-  std::cout << "Min: " << torch::min(points).item() << std::endl;
-  std::cout << "Max: " << torch::max(points).item() << std::endl;
+  // std::cout << "Min: " << torch::min(points).item() << std::endl;
+  // std::cout << "Max: " << torch::max(points).item() << std::endl;
 
   // Filter points by depth first
   // auto [filtered_points, filtered_colors] =
@@ -1100,11 +1129,11 @@ void ChunkManager::addPointsToChunks(
   auto filtered_points = points;
   auto filtered_colors = colors;
 
-  std::cout << "Min: " << torch::min(points).item() << std::endl;
-  std::cout << "Max: " << torch::max(points).item() << std::endl;
+  // std::cout << "Min: " << torch::min(points).item() << std::endl;
+  // std::cout << "Max: " << torch::max(points).item() << std::endl;
 
   if (filtered_points.sizes()[0] < min_new_points_threshold) {
-    std::cout << "Too little points, exiting" << std::endl;
+    // std::cout << "Too little points, exiting" << std::endl;
     return;
   }
 
@@ -1130,13 +1159,13 @@ void ChunkManager::addPointsToChunks(
     torch::Tensor chunk_points = points_cuda.index({chunk_mask}).clone();
     torch::Tensor chunk_colors = colors_cuda.index({chunk_mask}).clone();
 
-    std::cout << "Adding " << chunk_points.sizes()[0]
-              << " points for chunk: " << coord.x << " " << coord.y << " "
-              << coord.z << " " << std::endl;
+    // std::cout << "Adding " << chunk_points.sizes()[0]
+    //           << " points for chunk: " << coord.x << " " << coord.y << " "
+    //           << coord.z << " " << std::endl;
 
     // Skip if not enough points
     if (chunk_points.sizes()[0] < min_new_points_threshold) {
-      std::cout << "Too little points, skipping" << std::endl;
+      // std::cout << "Too little points, skipping" << std::endl;
       continue;
     }
 
@@ -1159,13 +1188,13 @@ void ChunkManager::addPointsToChunks(
     auto it = active_chunks_.find(coord);
     if (it != active_chunks_.end()) {
       chunk = it->second;
-      std::cout << "Chunk found in memory" << std::endl;
+      // std::cout << "Chunk found in memory" << std::endl;
     }
     // Try to load from disk
     else if (chunkExistsOnDiskNoLock(coord)) {  // Use no-lock version
       if (loadChunkNoLock(coord)) {             // Use no-lock version
         chunk = active_chunks_[coord];
-        std::cout << "Chunk loaded from disk" << std::endl;
+        // std::cout << "Chunk loaded from disk" << std::endl;
       } else {
         throw std::runtime_error("Loading existing chunk failed");
         // Loading failed, create new
@@ -1176,7 +1205,7 @@ void ChunkManager::addPointsToChunks(
     }
     // Create new chunk
     else {
-      std::cout << "Creating new chunk" << std::endl;
+      // std::cout << "Creating new chunk" << std::endl;
       chunk = std::make_shared<Chunk>(model_params_, coord);
       active_chunks_[coord] = chunk;
       chunk_exists_cache_[coord] = true;
@@ -1193,16 +1222,16 @@ void ChunkManager::addPointsToChunks(
 
     // Initialize or add points to the chunk
     if (is_new_chunk) {
-      std::cout << "Since new chunk, calling setup" << std::endl;
+      // std::cout << "Since new chunk, calling setup" << std::endl;
       // For new chunks, initialize with points
       try {
         // First initialize the Gaussian model
-        std::cout << "Calling createFromPcd" << std::endl;
+        // std::cout << "Calling createFromPcd" << std::endl;
         chunk->getGaussians()->createFromPcd(chunk_points, chunk_colors,
                                              cameras_extent);
 
         // Then explicitly set up training - make sure this happens!
-        std::cout << "Calling trainingSetup" << std::endl;
+        // std::cout << "Calling trainingSetup" << std::endl;
         chunk->getGaussians()->trainingSetup(opt_params_);
       } catch (const std::exception& e) {
         std::cerr << "Error setting up new chunk: " << e.what() << std::endl;
@@ -1210,7 +1239,7 @@ void ChunkManager::addPointsToChunks(
       }
     } else {
       // For existing chunks, add new points
-      std::cout << "Chunk already exists, adding points" << std::endl;
+      // std::cout << "Chunk already exists, adding points" << std::endl;
       chunk->getGaussians()->increasePcd(chunk_points, chunk_colors,
                                          getCurrentIteration());
     }
@@ -1316,7 +1345,6 @@ void ChunkManager::cullGaussiansOutsideChunkBorders() {
         (meta_it->second.loading || meta_it->second.saving)) {
       continue;  // Skip chunks being loaded or saved
     }
-
     // Get the AABB for the chunk
     AABB aabb = getChunkAABB(coord);
 
@@ -1401,7 +1429,7 @@ std::vector<ChunkCoord> ChunkManager::getExistingChunkCoords() {
   return result;
 }
 
-void ChunkManager::transferGaussiansAcrossChunks() {
+void ChunkManager::transferGaussiansAcrossChunks(float spatial_lr_scale) {
   torch::NoGradGuard no_grad;
 
   // Get all existing chunk coordinates (both in memory and on disk)
@@ -1425,12 +1453,13 @@ void ChunkManager::transferGaussiansAcrossChunks() {
   // Process chunks in batches to manage memory
   const int batch_size = 5;  // Adjust based on memory constraints
 
-  // First pass: Load chunks, identify and extract Gaussians that need transfer
+  // First pass: Load chunks, identify and extract Gaussians that need
+  // transfer
   std::vector<
       std::tuple<ChunkCoord, torch::Tensor, torch::Tensor, torch::Tensor,
                  torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>>
-      transfers;  // Source chunk, points, features_dc, features_rest, opacity,
-                  // scaling, rotation, exist_since
+      transfers;  // Source chunk, points, features_dc, features_rest,
+                  // opacity, scaling, rotation, exist_since
 
   for (size_t i = 0; i < all_chunks.size(); i += batch_size) {
     size_t end = std::min(i + batch_size, all_chunks.size());
@@ -1476,7 +1505,6 @@ void ChunkManager::transferGaussiansAcrossChunks() {
 
       auto gaussians = chunk->getGaussians();
       auto points = gaussians->getXYZ();
-      float spatial_lr_scale = gaussians->spatial_lr_scale_;
 
       // Skip if no points
       if (points.size(0) == 0) {
@@ -1707,7 +1735,6 @@ void ChunkManager::transferGaussiansAcrossChunks() {
 
     // Apply the transfer data
     auto gaussians = dest_chunk->getGaussians();
-    float spatial_lr_scale = gaussians->spatial_lr_scale_;
 
     // Initialize or add points to the chunk
     if (is_new_chunk) {

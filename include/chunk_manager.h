@@ -188,7 +188,7 @@ class ChunkManager {
 
   std::vector<ChunkCoord> getExistingChunkCoords();
 
-  void transferGaussiansAcrossChunks();
+  void transferGaussiansAcrossChunks(float spatial_lr_scale);
 
   int getChunkLocalIteration(const ChunkCoord& coord) {
     std::lock_guard<std::mutex> lock(io_mutex_);
