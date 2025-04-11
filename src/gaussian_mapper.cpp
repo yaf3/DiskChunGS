@@ -2061,7 +2061,7 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
 
   // Get visible chunks using ChunkManager instead of updateActiveChunks
   std::vector<std::shared_ptr<Chunk>> visible_chunks =
-      chunk_manager_->getVisibleChunks(pkf);
+      chunk_manager_->getVisibleChunks(pkf, false);
   std::vector<std::shared_ptr<GaussianModel>> models;
   models.reserve(visible_chunks.size());
   for (const auto& chunk : visible_chunks) {
@@ -2115,7 +2115,7 @@ void GaussianMapper::renderAndRecordKeyframe(
 
   // Get visible chunks using ChunkManager instead of updateActiveChunks
   std::vector<std::shared_ptr<Chunk>> visible_chunks =
-      chunk_manager_->getVisibleChunks(pkf);
+      chunk_manager_->getVisibleChunks(pkf, false);
 
   // Extract models from chunks
   std::vector<std::shared_ptr<GaussianModel>> models;

@@ -1,9 +1,10 @@
+#include "include/chunk_manager.h"
+
 #include <torch/cuda.h>
 
 #include <algorithm>
 #include <iostream>
 
-#include "include/chunk_manager.h"
 #include "include/profiling.h"
 
 // Pure Eigen implementation without explicit SIMD (relies on Eigen's
@@ -496,7 +497,8 @@ AABB ChunkManager::getChunkAABB(const ChunkCoord& coord) {
 // Main function that returns visible chunks, handling both active and on-disk
 // chunks
 std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
-    std::shared_ptr<GaussianKeyframe> keyframe) {
+    std::shared_ptr<GaussianKeyframe> keyframe,
+    bool use_cache) {
   auto timer = ProfilingUtils::Timer("ChunkManager::getVisibleChunks");
 
   if (!keyframe) {
@@ -507,11 +509,11 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::getVisibleChunks(
   std::size_t keyframe_id = keyframe->fid_;
   Sophus::SE3d current_pose = keyframe->getPose();
 
-  // Check if we can use cached visibility results
   std::vector<ChunkCoord> visible_chunk_coords;
-  bool use_cache = false;
 
-  {
+  // Check if we can use cached visibility results
+  if (use_cache) {
+    use_cache = false;
     std::lock_guard<std::mutex> lock(cache_mutex_);
     auto now = std::chrono::steady_clock::now();
 
