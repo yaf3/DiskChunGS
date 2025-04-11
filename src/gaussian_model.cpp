@@ -1020,6 +1020,18 @@ void GaussianModel::save_checkpoint(const std::string& path) {
   model_archive.write("exist_since_iter_", exist_since_iter_);
   model_archive.save_to(path + "/model.pt");
 
+  assert(active_sh_degree_ >= 0);
+  assert(max_sh_degree_ <= 3);
+  assert(lr_delay_steps_ >= 0);
+  assert(max_steps_ > 0);
+  assert(local_iteration_ >= 0);
+
+  assert(percent_dense_ > 0 && percent_dense_ < 1);
+  assert(spatial_lr_scale_ > 0);
+  assert(lr_init_ > 0);
+  assert(lr_final_ > 0);
+  assert(lr_delay_mult_ > 0);
+
   // Save configuration as before
   torch::serialize::OutputArchive config_archive;
   config_archive.write("active_sh_degree_", torch::tensor(active_sh_degree_));
@@ -1203,16 +1215,26 @@ void GaussianModel::load_checkpoint_incremental(
 
   // Convert tensors back to native types
   active_sh_degree_ = active_sh_degree_tensor.item<int>();
+  assert(active_sh_degree_ >= 0);
   max_sh_degree_ = max_sh_degree_tensor.item<int>();
+  assert(max_sh_degree_ <= 3);
   lr_delay_steps_ = lr_delay_steps_tensor.item<int>();
+  assert(lr_delay_steps_ >= 0);
   max_steps_ = max_steps_tensor.item<int>();
+  assert(max_steps_ > 0);
   local_iteration_ = local_iteration_tensor.item<int>();
+  assert(local_iteration_ >= 0);
 
   percent_dense_ = percent_dense_tensor.item<float>();
+  assert(percent_dense_ > 0 && percent_dense_ < 1);
   spatial_lr_scale_ = spatial_lr_scale_tensor.item<float>();
+  assert(spatial_lr_scale_ > 0);
   lr_init_ = lr_init_tensor.item<float>();
+  assert(lr_init_ > 0);
   lr_final_ = lr_final_tensor.item<float>();
+  assert(lr_final_ > 0);
   lr_delay_mult_ = lr_delay_mult_tensor.item<float>();
+  assert(lr_delay_mult_ > 0);
 
   // std::cout << "lr_init_tensor " << lr_init_tensor << std::endl;
   // std::cout << "lr_init_ " << lr_init_ << std::endl;
@@ -1672,4 +1694,9 @@ void GaussianModel::initializeFromExistingGaussians(
   lr_final_ = training_args.position_lr_final_ * this->spatial_lr_scale_;
   lr_delay_mult_ = training_args.position_lr_delay_mult_;
   max_steps_ = training_args.position_lr_max_steps_;
+
+  assert(lr_init_ > 0);
+  assert(lr_final_ > 0);
+  assert(lr_delay_mult_ > 0);
+  assert(max_steps_ > 0);
 }
