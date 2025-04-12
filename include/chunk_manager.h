@@ -263,4 +263,15 @@ class ChunkManager {
   }
 
   bool deleteChunk(const ChunkCoord& coord);
+
+  void shutdownWithoutSaving() {
+    // Signal thread to terminate
+    should_terminate_ = true;
+
+    // Just clear memory
+    active_chunks_.clear();
+
+    // Clear CUDA cache
+    c10::cuda::CUDACachingAllocator::emptyCache();
+  }
 };

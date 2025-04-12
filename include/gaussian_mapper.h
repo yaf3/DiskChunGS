@@ -220,6 +220,8 @@ class GaussianMapper {
   bool loadScene(std::filesystem::path scene_dir,
                  std::filesystem::path optional_camera_path = "");
 
+  void signalStopEvalMode();
+
  protected:
   void cullKeyframes();
 

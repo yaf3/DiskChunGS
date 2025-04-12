@@ -2045,13 +2045,13 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
     throw std::runtime_error(
         "[GaussianMapper::renderFromPose]KeyFrame Camera not found!");
   }
-  Eigen::Vector3f cam_position;
-  for (int i = 0; i < 3; ++i) {
-    cam_position[i] = pkf->camera_center_[i].item<float>();
-  }
-  auto cam_chunk_coord = chunk_manager_->getChunkCoord(cam_position);
-  std::cout << "Cam chunk: " << cam_chunk_coord.x << " " << cam_chunk_coord.y
-            << " " << cam_chunk_coord.z << std::endl;
+  // Eigen::Vector3f cam_position;
+  // for (int i = 0; i < 3; ++i) {
+  //   cam_position[i] = pkf->camera_center_[i].item<float>();
+  // }
+  // auto cam_chunk_coord = chunk_manager_->getChunkCoord(cam_position);
+  // std::cout << "Cam chunk: " << cam_chunk_coord.x << " " << cam_chunk_coord.y
+  //           << " " << cam_chunk_coord.z << std::endl;
 
   // std::cout << "Tcw matrix:\n" << Tcw.matrix() << std::endl;
 
@@ -2065,15 +2065,16 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
   std::vector<std::shared_ptr<GaussianModel>> models;
   models.reserve(visible_chunks.size());
   for (const auto& chunk : visible_chunks) {
-    std::cout << "[" << chunk->getCoord().x << " " << chunk->getCoord().y << " "
-              << chunk->getCoord().z << "], ";
+    // std::cout << "[" << chunk->getCoord().x << " " << chunk->getCoord().y <<
+    // " "
+    //           << chunk->getCoord().z << "], ";
     if (chunk && chunk->getGaussians()) {
       models.push_back(chunk->getGaussians());
     } else {
       throw "[renderFromPose] Chunk/Gaussian not valid";
     }
   }
-  std::cout << std::endl;
+  // std::cout << std::endl;
 
   // auto active_chunks = chunk_manager_->getActiveChunks();
   // std::vector<std::shared_ptr<GaussianModel>> models;
@@ -3607,4 +3608,12 @@ void GaussianMapper::saveTotalGaussians(std::string name_suffix) {
 
   // Close the file
   outFile.close();
+}
+
+void GaussianMapper::signalStopEvalMode() {
+  std::unique_lock<std::mutex> lock_status(this->mutex_status_);
+  this->stopped_ = true;
+  if (chunk_manager_) {
+    chunk_manager_->shutdownWithoutSaving();
+  }
 }
