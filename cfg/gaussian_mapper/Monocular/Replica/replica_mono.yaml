@@ -46,6 +46,7 @@ Record.record_ground_truth_image: 0 # 0:false, 1 or other integer:true
 Record.record_loss_image: 0 # 0:false, 1 or other integer:true
 Record.training_report_interval: 0 # 0:never, 1:always, others:periodically
 Record.record_loop_ply: 0 # 0:false, 1 or other integer:true
+Record.render_fly_through: 0 # 0:false, 1 or other integer:true
 
 #--------------------------------------------------------------------------------------------
 # Optimization Parameters
@@ -63,6 +64,11 @@ Optimization.scaling_lr: 0.005 #0.005
 Optimization.rotation_lr: 0.001 #0.001
 Optimization.smooth_l1: 0  # 0:false, 1:true
 Optimization.opacity_reg: 0.001
+
+# Chunking
+Chunking.chunk_size: 50.0
+Chunking.overlap_margin: 0.0
+Chunking.max_chunks: 20
 
 # Densification
 Optimization.percent_dense: 0.01
