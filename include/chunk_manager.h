@@ -6,6 +6,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -52,18 +53,43 @@ void cull_AABBs_against_frustum(const Cam& camera,
                                 std::vector<u32>& out_visible_list,
                                 bool use_simd = true);
 
-// Metadata for managing chunks lifecycle
-struct ChunkMetadata {
-  std::chrono::time_point<std::chrono::steady_clock> last_used;
-  std::chrono::time_point<std::chrono::steady_clock> load_time;
-  int usage_count;
-  bool dirty;  // Has been modified since last save
+// Define chunk state enum for tracking lifecycle
+enum class ChunkState {
+  INACTIVE,    // Not in memory
+  LOADING,     // Being loaded from disk
+  ACTIVE,      // In memory and usable
+  OPTIMIZING,  // In memory and currently being optimized
+  SAVING,      // Being saved to disk
+  DELETING     // Being deleted
+};
 
-  ChunkMetadata()
-      : last_used(std::chrono::steady_clock::now()),
-        load_time(std::chrono::steady_clock::now()),
-        usage_count(0),
-        dirty(false) {}
+// Definition for chunk operations
+struct ChunkOperation {
+  ChunkCoord coord;
+  enum Type { LOAD, SAVE, DELETE } type;
+  std::promise<bool> completion_promise;
+  int priority;
+  std::chrono::steady_clock::time_point timestamp;
+};
+
+// Comparator for priority queue
+struct ChunkOperationComparator {
+  bool operator()(const std::shared_ptr<ChunkOperation>& a,
+                  const std::shared_ptr<ChunkOperation>& b) {
+    // Higher priority first, then older operations first
+    if (a->priority != b->priority) return a->priority < b->priority;
+    return a->timestamp > b->timestamp;
+  }
+};
+
+// Enhanced metadata for chunks
+struct ChunkMetadata {
+  std::atomic<ChunkState> state{ChunkState::INACTIVE};
+  std::chrono::steady_clock::time_point load_time;
+  std::chrono::steady_clock::time_point last_used;
+  int usage_count = 0;
+  std::mutex operation_mutex;  // Fine-grained lock for this chunk
+  std::condition_variable operation_cv;
 };
 
 class ChunkManager {
@@ -73,15 +99,75 @@ class ChunkManager {
                std::filesystem::path chunk_save_dir,
                float chunk_size = 50.0f,
                float overlap_margin = 0.0f,
-               int max_chunks = 50);
+               int max_chunks = 50,
+               int num_io_threads = 2);
 
   ~ChunkManager();
+  // Shutdown the manager (stops background threads)
+  void shutdown();
+  void shutdownWithoutSaving();
 
+  // New async methods
+  std::future<bool> loadChunkAsync(const ChunkCoord& coord, int priority = 0);
+  std::future<bool> saveChunkAsync(const ChunkCoord& coord, int priority = 0);
+  std::future<bool> deleteChunkAsync(const ChunkCoord& coord, int priority = 0);
+
+  // Synchronous wrappers
+  bool loadChunkSync(const ChunkCoord& coord);
+  bool saveChunkSync(const ChunkCoord& coord);
+  bool deleteChunkSync(const ChunkCoord& coord);
+
+  void releaseChunksFromOptimization(const std::vector<ChunkCoord>& chunks);
+  void releaseChunksFromOptimization();
+  std::future<bool> loadChunkForOptimization(const ChunkCoord& coord,
+                                             int priority = 10);
+
+ private:
+  // Thread pool and task queue
+  std::vector<std::thread> io_threads_;
+  std::atomic<bool> shutdown_threads_{false};
+
+  // Priority-based task queue
+  std::priority_queue<std::shared_ptr<ChunkOperation>,
+                      std::vector<std::shared_ptr<ChunkOperation>>,
+                      ChunkOperationComparator>
+      operation_queue_;
+  std::mutex queue_mutex_;
+  std::condition_variable queue_cv_;
+
+  // Enhanced tracking with thread-safety
+  std::unordered_map<ChunkCoord, ChunkMetadata, ChunkCoordHash> chunk_metadata_;
+  std::vector<ChunkCoord> optimizing_chunks_;
+  std::mutex metadata_mutex_;
+  std::mutex active_chunks_mutex_;  // For active_chunks_ access
+  std::mutex chunk_exists_cache_mutex_;
+
+  // Thread pool methods
+  void initializeThreadPool(int num_threads);
+  void shutdownThreadPool();
+  void ioThreadFunction();
+
+  // Operation methods
+  void enqueueOperation(std::shared_ptr<ChunkOperation> operation);
+  void processOperation(std::shared_ptr<ChunkOperation> operation);
+  bool processLoadOperation(const ChunkCoord& coord);
+  bool processSaveOperation(const ChunkCoord& coord);
+  bool processDeleteOperation(const ChunkCoord& coord);
+
+  // State management helpers
+  ChunkState getChunkState(const ChunkCoord& coord);
+  bool transitionChunkState(const ChunkCoord& coord,
+                            ChunkState expected,
+                            ChunkState new_state);
+  bool waitForChunkState(const ChunkCoord& coord,
+                         ChunkState target_state,
+                         std::chrono::milliseconds timeout);
+  std::future<bool> createWaitFuture(const ChunkCoord& coord,
+                                     ChunkState target_state);
+
+ public:
   // Main interface methods
   void evictUnusedChunks(int keep_count = -1);
-
-  // Mark chunks as used (update metadata)
-  void markChunkUsed(const ChunkCoord& coord);
 
   std::vector<ChunkCoord> findChunksToEvict(int count);
 
@@ -125,26 +211,8 @@ class ChunkManager {
                     float zfar,
                     const Eigen::Matrix4f& vp_matrix);
 
-  void manageMemoryForNewChunks(size_t chunks_to_load_count);
-
-  void loadVisibleChunks(const std::vector<ChunkCoord>& chunks_to_load,
-                         std::vector<std::shared_ptr<Chunk>>& visible_chunks);
-
-  // std::vector<std::shared_ptr<Chunk>> getChunksInFrustumWithMargin(
-  //     std::shared_ptr<GaussianKeyframe> keyframe,
-  //     float margin_factor = 1.2);
-
   // Check if a chunk is inside or intersects with a view frustum
   AABB getChunkAABB(const ChunkCoord& coord);
-
-  // Load a chunk
-  bool loadChunk(const ChunkCoord& coord);
-
-  // Save a chunk
-  bool saveChunk(const ChunkCoord& coord);
-
-  // Shutdown the manager (stops background threads)
-  void shutdown();
 
   std::unordered_map<ChunkCoord, std::shared_ptr<Chunk>, ChunkCoordHash>
   getActiveChunks() const {
@@ -152,9 +220,6 @@ class ChunkManager {
   }
 
   bool cullSparseChunks(int min_points_threshold);
-
-  // Cull gaussians that are outside of chunk borders
-  void cullGaussiansOutsideChunkBorders();
 
   void updateChunkExistenceCache(const std::vector<ChunkCoord>& coords,
                                  bool exists);
@@ -199,7 +264,6 @@ class ChunkManager {
   // Core data
   std::unordered_map<ChunkCoord, std::shared_ptr<Chunk>, ChunkCoordHash>
       active_chunks_;
-  std::unordered_map<ChunkCoord, ChunkMetadata, ChunkCoordHash> chunk_metadata_;
 
   // Cache of chunk existence to avoid repeated disk checks
   std::unordered_map<ChunkCoord, bool, ChunkCoordHash> chunk_exists_cache_;
@@ -260,18 +324,5 @@ class ChunkManager {
   void clearVisibilityCache() {
     std::lock_guard<std::mutex> lock(cache_mutex_);
     visibility_cache_.clear();
-  }
-
-  bool deleteChunk(const ChunkCoord& coord);
-
-  void shutdownWithoutSaving() {
-    // Signal thread to terminate
-    should_terminate_ = true;
-
-    // Just clear memory
-    active_chunks_.clear();
-
-    // Clear CUDA cache
-    c10::cuda::CUDACachingAllocator::emptyCache();
   }
 };
