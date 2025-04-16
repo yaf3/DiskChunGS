@@ -588,7 +588,7 @@ void GaussianMapper::run() {
   if (render_fly_through_) {
     auto video_dir = result_dir_ / "flythrough";
     CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
-    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30, 9 * 30.0f,
+    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30, 1 * 30.0f,
                           0.8f, 2);
     // render3DExplorationVideo(video_dir / "3d_exploration", 1920, 1080, 30,
     //                          20.0f, 0.05f, false);
@@ -1001,6 +1001,7 @@ void GaussianMapper::trainForOneIteration() {
     }
   }
 
+  chunk_manager_->releaseChunksFromOptimization(visible_chunks);
   timer_trainForOneIteration.stop();
   // if (getIteration() % 500 == 0) {
   //   ProfilingUtils::getInstance().printStats();
@@ -1225,15 +1226,13 @@ void GaussianMapper::combineMappingOperations() {
                           << " points successfully" << std::endl;
 
                 num_transformed += chunk_transformed;
-
-                // Mark chunk as dirty since we modified it
-                std::cout << "Marking chunk as used" << std::endl;
-                chunk_manager_->markChunkUsed(chunk_coord);
               }
 
               // Give loop keyframes times of use
               increaseKeyframeTimesOfUse(pkf,
                                          loop_closure_increased_times_of_use_);
+
+              chunk_manager_->releaseChunksFromOptimization(visible_chunks);
             }
 
             // Update keyframe pose
@@ -1313,16 +1312,8 @@ void GaussianMapper::combineMappingOperations() {
             std::vector<ChunkCoord> all_chunks =
                 chunk_manager_->getExistingChunkCoords();
 
-            // Remember which chunks were originally active
-            std::unordered_set<ChunkCoord, ChunkCoordHash> originally_active;
-            auto active_chunks = chunk_manager_->getActiveChunks();
-            for (const auto& [coord, _] : active_chunks) {
-              originally_active.insert(coord);
-            }
-
             std::cout << "Applying scale transformation to "
-                      << all_chunks.size() << " chunks ("
-                      << active_chunks.size() << " active)" << std::endl;
+                      << all_chunks.size() << " chunks" << std::endl;
 
             // Process chunks in batches to manage memory
             const int batch_size = 5;  // Adjust based on memory constraints
@@ -1332,31 +1323,14 @@ void GaussianMapper::combineMappingOperations() {
               // Process current batch
               for (size_t j = i; j < end; j++) {
                 const auto& coord = all_chunks[j];
-                bool was_active =
-                    originally_active.find(coord) != originally_active.end();
-
-                if (was_active) {
-                  // Already in memory, just transform it
-                  auto chunk = chunk_manager_->getChunkAt(coord);
-                  if (chunk && chunk->getGaussians()) {
-                    chunk->getGaussians()->applyScaledTransformation(s, T);
-                    chunk_manager_->markChunkUsed(coord);
-                  }
-                } else {
-                  // Not in memory, load, transform, save, unload
-                  if (chunk_manager_->loadChunk(coord)) {
-                    auto chunk = chunk_manager_->getChunkAt(coord);
-                    if (chunk && chunk->getGaussians()) {
-                      chunk->getGaussians()->applyScaledTransformation(s, T);
-                      chunk_manager_->markChunkUsed(coord);
-                      chunk_manager_->saveChunk(coord);
-                    }
-                  }
+                if (chunk_manager_->loadChunkSync(coord, true)) {
+                  std::shared_ptr<Chunk> chunk =
+                      chunk_manager_->getChunkAt(coord);
+                  chunk->getGaussians()->applyScaledTransformation(s, T);
+                  chunk_manager_->releaseChunksFromOptimization({chunk});
+                  chunk_manager_->saveChunkAsync(coord);
                 }
               }
-
-              // Clear CUDA cache after each batch to free memory
-              c10::cuda::CUDACachingAllocator::emptyCache();
             }
           }
           // Apply the scaled transformation to the scene
@@ -1429,7 +1403,8 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
     pkf->gaus_pyramid_times_of_use_ = kf_gaus_pyramid_times_of_use_;
   } catch (std::out_of_range) {
     throw std::runtime_error(
-        "[GaussianMapper::combineMappingOperations]KeyFrame Camera not found!");
+        "[GaussianMapper::combineMappingOperations]KeyFrame Camera not "
+        "found!");
   }
   // Add the new keyframe to the scene
   pkf->computeTransformTensors();
@@ -1775,7 +1750,8 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
         case Camera::FISHEYE: {
           // TODO: support fisheye camera?
           throw std::runtime_error(
-              "[Gaussian Mapper]Fisheye cameras are not supported currently!");
+              "[Gaussian Mapper]Fisheye cameras are not supported "
+              "currently!");
         } break;
         default: {
           throw std::runtime_error("[Gaussian Mapper]Invalid camera model!");
@@ -2050,7 +2026,8 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
   //   cam_position[i] = pkf->camera_center_[i].item<float>();
   // }
   // auto cam_chunk_coord = chunk_manager_->getChunkCoord(cam_position);
-  // std::cout << "Cam chunk: " << cam_chunk_coord.x << " " << cam_chunk_coord.y
+  // std::cout << "Cam chunk: " << cam_chunk_coord.x << " " <<
+  // cam_chunk_coord.y
   //           << " " << cam_chunk_coord.z << std::endl;
 
   // std::cout << "Tcw matrix:\n" << Tcw.matrix() << std::endl;
@@ -2065,8 +2042,8 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
   std::vector<std::shared_ptr<GaussianModel>> models;
   models.reserve(visible_chunks.size());
   for (const auto& chunk : visible_chunks) {
-    // std::cout << "[" << chunk->getCoord().x << " " << chunk->getCoord().y <<
-    // " "
+    // std::cout << "[" << chunk->getCoord().x << " " << chunk->getCoord().y
+    // << " "
     //           << chunk->getCoord().z << "], ";
     if (chunk && chunk->getGaussians()) {
       models.push_back(chunk->getGaussians());
@@ -2083,13 +2060,15 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
   //   if (chunk && chunk->getGaussians()) {
   //     models.push_back(chunk->getGaussians());
   //   } else {
-  //     throw std::runtime_error("[renderFromPose] Chunk/Gaussian not valid");
+  //     throw std::runtime_error("[renderFromPose] Chunk/Gaussian not
+  //     valid");
   //   }
   // }
 
   // Check if we have any valid models to render
   if (models.empty()) {
     std::cout << "[renderFromPose] No valid models to render" << std::endl;
+    chunk_manager_->releaseChunksFromOptimization(visible_chunks);
     cv::Mat black_image = cv::Mat::zeros(height, width, CV_32FC3);
     return black_image;  // Early return if no valid models
   }
@@ -2099,6 +2078,7 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
       models, pkf, height, width, pipe_params_, background_, override_color_);
 
   // Return rendered image
+  chunk_manager_->releaseChunksFromOptimization(visible_chunks);
   return tensor_utils::torchTensor2CvMat_Float32(std::get<0>(render_pkg));
 }
 
@@ -2129,12 +2109,14 @@ void GaussianMapper::renderAndRecordKeyframe(
 
   if (models.empty()) {
     std::cout << "[renderFromPose] No valid models to render" << std::endl;
+    chunk_manager_->releaseChunksFromOptimization(visible_chunks);
     return;  // Early return if no valid models
   }
 
   auto render_pkg = GaussianRenderer::render(models, pkf, pkf->image_height_,
                                              pkf->image_width_, pipe_params_,
                                              background_, override_color_);
+  chunk_manager_->releaseChunksFromOptimization(visible_chunks);
   auto rendered_image = std::get<0>(render_pkg);
   torch::cuda::synchronize();
   auto end_timing = std::chrono::steady_clock::now();
@@ -2775,15 +2757,16 @@ GaussianMapper::predictUpcomingKeyframes(int count) {
 }
 
 /**
- * Generates a smooth fly-through video along keyframe path with constant speed
+ * Generates a smooth fly-through video along keyframe path with constant
+ * speed
  *
  * @param output_path Directory where frames and video will be saved
  * @param width Width of the output video
  * @param height Height of the output video
  * @param fps Frames per second
  * @param duration_seconds Total duration of the video
- * @param smoothness_factor Controls path smoothness (0.0-1.0, higher = smoother
- * but deviates more from keyframes)
+ * @param smoothness_factor Controls path smoothness (0.0-1.0, higher =
+ * smoother but deviates more from keyframes)
  * @param keyframe_subsample Use only every Nth keyframe (1 = use all, 2 = use
  * every other, etc.)
  */
@@ -2900,9 +2883,9 @@ void GaussianMapper::renderFlyThroughVideo(const std::string& output_path,
   std::cout << "Creating video with command: " << cmd << std::endl;
   int ret = system(cmd.c_str());
   if (ret != 0) {
-    std::cerr
-        << "Failed to create video using ffmpeg. Check if ffmpeg is installed."
-        << std::endl;
+    std::cerr << "Failed to create video using ffmpeg. Check if ffmpeg is "
+                 "installed."
+              << std::endl;
   } else {
     std::cout << "Video created successfully at " << output_path
               << "/flythrough.mp4" << std::endl;
@@ -2921,8 +2904,9 @@ void GaussianMapper::renderFlyThroughVideo(const std::string& output_path,
 }
 
 /**
- * Generates a 3D exploration video that showcases the depth and dimensionality
- * of the scene by adding camera movements that deviate from the main path
+ * Generates a 3D exploration video that showcases the depth and
+ * dimensionality of the scene by adding camera movements that deviate from
+ * the main path
  *
  * @param output_path Directory where frames and video will be saved
  * @param width Width of the output video
@@ -3033,8 +3017,8 @@ void GaussianMapper::render3DExplorationVideo(const std::string& output_path,
     // Apply deviation to base position
     Eigen::Vector3d explorer_position = base_position + deviation;
 
-    // Create a modified orientation that occasionally looks toward interesting
-    // features
+    // Create a modified orientation that occasionally looks toward
+    // interesting features
     Eigen::Quaterniond explorer_orientation = base_orientation;
 
     if (look_around) {
@@ -3100,9 +3084,9 @@ void GaussianMapper::render3DExplorationVideo(const std::string& output_path,
   std::cout << "Creating video with command: " << cmd << std::endl;
   int ret = system(cmd.c_str());
   if (ret != 0) {
-    std::cerr
-        << "Failed to create video using ffmpeg. Check if ffmpeg is installed."
-        << std::endl;
+    std::cerr << "Failed to create video using ffmpeg. Check if ffmpeg is "
+                 "installed."
+              << std::endl;
   } else {
     std::cout << "Video created successfully at " << output_path
               << "/3d_exploration.mp4" << std::endl;
@@ -3146,7 +3130,7 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
   bool all_saved = true;
 
   for (const auto& [coord, chunk] : active_chunks) {
-    if (!chunk_manager_->saveChunk(coord)) {
+    if (!chunk_manager_->saveChunkSync(coord)) {
       std::cerr << "Failed to save chunk: " << coord.x << "," << coord.y << ","
                 << coord.z << std::endl;
       all_saved = false;
@@ -3182,7 +3166,8 @@ bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
   // // Load a few chunks for initial visualization if desired
   // if (load_initial_chunks_ && !chunk_coords.empty()) {
   //   int max_to_load =
-  //       std::min(static_cast<int>(chunk_coords.size()), max_initial_chunks_);
+  //       std::min(static_cast<int>(chunk_coords.size()),
+  //       max_initial_chunks_);
 
   //   for (int i = 0; i < max_to_load; i++) {
   //     chunk_manager_->loadChunk(chunk_coords[i]);
@@ -3292,7 +3277,7 @@ void GaussianMapper::saveChunkManifest(std::filesystem::path scene_dir) {
     auto it = active_chunks.find(chunk_coords[i]);
     if (it != active_chunks.end()) {
       had_to_load = true;
-      bool success = chunk_manager_->loadChunk(chunk_coords[i]);
+      bool success = chunk_manager_->loadChunkSync(chunk_coords[i]);
       if (!success) continue;
     }
 
@@ -3307,7 +3292,7 @@ void GaussianMapper::saveChunkManifest(std::filesystem::path scene_dir) {
         Json::Value::Int64(chunk->getGaussians()->active_sh_degree_);
 
     if (had_to_load) {
-      chunk_manager_->saveChunk(chunk_coords[i]);
+      chunk_manager_->saveChunkAsync(chunk_coords[i]);
       c10::cuda::CUDACachingAllocator::emptyCache();
     }
 
@@ -3559,7 +3544,7 @@ void GaussianMapper::saveTotalGaussians(std::string name_suffix) {
         }
         // Otherwise, load chunk, count Gaussians, then save it back
         else {
-          if (chunk_manager_->loadChunk(coord)) {
+          if (chunk_manager_->loadChunkSync(coord)) {
             auto chunk = chunk_manager_->getChunkAt(coord);
             if (chunk && chunk->getGaussians()) {
               int chunkGaussians = chunk->getGaussians()->getXYZ().size(0);
@@ -3570,7 +3555,7 @@ void GaussianMapper::saveTotalGaussians(std::string name_suffix) {
               //           << std::endl;
             }
             // Save back to disk and remove from memory
-            chunk_manager_->loadChunk(coord);
+            chunk_manager_->saveChunkAsync(coord);
           }
         }
       } catch (const std::exception& e) {
@@ -3616,4 +3601,39 @@ void GaussianMapper::signalStopEvalMode() {
   if (chunk_manager_) {
     chunk_manager_->shutdownWithoutSaving();
   }
+}
+
+std::shared_ptr<GaussianKeyframe> GaussianMapper::useRecentKeyframe() {
+  if (scene_->keyframes().empty()) return nullptr;
+
+  // Find keyframe with the highest ID (most recent)
+  unsigned long max_id = 0;
+  std::shared_ptr<GaussianKeyframe> most_recent_kf = nullptr;
+
+  for (const auto& kf_pair : scene_->keyframes()) {
+    if (kf_pair.first > max_id) {
+      max_id = kf_pair.first;
+      most_recent_kf = kf_pair.second;
+    }
+  }
+
+  // Check if keyframe has remaining uses
+  if (most_recent_kf && most_recent_kf->remaining_times_of_use_ <= 0) {
+    // Increase it to allow usage
+    increaseKeyframeTimesOfUse(most_recent_kf, 1);
+  }
+
+  // Track usage for statistics
+  if (most_recent_kf) {
+    auto viewpoint_fid = most_recent_kf->fid_;
+    if (kfs_used_times_.find(viewpoint_fid) == kfs_used_times_.end())
+      kfs_used_times_[viewpoint_fid] = 1;
+    else
+      ++kfs_used_times_[viewpoint_fid];
+
+    // Decrease remaining times of use
+    --(most_recent_kf->remaining_times_of_use_);
+  }
+
+  return most_recent_kf;
 }

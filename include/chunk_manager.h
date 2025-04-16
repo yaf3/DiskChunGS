@@ -70,6 +70,7 @@ struct ChunkOperation {
   std::promise<bool> completion_promise;
   int priority;
   std::chrono::steady_clock::time_point timestamp;
+  bool load_for_optimization;
 };
 
 // Comparator for priority queue
@@ -100,7 +101,7 @@ class ChunkManager {
                float chunk_size = 50.0f,
                float overlap_margin = 0.0f,
                int max_chunks = 50,
-               int num_io_threads = 2);
+               int num_io_threads = 8);
 
   ~ChunkManager();
   // Shutdown the manager (stops background threads)
@@ -108,19 +109,23 @@ class ChunkManager {
   void shutdownWithoutSaving();
 
   // New async methods
-  std::future<bool> loadChunkAsync(const ChunkCoord& coord, int priority = 0);
+  std::future<bool> loadChunkAsync(const ChunkCoord& coord,
+                                   int priority = 0,
+                                   bool load_for_optimization = true,
+                                   bool skip_busy_chunks = true);
   std::future<bool> saveChunkAsync(const ChunkCoord& coord, int priority = 0);
   std::future<bool> deleteChunkAsync(const ChunkCoord& coord, int priority = 0);
 
   // Synchronous wrappers
-  bool loadChunkSync(const ChunkCoord& coord);
+  bool loadChunkSync(const ChunkCoord& coord,
+                     bool load_for_optimization = true);
   bool saveChunkSync(const ChunkCoord& coord);
   bool deleteChunkSync(const ChunkCoord& coord);
 
   void releaseChunksFromOptimization(const std::vector<ChunkCoord>& chunks);
-  void releaseChunksFromOptimization();
-  std::future<bool> loadChunkForOptimization(const ChunkCoord& coord,
-                                             int priority = 10);
+  void releaseChunksFromOptimization(
+      const std::vector<std::shared_ptr<Chunk>>& chunks);
+  void releaseAllChunksFromOptimization();
 
  private:
   // Thread pool and task queue
@@ -137,7 +142,7 @@ class ChunkManager {
 
   // Enhanced tracking with thread-safety
   std::unordered_map<ChunkCoord, ChunkMetadata, ChunkCoordHash> chunk_metadata_;
-  std::vector<ChunkCoord> optimizing_chunks_;
+  std::unordered_set<ChunkCoord, ChunkCoordHash> optimizing_chunks_;
   std::mutex metadata_mutex_;
   std::mutex active_chunks_mutex_;  // For active_chunks_ access
   std::mutex chunk_exists_cache_mutex_;
@@ -150,7 +155,8 @@ class ChunkManager {
   // Operation methods
   void enqueueOperation(std::shared_ptr<ChunkOperation> operation);
   void processOperation(std::shared_ptr<ChunkOperation> operation);
-  bool processLoadOperation(const ChunkCoord& coord);
+  bool processLoadOperation(const ChunkCoord& coord,
+                            bool load_for_optimization = false);
   bool processSaveOperation(const ChunkCoord& coord);
   bool processDeleteOperation(const ChunkCoord& coord);
 

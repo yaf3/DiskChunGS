@@ -212,6 +212,7 @@ class GaussianMapper {
   void generateKfidRandomShuffle();
   std::shared_ptr<GaussianKeyframe> useOneRandomSlidingWindowKeyframe();
   std::shared_ptr<GaussianKeyframe> useOneRandomKeyframe();
+  std::shared_ptr<GaussianKeyframe> useRecentKeyframe();
 
  public:
   void increaseKeyframeTimesOfUse(std::shared_ptr<GaussianKeyframe> pkf,

@@ -293,8 +293,14 @@ void GaussianModel::scaledTransformVisiblePointsOfKeyframe(
     const float scale) {
   torch::NoGradGuard no_grad;
 
+  std::cout << "[DEBUG-STPV] Starting with flag tensor size: "
+            << point_not_transformed_flags.size(0)
+            << ", xyz size: " << this->xyz_.size(0) << std::endl;
+
   torch::Tensor points = this->getXYZ();
   torch::Tensor rots = this->getRotationActivation();
+
+  std::cout << "[DEBUG-STPV] Got points and rotations" << std::endl;
   // torch::Tensor scales = this->scaling_;// * scale;
 
   torch::Tensor point_unstable_flags =
@@ -302,10 +308,17 @@ void GaussianModel::scaledTransformVisiblePointsOfKeyframe(
                        stable_num_iter_existence,
                    true, false);
 
+  std::cout << "[DEBUG-STPV] Created unstable flags" << std::endl;
+
+  std::cout << "[DEBUG-STPV] Calling transform function" << std::endl;
+
   scaleAndTransformThenMarkVisiblePoints(
       points, rots, point_not_transformed_flags, point_unstable_flags,
       diff_pose, kf_world_view_transform, kf_full_proj_transform,
       num_transformed, scale);
+
+  std::cout << "[DEBUG-STPV] Transform complete, transformed "
+            << num_transformed << " points" << std::endl;
 
   // torch::Tensor point_cloud_copy = points.clone();
   // torch::Tensor dist2 = torch::clamp_min(distCUDA2(point_cloud_copy),
@@ -322,18 +335,23 @@ void GaussianModel::scaledTransformVisiblePointsOfKeyframe(
   // param_groups[4] = scaling_
   // param_groups[5] = rotation_
   // ==================================
-  torch::Tensor optimizable_xyz = this->replaceTensorToOptimizer(points, 0);
-  // torch::Tensor optimizable_scaling = this->replaceTensorToOptimizer(scales,
-  // 4);
-  torch::Tensor optimizable_rots = this->replaceTensorToOptimizer(rots, 5);
 
-  this->xyz_ = optimizable_xyz;
-  // this->scaling_ = optimizable_scaling;
-  this->rotation_ = optimizable_rots;
+  if (num_transformed > 0) {
+    torch::Tensor optimizable_xyz = this->replaceTensorToOptimizer(points, 0);
+    // torch::Tensor optimizable_scaling =
+    // this->replaceTensorToOptimizer(scales, 4);
+    torch::Tensor optimizable_rots = this->replaceTensorToOptimizer(rots, 5);
 
-  this->Tensor_vec_xyz_ = {this->xyz_};
-  // this->Tensor_vec_scaling_ = {this->scaling_};
-  this->Tensor_vec_rotation_ = {this->rotation_};
+    this->xyz_ = optimizable_xyz;
+    // this->scaling_ = optimizable_scaling;
+    this->rotation_ = optimizable_rots;
+
+    this->Tensor_vec_xyz_ = {this->xyz_};
+    // this->Tensor_vec_scaling_ = {this->scaling_};
+    this->Tensor_vec_rotation_ = {this->rotation_};
+
+    std::cout << "[DEBUG-STPV] Updated tensors in-place" << std::endl;
+  }
 }
 
 void GaussianModel::trainingSetup(
