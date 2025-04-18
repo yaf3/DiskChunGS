@@ -118,11 +118,13 @@ class ChunkManager {
 
   // Synchronous wrappers
   bool loadChunkSync(const ChunkCoord& coord,
-                     bool load_for_optimization = true);
+                     bool load_for_optimization = true,
+                     bool skip_busy_chunks = true);
   bool saveChunkSync(const ChunkCoord& coord);
   bool deleteChunkSync(const ChunkCoord& coord);
 
-  void releaseChunksFromOptimization(const std::vector<ChunkCoord>& chunks);
+  void releaseChunksFromOptimization(
+      const std::vector<ChunkCoord>& chunk_coords);
   void releaseChunksFromOptimization(
       const std::vector<std::shared_ptr<Chunk>>& chunks);
   void releaseAllChunksFromOptimization();
@@ -198,27 +200,25 @@ class ChunkManager {
   std::shared_ptr<Chunk> getChunkAt(const ChunkCoord& coord);
 
   // Check if chunk exists on disk
-  bool chunkExistsOnDisk(const ChunkCoord& coord);
+  bool chunkExists(const ChunkCoord& coord);
 
   // Get chunk coordinate from 3D position
   ChunkCoord getChunkCoord(const Eigen::Vector3f& position);
 
-  std::vector<std::shared_ptr<Chunk>> getVisibleChunks(
-      std::shared_ptr<GaussianKeyframe> keyframe,
-      bool use_cache = true);
-
   Eigen::Matrix4f createProjectionMatrix(
       std::shared_ptr<GaussianKeyframe> keyframe);
 
-  std::pair<std::vector<std::shared_ptr<Chunk>>, std::vector<ChunkCoord>>
-  findVisibleChunks(const ChunkCoord& camera_chunk,
-                    int search_radius,
-                    const Eigen::Vector3f& camera_position,
-                    float zfar,
-                    const Eigen::Matrix4f& vp_matrix);
+  std::vector<ChunkCoord> frustumCullChunks(
+      std::shared_ptr<GaussianKeyframe> keyframe);
 
   // Check if a chunk is inside or intersects with a view frustum
   AABB getChunkAABB(const ChunkCoord& coord);
+
+  std::vector<std::shared_ptr<Chunk>> loadVisibleChunks(
+      std::shared_ptr<GaussianKeyframe> keyframe,
+      bool use_cache = true);
+  void preloadVisibleChunks(std::shared_ptr<GaussianKeyframe> keyframe,
+                            bool use_cache = true);
 
   std::unordered_map<ChunkCoord, std::shared_ptr<Chunk>, ChunkCoordHash>
   getActiveChunks() const {

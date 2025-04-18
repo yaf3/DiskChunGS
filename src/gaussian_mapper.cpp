@@ -20,7 +20,6 @@
 
 #include "include/chunk_manager.h"
 #include "include/gaussian_renderer.h"
-#include "include/keyframe_selector.h"
 #include "include/loss_utils.h"
 #include "include/profiling.h"
 #include "include/render_flythrough.h"
@@ -98,6 +97,9 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
 
   // Initialize scene
   scene_ = std::make_shared<GaussianScene>(model_params_);
+
+  keyframe_queue_ =
+      std::make_shared<KeyframeQueue>(scene_, kfs_used_times_, kfid_shuffled_);
 
   // Initialize chunk manager
   initializeChunkManagement();
@@ -588,7 +590,7 @@ void GaussianMapper::run() {
   if (render_fly_through_) {
     auto video_dir = result_dir_ / "flythrough";
     CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
-    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30, 1 * 30.0f,
+    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30, 10.0,
                           0.8f, 2);
     // render3DExplorationVideo(video_dir / "3d_exploration", 1920, 1080, 30,
     //                          20.0f, 0.05f, false);
@@ -697,7 +699,10 @@ void GaussianMapper::trainColmap() {
   if (render_fly_through_) {
     auto video_dir = result_dir_ / "flythrough";
     CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
-    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30, 30.0f);
+    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30, 10.0,
+                          0.8f, 2);
+    // render3DExplorationVideo(video_dir / "3d_exploration", 1920, 1080, 30,
+    //                          20.0f, 0.05f, false);
   }
 
   // Save and clear
@@ -722,19 +727,28 @@ void GaussianMapper::trainForOneIteration() {
   increaseIteration(1);
   chunk_manager_->setCurrentIteration(getIteration());
 
+  auto timer_cullSparseChunks = ProfilingUtils::Timer("cullSparseChunks");
   int min_points_chunk_threshold = 10;
   chunk_manager_->cullSparseChunks(min_points_chunk_threshold);
+  timer_cullSparseChunks.stop();
 
   auto iter_start_timing = std::chrono::steady_clock::now();
 
-  auto timer_selectLocalityAwareKeyframe =
-      ProfilingUtils::Timer("selectLocalityAwareKeyframe");
-  // Pick a keyframe using our locality-aware strategy
-  // std::shared_ptr<GaussianKeyframe> viewpoint_cam =
-  //     selectLocalityAwareKeyframe();
+  // size_t keyframe_lookahead = 3;
+  // std::vector<std::shared_ptr<GaussianKeyframe>> upcoming_keyframes =
+  //     getUpcomingKeyframes(keyframe_lookahead);
+
+  // std::cout << "Keyframes lookahead: ";
+  // for (auto& keyframe : upcoming_keyframes) {
+  //   std::cout << keyframe->fid_ << " ";
+  // }
+  // std::cout << std::endl;
+
+  auto timer_pickKeyframe = ProfilingUtils::Timer("pickKeyframe");
   std::shared_ptr<GaussianKeyframe> viewpoint_cam =
       useOneRandomSlidingWindowKeyframe();
-  timer_selectLocalityAwareKeyframe.stop();
+  timer_pickKeyframe.stop();
+  // std::cout << "Using keyframe id: " << viewpoint_cam->fid_ << std::endl;
   if (!viewpoint_cam) {
     increaseIteration(-1);
     return;
@@ -769,22 +783,25 @@ void GaussianMapper::trainForOneIteration() {
   std::unique_lock<std::mutex> lock_render(mutex_render_);
   timer_waitForMutex.stop();
 
-  auto timer_getVisibleChunks = ProfilingUtils::Timer("getVisibleChunks");
-  // Get visible chunks using ChunkManager instead of updateActiveChunks
+  size_t keyframe_lookahead = 3;
+  std::vector<std::shared_ptr<GaussianKeyframe>> upcoming_keyframes =
+      getUpcomingKeyframes(keyframe_lookahead);
+
+  // std::cout << "Keyframes lookahead: ";
+  auto timer_preload = ProfilingUtils::Timer("preloadUpcomingKeyframes");
+  for (auto& keyframe : upcoming_keyframes) {
+    chunk_manager_->preloadVisibleChunks(keyframe, true);
+    // std::cout << keyframe->fid_ << " ";
+  }
+  // std::cout << std::endl;
+  timer_preload.stop();
+
+  auto timer_loadVisibleChunks = ProfilingUtils::Timer("loadVisibleChunks");
   std::vector<std::shared_ptr<Chunk>> visible_chunks =
-      chunk_manager_->getVisibleChunks(viewpoint_cam);
-  // auto active_chunks = chunk_manager_->getActiveChunks();
-  // std::vector<std::shared_ptr<GaussianModel>> models;
-  // models.reserve(active_chunks.size());
-  // for (const auto& [coord, chunk] : active_chunks) {
-  //   if (chunk && chunk->getGaussians()) {
-  //     models.push_back(chunk->getGaussians());
-  //   } else {
-  //     throw std::runtime_error("[renderFromPose] Chunk/Gaussian not
-  //     valid");
-  //   }
-  // }
-  timer_getVisibleChunks.stop();
+      chunk_manager_->loadVisibleChunks(viewpoint_cam, true);
+  timer_loadVisibleChunks.stop();
+
+  auto timer_misc_updates = ProfilingUtils::Timer("ITER/LR/SH Updates");
 
   // std::cout << "[Optimization] Num visible chunks: " << visible_chunks.size()
   //           << std::endl;
@@ -824,6 +841,8 @@ void GaussianMapper::trainForOneIteration() {
     gaussians->setRotationLearningRate(rotationLearningRate());
   }
 
+  timer_misc_updates.stop();
+
   // Render
   auto timer_render = ProfilingUtils::Timer("render");
   auto render_pkg =
@@ -835,6 +854,7 @@ void GaussianMapper::trainForOneIteration() {
   std::vector<torch::Tensor> screenspace_points_vec = std::get<1>(render_pkg);
   std::vector<torch::Tensor> radii_vec = std::get<2>(render_pkg);
 
+  auto timer_loss_calculation = ProfilingUtils::Timer("loss_calculation");
   // Loss calculation (same as before)
   auto l1_loss =
       opt_params_.smooth_l1_ ? loss_utils::smooth_l1_loss : loss_utils::l1_loss;
@@ -849,6 +869,21 @@ void GaussianMapper::trainForOneIteration() {
               gaussians->getOpacityActivation().abs().mean();
     }
   }
+
+  // float anisotropy_reg_weight = 0.01f;  // Adjust strength as needed
+  // for (const auto& gaussians : models) {
+  //   // Get scaling and calculate anisotropy
+  //   torch::Tensor scaling = gaussians->getScalingActivation();
+  //   torch::Tensor max_scale = std::get<1>(scaling.max(1));
+  //   torch::Tensor min_scale = std::get<1>(scaling.min(1));
+  //   torch::Tensor anisotropy =
+  //       (max_scale - min_scale) / (max_scale + min_scale + 1e-7f);
+
+  //   // Add weighted regularization term to loss
+  //   loss += anisotropy_reg_weight * anisotropy.mean();
+  // }
+
+  timer_loss_calculation.stop();
 
   auto timer_backwards = ProfilingUtils::Timer("backwards");
   loss.backward();
@@ -877,7 +912,9 @@ void GaussianMapper::trainForOneIteration() {
     // }
   }
 
+  auto timer_cuda_sync = ProfilingUtils::Timer("cuda_sync");
   torch::cuda::synchronize();
+  timer_cuda_sync.stop();
   auto timer_densification = ProfilingUtils::Timer("densification");
   {
     torch::NoGradGuard no_grad;
@@ -930,83 +967,65 @@ void GaussianMapper::trainForOneIteration() {
           gaussians->resetOpacity();
       }
     }
-
-    timer_densification.stop();
-
-    auto iter_end_timing = std::chrono::steady_clock::now();
-    auto iter_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-                         iter_end_timing - iter_start_timing)
-                         .count();
-
-    // Reporting and periodic saves
-    if (training_report_interval_ &&
-        (getIteration() % training_report_interval_ == 0)) {
-      std::cout << std::fixed << std::setprecision(8) << "Training iteration "
-                << getIteration() << "/" << opt_params_.iterations_
-                << ", time elapsed:" << iter_time / 1000.0 << "s"
-                << ", ema_loss:" << ema_loss_for_log_ << ", active_chunks:"
-                << chunk_manager_->getStats().active_chunks << std::endl;
-    }
-
-    if ((all_keyframes_record_interval_ &&
-         getIteration() % all_keyframes_record_interval_ == 0)) {
-      renderAndRecordAllKeyframes();
-      // savePly(result_dir_ / std::to_string(getIteration()) / "ply");
-      saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
-                "data");
-    }
-
-    if (loop_closure_iteration_) loop_closure_iteration_ = false;
-
-    // Prefetch chunks for upcoming keyframes
-    // auto timer_predictUpcomingKeyframes =
-    //     ProfilingUtils::Timer("predictUpcomingKeyframes");
-    // auto upcoming_keyframes = predictUpcomingKeyframes();
-    // timer_predictUpcomingKeyframes.stop();
-
-    // auto timer_preloadChunksForKeyframes =
-    //     ProfilingUtils::Timer("preloadChunksForKeyframes");
-    // chunk_manager_->preloadChunksForKeyframes(upcoming_keyframes);
-    // timer_preloadChunksForKeyframes.stop();
-
-    // if (getIteration() % 1000 == 0) {
-    //   auto active_chunks = chunk_manager_->getActiveChunks();
-    //   for (const auto& [coord, chunk] : active_chunks) {
-    //     if (chunk && chunk->getGaussians()) {
-    //       chunk_manager_->saveChunk(coord, true);
-    //       sleep(1);
-    //       chunk_manager_->loadChunk(coord, true);
-    //     } else {
-    //       throw std::runtime_error("Chunk/Gaussian not valid");
-    //     }
-    //   }
-    // }
-
-    // Optimizer step
-    for (const auto& gaussians : models) {
-      if (getIteration() < opt_params_.iterations_ ||
-          opt_params_.iterations_ == -1) {
-        gaussians->optimizer_->step();
-        gaussians->optimizer_->zero_grad(true);
-
-        // gaussians->incrementLocalIteration();
-      }
-    }
-
-    // Periodically cull gaussians outside of borders & evict unused chunks
-    if (getIteration() % 50 == 0) {
-      // chunk_manager_->transferGaussiansAcrossChunks();
-      // chunk_manager_->cullGaussiansOutsideChunkBorders();
-      chunk_manager_->evictUnusedChunks();
-    }
   }
 
+  timer_densification.stop();
+
+  auto iter_end_timing = std::chrono::steady_clock::now();
+  auto iter_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       iter_end_timing - iter_start_timing)
+                       .count();
+
+  // Reporting and periodic saves
+  if (training_report_interval_ &&
+      (getIteration() % training_report_interval_ == 0)) {
+    std::cout << std::fixed << std::setprecision(8) << "Training iteration "
+              << getIteration() << "/" << opt_params_.iterations_
+              << ", time elapsed:" << iter_time / 1000.0 << "s"
+              << ", ema_loss:" << ema_loss_for_log_
+              << ", active_chunks:" << chunk_manager_->getStats().active_chunks
+              << std::endl;
+  }
+
+  if ((all_keyframes_record_interval_ &&
+       getIteration() % all_keyframes_record_interval_ == 0)) {
+    renderAndRecordAllKeyframes();
+    // savePly(result_dir_ / std::to_string(getIteration()) / "ply");
+    saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
+              "data");
+  }
+
+  if (loop_closure_iteration_) loop_closure_iteration_ = false;
+
+  auto timer_optimizer_step = ProfilingUtils::Timer("optimizer_step");
+  // Optimizer step
+  for (const auto& gaussians : models) {
+    if (getIteration() < opt_params_.iterations_ ||
+        opt_params_.iterations_ == -1) {
+      gaussians->optimizer_->step();
+      gaussians->optimizer_->zero_grad(true);
+    }
+  }
+  timer_optimizer_step.stop();
+
+  auto timer_evictUnusedChunks = ProfilingUtils::Timer("evictUnusedChunks");
+  // Periodically cull gaussians outside of borders & evict unused chunks
+  if (getIteration() % 50 == 0) {
+    // chunk_manager_->transferGaussiansAcrossChunks();
+    // chunk_manager_->cullGaussiansOutsideChunkBorders();
+    // chunk_manager_->evictUnusedChunks();
+  }
+  timer_evictUnusedChunks.stop();
+
+  auto timer_releaseChunksFromOptimization =
+      ProfilingUtils::Timer("releaseChunksFromOptimization");
   chunk_manager_->releaseChunksFromOptimization(visible_chunks);
+  timer_releaseChunksFromOptimization.stop();
   timer_trainForOneIteration.stop();
-  // if (getIteration() % 500 == 0) {
-  //   ProfilingUtils::getInstance().printStats();
-  //   ProfilingUtils::getInstance().reset();
-  // }
+  if (getIteration() % 500 == 0) {
+    ProfilingUtils::getInstance().printStats();
+    ProfilingUtils::getInstance().reset();
+  }
 }
 
 bool GaussianMapper::isStopped() {
@@ -1145,7 +1164,7 @@ void GaussianMapper::combineMappingOperations() {
 
               // Get chunks visible from this keyframe
               std::vector<std::shared_ptr<Chunk>> visible_chunks =
-                  chunk_manager_->getVisibleChunks(pkf);
+                  chunk_manager_->loadVisibleChunks(pkf);
 
               for (const auto& chunk : visible_chunks) {
                 std::cout << "Now processing: " << chunk->getCoord().x << " "
@@ -1176,8 +1195,8 @@ void GaussianMapper::combineMappingOperations() {
                 torch::Tensor chunk_point_flags;
 
                 if (it == chunk_transformed_flags.end()) {
-                  // First time seeing this chunk, initialize all flags to "not
-                  // transformed"
+                  // First time seeing this chunk, initialize all flags to
+                  // "not transformed"
                   std::cout << "First time seeing this chunk, set all flags to "
                                "not transformed"
                             << std::endl;
@@ -1335,7 +1354,8 @@ void GaussianMapper::combineMappingOperations() {
           }
           // Apply the scaled transformation to the scene
           scene_->applyScaledTransformation(s, T);
-        } else {  // TODO: the workflow should not come here, delete this branch
+        } else {  // TODO: the workflow should not come here, delete this
+                  // branch
           // Apply the scaled transformation to the cached points
           for (auto& pt : scene_->cached_point_cloud_) {
             // pt <- (s * Ryw * pt + tyw)
@@ -1450,80 +1470,14 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   }
 }
 
-void GaussianMapper::generateKfidRandomShuffle() {
-  if (scene_->keyframes().empty()) return;
-
-  std::size_t nkfs = scene_->keyframes().size();
-  kfid_shuffle_.resize(nkfs);
-  std::iota(kfid_shuffle_.begin(), kfid_shuffle_.end(), 0);
-  std::mt19937 g(rd_());
-  std::shuffle(kfid_shuffle_.begin(), kfid_shuffle_.end(), g);
-
-  kfid_shuffled_ = true;
-}
-
 std::shared_ptr<GaussianKeyframe>
 GaussianMapper::useOneRandomSlidingWindowKeyframe() {
-  // auto t1 = std::chrono::steady_clock::now();
-  if (scene_->keyframes().empty()) return nullptr;
+  return keyframe_queue_->getNextKeyframe();
+}
 
-  if (!kfid_shuffled_) generateKfidRandomShuffle();
-
-  std::shared_ptr<GaussianKeyframe> viewpoint_cam = nullptr;
-  int random_cam_idx;
-
-  if (kfid_shuffled_) {
-    int start_shuffle_idx = kfid_shuffle_idx_;
-    do {
-      // Next shuffled idx
-      ++kfid_shuffle_idx_;
-      if (kfid_shuffle_idx_ >= kfid_shuffle_.size()) kfid_shuffle_idx_ = 0;
-      // Add 1 time of use to all kfs if they are all unavalible
-      if (kfid_shuffle_idx_ == start_shuffle_idx) {
-        for (auto& kfit : scene_->keyframes()) {
-          increaseKeyframeTimesOfUse(kfit.second, 1);
-        }
-        if (opt_params_.auto_distribute_) {
-          std::vector<std::pair<std::size_t, float>> vec(kfs_loss_.begin(),
-                                                         kfs_loss_.end());
-          // std::vector<std::pair<std::size_t, int>>
-          // vec(kfs_used_times_.begin(), kfs_used_times_.end());
-          int k = std::max(
-              1, static_cast<int>(vec.size() / opt_params_.auto_distribute_));
-          std::nth_element(vec.begin(), vec.begin() + k, vec.end(),
-                           [](const std::pair<std::size_t, float>& a,
-                              const std::pair<std::size_t, float>& b) {
-                             return a.second > b.second;
-                           });
-          for (int i = 0; i < k; ++i) {
-            increaseKeyframeTimesOfUse(scene_->keyframes()[vec[i].first], 1);
-          }
-        }
-      }
-      // Get viewpoint kf
-      random_cam_idx = kfid_shuffle_[kfid_shuffle_idx_];
-      auto random_cam_it = scene_->keyframes().begin();
-      for (int cam_idx = 0; cam_idx < random_cam_idx; ++cam_idx)
-        ++random_cam_it;
-      viewpoint_cam = (*random_cam_it).second;
-    } while (viewpoint_cam->remaining_times_of_use_ <= 0);
-  }
-
-  // Count used times
-  auto viewpoint_fid = viewpoint_cam->fid_;
-  if (kfs_used_times_.find(viewpoint_fid) == kfs_used_times_.end())
-    kfs_used_times_[viewpoint_fid] = 1;
-  else
-    ++kfs_used_times_[viewpoint_fid];
-
-  // Handle times of use
-  --(viewpoint_cam->remaining_times_of_use_);
-
-  // auto t2 = std::chrono::steady_clock::now();
-  // auto t21 =
-  // std::chrono::duration_cast<std::chrono::nanoseconds>(t2-t1).count();
-  // std::cout<<t21 <<" ns"<<std::endl;
-  return viewpoint_cam;
+std::vector<std::shared_ptr<GaussianKeyframe>>
+GaussianMapper::getUpcomingKeyframes(size_t count) {
+  return keyframe_queue_->peekUpcomingKeyframes(count);
 }
 
 std::shared_ptr<GaussianKeyframe> GaussianMapper::useOneRandomKeyframe() {
@@ -2038,7 +1992,7 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
 
   // Get visible chunks using ChunkManager instead of updateActiveChunks
   std::vector<std::shared_ptr<Chunk>> visible_chunks =
-      chunk_manager_->getVisibleChunks(pkf, false);
+      chunk_manager_->loadVisibleChunks(pkf, false);
   std::vector<std::shared_ptr<GaussianModel>> models;
   models.reserve(visible_chunks.size());
   for (const auto& chunk : visible_chunks) {
@@ -2096,7 +2050,7 @@ void GaussianMapper::renderAndRecordKeyframe(
 
   // Get visible chunks using ChunkManager instead of updateActiveChunks
   std::vector<std::shared_ptr<Chunk>> visible_chunks =
-      chunk_manager_->getVisibleChunks(pkf, false);
+      chunk_manager_->loadVisibleChunks(pkf, false);
 
   // Extract models from chunks
   std::vector<std::shared_ptr<GaussianModel>> models;
@@ -2703,9 +2657,6 @@ void GaussianMapper::initializeChunkManagement() {
   chunk_manager_ = std::make_shared<ChunkManager>(
       model_params_, opt_params_, chunk_save_dir_, chunk_size_, overlap_margin_,
       max_chunks_in_memory_);
-
-  // Create the keyframe selector with just the chunk manager
-  keyframe_selector_ = std::make_shared<KeyframeSelector>(chunk_manager_);
 }
 
 void GaussianMapper::addPoints(
@@ -2724,38 +2675,6 @@ void GaussianMapper::addPoints(
                                     scene_->cameras_extent_);
 }
 
-std::shared_ptr<GaussianKeyframe>
-GaussianMapper::selectLocalityAwareKeyframe() {
-  if (!keyframe_selector_) {
-    // Fallback to old method
-    std::cout << "Smart Keyframe selection unavailable, fallback to OG "
-                 "method."
-              << std::endl;
-    return useOneRandomSlidingWindowKeyframe();
-  }
-
-  auto keyframe = keyframe_selector_->selectKeyframe(
-      scene_->keyframes(), kfs_loss_, kfs_used_times_, getIteration());
-
-  if (keyframe) {
-    // Handle keyframe usage internally inside GaussianMapper
-    increaseKeyframeTimesOfUse(keyframe, -1);
-  }
-
-  return keyframe;
-}
-
-// Predict upcoming keyframes for prefetching
-std::vector<std::shared_ptr<GaussianKeyframe>>
-GaussianMapper::predictUpcomingKeyframes(int count) {
-  if (!keyframe_selector_) {
-    return {};
-  }
-
-  return keyframe_selector_->predictUpcomingKeyframes(scene_->keyframes(),
-                                                      kfs_loss_, count);
-}
-
 /**
  * Generates a smooth fly-through video along keyframe path with constant
  * speed
@@ -2764,7 +2683,7 @@ GaussianMapper::predictUpcomingKeyframes(int count) {
  * @param width Width of the output video
  * @param height Height of the output video
  * @param fps Frames per second
- * @param duration_seconds Total duration of the video
+ * @param speed Speed of the camera in units per second
  * @param smoothness_factor Controls path smoothness (0.0-1.0, higher =
  * smoother but deviates more from keyframes)
  * @param keyframe_subsample Use only every Nth keyframe (1 = use all, 2 = use
@@ -2774,7 +2693,7 @@ void GaussianMapper::renderFlyThroughVideo(const std::string& output_path,
                                            int width,
                                            int height,
                                            int fps,
-                                           float duration_seconds,
+                                           float speed,
                                            float smoothness_factor,
                                            int keyframe_subsample) {
   // Create output directory if it doesn't exist
@@ -2836,7 +2755,23 @@ void GaussianMapper::renderFlyThroughVideo(const std::string& output_path,
     smoothPath(path_points, smoothness_factor);
   }
 
-  // 4. Sample the path at equal distances to ensure constant speed
+  // 4. Calculate total path length using arc lengths
+  std::vector<double> arc_lengths = computeArcLengths(path_points);
+  double total_path_length = arc_lengths.back();
+
+  // 5. Calculate duration based on path length and speed
+  float duration_seconds = total_path_length / speed;
+  int total_frames = static_cast<int>(duration_seconds * fps);
+
+  // Ensure we have at least 2 frames
+  total_frames = std::max(2, total_frames);
+
+  std::cout << "Path length: " << total_path_length << " units" << std::endl;
+  std::cout << "Speed: " << speed << " units/second" << std::endl;
+  std::cout << "Duration: " << duration_seconds << " seconds" << std::endl;
+  std::cout << "Total frames: " << total_frames << std::endl;
+
+  // 6. Sample the path at equal distances to ensure constant speed
   std::vector<Eigen::Vector3d> sampled_positions;
   std::vector<Eigen::Quaterniond> sampled_orientations;
   samplePathConstantSpeed(path_points, keyframe_positions,
@@ -2844,9 +2779,8 @@ void GaussianMapper::renderFlyThroughVideo(const std::string& output_path,
                           static_cast<int>(duration_seconds * fps),
                           sampled_positions, sampled_orientations);
 
-  // 5. Render each frame
+  // 7. Render each frame
   std::vector<std::string> frame_paths;
-  int total_frames = sampled_positions.size();
 
   for (int i = 0; i < total_frames; i++) {
     // Create world-to-camera transform
@@ -2874,7 +2808,7 @@ void GaussianMapper::renderFlyThroughVideo(const std::string& output_path,
     }
   }
 
-  // 6. Combine frames into video using ffmpeg
+  // 8. Combine frames into video using ffmpeg
   std::string cmd = "ffmpeg -y -framerate " + std::to_string(fps) + " -i " +
                     output_path + "/frame_%d.png" +
                     " -c:v libx264 -crf 18 -pix_fmt yuv420p " + output_path +
@@ -2890,7 +2824,7 @@ void GaussianMapper::renderFlyThroughVideo(const std::string& output_path,
     std::cout << "Video created successfully at " << output_path
               << "/flythrough.mp4" << std::endl;
 
-    // 7. Delete all frame files
+    // 9. Delete all frame files
     std::cout << "Cleaning up frame files..." << std::endl;
     int deleted_frames = 0;
     for (const auto& frame_path : frame_paths) {
@@ -3636,4 +3570,37 @@ std::shared_ptr<GaussianKeyframe> GaussianMapper::useRecentKeyframe() {
   }
 
   return most_recent_kf;
+}
+
+std::vector<std::shared_ptr<GaussianKeyframe>>
+GaussianMapper::predictUpcomingKeyframes(int count) {
+  std::vector<std::shared_ptr<GaussianKeyframe>> upcoming_keyframes;
+
+  if (!kfid_shuffled_ || scene_->keyframes().empty()) {
+    return upcoming_keyframes;
+  }
+
+  int next_idx = kfid_shuffle_idx_;
+  int loops = 0;
+
+  while (upcoming_keyframes.size() < count && loops < kfid_shuffle_.size()) {
+    // Move to next index in shuffle
+    next_idx = (next_idx + 1) % kfid_shuffle_.size();
+    loops++;
+
+    // Get keyframe index from shuffle
+    size_t kf_idx = kfid_shuffle_[next_idx];
+
+    // Find the keyframe in the map
+    auto it = scene_->keyframes().begin();
+    std::advance(it, std::min(kf_idx, scene_->keyframes().size() - 1));
+    auto kf = it->second;
+
+    // Only add keyframes with remaining uses
+    if (kf && kf->remaining_times_of_use_ > 0) {
+      upcoming_keyframes.push_back(kf);
+    }
+  }
+
+  return upcoming_keyframes;
 }

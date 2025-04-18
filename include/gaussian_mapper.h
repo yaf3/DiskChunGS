@@ -49,6 +49,7 @@
 #include "chunk_types.h"
 #include "gaussian_keyframe.h"
 #include "gaussian_scene.h"
+#include "keyframe_selection.h"
 #include "operate_points.h"
 #include "stereo_vision.h"
 #include "tensor_utils.h"
@@ -209,8 +210,9 @@ class GaussianMapper {
                                     std::vector<float>,
                                     std::vector<float>,
                                     std::string> &kf);
-  void generateKfidRandomShuffle();
   std::shared_ptr<GaussianKeyframe> useOneRandomSlidingWindowKeyframe();
+  std::vector<std::shared_ptr<GaussianKeyframe>> getUpcomingKeyframes(
+      size_t count);
   std::shared_ptr<GaussianKeyframe> useOneRandomKeyframe();
   std::shared_ptr<GaussianKeyframe> useRecentKeyframe();
 
@@ -298,11 +300,10 @@ class GaussianMapper {
   // Chunk manager for efficient memory handling
   std::shared_ptr<ChunkManager> chunk_manager_;
 
-  // Keyframe selector for intelligent keyframe selection
-  std::shared_ptr<KeyframeSelector> keyframe_selector_;
-
   // Scene
   std::shared_ptr<GaussianScene> scene_;
+
+  std::shared_ptr<KeyframeQueue> keyframe_queue_;
 
   // SLAM system
   std::shared_ptr<ORB_SLAM3::System> pSLAM_;
