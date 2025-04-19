@@ -165,8 +165,9 @@ add_library(
     include/profiling.h
     include/chunk_types.h
     include/chunk_manager.h
-    include/keyframe_selector.h
     include/render_flythrough.h
+    include/keyframe_selection.h
+    include/nanoflann.hpp
     src/gaussian_keyframe.cpp
     src/gaussian_model.cpp
     src/gaussian_parameters.cpp
@@ -175,8 +176,8 @@ add_library(
     src/gaussian_scene.cpp
     src/gaussian_mapper.cpp
     src/chunk_manager.cpp
-    src/keyframe_selector.cpp
     src/render_flythrough.cpp
+    src/keyframe_selection.cpp
 )
 target_link_libraries(
     gaussian_mapper
@@ -276,6 +277,13 @@ target_link_libraries(kitti_mono
 # KITTI Stereo
 add_executable(kitti_stereo examples/kitti_stereo.cpp)
 target_link_libraries(kitti_stereo
+    gaussian_viewer    
+    gaussian_mapper
+    ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
+
+# KITTI RGBD
+add_executable(kitti_rgbd examples/kitti_rgbd.cpp)
+target_link_libraries(kitti_rgbd
     gaussian_viewer    
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)

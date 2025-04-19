@@ -18,9 +18,11 @@ KeyframeQueue::KeyframeQueue(std::shared_ptr<GaussianScene> scene,
       kfid_shuffle_idx_(0),
       current_cluster_(0),
       cluster_iterations_(0),
-      iterations_per_cluster_(50),  // Default value, can be adjusted
-      keyframes_since_last_full_clustering_(0) {
-  // Initialize empty
+      iterations_per_cluster_(200),
+      keyframes_since_last_full_clustering_(0),
+      cluster_centers_adapter_(nullptr),
+      cluster_kdtree_(nullptr) {
+  // KD-tree will be initialized when we have cluster centers
 }
 
 void KeyframeQueue::setChunkManager(
@@ -34,6 +36,9 @@ void KeyframeQueue::generateKfidRandomShuffle() {
 
   // Create vector of keyframe IDs
   kfid_shuffle_.clear();
+  kfid_shuffle_.reserve(
+      scene_->keyframes().size());  // Pre-allocate for better performance
+
   for (const auto& [fid, _] : scene_->keyframes()) {
     kfid_shuffle_.push_back(fid);
   }
@@ -46,7 +51,7 @@ void KeyframeQueue::generateKfidRandomShuffle() {
             << " keyframes" << std::endl;
 }
 
-// New spatial clustering method
+// New spatial clustering method with KD-tree optimization
 void KeyframeQueue::generateSpatiallyCoherentBatches() {
   auto timer = ProfilingUtils::Timer("generateSpatiallyCoherentBatches");
 
@@ -58,6 +63,10 @@ void KeyframeQueue::generateSpatiallyCoherentBatches() {
   std::vector<std::pair<std::size_t, Eigen::Vector3f>> keyframe_positions;
   keyframe_positions.reserve(scene_->keyframes().size());
 
+  // Clear position cache and rebuild it
+  keyframe_positions_cache_.clear();
+  keyframe_positions_cache_.reserve(scene_->keyframes().size());
+
   for (const auto& [fid, keyframe] : scene_->keyframes()) {
     if (!keyframe->set_pose_) continue;  // Skip keyframes without valid poses
 
@@ -65,6 +74,7 @@ void KeyframeQueue::generateSpatiallyCoherentBatches() {
     Sophus::SE3d Twc = keyframe->getPose().inverse();
     Eigen::Vector3f position = Twc.translation().cast<float>();
     keyframe_positions.push_back({fid, position});
+    keyframe_positions_cache_[fid] = position;  // Cache the position
   }
 
   if (keyframe_positions.empty()) {
@@ -76,11 +86,9 @@ void KeyframeQueue::generateSpatiallyCoherentBatches() {
   }
 
   // Step 2: Determine appropriate number of clusters based on scene size
-  const int min_keyframes_per_cluster =
-      15;  // Target minimum keyframes per cluster
+  const int min_keyframes_per_cluster = 15;
   int num_clusters = std::max(1, static_cast<int>(keyframe_positions.size() /
                                                   min_keyframes_per_cluster));
-  // num_clusters = std::min(8, num_clusters);  // Cap at 8 clusters
 
   std::cout << "Creating " << num_clusters << " spatial clusters for "
             << keyframe_positions.size() << " keyframes" << std::endl;
@@ -90,31 +98,55 @@ void KeyframeQueue::generateSpatiallyCoherentBatches() {
   // Initialize cluster centers with furthest point sampling for better
   // distribution
   cluster_centers_.clear();
+  cluster_centers_.reserve(
+      num_clusters);  // Pre-allocate for better performance
   cluster_centers_.push_back(
       keyframe_positions[0].second);  // Start with first point
 
+  // Furthest point sampling for initial cluster centers
   for (int i = 1; i < num_clusters; i++) {
-    // Find furthest point from all existing centers
     float max_dist = -1;
     std::size_t furthest_idx = 0;
 
-    for (std::size_t j = 0; j < keyframe_positions.size(); j++) {
-      float min_dist = std::numeric_limits<float>::max();
-      for (const auto& center : cluster_centers_) {
-        float dist = (keyframe_positions[j].second - center).norm();
-        min_dist = std::min(min_dist, dist);
-      }
+    // Process keyframe positions in batches to improve cache efficiency
+    for (std::size_t batch_start = 0; batch_start < keyframe_positions.size();
+         batch_start += BATCH_SIZE) {
+      const std::size_t batch_end =
+          std::min(batch_start + BATCH_SIZE, keyframe_positions.size());
 
-      if (min_dist > max_dist) {
-        max_dist = min_dist;
-        furthest_idx = j;
+      for (std::size_t j = batch_start; j < batch_end; j++) {
+        float min_dist = std::numeric_limits<float>::max();
+
+        // Find minimum distance to any existing center
+        for (const auto& center : cluster_centers_) {
+          float dist =
+              (keyframe_positions[j].second - center)
+                  .squaredNorm();  // Use squared norm to avoid square root
+          min_dist = std::min(min_dist, dist);
+        }
+
+        if (min_dist > max_dist) {
+          max_dist = min_dist;
+          furthest_idx = j;
+        }
       }
     }
 
     cluster_centers_.push_back(keyframe_positions[furthest_idx].second);
   }
 
-  // Assign keyframes to nearest cluster
+  // Initialize nanoflann KD-tree with cluster centers for efficient nearest
+  // neighbor search
+  cluster_centers_adapter_ =
+      std::make_unique<ClusterCentersAdapter>(cluster_centers_);
+  cluster_kdtree_ = std::make_unique<ClusterKDTree>(
+      3,  // dim
+      *cluster_centers_adapter_,
+      nanoflann::KDTreeSingleIndexAdaptorParams(10)  // max leaf size
+  );
+  cluster_kdtree_->buildIndex();
+
+  // Assign keyframes to nearest cluster using KD-tree
   for (const auto& [fid, position] : keyframe_positions) {
     int nearest_cluster = findNearestCluster(position);
     clusters[nearest_cluster].push_back(fid);
@@ -123,6 +155,7 @@ void KeyframeQueue::generateSpatiallyCoherentBatches() {
   // Step 3: Create queue of clusters, and shuffle keyframes within each cluster
   kfid_shuffle_.clear();
   clusters_.clear();
+  clusters_.reserve(num_clusters);
 
   std::mt19937 g(std::random_device{}());
 
@@ -155,7 +188,6 @@ void KeyframeQueue::generateSpatiallyCoherentBatches() {
 
   kfid_shuffled_ = true;
   kfid_shuffle_idx_ = 0;
-  // Don't reset cluster_iterations_ to maintain continuity
 
   // Reset new keyframe counter
   keyframes_since_last_full_clustering_ = 0;
@@ -200,6 +232,10 @@ void KeyframeQueue::fillQueue() {
   // Check if we should generate clusters
   if (!kfid_shuffled_) {
     generateSpatiallyCoherentBatches();
+    // Clear the queue so we incorporate new keyframes immediately
+    while (!keyframe_queue_.empty()) {
+      keyframe_queue_.pop();
+    }
   }
 
   // Check if we should move to the next cluster
@@ -221,6 +257,7 @@ void KeyframeQueue::fillQueue() {
 
     // Pre-warm cache for new cluster
     prewarmClusterCache();
+    return;  // Return after switching clusters and prewarming cache
   }
 
   // Keep filling until we reach desired size or run out of options
@@ -264,30 +301,35 @@ void KeyframeQueue::fillQueue() {
   }
 }
 
-// Helper to find nearest cluster for a keyframe
+// Helper to find nearest cluster for a keyframe - optimized with nanoflann
+// KD-tree
 int KeyframeQueue::findNearestCluster(const Eigen::Vector3f& position) const {
   if (cluster_centers_.empty()) return 0;
+  if (!cluster_kdtree_) return 0;
 
-  float min_dist = std::numeric_limits<float>::max();
-  int nearest_cluster = 0;
+  // Use nanoflann KD-tree for nearest neighbor search - O(log n) instead of
+  // O(n)
+  const float query_point[3] = {position(0), position(1), position(2)};
 
-  for (int i = 0; i < cluster_centers_.size(); i++) {
-    float dist = (position - cluster_centers_[i]).norm();
-    if (dist < min_dist) {
-      min_dist = dist;
-      nearest_cluster = i;
-    }
-  }
+  // Find nearest neighbor
+  size_t index;
+  float distance_squared;
 
-  return nearest_cluster;
+  nanoflann::KNNResultSet<float> resultSet(1);
+  resultSet.init(&index, &distance_squared);
+
+  // Search for the nearest neighbor
+  cluster_kdtree_->findNeighbors(resultSet, query_point,
+                                 nanoflann::SearchParameters(10));
+
+  return static_cast<int>(index);
 }
 
-// Add a single keyframe to existing clusters
+// Add a single keyframe to existing clusters - optimized
 void KeyframeQueue::addKeyframeToExistingClusters(
     std::shared_ptr<GaussianKeyframe> keyframe) {
   if (!keyframe || !keyframe->set_pose_ || clusters_.empty() ||
       cluster_centers_.empty()) {
-    // Can't add to clusters if they don't exist or keyframe has no pose
     return;
   }
 
@@ -295,7 +337,10 @@ void KeyframeQueue::addKeyframeToExistingClusters(
   Sophus::SE3d Twc = keyframe->getPose().inverse();
   Eigen::Vector3f position = Twc.translation().cast<float>();
 
-  // Find nearest cluster
+  // Cache the position
+  keyframe_positions_cache_[keyframe->fid_] = position;
+
+  // Find nearest cluster using KD-tree
   int nearest_cluster = findNearestCluster(position);
 
   // Make sure the cluster index is valid
@@ -367,10 +412,8 @@ std::shared_ptr<GaussianKeyframe> KeyframeQueue::getNextKeyframe() {
 
   // Update usage statistics
   auto viewpoint_fid = next_kf->fid_;
-  if (kfs_used_times_.find(viewpoint_fid) == kfs_used_times_.end())
-    kfs_used_times_[viewpoint_fid] = 1;
-  else
-    ++kfs_used_times_[viewpoint_fid];
+  kfs_used_times_[viewpoint_fid]++;  // Simplified, unordered_map handles
+                                     // non-existent keys
 
   // Decrease remaining times of use
   --(next_kf->remaining_times_of_use_);
@@ -403,6 +446,8 @@ KeyframeQueue::peekUpcomingKeyframes(size_t count) {
   }
 
   std::vector<std::shared_ptr<GaussianKeyframe>> upcoming;
+  upcoming.reserve(std::min(count, keyframe_queue_.size()));  // Pre-allocate
+
   std::queue<std::shared_ptr<GaussianKeyframe>> temp_queue = keyframe_queue_;
   size_t look_ahead = std::min(count, temp_queue.size());
 
@@ -446,4 +491,218 @@ void KeyframeQueue::forceNextCluster() {
 
   // Pre-warm cache for the new cluster
   prewarmClusterCache();
+}
+
+void KeyframeQueue::visualizeClusterCenters(const std::string& output_file,
+                                            int width,
+                                            int height) {
+  if (cluster_centers_.empty()) {
+    std::cerr << "No cluster centers to visualize." << std::endl;
+    return;
+  }
+
+  // Define projection plane (we'll use XZ by default, but you can change this)
+  // Options: XY (0,1), XZ (0,2), YZ (1,2)
+  int dim1 = 0;  // X
+  int dim2 = 2;  // Z
+
+  // Determine bounds of the data for scaling
+  float min_x = std::numeric_limits<float>::max();
+  float max_x = std::numeric_limits<float>::lowest();
+  float min_y = std::numeric_limits<float>::max();
+  float max_y = std::numeric_limits<float>::lowest();
+
+  // Check cluster centers
+  for (const auto& center : cluster_centers_) {
+    min_x = std::min(min_x, center(dim1));
+    max_x = std::max(max_x, center(dim1));
+    min_y = std::min(min_y, center(dim2));
+    max_y = std::max(max_y, center(dim2));
+  }
+
+  // Check keyframe positions
+  for (const auto& [_, pos] : keyframe_positions_cache_) {
+    min_x = std::min(min_x, pos(dim1));
+    max_x = std::max(max_x, pos(dim1));
+    min_y = std::min(min_y, pos(dim2));
+    max_y = std::max(max_y, pos(dim2));
+  }
+
+  // Add some padding
+  float padding = 0.05f;
+  float range_x = max_x - min_x;
+  float range_y = max_y - min_y;
+  min_x -= range_x * padding;
+  max_x += range_x * padding;
+  min_y -= range_y * padding;
+  max_y += range_y * padding;
+
+  // Scale factors to fit within SVG dimensions
+  auto scale_x = [&](float x) -> float {
+    return width * 0.9f * (x - min_x) / (max_x - min_x) + width * 0.05f;
+  };
+
+  auto scale_y = [&](float y) -> float {
+    return height * 0.9f * (1.0f - (y - min_y) / (max_y - min_y)) +
+           height * 0.05f;
+  };
+
+  // Generate random colors for clusters
+  std::vector<std::string> colors;
+  std::mt19937 rng(42);  // Fixed seed for reproducibility
+  std::uniform_int_distribution<int> dist(0, 255);
+
+  for (size_t i = 0; i < cluster_centers_.size(); i++) {
+    std::stringstream ss;
+    ss << "#";
+
+    // Generate a color that's not too light (for visibility)
+    int r = dist(rng) % 200;
+    int g = dist(rng) % 200;
+    int b = dist(rng) % 200;
+
+    ss << std::hex << std::setfill('0') << std::setw(2) << r;
+    ss << std::hex << std::setfill('0') << std::setw(2) << g;
+    ss << std::hex << std::setfill('0') << std::setw(2) << b;
+
+    colors.push_back(ss.str());
+  }
+
+  // Create SVG file
+  std::ofstream svg_file(output_file);
+  if (!svg_file.is_open()) {
+    std::cerr << "Failed to open output file: " << output_file << std::endl;
+    return;
+  }
+
+  // Write SVG header
+  svg_file << "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>"
+           << std::endl;
+  svg_file << "<svg width=\"" << width << "\" height=\"" << height
+           << "\" xmlns=\"http://www.w3.org/2000/svg\">" << std::endl;
+
+  // Add title
+  svg_file << "  <title>Cluster Centers Visualization</title>" << std::endl;
+
+  // Add background
+  svg_file << "  <rect width=\"100%\" height=\"100%\" fill=\"#f0f0f0\"/>"
+           << std::endl;
+
+  // Draw grid lines (optional)
+  svg_file << "  <!-- Grid lines -->" << std::endl;
+  int grid_steps = 10;
+  svg_file << "  <g stroke=\"#cccccc\" stroke-width=\"0.5\">" << std::endl;
+
+  for (int i = 1; i < grid_steps; i++) {
+    float pos_x = width * i / static_cast<float>(grid_steps);
+    float pos_y = height * i / static_cast<float>(grid_steps);
+
+    // Vertical line
+    svg_file << "    <line x1=\"" << pos_x << "\" y1=\"0\" x2=\"" << pos_x
+             << "\" y2=\"" << height << "\"/>" << std::endl;
+
+    // Horizontal line
+    svg_file << "    <line x1=\"0\" y1=\"" << pos_y << "\" x2=\"" << width
+             << "\" y2=\"" << pos_y << "\"/>" << std::endl;
+  }
+  svg_file << "  </g>" << std::endl;
+
+  // Draw axes labels
+  svg_file << "  <!-- Axes labels -->" << std::endl;
+  svg_file
+      << "  <text x=\"" << width / 2 << "\" y=\"" << height - 10
+      << "\" text-anchor=\"middle\" font-family=\"Arial\" font-size=\"14\">"
+      << (dim1 == 0 ? "X" : (dim1 == 1 ? "Y" : "Z")) << " Axis</text>"
+      << std::endl;
+  svg_file
+      << "  <text x=\"10\" y=\"" << height / 2
+      << "\" text-anchor=\"middle\" font-family=\"Arial\" font-size=\"14\" "
+      << "transform=\"rotate(270 10," << height / 2 << ")\">"
+      << (dim2 == 0 ? "X" : (dim2 == 1 ? "Y" : "Z")) << " Axis</text>"
+      << std::endl;
+
+  // Create keyframe to cluster CENTER mapping based on nearest distance
+  // This is the key fix - we color by actual cluster center, not by cluster
+  // index in the shuffled array
+  std::unordered_map<std::size_t, size_t> keyframe_to_cluster_center;
+
+  // For each keyframe, find the nearest cluster center
+  for (const auto& [kf_id, pos] : keyframe_positions_cache_) {
+    int nearest_center_idx = findNearestCluster(pos);
+    if (nearest_center_idx >= 0 &&
+        nearest_center_idx < cluster_centers_.size()) {
+      keyframe_to_cluster_center[kf_id] = nearest_center_idx;
+    }
+  }
+
+  // Draw keyframes as small dots
+  svg_file << "  <!-- Keyframes -->" << std::endl;
+  svg_file << "  <g>" << std::endl;
+
+  // Draw each keyframe with its cluster center's color
+  for (const auto& [kf_id, pos] : keyframe_positions_cache_) {
+    float x = scale_x(pos(dim1));
+    float y = scale_y(pos(dim2));
+
+    // Get cluster center index for this keyframe
+    std::string color = "#aaaaaa";  // Default gray color
+    auto it = keyframe_to_cluster_center.find(kf_id);
+    if (it != keyframe_to_cluster_center.end() && it->second < colors.size()) {
+      color = colors[it->second];
+    }
+
+    svg_file << "    <circle cx=\"" << x << "\" cy=\"" << y
+             << "\" r=\"2\" fill=\"" << color << "\" />" << std::endl;
+  }
+  svg_file << "  </g>" << std::endl;
+
+  // Draw cluster centers as larger circles
+  svg_file << "  <!-- Cluster Centers -->" << std::endl;
+  for (size_t i = 0; i < cluster_centers_.size(); i++) {
+    const auto& center = cluster_centers_[i];
+    float x = scale_x(center(dim1));
+    float y = scale_y(center(dim2));
+
+    // Draw the cluster center
+    svg_file << "  <g>" << std::endl;
+    svg_file << "    <circle cx=\"" << x << "\" cy=\"" << y
+             << "\" r=\"8\" fill=\"" << colors[i]
+             << "\" stroke=\"black\" stroke-width=\"1\"/>" << std::endl;
+
+    // Add label
+    svg_file
+        << "    <text x=\"" << x << "\" y=\"" << y - 10
+        << "\" text-anchor=\"middle\" font-family=\"Arial\" font-size=\"12\">"
+        << "C" << i << "</text>" << std::endl;
+    svg_file << "  </g>" << std::endl;
+  }
+
+  // Add legend
+  svg_file << "  <!-- Legend -->" << std::endl;
+  svg_file << "  <g transform=\"translate(" << (width - 120) << ", 20)\">"
+           << std::endl;
+  svg_file << "    <rect x=\"0\" y=\"0\" width=\"110\" height=\""
+           << (30 + 20 * cluster_centers_.size())
+           << "\" fill=\"white\" stroke=\"black\" stroke-width=\"1\"/>"
+           << std::endl;
+  svg_file << "    <text x=\"5\" y=\"20\" font-family=\"Arial\" "
+              "font-size=\"12\" font-weight=\"bold\">Clusters</text>"
+           << std::endl;
+
+  for (size_t i = 0; i < cluster_centers_.size(); i++) {
+    float y_pos = 40 + i * 20;
+    svg_file << "    <circle cx=\"15\" cy=\"" << y_pos - 5
+             << "\" r=\"5\" fill=\"" << colors[i] << "\"/>" << std::endl;
+    svg_file << "    <text x=\"30\" y=\"" << y_pos
+             << "\" font-family=\"Arial\" font-size=\"12\">Cluster " << i
+             << " (" << clusters_[i].size() << ")</text>" << std::endl;
+  }
+  svg_file << "  </g>" << std::endl;
+
+  // End SVG
+  svg_file << "</svg>" << std::endl;
+  svg_file.close();
+
+  std::cout << "Generated cluster visualization at: " << output_file
+            << std::endl;
 }
