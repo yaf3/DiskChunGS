@@ -101,7 +101,7 @@ class ChunkManager {
                float chunk_size = 50.0f,
                float overlap_margin = 0.0f,
                int max_chunks = 50,
-               int num_io_threads = 8);
+               int num_io_threads = 32);
 
   ~ChunkManager();
   // Shutdown the manager (stops background threads)
@@ -129,7 +129,11 @@ class ChunkManager {
       const std::vector<std::shared_ptr<Chunk>>& chunks);
   void releaseAllChunksFromOptimization();
 
+  void initializeMetaData(ChunkCoord& coord);
+
  private:
+  std::atomic<bool> is_shutting_down_{false};
+
   // Thread pool and task queue
   std::vector<std::thread> io_threads_;
   std::atomic<bool> shutdown_threads_{false};
@@ -144,7 +148,6 @@ class ChunkManager {
 
   // Enhanced tracking with thread-safety
   std::unordered_map<ChunkCoord, ChunkMetadata, ChunkCoordHash> chunk_metadata_;
-  std::unordered_set<ChunkCoord, ChunkCoordHash> optimizing_chunks_;
   std::mutex metadata_mutex_;
   std::mutex active_chunks_mutex_;  // For active_chunks_ access
   std::mutex chunk_exists_cache_mutex_;
@@ -163,7 +166,6 @@ class ChunkManager {
   bool processDeleteOperation(const ChunkCoord& coord);
 
   // State management helpers
-  ChunkState getChunkState(const ChunkCoord& coord);
   bool transitionChunkState(const ChunkCoord& coord,
                             ChunkState expected,
                             ChunkState new_state);
@@ -174,11 +176,8 @@ class ChunkManager {
                                      ChunkState target_state);
 
  public:
+  ChunkState getChunkState(const ChunkCoord& coord);
   // Main interface methods
-  void evictUnusedChunks(int keep_count = -1);
-
-  std::vector<ChunkCoord> findChunksToEvict(int count);
-
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> groupPointsByChunk(
       const torch::Tensor& positions);
 
@@ -225,7 +224,7 @@ class ChunkManager {
     return active_chunks_;
   }
 
-  bool cullSparseChunks(int min_points_threshold);
+  bool cullSparseChunks(int min_points_threshold, int min_chunk_iterations);
 
   void updateChunkExistenceCache(const std::vector<ChunkCoord>& coords,
                                  bool exists);
@@ -242,16 +241,17 @@ class ChunkManager {
     return 0;
   }
 
-  // Stats for debugging/monitoring
-  struct Stats {
+  // ChunkStats for debugging/monitoring
+  struct ChunkStats {
     int active_chunks;
     int disk_loads;
     int disk_saves;
     int cache_hits;
     int prefetched;
+    int existing_chunks;
   };
 
-  Stats getStats() const;
+  ChunkStats getStats() const;
 
   // Access to model parameters
   const GaussianModelParams& getModelParams() const { return model_params_; }
@@ -282,12 +282,12 @@ class ChunkManager {
   float chunk_size_;
   float overlap_margin_;
   int max_chunks_in_memory_;
-  std::chrono::seconds min_retention_time_{
-      5};  // Minimum time to keep a chunk after loading
+  std::chrono::milliseconds min_retention_time_{
+      1000};  // Minimum time to keep a chunk after loading
 
   // Statistics
   mutable std::mutex stats_mutex_;
-  Stats stats_{0, 0, 0, 0, 0};
+  ChunkStats stats_{0, 0, 0, 0, 0, 0};
 
   // Private helper methods
   std::filesystem::path getChunkFilename(const ChunkCoord& coord);
@@ -331,4 +331,18 @@ class ChunkManager {
     std::lock_guard<std::mutex> lock(cache_mutex_);
     visibility_cache_.clear();
   }
+
+ private:
+  std::thread lru_eviction_thread_;
+  std::atomic<bool> stop_lru_thread_{false};
+  std::mutex lru_mutex_;
+  std::condition_variable lru_cv_;
+  std::chrono::milliseconds lru_check_interval_{200};
+
+  void lruEvictionThreadFunction();
+  void updateLastUsedTime(const ChunkCoord& coord);
+  void updateLastUsedTimeForChunks(const std::vector<ChunkCoord>& coords);
+
+ public:
+  void triggerLruCheck();
 };

@@ -158,6 +158,7 @@ class GaussianMapper {
   bool isKeepingTraining();
   bool isdoingGausPyramidTraining();
   bool isdoingInactiveGeoDensify();
+  bool isdoingStereoDensify();
 
   void setPositionLearningRateInit(const float lr);
   void setFeatureLearningRate(const float lr);
@@ -281,7 +282,7 @@ class GaussianMapper {
                                 bool look_around = true);
 
   void saveChunkManifest(std::filesystem::path scene_dir);
-  std::vector<ChunkCoord> loadChunkManifest(std::filesystem::path scene_dir);
+  void loadChunkManifest(std::filesystem::path scene_dir);
   void loadCamerasFromJson(std::filesystem::path json_path);
 
   void saveTotalGaussians(std::string name_suffix);
@@ -364,6 +365,7 @@ class GaussianMapper {
   SystemSensorType sensor_type_;
 
   float monocular_inactive_geo_densify_max_pixel_dist_ = 20.0;
+  float stereo_densify_subsample_ratio_ = 0.1;
   float stereo_baseline_length_ = 0.0f;
   int stereo_min_disparity_ = 0;
   int stereo_num_disparity_ = 128;
@@ -373,6 +375,7 @@ class GaussianMapper {
   float RGBD_max_depth_ = 100.0f;
 
   bool inactive_geo_densify_ = true;
+  bool stereo_densify_ = false;
   int depth_cached_ = 0;
   int max_depth_cached_ = 1;
   torch::Tensor depth_cache_points_;

@@ -130,7 +130,9 @@ inline torch::Tensor eval_sh(int deg, torch::Tensor& sh, torch::Tensor& dirs) {
   return result;
 }
 
-inline torch::Tensor RGB2SH(torch::Tensor& rgb) { return (rgb - 0.5f) / C0; }
+inline torch::Tensor RGB2SH(const torch::Tensor& rgb) {
+  return (rgb - 0.5f) / C0;
+}
 
 inline torch::Tensor SH2RGB(torch::Tensor& sh) { return sh * C0 + 0.5f; }
 

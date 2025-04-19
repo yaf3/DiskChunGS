@@ -547,6 +547,10 @@ void ImGuiViewer::run() {
 
         ImGui::Text("Iteration: %d", current_iteration);
         ImGui::Text("Speed: %.1f iter/s", iterations_per_second_);
+        ImGui::Text("Active Chunks: %d",
+                    pGausMapper_->chunk_manager_->getStats().active_chunks);
+        ImGui::Text("Total Chunks: %d",
+                    pGausMapper_->chunk_manager_->getStats().existing_chunks);
 
         ImGui::Checkbox("Gaussian-pyramid-based training",
                         &do_gaus_pyramid_training_);

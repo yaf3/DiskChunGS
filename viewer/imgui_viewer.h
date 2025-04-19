@@ -125,7 +125,7 @@ class ImGuiViewer {
   bool tracking_vision_ = false;
   bool show_keyframes_ = false;
   bool show_sparse_mappoints_ = false;
-  bool show_main_rendered_ = true;
+  bool show_main_rendered_ = false;
   bool show_current_rendered_ = false;
 
   float position_lr_init_;

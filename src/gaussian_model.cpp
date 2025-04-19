@@ -105,8 +105,8 @@ void GaussianModel::setShDegree(const int sh) {
       (sh > this->max_sh_degree_ ? this->max_sh_degree_ : sh);
 }
 
-void GaussianModel::createFromPcd(torch::Tensor& fused_point_cloud,
-                                  torch::Tensor& color,
+void GaussianModel::createFromPcd(const torch::Tensor& fused_point_cloud,
+                                  const torch::Tensor& color,
                                   const float spatial_lr_scale) {
   this->spatial_lr_scale_ = spatial_lr_scale;
   int num_points = static_cast<int>(fused_point_cloud.sizes()[0]);
@@ -171,8 +171,8 @@ void GaussianModel::createFromPcd(torch::Tensor& fused_point_cloud,
       {this->getXYZ().size(0)}, torch::TensorOptions().device(device_type_));
 }
 
-void GaussianModel::increasePcd(torch::Tensor& new_point_cloud,
-                                torch::Tensor& new_colors,
+void GaussianModel::increasePcd(const torch::Tensor& new_point_cloud,
+                                const torch::Tensor& new_colors,
                                 const int iteration) {
   // auto time1 = std::chrono::steady_clock::now();
   auto num_new_points = new_point_cloud.size(0);
@@ -701,8 +701,9 @@ void GaussianModel::densifyAndPrune(float max_grad,
   c10::cuda::CUDACachingAllocator::emptyCache();  // torch.cuda.empty_cache()
 }
 
-void GaussianModel::addDensificationStats(torch::Tensor& viewspace_point_tensor,
-                                          torch::Tensor& update_filter) {
+void GaussianModel::addDensificationStats(
+    const torch::Tensor& viewspace_point_tensor,
+    const torch::Tensor& update_filter) {
   this->xyz_gradient_accum_.index_put_(
       {update_filter},
       torch::frobenius_norm(viewspace_point_tensor.grad().index(

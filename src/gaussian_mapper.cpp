@@ -280,6 +280,8 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
   monocular_inactive_geo_densify_max_pixel_dist_ =
       settings_file["Monocular.inactive_geo_densify_max_pixel_dist"]
           .operator float();
+  stereo_densify_subsample_ratio_ =
+      settings_file["Stereo.stereo_densify_subsample_ratio"].operator float();
   stereo_min_disparity_ = settings_file["Stereo.min_disparity"].operator int();
   stereo_num_disparity_ = settings_file["Stereo.num_disparity"].operator int();
   RGBD_min_depth_ = settings_file["RGBD.min_depth"].operator float();
@@ -287,6 +289,8 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
 
   inactive_geo_densify_ =
       (settings_file["Mapper.inactive_geo_densify"].operator int()) != 0;
+  stereo_densify_ =
+      (settings_file["Mapper.stereo_densify"].operator int()) != 0;
   max_depth_cached_ = settings_file["Mapper.depth_cache"].operator int();
   min_num_initial_map_kfs_ = static_cast<unsigned long>(
       settings_file["Mapper.min_num_initial_map_kfs"].operator int());
@@ -728,8 +732,10 @@ void GaussianMapper::trainForOneIteration() {
   chunk_manager_->setCurrentIteration(getIteration());
 
   auto timer_cullSparseChunks = ProfilingUtils::Timer("cullSparseChunks");
-  int min_points_chunk_threshold = 10;
-  chunk_manager_->cullSparseChunks(min_points_chunk_threshold);
+  int min_points_chunk_threshold = 1000;
+  int min_chunk_iterations = 2000;
+  chunk_manager_->cullSparseChunks(min_points_chunk_threshold,
+                                   min_chunk_iterations);
   timer_cullSparseChunks.stop();
 
   auto iter_start_timing = std::chrono::steady_clock::now();
@@ -788,13 +794,16 @@ void GaussianMapper::trainForOneIteration() {
       getUpcomingKeyframes(keyframe_lookahead);
 
   // std::cout << "Keyframes lookahead: ";
-  auto timer_preload = ProfilingUtils::Timer("preloadUpcomingKeyframes");
-  for (auto& keyframe : upcoming_keyframes) {
-    chunk_manager_->preloadVisibleChunks(keyframe, true);
-    // std::cout << keyframe->fid_ << " ";
-  }
+  // auto timer_preload = ProfilingUtils::Timer("preloadUpcomingKeyframes");
+  // Only load keyframe after next (so basically get ready for the next
+  // iteration)
+  // chunk_manager_->preloadVisibleChunks(upcoming_keyframes[1], true);
+  // for (auto& keyframe : upcoming_keyframes) {
+  //   chunk_manager_->preloadVisibleChunks(keyframe, true);
+  //   // std::cout << keyframe->fid_ << " ";
+  // }
   // std::cout << std::endl;
-  timer_preload.stop();
+  // timer_preload.stop();
 
   auto timer_loadVisibleChunks = ProfilingUtils::Timer("loadVisibleChunks");
   std::vector<std::shared_ptr<Chunk>> visible_chunks =
@@ -1036,6 +1045,7 @@ bool GaussianMapper::isStopped() {
 void GaussianMapper::signalStop(const bool going_to_stop) {
   std::unique_lock<std::mutex> lock_status(this->mutex_status_);
   this->stopped_ = going_to_stop;
+  std::cout << "Signal stop received" << std::endl;
   if (chunk_manager_) {
     chunk_manager_->shutdown();
   }
@@ -1252,6 +1262,7 @@ void GaussianMapper::combineMappingOperations() {
                                          loop_closure_increased_times_of_use_);
 
               chunk_manager_->releaseChunksFromOptimization(visible_chunks);
+              chunk_manager_->triggerLruCheck();
             }
 
             // Update keyframe pose
@@ -1440,7 +1451,7 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   pkf->kps_point_local_ = std::move(std::get<7>(kf));
   if (isdoingInactiveGeoDensify()) increasePcdByKeyframeInactiveGeoDensify(pkf);
 
-  // increasePcdByStereoReprojection(pkf);
+  if (isdoingStereoDensify()) increasePcdByStereoReprojection(pkf);
 
   if (appearance_embedding_) pkf->initAppearanceParams(device_type_);
 
@@ -1845,9 +1856,9 @@ void GaussianMapper::increasePcdByStereoReprojection(
 
       // Further random subsampling if needed
       // Keep only 25% of the valid points randomly
-      const float keep_probability = 0.5f;
       torch::Tensor random_mask =
-          torch::rand_like(valid_points.to(torch::kFloat)) < keep_probability;
+          torch::rand_like(valid_points.to(torch::kFloat)) <
+          stereo_densify_subsample_ratio_;
       valid_points = torch::logical_and(valid_points, random_mask);
 
       // Keep only valid points
@@ -1874,7 +1885,7 @@ void GaussianMapper::increasePcdByStereoReprojection(
       ++depth_cached_;
       depth_cache_keyframes_[pkf->fid_] = pkf;
 
-      // Add to g{aussian model when cache is full
+      // Add to gaussian model when cache is full
       if (depth_cached_ >= max_depth_cached_) {
         depth_cached_ = 0;
         std::unique_lock<std::mutex> lock_render(mutex_render_);
@@ -2349,7 +2360,10 @@ bool GaussianMapper::isdoingInactiveGeoDensify() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return inactive_geo_densify_;
 }
-
+bool GaussianMapper::isdoingStereoDensify() {
+  std::unique_lock<std::mutex> lock(mutex_settings_);
+  return stereo_densify_;
+}
 void GaussianMapper::setPositionLearningRateInit(const float lr) {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   opt_params_.position_lr_init_ = lr;
@@ -3039,6 +3053,7 @@ void GaussianMapper::render3DExplorationVideo(const std::string& output_path,
 }
 
 bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
+  std::cout << "saveScene called" << std::endl;
   // Create directory if it doesn't exist
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(scene_dir);
 
@@ -3060,14 +3075,19 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
   }
 
   // Save all active chunks
+  chunk_manager_->releaseAllChunksFromOptimization();
   auto active_chunks = chunk_manager_->getActiveChunks();
   bool all_saved = true;
 
+  std::cout << active_chunks.size() << " active chunks to save" << std::endl;
+
   for (const auto& [coord, chunk] : active_chunks) {
-    if (!chunk_manager_->saveChunkSync(coord)) {
-      std::cerr << "Failed to save chunk: " << coord.x << "," << coord.y << ","
-                << coord.z << std::endl;
-      all_saved = false;
+    if (chunk_manager_->getChunkState(coord) == ChunkState::ACTIVE) {
+      if (!chunk_manager_->saveChunkSync(coord)) {
+        std::cerr << "Failed to save chunk: " << coord.x << "," << coord.y
+                  << "," << coord.z << std::endl;
+        all_saved = false;
+      }
     }
   }
 
@@ -3092,10 +3112,7 @@ bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
   loadCamerasFromJson(scene_dir / "cameras.json");
 
   // Load chunk information from the manifest
-  std::vector<ChunkCoord> chunk_coords = loadChunkManifest(scene_dir);
-
-  // Update the chunk manager's cache
-  chunk_manager_->updateChunkExistenceCache(chunk_coords, true);
+  loadChunkManifest(scene_dir);
 
   // // Load a few chunks for initial visualization if desired
   // if (load_initial_chunks_ && !chunk_coords.empty()) {
@@ -3182,8 +3199,7 @@ bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
   this->initial_mapped_ = true;
   increaseIteration();
 
-  std::cout << "Scene loaded from " << scene_dir << " with "
-            << chunk_coords.size() << " chunks" << std::endl;
+  std::cout << "Scene loaded from " << scene_dir << std::endl;
   return true;
 }
 
@@ -3206,14 +3222,12 @@ void GaussianMapper::saveChunkManifest(std::filesystem::path scene_dir) {
     chunk_entry["y"] = Json::Value::Int64(chunk_coords[i].y);
     chunk_entry["z"] = Json::Value::Int64(chunk_coords[i].z);
 
-    bool had_to_load = false;
-    auto active_chunks = chunk_manager_->getActiveChunks();
-    auto it = active_chunks.find(chunk_coords[i]);
-    if (it != active_chunks.end()) {
-      had_to_load = true;
-      bool success = chunk_manager_->loadChunkSync(chunk_coords[i]);
-      if (!success) continue;
-    }
+    std::vector<ChunkCoord> all_chunks =
+        chunk_manager_->getExistingChunkCoords();
+    std::cout << all_chunks.size() << " chunks during saveChunkManifest"
+              << std::endl;
+    bool success = chunk_manager_->loadChunkSync(chunk_coords[i], true, false);
+    if (!success) continue;
 
     auto chunk = chunk_manager_->getChunkAt(chunk_coords[i]);
     if (!chunk || !chunk->getGaussians()) continue;
@@ -3225,10 +3239,8 @@ void GaussianMapper::saveChunkManifest(std::filesystem::path scene_dir) {
     chunk_entry["active_sh_degree"] =
         Json::Value::Int64(chunk->getGaussians()->active_sh_degree_);
 
-    if (had_to_load) {
-      chunk_manager_->saveChunkAsync(chunk_coords[i]);
-      c10::cuda::CUDACachingAllocator::emptyCache();
-    }
+    chunk_manager_->releaseChunksFromOptimization({chunk_coords[i]});
+    chunk_manager_->saveChunkSync(chunk_coords[i]);
 
     json_root[static_cast<int>(i)] = chunk_entry;
   }
@@ -3245,15 +3257,13 @@ void GaussianMapper::saveChunkManifest(std::filesystem::path scene_dir) {
 }
 
 // Implementation for loadChunkManifest
-std::vector<ChunkCoord> GaussianMapper::loadChunkManifest(
-    std::filesystem::path scene_dir) {
+void GaussianMapper::loadChunkManifest(std::filesystem::path scene_dir) {
   std::filesystem::path manifest_path = scene_dir / "chunk_manifest.json";
-  std::vector<ChunkCoord> result;
 
   if (!std::filesystem::exists(manifest_path)) {
     std::cerr << "Warning: Chunk manifest not found at " << manifest_path
               << std::endl;
-    return result;
+    return;
   }
 
   // Parse the JSON file
@@ -3272,10 +3282,10 @@ std::vector<ChunkCoord> GaussianMapper::loadChunkManifest(
     int64_t y = chunk_entry["y"].asInt64();
     int64_t z = chunk_entry["z"].asInt64();
 
-    result.push_back(ChunkCoord{x, y, z});
+    ChunkCoord coord{x, y, z};
+    chunk_manager_->updateChunkExistenceCache({coord}, true);
+    chunk_manager_->initializeMetaData(coord);
   }
-
-  return result;
 }
 
 void GaussianMapper::loadCamerasFromJson(std::filesystem::path json_path) {
@@ -3532,6 +3542,7 @@ void GaussianMapper::saveTotalGaussians(std::string name_suffix) {
 void GaussianMapper::signalStopEvalMode() {
   std::unique_lock<std::mutex> lock_status(this->mutex_status_);
   this->stopped_ = true;
+  std::cout << "signalStopEvalMode called" << std::endl;
   if (chunk_manager_) {
     chunk_manager_->shutdownWithoutSaving();
   }

@@ -83,12 +83,12 @@ class GaussianModel {
   void incrementLocalIteration(int inc = 1) { local_iteration_ += inc; }
   void setLocalIteration(int iter) { local_iteration_ = iter; }
 
-  void createFromPcd(torch::Tensor& fused_point_cloud,
-                     torch::Tensor& color,
+  void createFromPcd(const torch::Tensor& fused_point_cloud,
+                     const torch::Tensor& color,
                      const float spatial_lr_scale);
 
-  void increasePcd(torch::Tensor& new_point_cloud,
-                   torch::Tensor& new_colors,
+  void increasePcd(const torch::Tensor& new_point_cloud,
+                   const torch::Tensor& new_colors,
                    const int iteration);
 
   void applyScaledTransformation(
@@ -143,8 +143,8 @@ class GaussianModel {
                        float extent,
                        int max_screen_size);
 
-  void addDensificationStats(torch::Tensor& viewspace_point_tensor,
-                             torch::Tensor& update_filter);
+  void addDensificationStats(const torch::Tensor& viewspace_point_tensor,
+                             const torch::Tensor& update_filter);
 
   // void increasePointsIterationsOfExistence(const int i = 1);
 
