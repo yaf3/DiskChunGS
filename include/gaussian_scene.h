@@ -47,7 +47,7 @@ class GaussianScene {
   void addCamera(Camera& camera);
   Camera& getCamera(camera_id_t cameraId);
 
-  void addKeyframe(std::shared_ptr<GaussianKeyframe> new_kf, bool* shuffled);
+  void addKeyframe(std::shared_ptr<GaussianKeyframe> new_kf);
   std::shared_ptr<GaussianKeyframe> getKeyframe(std::size_t fid);
   std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>& keyframes();
   std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> getAllKeyframes();

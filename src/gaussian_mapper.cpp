@@ -98,8 +98,8 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   // Initialize scene
   scene_ = std::make_shared<GaussianScene>(model_params_);
 
-  keyframe_queue_ =
-      std::make_shared<KeyframeQueue>(scene_, kfs_used_times_, kfid_shuffled_);
+  keyframe_queue_ = std::make_shared<KeyframeQueue>(scene_, 10);
+  keyframe_queue_->setChunkManager(chunk_manager_);
 
   // Initialize chunk manager
   initializeChunkManagement();
@@ -481,7 +481,8 @@ void GaussianMapper::run() {
                 "[GaussianMapper::run]KeyFrame Camera not found!");
           }
           new_kf->computeTransformTensors();
-          scene_->addKeyframe(new_kf, &kfid_shuffled_);
+          scene_->addKeyframe(new_kf);
+          keyframe_queue_->notifyNewKeyframeAdded(new_kf);
 
           increaseKeyframeTimesOfUse(new_kf, newKeyframeTimesOfUse());
 
@@ -1439,7 +1440,8 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   }
   // Add the new keyframe to the scene
   pkf->computeTransformTensors();
-  scene_->addKeyframe(pkf, &kfid_shuffled_);
+  scene_->addKeyframe(pkf);
+  keyframe_queue_->notifyNewKeyframeAdded(pkf);
 
   // Give new keyframes times of use and add it to the training sliding window
   increaseKeyframeTimesOfUse(pkf, newKeyframeTimesOfUse());
@@ -3416,7 +3418,8 @@ void GaussianMapper::loadCamerasFromJson(std::filesystem::path json_path) {
     pkf->computeTransformTensors();
 
     // Add keyframe to scene
-    scene_->addKeyframe(pkf, &kfid_shuffled_);
+    scene_->addKeyframe(pkf);
+    keyframe_queue_->notifyNewKeyframeAdded(pkf);
 
     break;
   }
@@ -3587,7 +3590,7 @@ std::vector<std::shared_ptr<GaussianKeyframe>>
 GaussianMapper::predictUpcomingKeyframes(int count) {
   std::vector<std::shared_ptr<GaussianKeyframe>> upcoming_keyframes;
 
-  if (!kfid_shuffled_ || scene_->keyframes().empty()) {
+  if (scene_->keyframes().empty()) {
     return upcoming_keyframes;
   }
 

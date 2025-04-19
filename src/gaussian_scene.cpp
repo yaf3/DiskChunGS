@@ -39,11 +39,9 @@ Camera& GaussianScene::getCamera(camera_id_t cameraId) {
   return this->cameras_[cameraId];
 }
 
-void GaussianScene::addKeyframe(std::shared_ptr<GaussianKeyframe> new_kf,
-                                bool* shuffled) {
+void GaussianScene::addKeyframe(std::shared_ptr<GaussianKeyframe> new_kf) {
   std::unique_lock<std::mutex> lock_kfs(this->mutex_kfs_);
   this->keyframes_.emplace(new_kf->fid_, new_kf);
-  *shuffled = false;
 }
 
 std::shared_ptr<GaussianKeyframe> GaussianScene::getKeyframe(std::size_t fid) {

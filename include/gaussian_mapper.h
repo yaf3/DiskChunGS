@@ -329,7 +329,6 @@ class GaussianMapper {
   float z_far_ = 100.0f;
 
   // Data
-  bool kfid_shuffled_ = false;
   std::map<camera_id_t, torch::Tensor> undistort_mask_;
   std::map<camera_id_t, torch::Tensor> viewer_main_undistort_mask_;
   std::map<camera_id_t, torch::Tensor> viewer_sub_undistort_mask_;
