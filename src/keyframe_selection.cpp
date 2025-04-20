@@ -1,6 +1,8 @@
 #include "include/keyframe_selection.h"
 
 #include <algorithm>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <numeric>
@@ -19,10 +21,8 @@ KeyframeQueue::KeyframeQueue(std::shared_ptr<GaussianScene> scene,
       current_cluster_(0),
       cluster_iterations_(0),
       iterations_per_cluster_(200),
-      keyframes_since_last_full_clustering_(0),
-      cluster_centers_adapter_(nullptr),
-      cluster_kdtree_(nullptr) {
-  // KD-tree will be initialized when we have cluster centers
+      keyframes_since_last_full_clustering_(0) {
+  // No initialization needed for visibility-based clustering yet
 }
 
 void KeyframeQueue::setChunkManager(
@@ -36,8 +36,7 @@ void KeyframeQueue::generateKfidRandomShuffle() {
 
   // Create vector of keyframe IDs
   kfid_shuffle_.clear();
-  kfid_shuffle_.reserve(
-      scene_->keyframes().size());  // Pre-allocate for better performance
+  kfid_shuffle_.reserve(scene_->keyframes().size());
 
   for (const auto& [fid, _] : scene_->keyframes()) {
     kfid_shuffle_.push_back(fid);
@@ -51,126 +50,184 @@ void KeyframeQueue::generateKfidRandomShuffle() {
             << " keyframes" << std::endl;
 }
 
-// New spatial clustering method with KD-tree optimization
-void KeyframeQueue::generateSpatiallyCoherentBatches() {
-  auto timer = ProfilingUtils::Timer("generateSpatiallyCoherentBatches");
+// Get or compute visible chunks for a keyframe
+std::vector<ChunkCoord> KeyframeQueue::getOrComputeVisibleChunks(
+    std::shared_ptr<GaussianKeyframe> keyframe) {
+  if (!keyframe || !keyframe->set_pose_ || !chunk_manager_) {
+    return {};
+  }
+
+  std::size_t kf_id = keyframe->fid_;
+  Sophus::SE3d current_pose = keyframe->getPose();
+  auto now = std::chrono::steady_clock::now();
+
+  // Check if we have valid cached data
+  auto it = keyframe_visibility_cache_.find(kf_id);
+  if (it != keyframe_visibility_cache_.end()) {
+    auto& cache_entry = it->second;
+
+    // Check if cache is still valid (pose hasn't changed and not too old)
+    if ((now - cache_entry.timestamp) < VISIBILITY_CACHE_EXPIRY &&
+        (current_pose.translation() - cache_entry.pose.translation()).norm() <
+            1e-3 &&
+        current_pose.unit_quaternion().angularDistance(
+            cache_entry.pose.unit_quaternion()) < 1e-3) {
+      return cache_entry.visible_chunks;
+    }
+  }
+
+  // Compute visibility
+  auto visible_chunks = chunk_manager_->frustumCullChunks(keyframe);
+
+  // Update cache
+  KeyframeVisibilityData cache_entry;
+  cache_entry.visible_chunks = visible_chunks;
+  cache_entry.pose = current_pose;
+  cache_entry.timestamp = now;
+  keyframe_visibility_cache_[kf_id] = cache_entry;
+
+  return visible_chunks;
+}
+
+// Compute similarity between keyframes based on chunk visibility overlap
+float KeyframeQueue::computeChunkOverlapSimilarity(std::size_t kf1_id,
+                                                   std::size_t kf2_id) {
+  auto it1 = scene_->keyframes().find(kf1_id);
+  auto it2 = scene_->keyframes().find(kf2_id);
+
+  if (it1 == scene_->keyframes().end() || it2 == scene_->keyframes().end() ||
+      !it1->second || !it2->second) {
+    return 0.0f;
+  }
+
+  // Get visible chunks for both keyframes
+  std::vector<ChunkCoord> chunks1 = getOrComputeVisibleChunks(it1->second);
+  std::vector<ChunkCoord> chunks2 = getOrComputeVisibleChunks(it2->second);
+
+  // If either list is empty, there's no overlap
+  if (chunks1.empty() || chunks2.empty()) return 0.0f;
+
+  // Count the overlap using a set for efficient lookups
+  std::unordered_set<ChunkCoord, ChunkCoordHash> chunks1_set(chunks1.begin(),
+                                                             chunks1.end());
+  int overlap = 0;
+
+  for (const auto& chunk : chunks2) {
+    if (chunks1_set.count(chunk) > 0) {
+      overlap++;
+    }
+  }
+
+  // Jaccard similarity: |A ∩ B| / |A ∪ B|
+  int total_unique = chunks1.size() + chunks2.size() - overlap;
+  if (total_unique == 0) return 0.0f;  // Avoid division by zero
+
+  return static_cast<float>(overlap) / total_unique;
+}
+
+// New method for visibility-based clustering
+void KeyframeQueue::generateVisibilityBasedClusters() {
+  auto timer = ProfilingUtils::Timer("generateVisibilityBasedClusters");
 
   if (scene_->keyframes().empty()) return;
 
-  std::cout << "Generating spatially coherent keyframe batches..." << std::endl;
+  std::cout << "Generating visibility-based keyframe clusters..." << std::endl;
 
-  // Step 1: Extract keyframe positions
-  std::vector<std::pair<std::size_t, Eigen::Vector3f>> keyframe_positions;
-  keyframe_positions.reserve(scene_->keyframes().size());
+  // Clear old visibility data that's stale
+  clearStaleVisibilityData();
 
-  // Clear position cache and rebuild it
-  keyframe_positions_cache_.clear();
-  keyframe_positions_cache_.reserve(scene_->keyframes().size());
-
-  for (const auto& [fid, keyframe] : scene_->keyframes()) {
+  // First, ensure we have visibility data for all keyframes
+  std::vector<std::size_t> valid_keyframe_ids;
+  for (const auto& [kf_id, keyframe] : scene_->keyframes()) {
     if (!keyframe->set_pose_) continue;  // Skip keyframes without valid poses
 
-    // Get world position of camera (inverse of camera-to-world)
-    Sophus::SE3d Twc = keyframe->getPose().inverse();
-    Eigen::Vector3f position = Twc.translation().cast<float>();
-    keyframe_positions.push_back({fid, position});
-    keyframe_positions_cache_[fid] = position;  // Cache the position
+    // Pre-compute and cache visible chunks
+    getOrComputeVisibleChunks(keyframe);
+    valid_keyframe_ids.push_back(kf_id);
   }
 
-  if (keyframe_positions.empty()) {
-    std::cout
-        << "No valid keyframe positions found, falling back to random shuffle"
-        << std::endl;
+  if (valid_keyframe_ids.empty()) {
+    std::cout << "No valid keyframes found, falling back to random shuffle"
+              << std::endl;
     generateKfidRandomShuffle();
     return;
   }
 
-  // Step 2: Determine appropriate number of clusters based on scene size
-  const int min_keyframes_per_cluster = 15;
-  int num_clusters = std::max(1, static_cast<int>(keyframe_positions.size() /
-                                                  min_keyframes_per_cluster));
+  // For larger datasets, we'll use a more efficient approach:
+  // 1. Start with each keyframe in its own cluster
+  // 2. Iteratively merge the two most similar clusters
 
-  std::cout << "Creating " << num_clusters << " spatial clusters for "
-            << keyframe_positions.size() << " keyframes" << std::endl;
+  // Initialize each keyframe as its own cluster
+  std::vector<std::vector<std::size_t>> working_clusters;
+  for (std::size_t kf_id : valid_keyframe_ids) {
+    working_clusters.push_back({kf_id});
+  }
 
-  std::vector<std::vector<std::size_t>> clusters(num_clusters);
+  // Limit the number of clusters to create
+  const int target_clusters = std::max(
+      5, std::min(20, static_cast<int>(valid_keyframe_ids.size() / 15)));
 
-  // Initialize cluster centers with furthest point sampling for better
-  // distribution
-  cluster_centers_.clear();
-  cluster_centers_.reserve(
-      num_clusters);  // Pre-allocate for better performance
-  cluster_centers_.push_back(
-      keyframe_positions[0].second);  // Start with first point
+  // Merge until we reach the target number of clusters
+  while (working_clusters.size() > target_clusters) {
+    float best_similarity = -1.0f;
+    int best_i = -1, best_j = -1;
 
-  // Furthest point sampling for initial cluster centers
-  for (int i = 1; i < num_clusters; i++) {
-    float max_dist = -1;
-    std::size_t furthest_idx = 0;
+    // Find the two most similar clusters
+    for (size_t i = 0; i < working_clusters.size(); i++) {
+      for (size_t j = i + 1; j < working_clusters.size(); j++) {
+        // Compute average similarity between all pairs of keyframes in the two
+        // clusters
+        float total_similarity = 0.0f;
+        int pairs_compared = 0;
 
-    // Process keyframe positions in batches to improve cache efficiency
-    for (std::size_t batch_start = 0; batch_start < keyframe_positions.size();
-         batch_start += BATCH_SIZE) {
-      const std::size_t batch_end =
-          std::min(batch_start + BATCH_SIZE, keyframe_positions.size());
+        // To avoid O(n²) comparisons for large clusters, sample a limited
+        // number of pairs
+        const int max_pairs_to_check = 9;  // 3x3 pairs
+        int pairs_i = std::min(static_cast<int>(working_clusters[i].size()), 3);
+        int pairs_j = std::min(static_cast<int>(working_clusters[j].size()), 3);
 
-      for (std::size_t j = batch_start; j < batch_end; j++) {
-        float min_dist = std::numeric_limits<float>::max();
-
-        // Find minimum distance to any existing center
-        for (const auto& center : cluster_centers_) {
-          float dist =
-              (keyframe_positions[j].second - center)
-                  .squaredNorm();  // Use squared norm to avoid square root
-          min_dist = std::min(min_dist, dist);
+        for (int ii = 0; ii < pairs_i; ii++) {
+          std::size_t kf1_id =
+              working_clusters[i][ii * working_clusters[i].size() / pairs_i];
+          for (int jj = 0; jj < pairs_j; jj++) {
+            std::size_t kf2_id =
+                working_clusters[j][jj * working_clusters[j].size() / pairs_j];
+            total_similarity += computeChunkOverlapSimilarity(kf1_id, kf2_id);
+            pairs_compared++;
+          }
         }
 
-        if (min_dist > max_dist) {
-          max_dist = min_dist;
-          furthest_idx = j;
+        float avg_similarity =
+            pairs_compared > 0 ? total_similarity / pairs_compared : 0.0f;
+
+        if (avg_similarity > best_similarity) {
+          best_similarity = avg_similarity;
+          best_i = i;
+          best_j = j;
         }
       }
     }
 
-    cluster_centers_.push_back(keyframe_positions[furthest_idx].second);
-  }
+    // If the best similarity is too low, stop merging
+    if (best_similarity < SIMILARITY_THRESHOLD || best_i < 0 || best_j < 0) {
+      break;
+    }
 
-  // Initialize nanoflann KD-tree with cluster centers for efficient nearest
-  // neighbor search
-  cluster_centers_adapter_ =
-      std::make_unique<ClusterCentersAdapter>(cluster_centers_);
-  cluster_kdtree_ = std::make_unique<ClusterKDTree>(
-      3,  // dim
-      *cluster_centers_adapter_,
-      nanoflann::KDTreeSingleIndexAdaptorParams(10)  // max leaf size
-  );
-  cluster_kdtree_->buildIndex();
+    // Merge the two most similar clusters
+    working_clusters[best_i].insert(working_clusters[best_i].end(),
+                                    working_clusters[best_j].begin(),
+                                    working_clusters[best_j].end());
 
-  // Assign keyframes to nearest cluster using KD-tree
-  for (const auto& [fid, position] : keyframe_positions) {
-    int nearest_cluster = findNearestCluster(position);
-    clusters[nearest_cluster].push_back(fid);
-  }
-
-  // Step 3: Create queue of clusters, and shuffle keyframes within each cluster
-  kfid_shuffle_.clear();
-  clusters_.clear();
-  clusters_.reserve(num_clusters);
-
-  std::mt19937 g(std::random_device{}());
-
-  for (auto& cluster : clusters) {
-    // Skip empty clusters
-    if (cluster.empty()) continue;
-
-    // Shuffle keyframes within the cluster
-    std::shuffle(cluster.begin(), cluster.end(), g);
-
-    clusters_.push_back(cluster);
+    // Remove the now-merged cluster
+    working_clusters.erase(working_clusters.begin() + best_j);
   }
 
   // Shuffle the order of clusters
-  std::shuffle(clusters_.begin(), clusters_.end(), g);
+  std::mt19937 g(std::random_device{}());
+  std::shuffle(working_clusters.begin(), working_clusters.end(), g);
+
+  // Save the new clusters
+  clusters_ = working_clusters;
 
   // If we were already training, try to keep current cluster if it still exists
   int old_current_cluster = current_cluster_;
@@ -184,6 +241,8 @@ void KeyframeQueue::generateSpatiallyCoherentBatches() {
   // Start with current cluster
   if (!clusters_.empty()) {
     kfid_shuffle_ = clusters_[current_cluster_];
+    // Shuffle the keyframes within the current cluster
+    std::shuffle(kfid_shuffle_.begin(), kfid_shuffle_.end(), g);
   }
 
   kfid_shuffled_ = true;
@@ -193,18 +252,19 @@ void KeyframeQueue::generateSpatiallyCoherentBatches() {
   keyframes_since_last_full_clustering_ = 0;
 
   // Print cluster information
-  std::cout << "Created " << clusters_.size() << " spatial clusters with:";
+  std::cout << "Created " << clusters_.size()
+            << " visibility-based clusters with:";
   for (size_t i = 0; i < clusters_.size(); i++) {
     std::cout << " [" << i << "]:" << clusters_[i].size();
   }
   std::cout << " keyframes" << std::endl;
 
-  // Initialize with current cluster
-  prewarmClusterCache();
+  // Pre-warm cache for current cluster
+  preloadClusterChunks();
 }
 
-// Pre-warm cache for current cluster
-void KeyframeQueue::prewarmClusterCache() {
+// Helper to pre-warm cache for current cluster
+void KeyframeQueue::preloadClusterChunks() {
   if (!chunk_manager_ || clusters_.empty() ||
       current_cluster_ >= clusters_.size()) {
     return;
@@ -213,25 +273,41 @@ void KeyframeQueue::prewarmClusterCache() {
   std::cout << "Pre-warming cache for cluster " << current_cluster_ << "..."
             << std::endl;
 
-  // Take first few keyframes from current cluster to pre-load their chunks
-  const int preload_count =
-      std::min(5, static_cast<int>(clusters_[current_cluster_].size()));
+  // Get unique visible chunks for this cluster
+  std::unordered_set<ChunkCoord, ChunkCoordHash> cluster_chunks;
 
-  for (int i = 0; i < preload_count; i++) {
-    auto kf_id = clusters_[current_cluster_][i];
+  for (std::size_t kf_id : clusters_[current_cluster_]) {
     auto it = scene_->keyframes().find(kf_id);
-    if (it != scene_->keyframes().end()) {
-      // Use preloadVisibleChunks with true to use cache
-      chunk_manager_->preloadVisibleChunks(it->second, true);
+    if (it != scene_->keyframes().end() && it->second) {
+      std::vector<ChunkCoord> kf_chunks = getOrComputeVisibleChunks(it->second);
+      for (const auto& chunk : kf_chunks) {
+        if (chunk_manager_->chunkExists(chunk)) {
+          cluster_chunks.insert(chunk);
+        }
+      }
     }
   }
+
+  // Preload a limited number of chunks
+  int preloaded = 0;
+
+  for (const auto& chunk_coord : cluster_chunks) {
+    if (preloaded >= MAX_PRELOAD_CHUNKS) break;
+
+    // Use cache and skip busy chunks
+    chunk_manager_->loadChunkAsync(chunk_coord, 3, false, true);
+    preloaded++;
+  }
+
+  std::cout << "Preloaded " << preloaded << " chunks for cluster "
+            << current_cluster_ << std::endl;
 }
 
-// Modified fillQueue to use spatial coherence
+// Modified fillQueue to use visibility-based clustering
 void KeyframeQueue::fillQueue() {
   // Check if we should generate clusters
   if (!kfid_shuffled_) {
-    generateSpatiallyCoherentBatches();
+    generateVisibilityBasedClusters();
     // Clear the queue so we incorporate new keyframes immediately
     while (!keyframe_queue_.empty()) {
       keyframe_queue_.pop();
@@ -247,8 +323,12 @@ void KeyframeQueue::fillQueue() {
     kfid_shuffle_ = clusters_[current_cluster_];
     kfid_shuffle_idx_ = 0;
 
-    std::cout << "Switching to spatial cluster " << current_cluster_ << " with "
-              << kfid_shuffle_.size() << " keyframes" << std::endl;
+    // Shuffle the keyframes within the cluster too
+    std::mt19937 g(std::random_device{}());
+    std::shuffle(kfid_shuffle_.begin(), kfid_shuffle_.end(), g);
+
+    std::cout << "Switching to visibility cluster " << current_cluster_
+              << " with " << kfid_shuffle_.size() << " keyframes" << std::endl;
 
     // When switching clusters, clear the queue for fresh keyframes
     while (!keyframe_queue_.empty()) {
@@ -256,7 +336,7 @@ void KeyframeQueue::fillQueue() {
     }
 
     // Pre-warm cache for new cluster
-    prewarmClusterCache();
+    preloadClusterChunks();
     return;  // Return after switching clusters and prewarming cache
   }
 
@@ -301,67 +381,65 @@ void KeyframeQueue::fillQueue() {
   }
 }
 
-// Helper to find nearest cluster for a keyframe - optimized with nanoflann
-// KD-tree
-int KeyframeQueue::findNearestCluster(const Eigen::Vector3f& position) const {
-  if (cluster_centers_.empty()) return 0;
-  if (!cluster_kdtree_) return 0;
-
-  // Use nanoflann KD-tree for nearest neighbor search - O(log n) instead of
-  // O(n)
-  const float query_point[3] = {position(0), position(1), position(2)};
-
-  // Find nearest neighbor
-  size_t index;
-  float distance_squared;
-
-  nanoflann::KNNResultSet<float> resultSet(1);
-  resultSet.init(&index, &distance_squared);
-
-  // Search for the nearest neighbor
-  cluster_kdtree_->findNeighbors(resultSet, query_point,
-                                 nanoflann::SearchParameters(10));
-
-  return static_cast<int>(index);
-}
-
-// Add a single keyframe to existing clusters - optimized
+// Add a single keyframe to existing clusters
 void KeyframeQueue::addKeyframeToExistingClusters(
     std::shared_ptr<GaussianKeyframe> keyframe) {
-  if (!keyframe || !keyframe->set_pose_ || clusters_.empty() ||
-      cluster_centers_.empty()) {
+  if (!keyframe || !keyframe->set_pose_ || clusters_.empty()) {
     return;
   }
 
-  // Get keyframe position
-  Sophus::SE3d Twc = keyframe->getPose().inverse();
-  Eigen::Vector3f position = Twc.translation().cast<float>();
+  // Get visible chunks for this keyframe
+  std::vector<ChunkCoord> visible_chunks = getOrComputeVisibleChunks(keyframe);
 
-  // Cache the position
-  keyframe_positions_cache_[keyframe->fid_] = position;
+  // Find the best cluster to add this keyframe to
+  float best_similarity = -1.0f;
+  int best_cluster = -1;
 
-  // Find nearest cluster using KD-tree
-  int nearest_cluster = findNearestCluster(position);
+  for (size_t i = 0; i < clusters_.size(); i++) {
+    float total_similarity = 0.0f;
+    int comparisons = 0;
 
-  // Make sure the cluster index is valid
-  if (nearest_cluster >= clusters_.size()) {
-    nearest_cluster = clusters_.size() - 1;
+    // Sample a few keyframes from the cluster for comparison
+    const int max_samples = 5;  // Limit the number of comparisons
+    int step = std::max(1, static_cast<int>(clusters_[i].size() / max_samples));
+
+    for (size_t j = 0; j < clusters_[i].size(); j += step) {
+      std::size_t kf_id = clusters_[i][j];
+      total_similarity += computeChunkOverlapSimilarity(keyframe->fid_, kf_id);
+      comparisons++;
+    }
+
+    float avg_similarity =
+        comparisons > 0 ? total_similarity / comparisons : 0.0f;
+
+    if (avg_similarity > best_similarity) {
+      best_similarity = avg_similarity;
+      best_cluster = i;
+    }
   }
 
-  // Add keyframe to the nearest cluster
-  clusters_[nearest_cluster].push_back(keyframe->fid_);
+  // Add to the best cluster or create a new one if none is suitable
+  if (best_cluster >= 0 && best_similarity > SIMILARITY_THRESHOLD) {
+    clusters_[best_cluster].push_back(keyframe->fid_);
 
-  // Update the current shuffle if we're in the affected cluster
-  if (nearest_cluster == current_cluster_) {
-    kfid_shuffle_ = clusters_[current_cluster_];
-    // Preserve the current index if possible
-    kfid_shuffle_idx_ =
-        std::min(kfid_shuffle_idx_, static_cast<int>(kfid_shuffle_.size() - 1));
+    // If we're adding to the current cluster, update the shuffle
+    if (best_cluster == current_cluster_) {
+      kfid_shuffle_ = clusters_[current_cluster_];
+      // Preserve the current index if possible
+      kfid_shuffle_idx_ = std::min(kfid_shuffle_idx_,
+                                   static_cast<int>(kfid_shuffle_.size() - 1));
+    }
+
+    std::cout << "Added new keyframe " << keyframe->fid_
+              << " to visibility cluster " << best_cluster << " (now has "
+              << clusters_[best_cluster].size() << " keyframes)" << std::endl;
+  } else {
+    // Create a new cluster for this keyframe
+    clusters_.push_back({keyframe->fid_});
+
+    std::cout << "Created new visibility cluster " << (clusters_.size() - 1)
+              << " for keyframe " << keyframe->fid_ << std::endl;
   }
-
-  std::cout << "Added new keyframe " << keyframe->fid_ << " to spatial cluster "
-            << nearest_cluster << " (now has "
-            << clusters_[nearest_cluster].size() << " keyframes)" << std::endl;
 }
 
 // Notify that a new keyframe was added
@@ -369,7 +447,7 @@ void KeyframeQueue::notifyNewKeyframeAdded(
     std::shared_ptr<GaussianKeyframe> keyframe) {
   if (!keyframe) return;
 
-  if (!kfid_shuffled_ || clusters_.empty() || cluster_centers_.empty()) {
+  if (!kfid_shuffled_ || clusters_.empty()) {
     // No clusters yet, need to do a full clustering
     kfid_shuffled_ = false;
     return;
@@ -378,23 +456,23 @@ void KeyframeQueue::notifyNewKeyframeAdded(
   // Increment counter for new keyframes
   keyframes_since_last_full_clustering_++;
 
-  // If we've added too many new keyframes, do a full reclustering
-  if (keyframes_since_last_full_clustering_ >= RECLUSTER_THRESHOLD) {
-    std::cout << "Reached " << keyframes_since_last_full_clustering_
-              << " new keyframes, performing full reclustering" << std::endl;
+  // // If we've added too many new keyframes, do a full reclustering
+  // if (keyframes_since_last_full_clustering_ >= RECLUSTER_THRESHOLD) {
+  //   std::cout << "Reached " << keyframes_since_last_full_clustering_
+  //             << " new keyframes, performing full reclustering" << std::endl;
 
-    kfid_shuffled_ = false;
-    return;
-  }
+  //   kfid_shuffled_ = false;
+  //   return;
+  // }
 
   // Otherwise, just add to existing clusters
   addKeyframeToExistingClusters(keyframe);
 }
 
-// Modified to handle spatial clusters and incremental updates
+// Modified to handle visibility-based clusters
 std::shared_ptr<GaussianKeyframe> KeyframeQueue::getNextKeyframe() {
   if (!kfid_shuffled_) {
-    generateSpatiallyCoherentBatches();
+    generateVisibilityBasedClusters();
     // Clear the queue so we incorporate new keyframes immediately
     while (!keyframe_queue_.empty()) {
       keyframe_queue_.pop();
@@ -412,8 +490,7 @@ std::shared_ptr<GaussianKeyframe> KeyframeQueue::getNextKeyframe() {
 
   // Update usage statistics
   auto viewpoint_fid = next_kf->fid_;
-  kfs_used_times_[viewpoint_fid]++;  // Simplified, unordered_map handles
-                                     // non-existent keys
+  kfs_used_times_[viewpoint_fid]++;
 
   // Decrease remaining times of use
   --(next_kf->remaining_times_of_use_);
@@ -433,7 +510,7 @@ std::shared_ptr<GaussianKeyframe> KeyframeQueue::getNextKeyframe() {
 std::vector<std::shared_ptr<GaussianKeyframe>>
 KeyframeQueue::peekUpcomingKeyframes(size_t count) {
   if (!kfid_shuffled_) {
-    generateSpatiallyCoherentBatches();
+    generateVisibilityBasedClusters();
     // Clear the queue so we incorporate new keyframes immediately
     while (!keyframe_queue_.empty()) {
       keyframe_queue_.pop();
@@ -446,7 +523,7 @@ KeyframeQueue::peekUpcomingKeyframes(size_t count) {
   }
 
   std::vector<std::shared_ptr<GaussianKeyframe>> upcoming;
-  upcoming.reserve(std::min(count, keyframe_queue_.size()));  // Pre-allocate
+  upcoming.reserve(std::min(count, keyframe_queue_.size()));
 
   std::queue<std::shared_ptr<GaussianKeyframe>> temp_queue = keyframe_queue_;
   size_t look_ahead = std::min(count, temp_queue.size());
@@ -481,23 +558,44 @@ void KeyframeQueue::forceNextCluster() {
   kfid_shuffle_idx_ = 0;
   cluster_iterations_ = 0;
 
+  // Shuffle the keyframes within the current cluster
+  std::mt19937 g(std::random_device{}());
+  std::shuffle(kfid_shuffle_.begin(), kfid_shuffle_.end(), g);
+
   // Clear queue to force refill from new cluster
   while (!keyframe_queue_.empty()) {
     keyframe_queue_.pop();
   }
 
-  std::cout << "Forced switch to spatial cluster " << current_cluster_
+  std::cout << "Forced switch to visibility cluster " << current_cluster_
             << " with " << kfid_shuffle_.size() << " keyframes" << std::endl;
 
   // Pre-warm cache for the new cluster
-  prewarmClusterCache();
+  preloadClusterChunks();
 }
 
-void KeyframeQueue::visualizeClusterCenters(const std::string& output_file,
-                                            int width,
-                                            int height) {
-  if (cluster_centers_.empty()) {
-    std::cerr << "No cluster centers to visualize." << std::endl;
+// Clear stale visibility data to prevent memory buildup
+void KeyframeQueue::clearStaleVisibilityData() {
+  auto now = std::chrono::steady_clock::now();
+
+  std::vector<std::size_t> to_remove;
+  for (const auto& [kf_id, data] : keyframe_visibility_cache_) {
+    // Remove if data is too old
+    if (now - data.timestamp > VISIBILITY_CACHE_EXPIRY) {
+      to_remove.push_back(kf_id);
+    }
+  }
+
+  for (std::size_t kf_id : to_remove) {
+    keyframe_visibility_cache_.erase(kf_id);
+  }
+}
+
+void KeyframeQueue::visualizeClusters(const std::string& output_file,
+                                      int width,
+                                      int height) {
+  if (clusters_.empty()) {
+    std::cerr << "No clusters to visualize." << std::endl;
     return;
   }
 
@@ -512,20 +610,14 @@ void KeyframeQueue::visualizeClusterCenters(const std::string& output_file,
   float min_y = std::numeric_limits<float>::max();
   float max_y = std::numeric_limits<float>::lowest();
 
-  // Check cluster centers
-  for (const auto& center : cluster_centers_) {
-    min_x = std::min(min_x, center(dim1));
-    max_x = std::max(max_x, center(dim1));
-    min_y = std::min(min_y, center(dim2));
-    max_y = std::max(max_y, center(dim2));
-  }
-
   // Check keyframe positions
-  for (const auto& [_, pos] : keyframe_positions_cache_) {
-    min_x = std::min(min_x, pos(dim1));
-    max_x = std::max(max_x, pos(dim1));
-    min_y = std::min(min_y, pos(dim2));
-    max_y = std::max(max_y, pos(dim2));
+  for (const auto& [fid, keyframe] : scene_->keyframes()) {
+    Sophus::SE3d Twc = keyframe->getPose().inverse();
+    Eigen::Vector3f position = Twc.translation().cast<float>();
+    min_x = std::min(min_x, position(dim1));
+    max_x = std::max(max_x, position(dim1));
+    min_y = std::min(min_y, position(dim2));
+    max_y = std::max(max_y, position(dim2));
   }
 
   // Add some padding
@@ -552,7 +644,7 @@ void KeyframeQueue::visualizeClusterCenters(const std::string& output_file,
   std::mt19937 rng(42);  // Fixed seed for reproducibility
   std::uniform_int_distribution<int> dist(0, 255);
 
-  for (size_t i = 0; i < cluster_centers_.size(); i++) {
+  for (size_t i = 0; i < clusters_.size(); i++) {
     std::stringstream ss;
     ss << "#";
 
@@ -626,12 +718,11 @@ void KeyframeQueue::visualizeClusterCenters(const std::string& output_file,
   // index in the shuffled array
   std::unordered_map<std::size_t, size_t> keyframe_to_cluster_center;
 
-  // For each keyframe, find the nearest cluster center
-  for (const auto& [kf_id, pos] : keyframe_positions_cache_) {
-    int nearest_center_idx = findNearestCluster(pos);
-    if (nearest_center_idx >= 0 &&
-        nearest_center_idx < cluster_centers_.size()) {
-      keyframe_to_cluster_center[kf_id] = nearest_center_idx;
+  for (size_t cluster_idx = 0; cluster_idx < clusters_.size(); cluster_idx++) {
+    for (auto& kf_id : clusters_[cluster_idx]) {
+      keyframe_to_cluster_center[kf_id] = cluster_idx;
+      std::cout << "Keyframe " << kf_id << " belongs to cluster " << cluster_idx
+                << std::endl;
     }
   }
 
@@ -640,62 +731,21 @@ void KeyframeQueue::visualizeClusterCenters(const std::string& output_file,
   svg_file << "  <g>" << std::endl;
 
   // Draw each keyframe with its cluster center's color
-  for (const auto& [kf_id, pos] : keyframe_positions_cache_) {
-    float x = scale_x(pos(dim1));
-    float y = scale_y(pos(dim2));
+  for (const auto& [fid, keyframe] : scene_->keyframes()) {
+    Sophus::SE3d Twc = keyframe->getPose().inverse();
+    Eigen::Vector3f position = Twc.translation().cast<float>();
+    float x = scale_x(position(dim1));
+    float y = scale_y(position(dim2));
 
     // Get cluster center index for this keyframe
     std::string color = "#aaaaaa";  // Default gray color
-    auto it = keyframe_to_cluster_center.find(kf_id);
+    auto it = keyframe_to_cluster_center.find(fid);
     if (it != keyframe_to_cluster_center.end() && it->second < colors.size()) {
       color = colors[it->second];
     }
 
     svg_file << "    <circle cx=\"" << x << "\" cy=\"" << y
              << "\" r=\"2\" fill=\"" << color << "\" />" << std::endl;
-  }
-  svg_file << "  </g>" << std::endl;
-
-  // Draw cluster centers as larger circles
-  svg_file << "  <!-- Cluster Centers -->" << std::endl;
-  for (size_t i = 0; i < cluster_centers_.size(); i++) {
-    const auto& center = cluster_centers_[i];
-    float x = scale_x(center(dim1));
-    float y = scale_y(center(dim2));
-
-    // Draw the cluster center
-    svg_file << "  <g>" << std::endl;
-    svg_file << "    <circle cx=\"" << x << "\" cy=\"" << y
-             << "\" r=\"8\" fill=\"" << colors[i]
-             << "\" stroke=\"black\" stroke-width=\"1\"/>" << std::endl;
-
-    // Add label
-    svg_file
-        << "    <text x=\"" << x << "\" y=\"" << y - 10
-        << "\" text-anchor=\"middle\" font-family=\"Arial\" font-size=\"12\">"
-        << "C" << i << "</text>" << std::endl;
-    svg_file << "  </g>" << std::endl;
-  }
-
-  // Add legend
-  svg_file << "  <!-- Legend -->" << std::endl;
-  svg_file << "  <g transform=\"translate(" << (width - 120) << ", 20)\">"
-           << std::endl;
-  svg_file << "    <rect x=\"0\" y=\"0\" width=\"110\" height=\""
-           << (30 + 20 * cluster_centers_.size())
-           << "\" fill=\"white\" stroke=\"black\" stroke-width=\"1\"/>"
-           << std::endl;
-  svg_file << "    <text x=\"5\" y=\"20\" font-family=\"Arial\" "
-              "font-size=\"12\" font-weight=\"bold\">Clusters</text>"
-           << std::endl;
-
-  for (size_t i = 0; i < cluster_centers_.size(); i++) {
-    float y_pos = 40 + i * 20;
-    svg_file << "    <circle cx=\"15\" cy=\"" << y_pos - 5
-             << "\" r=\"5\" fill=\"" << colors[i] << "\"/>" << std::endl;
-    svg_file << "    <text x=\"30\" y=\"" << y_pos
-             << "\" font-family=\"Arial\" font-size=\"12\">Cluster " << i
-             << " (" << clusters_[i].size() << ")</text>" << std::endl;
   }
   svg_file << "  </g>" << std::endl;
 
