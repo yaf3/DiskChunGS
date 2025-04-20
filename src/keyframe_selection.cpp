@@ -57,36 +57,9 @@ std::vector<ChunkCoord> KeyframeQueue::getOrComputeVisibleChunks(
     return {};
   }
 
-  std::size_t kf_id = keyframe->fid_;
-  Sophus::SE3d current_pose = keyframe->getPose();
-  auto now = std::chrono::steady_clock::now();
-
-  // Check if we have valid cached data
-  auto it = keyframe_visibility_cache_.find(kf_id);
-  if (it != keyframe_visibility_cache_.end()) {
-    auto& cache_entry = it->second;
-
-    // Check if cache is still valid (pose hasn't changed and not too old)
-    if ((now - cache_entry.timestamp) < VISIBILITY_CACHE_EXPIRY &&
-        (current_pose.translation() - cache_entry.pose.translation()).norm() <
-            1e-3 &&
-        current_pose.unit_quaternion().angularDistance(
-            cache_entry.pose.unit_quaternion()) < 1e-3) {
-      return cache_entry.visible_chunks;
-    }
-  }
-
-  // Compute visibility
-  auto visible_chunks = chunk_manager_->frustumCullChunks(keyframe);
-
-  // Update cache
-  KeyframeVisibilityData cache_entry;
-  cache_entry.visible_chunks = visible_chunks;
-  cache_entry.pose = current_pose;
-  cache_entry.timestamp = now;
-  keyframe_visibility_cache_[kf_id] = cache_entry;
-
-  return visible_chunks;
+  // Simply use ChunkManager's frustumCullChunks which has its own cache
+  // The true parameter enables the cache
+  return chunk_manager_->frustumCullChunks(keyframe, true);
 }
 
 // Compute similarity between keyframes based on chunk visibility overlap
@@ -127,14 +100,12 @@ float KeyframeQueue::computeChunkOverlapSimilarity(std::size_t kf1_id,
 
 // New method for visibility-based clustering
 void KeyframeQueue::generateVisibilityBasedClusters() {
+  auto start_time = std::chrono::steady_clock::now();
   auto timer = ProfilingUtils::Timer("generateVisibilityBasedClusters");
 
   if (scene_->keyframes().empty()) return;
 
   std::cout << "Generating visibility-based keyframe clusters..." << std::endl;
-
-  // Clear old visibility data that's stale
-  clearStaleVisibilityData();
 
   // First, ensure we have visibility data for all keyframes
   std::vector<std::size_t> valid_keyframe_ids;
@@ -251,9 +222,13 @@ void KeyframeQueue::generateVisibilityBasedClusters() {
   // Reset new keyframe counter
   keyframes_since_last_full_clustering_ = 0;
 
+  auto end_time = std::chrono::steady_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+      end_time - start_time);
   // Print cluster information
   std::cout << "Created " << clusters_.size()
-            << " visibility-based clusters with:";
+            << " visibility-based clusters in " << duration.count()
+            << "ms with:";
   for (size_t i = 0; i < clusters_.size(); i++) {
     std::cout << " [" << i << "]:" << clusters_[i].size();
   }
@@ -388,6 +363,8 @@ void KeyframeQueue::addKeyframeToExistingClusters(
     return;
   }
 
+  auto start_time = std::chrono::steady_clock::now();
+
   // Get visible chunks for this keyframe
   std::vector<ChunkCoord> visible_chunks = getOrComputeVisibleChunks(keyframe);
 
@@ -440,6 +417,13 @@ void KeyframeQueue::addKeyframeToExistingClusters(
     std::cout << "Created new visibility cluster " << (clusters_.size() - 1)
               << " for keyframe " << keyframe->fid_ << std::endl;
   }
+
+  auto end_time = std::chrono::steady_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+      end_time - start_time);
+  // Print cluster information
+  std::cout << "Adding keyframe to queue took " << duration.count() << "ms"
+            << std::endl;
 }
 
 // Notify that a new keyframe was added
@@ -572,23 +556,6 @@ void KeyframeQueue::forceNextCluster() {
 
   // Pre-warm cache for the new cluster
   preloadClusterChunks();
-}
-
-// Clear stale visibility data to prevent memory buildup
-void KeyframeQueue::clearStaleVisibilityData() {
-  auto now = std::chrono::steady_clock::now();
-
-  std::vector<std::size_t> to_remove;
-  for (const auto& [kf_id, data] : keyframe_visibility_cache_) {
-    // Remove if data is too old
-    if (now - data.timestamp > VISIBILITY_CACHE_EXPIRY) {
-      to_remove.push_back(kf_id);
-    }
-  }
-
-  for (std::size_t kf_id : to_remove) {
-    keyframe_visibility_cache_.erase(kf_id);
-  }
 }
 
 void KeyframeQueue::visualizeClusters(const std::string& output_file,

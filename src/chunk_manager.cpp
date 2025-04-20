@@ -589,6 +589,11 @@ bool ChunkManager::processLoadOperation(const ChunkCoord& coord,
       chunk->getGaussians()->load_checkpoint_incremental(
           chunk_filename.string(), opt_params_, true, true, true);
 
+      assert(chunk->getGaussians()->getXYZ().numel() > 0 &&
+             "Failed to load chunk with no gaussians!");
+      assert(chunk->getGaussians()->optimizer_ &&
+             "Failed to load chunk with no optimizer!");
+
       // Update in-memory structures
       {
         std::unique_lock<std::mutex> lock(active_chunks_mutex_);
@@ -1113,66 +1118,8 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::loadVisibleChunks(
 
   triggerLruCheck();
 
-  std::size_t keyframe_id = keyframe->fid_;
-  Sophus::SE3d current_pose = keyframe->getPose();
-
-  std::vector<ChunkCoord> visible_chunk_coords;
-
-  bool cache_exists = false;
-  // Check if we can use cached visibility results
-  if (use_cache) {
-    cache_exists = false;
-    std::lock_guard<std::mutex> lock(cache_mutex_);
-    auto now = std::chrono::steady_clock::now();
-
-    // Check cache entry exists and is valid
-    auto cache_it = visibility_cache_.find(keyframe_id);
-    if (cache_it != visibility_cache_.end()) {
-      auto& entry = cache_it->second;
-
-      // Check if cache entry is recent enough and pose hasn't changed
-      // significantly
-      if ((now - entry.timestamp) < cache_expiry_time_ &&
-          pose_nearly_equal(current_pose, entry.pose)) {
-        // std::cout << "Using chunk visibility cache!" << std::endl;
-        visible_chunk_coords = entry.visible_chunks;
-        cache_exists = true;
-
-        // Update timestamp to keep this entry fresh
-        entry.timestamp = now;
-      }
-    }
-
-    // Clean up old cache entries periodically
-    if (visibility_cache_.size() > max_cache_entries_) {
-      // Find and remove oldest entries
-      std::vector<std::size_t> to_remove;
-      for (const auto& [id, entry] : visibility_cache_) {
-        if ((now - entry.timestamp) > cache_expiry_time_) {
-          to_remove.push_back(id);
-        }
-      }
-
-      for (auto id : to_remove) {
-        visibility_cache_.erase(id);
-      }
-    }
-  }
-
-  // If we can't use the cache, perform frustum culling
-  if (!use_cache || !cache_exists) {
-    visible_chunk_coords = frustumCullChunks(keyframe);
-
-    // Update the cache
-    if (use_cache && !cache_exists) {
-      std::lock_guard<std::mutex> lock(cache_mutex_);
-      VisibilityCacheEntry entry;
-      entry.pose = current_pose;
-      entry.visible_chunks = visible_chunk_coords;
-      entry.timestamp = std::chrono::steady_clock::now();
-      visibility_cache_[keyframe_id] = entry;
-    }
-  }
+  std::vector<ChunkCoord> visible_chunk_coords =
+      frustumCullChunks(keyframe, use_cache);
 
   // Now we have the list of visible chunk coordinates
   // Start asynchronous loading of chunks
@@ -1256,66 +1203,8 @@ void ChunkManager::preloadVisibleChunks(
 
   triggerLruCheck();
 
-  std::size_t keyframe_id = keyframe->fid_;
-  Sophus::SE3d current_pose = keyframe->getPose();
-
-  std::vector<ChunkCoord> visible_chunk_coords;
-
-  bool cache_exists = false;
-  // Check if we can use cached visibility results
-  if (use_cache) {
-    cache_exists = false;
-    std::lock_guard<std::mutex> lock(cache_mutex_);
-    auto now = std::chrono::steady_clock::now();
-
-    // Check cache entry exists and is valid
-    auto cache_it = visibility_cache_.find(keyframe_id);
-    if (cache_it != visibility_cache_.end()) {
-      auto& entry = cache_it->second;
-
-      // Check if cache entry is recent enough and pose hasn't changed
-      // significantly
-      if ((now - entry.timestamp) < cache_expiry_time_ &&
-          pose_nearly_equal(current_pose, entry.pose)) {
-        // std::cout << "Using chunk visibility cache!" << std::endl;
-        visible_chunk_coords = entry.visible_chunks;
-        cache_exists = true;
-
-        // Update timestamp to keep this entry fresh
-        entry.timestamp = now;
-      }
-    }
-
-    // Clean up old cache entries periodically
-    if (visibility_cache_.size() > max_cache_entries_) {
-      // Find and remove oldest entries
-      std::vector<std::size_t> to_remove;
-      for (const auto& [id, entry] : visibility_cache_) {
-        if ((now - entry.timestamp) > cache_expiry_time_) {
-          to_remove.push_back(id);
-        }
-      }
-
-      for (auto id : to_remove) {
-        visibility_cache_.erase(id);
-      }
-    }
-  }
-
-  // If we can't use the cache, perform frustum culling
-  if (!use_cache || !cache_exists) {
-    visible_chunk_coords = frustumCullChunks(keyframe);
-
-    // Update the cache
-    if (use_cache && !cache_exists) {
-      std::lock_guard<std::mutex> lock(cache_mutex_);
-      VisibilityCacheEntry entry;
-      entry.pose = current_pose;
-      entry.visible_chunks = visible_chunk_coords;
-      entry.timestamp = std::chrono::steady_clock::now();
-      visibility_cache_[keyframe_id] = entry;
-    }
-  }
+  std::vector<ChunkCoord> visible_chunk_coords =
+      frustumCullChunks(keyframe, use_cache);
 
   for (const auto& coord : visible_chunk_coords) {
     // Check if chunk has been seen before
@@ -1341,14 +1230,36 @@ void ChunkManager::preloadVisibleChunks(
 
 // Helper function to find visible chunks within search radius
 std::vector<ChunkCoord> ChunkManager::frustumCullChunks(
-    std::shared_ptr<GaussianKeyframe> keyframe) {
-  // std::cout << "Called frustumCullChunks" << std::endl;
+    std::shared_ptr<GaussianKeyframe> keyframe,
+    bool use_cache) {
+  if (!keyframe) {
+    return {};
+  }
+
+  std::size_t keyframe_id = keyframe->fid_;
+  Sophus::SE3d current_pose = keyframe->getPose();
+
+  // Check if we can use cached visibility results
+  if (use_cache) {
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    auto now = std::chrono::steady_clock::now();
+
+    // Check cache entry exists and is valid
+    auto cache_it = visibility_cache_.find(keyframe_id);
+    if (cache_it != visibility_cache_.end()) {
+      auto& entry = cache_it->second;
+
+      // Check if cache entry is recent enough and pose hasn't changed
+      if ((now - entry.timestamp) < cache_expiry_time_ &&
+          pose_nearly_equal(current_pose, entry.pose)) {
+        // Update timestamp to keep this entry fresh
+        entry.timestamp = now;
+        return entry.visible_chunks;
+      }
+    }
+  }
 
   std::vector<ChunkCoord> visible_coords;
-
-  if (!keyframe) {
-    return visible_coords;
-  }
 
   Eigen::Matrix4f view_matrix =
       keyframe->getWorld2View2(keyframe->trans_, keyframe->scale_);
@@ -1356,7 +1267,6 @@ std::vector<ChunkCoord> ChunkManager::frustumCullChunks(
   Eigen::Matrix4f vp_matrix = proj_matrix * view_matrix;
 
   // Get camera position for chunk search
-  Sophus::SE3d current_pose = keyframe->getPose();
   Sophus::SE3d Twc = current_pose.inverse();  // World to camera transform
   Eigen::Vector3f camera_position = Twc.translation().cast<float>();
   ChunkCoord camera_chunk = getChunkCoord(camera_position);
@@ -1386,6 +1296,16 @@ std::vector<ChunkCoord> ChunkManager::frustumCullChunks(
         }
       }
     }
+  }
+
+  // Update the cache if enabled
+  if (use_cache) {
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    VisibilityCacheEntry entry;
+    entry.pose = current_pose;
+    entry.visible_chunks = visible_coords;
+    entry.timestamp = std::chrono::steady_clock::now();
+    visibility_cache_[keyframe_id] = entry;
   }
   return visible_coords;
 }

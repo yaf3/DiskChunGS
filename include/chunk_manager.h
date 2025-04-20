@@ -208,7 +208,8 @@ class ChunkManager {
       std::shared_ptr<GaussianKeyframe> keyframe);
 
   std::vector<ChunkCoord> frustumCullChunks(
-      std::shared_ptr<GaussianKeyframe> keyframe);
+      std::shared_ptr<GaussianKeyframe> keyframe,
+      bool use_cache = true);
 
   // Check if a chunk is inside or intersects with a view frustum
   AABB getChunkAABB(const ChunkCoord& coord);

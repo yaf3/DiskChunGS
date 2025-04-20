@@ -13,13 +13,6 @@
 #include "gaussian_keyframe.h"
 #include "gaussian_scene.h"
 
-// Cache entry to store chunk visibility data for a keyframe
-struct KeyframeVisibilityData {
-  std::vector<ChunkCoord> visible_chunks;
-  Sophus::SE3d pose;  // Pose when visibility was calculated
-  std::chrono::steady_clock::time_point timestamp;
-};
-
 class KeyframeQueue {
  public:
   KeyframeQueue(std::shared_ptr<GaussianScene> scene, size_t queue_size = 10);
@@ -77,8 +70,6 @@ class KeyframeQueue {
   std::unordered_map<std::size_t, int> kfs_used_times_;
 
   // Visibility-based clustering
-  std::unordered_map<std::size_t, KeyframeVisibilityData>
-      keyframe_visibility_cache_;
   std::vector<std::vector<std::size_t>> clusters_;
   int current_cluster_;
   int cluster_iterations_;
@@ -101,5 +92,4 @@ class KeyframeQueue {
   void preloadClusterChunks();
   void addKeyframeToExistingClusters(
       std::shared_ptr<GaussianKeyframe> keyframe);
-  void clearStaleVisibilityData();
 };
