@@ -283,7 +283,7 @@ class ChunkManager {
   float overlap_margin_;
   int max_chunks_in_memory_;
   std::chrono::milliseconds min_retention_time_{
-      1000};  // Minimum time to keep a chunk after loading
+      0};  // Minimum time to keep a chunk after loading
 
   // Statistics
   mutable std::mutex stats_mutex_;
@@ -345,4 +345,8 @@ class ChunkManager {
 
  public:
   void triggerLruCheck();
+  int getOperationQueueSize() const {
+    // std::lock_guard<std::mutex> lock(queue_mutex_);
+    return operation_queue_.size();
+  }
 };

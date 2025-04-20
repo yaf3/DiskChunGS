@@ -98,11 +98,11 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   // Initialize scene
   scene_ = std::make_shared<GaussianScene>(model_params_);
 
-  keyframe_queue_ = std::make_shared<KeyframeQueue>(scene_, 10);
-  keyframe_queue_->setChunkManager(chunk_manager_);
-
   // Initialize chunk manager
   initializeChunkManagement();
+
+  keyframe_queue_ = std::make_shared<KeyframeQueue>(scene_, 10);
+  keyframe_queue_->setChunkManager(chunk_manager_);
 
   // Mode
   if (!pSLAM) {
@@ -562,6 +562,10 @@ void GaussianMapper::run() {
 
     // Invoke training once
     trainForOneIteration();
+
+    if (getIteration() == 2000)
+      keyframe_queue_->visualizeClusters(
+          "/workspaces/large_scale_gaussian_slam/cluster_visualization.svg");
 
     if (pSLAM_->isShutDown()) {
       SLAM_stop_iter = getIteration();
@@ -1317,10 +1321,14 @@ void GaussianMapper::combineMappingOperations() {
                                             scene_->cameras_extent_);
         }
 
+        chunk_manager_->releaseAllChunksFromOptimization();
+
         // Gaussians will be all over the place, transfer them to their
         // respective chunks
         std::cout << "Transferring gaussians across chunks" << std::endl;
         chunk_manager_->transferGaussiansAcrossChunks(scene_->cameras_extent_);
+
+        chunk_manager_->releaseAllChunksFromOptimization();
 
         // Mark this iteration
         loop_closure_iteration_ = true;

@@ -310,6 +310,10 @@ bool ChunkManager::transitionChunkState(const ChunkCoord& coord,
   auto& metadata = chunk_metadata_[coord];
   ChunkState current = metadata.state.load();
 
+  if (current == new_state) {
+    return true;  // Already in the desired state
+  }
+
   if (current != expected) {
     std::cout << "Failed state transition for " << coord.x << "," << coord.y
               << "," << coord.z << ": expected=" << static_cast<int>(expected)
@@ -643,7 +647,7 @@ bool ChunkManager::processLoadOperation(const ChunkCoord& coord,
       end_time - start_time);
   std::cout << "Chunk [" << coord.x << "," << coord.y << "," << coord.z
             << "]: " << "Load completed in " << duration.count() << "ms"
-            << std::endl;
+            << " QL: " << is_active << std::endl;
   return true;
 }
 
@@ -651,6 +655,8 @@ bool ChunkManager::processLoadOperation(const ChunkCoord& coord,
 bool ChunkManager::processSaveOperation(const ChunkCoord& coord) {
   // std::cout << "Called processSaveOperation" << std::endl;
   auto start_time = std::chrono::steady_clock::now();
+  // std::chrono::milliseconds time_spend_waiting_for_mutex(0);
+
   try {
     std::shared_ptr<Chunk> chunk;
 
@@ -788,46 +794,58 @@ void ChunkManager::processOperation(std::shared_ptr<ChunkOperation> operation) {
 // Create a future that resolves when a chunk reaches a specific state
 std::future<bool> ChunkManager::createWaitFuture(const ChunkCoord& coord,
                                                  ChunkState target_state) {
-  // std::cout << "Called createWaitFuture" << std::endl;
   auto promise = std::make_shared<std::promise<bool>>();
-  std::future<bool> future = promise->get_future();
 
-  // Launch a wait task on a separate thread
   std::thread([this, coord, target_state, promise]() {
-    const int MAX_RETRIES = 100;
-    const auto RETRY_INTERVAL = std::chrono::milliseconds(50);
-
+    const auto TOTAL_TIMEOUT = std::chrono::seconds(5);
+    auto end_time = std::chrono::steady_clock::now() + TOTAL_TIMEOUT;
     bool success = false;
-    int attempts = 0;
 
-    while (attempts < MAX_RETRIES) {
-      ChunkState current = getChunkState(coord);
+    while (std::chrono::steady_clock::now() < end_time) {
+      // Step 1: Check current state with a scoped lock
+      ChunkState current_state;
+      std::condition_variable* cv_ptr = nullptr;
+      std::mutex* mutex_ptr = nullptr;
 
-      if (current == target_state) {
-        success = true;
-        break;
-      }
-
-      // Wait with timeout on the condition variable
       {
-        std::unique_lock<std::mutex> lock(metadata_mutex_);
+        // Only lock metadata briefly to check state and get pointers
+        std::unique_lock<std::mutex> meta_lock(metadata_mutex_);
         auto it = chunk_metadata_.find(coord);
-        if (it != chunk_metadata_.end()) {
-          std::unique_lock<std::mutex> op_lock(it->second.operation_mutex);
-          it->second.operation_cv.wait_for(op_lock, RETRY_INTERVAL);
-        } else {
-          // If no metadata, just sleep
-          std::this_thread::sleep_for(RETRY_INTERVAL);
-        }
-      }
 
-      attempts++;
+        if (it == chunk_metadata_.end()) {
+          // No metadata exists
+          success = (target_state == ChunkState::INACTIVE);
+          break;
+        }
+
+        // Step 2: Check if already in target state
+        current_state = it->second.state.load();
+        if (current_state == target_state) {
+          success = true;
+          break;
+        }
+
+        // Step 3: Get pointers to the mutex and cv for this chunk
+        mutex_ptr = &(it->second.operation_mutex);
+        cv_ptr = &(it->second.operation_cv);
+      }  // metadata_mutex is released here
+
+      // Step 4: Now wait on the chunk's own cv with its own mutex
+      if (mutex_ptr && cv_ptr) {
+        std::unique_lock<std::mutex> op_lock(*mutex_ptr);
+        auto wait_status =
+            cv_ptr->wait_for(op_lock, std::chrono::milliseconds(100));
+        // Continue to next loop iteration regardless of wait result
+      } else {
+        // If we couldn't get the pointers, sleep briefly
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
     }
 
     promise->set_value(success);
   }).detach();
 
-  return future;
+  return promise->get_future();
 }
 
 // Asynchronous delete with priority
@@ -1195,7 +1213,7 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::loadVisibleChunks(
   }
 
   // Wait for critical chunks to load (with timeout)
-  const auto timeout = std::chrono::milliseconds(100);
+  const auto timeout = std::chrono::milliseconds(500);
   for (size_t i = 0; i < load_futures.size(); ++i) {
     if (load_futures[i].wait_for(timeout) == std::future_status::ready) {
       if (load_futures[i].get()) {
@@ -1316,7 +1334,7 @@ void ChunkManager::preloadVisibleChunks(
                 << "): " << coord.x << " " << coord.y << " " << coord.z
                 << std::endl;
       // Need to load from disk or in an incompatible state
-      loadChunkAsync(coord, 3, false, true);
+      loadChunkAsync(coord, 3, false, false);
     }
   }
 }
@@ -1495,7 +1513,7 @@ void ChunkManager::addPointsToChunks(
             ChunkState state = getChunkState(coord);
             if (state == ChunkState::INACTIVE) {
               // Start loading the chunk
-              load_future = loadChunkAsync(coord, 10, true);
+              load_future = loadChunkAsync(coord, 10, true, false);
               needs_loading = true;
             } else if (state == ChunkState::ACTIVE) {
               // Transition to OPTIMIZING
@@ -1575,6 +1593,7 @@ void ChunkManager::addPointsToChunks(
   }
 
   torch::cuda::synchronize();
+  triggerLruCheck();
 }
 
 // Updated shutdown to properly clean up threads
@@ -1860,7 +1879,6 @@ void ChunkManager::transferGaussiansAcrossChunks(float spatial_lr_scale) {
       // Skip if no points
       if (points.size(0) == 0) {
         releaseChunksFromOptimization({coord});
-        saveChunkAsync(coord, 3);  // Schedule async save
         continue;
       }
 
@@ -1880,7 +1898,6 @@ void ChunkManager::transferGaussiansAcrossChunks(float spatial_lr_scale) {
       int num_outside = outside_mask.sum().item<int>();
       if (num_outside == 0) {
         releaseChunksFromOptimization({coord});
-        saveChunkAsync(coord, 3);  // Schedule async save
         continue;
       }
 
@@ -1951,8 +1968,8 @@ void ChunkManager::transferGaussiansAcrossChunks(float spatial_lr_scale) {
 
       // Save and unload
       releaseChunksFromOptimization({coord});
-      saveChunkAsync(coord, 3);
     }
+    triggerLruCheck();
   }
 
   // Second pass: Apply the transfers to destination chunks
@@ -2077,7 +2094,7 @@ void ChunkManager::transferGaussiansAcrossChunks(float spatial_lr_scale) {
     }
 
     releaseChunksFromOptimization({dest_coord});
-    saveChunkAsync(dest_coord, 3);
+    triggerLruCheck();
   }
   // Clear CUDA cache after processing
   c10::cuda::CUDACachingAllocator::emptyCache();
@@ -2121,12 +2138,19 @@ void ChunkManager::releaseChunksFromOptimization(
 }
 
 void ChunkManager::releaseAllChunksFromOptimization() {
-  std::unique_lock<std::mutex> lock(active_chunks_mutex_);
-  for (const auto& [coord, chunk] : active_chunks_) {
-    if (chunk && chunk->getGaussians()) {
-      releaseChunksFromOptimization({chunk});
+  // Copy coordinates first with one lock, then release with another
+  std::vector<ChunkCoord> coords_to_release;
+  {
+    std::unique_lock<std::mutex> lock(active_chunks_mutex_);
+    for (const auto& [coord, chunk] : active_chunks_) {
+      if (chunk && chunk->getGaussians()) {
+        coords_to_release.push_back(coord);
+      }
     }
   }
+
+  // Now release them without holding the active_chunks_mutex_
+  releaseChunksFromOptimization(coords_to_release);
 }
 
 void ChunkManager::lruEvictionThreadFunction() {
@@ -2178,6 +2202,12 @@ void ChunkManager::lruEvictionThreadFunction() {
     std::vector<std::pair<ChunkCoord, std::chrono::steady_clock::time_point>>
         candidates;
 
+    int chunk_inactive_count = 0;
+    int chunk_optimizing_count = 0;
+    int chunk_loading_count = 0;
+    int chunk_saving_count = 0;
+    int chunks_skipped_since_too_recently_loaded = 0;
+
     {
       // Lock both mutexes to access both active chunks and metadata
       std::unique_lock<std::mutex> meta_lock(metadata_mutex_);
@@ -2197,6 +2227,19 @@ void ChunkManager::lruEvictionThreadFunction() {
             // min_retention_time_
             if (meta_it->second.load_time < min_retention_cutoff) {
               candidates.push_back({coord, meta_it->second.last_used});
+            } else {
+              chunks_skipped_since_too_recently_loaded++;
+            }
+          } else {
+            // Count other states for logging
+            if (meta_it->second.state.load() == ChunkState::INACTIVE) {
+              chunk_inactive_count++;
+            } else if (meta_it->second.state.load() == ChunkState::OPTIMIZING) {
+              chunk_optimizing_count++;
+            } else if (meta_it->second.state.load() == ChunkState::LOADING) {
+              chunk_loading_count++;
+            } else if (meta_it->second.state.load() == ChunkState::SAVING) {
+              chunk_saving_count++;
             }
           }
         }
@@ -2224,6 +2267,12 @@ void ChunkManager::lruEvictionThreadFunction() {
 
     std::cout << "LRU Eviction: Scheduled " << evicted << " chunks for eviction"
               << std::endl;
+    std::cout << "LRU Eviction: Skipped: Inactive: " << chunk_inactive_count
+              << ", Optimizing: " << chunk_optimizing_count
+              << ", Loading: " << chunk_loading_count
+              << ", Saving: " << chunk_saving_count
+              << ", Skipped due to recent load: "
+              << chunks_skipped_since_too_recently_loaded << std::endl;
   }
 
   std::cout << "LRU eviction thread terminating" << std::endl;

@@ -551,6 +551,8 @@ void ImGuiViewer::run() {
                     pGausMapper_->chunk_manager_->getStats().active_chunks);
         ImGui::Text("Total Chunks: %d",
                     pGausMapper_->chunk_manager_->getStats().existing_chunks);
+        ImGui::Text("Chunk Operations Pending: %d",
+                    pGausMapper_->chunk_manager_->getOperationQueueSize());
 
         ImGui::Checkbox("Gaussian-pyramid-based training",
                         &do_gaus_pyramid_training_);
