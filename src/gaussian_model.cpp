@@ -337,20 +337,30 @@ void GaussianModel::scaledTransformVisiblePointsOfKeyframe(
   // ==================================
 
   if (num_transformed > 0) {
-    torch::Tensor optimizable_xyz = this->replaceTensorToOptimizer(points, 0);
-    // torch::Tensor optimizable_scaling =
-    // this->replaceTensorToOptimizer(scales, 4);
-    torch::Tensor optimizable_rots = this->replaceTensorToOptimizer(rots, 5);
+    try {
+      std::cout << "[DEBUG-STPV] About to replace xyz tensor" << std::endl;
+      torch::Tensor optimizable_xyz = this->replaceTensorToOptimizer(points, 0);
+      std::cout << "[DEBUG-STPV] Successfully replaced xyz tensor" << std::endl;
 
-    this->xyz_ = optimizable_xyz;
-    // this->scaling_ = optimizable_scaling;
-    this->rotation_ = optimizable_rots;
+      std::cout << "[DEBUG-STPV] About to replace rotation tensor" << std::endl;
+      torch::Tensor optimizable_rots = this->replaceTensorToOptimizer(rots, 5);
+      std::cout << "[DEBUG-STPV] Successfully replaced rotation tensor"
+                << std::endl;
 
-    this->Tensor_vec_xyz_ = {this->xyz_};
-    // this->Tensor_vec_scaling_ = {this->scaling_};
-    this->Tensor_vec_rotation_ = {this->rotation_};
+      this->xyz_ = optimizable_xyz;
+      this->rotation_ = optimizable_rots;
 
-    std::cout << "[DEBUG-STPV] Updated tensors in-place" << std::endl;
+      this->Tensor_vec_xyz_ = {this->xyz_};
+      this->Tensor_vec_rotation_ = {this->rotation_};
+
+      std::cout << "[DEBUG-STPV] Updated tensors in-place" << std::endl;
+    } catch (const std::exception& e) {
+      std::cerr << "ERROR during optimizer tensor replacement: " << e.what()
+                << std::endl;
+      // Recover gracefully instead of crashing
+      std::cerr << "Skipping optimizer update for this transformation"
+                << std::endl;
+    }
   }
 }
 
@@ -450,24 +460,79 @@ void GaussianModel::resetOpacity() {
 
 torch::Tensor GaussianModel::replaceTensorToOptimizer(torch::Tensor& tensor,
                                                       int tensor_idx) {
-  auto& param = this->optimizer_->param_groups()[tensor_idx].params()[0];
+  std::cout
+      << "[DEBUG-Optimizer] Starting replaceTensorToOptimizer for tensor_idx: "
+      << tensor_idx << std::endl;
+
+  if (!this->optimizer_) {
+    std::cerr << "ERROR: Optimizer is null!" << std::endl;
+    throw std::runtime_error("Null optimizer in replaceTensorToOptimizer");
+  }
+
+  std::cout << "[DEBUG-Optimizer] Param groups size: "
+            << this->optimizer_->param_groups().size() << std::endl;
+
+  if (tensor_idx >= this->optimizer_->param_groups().size()) {
+    std::cerr << "ERROR: tensor_idx " << tensor_idx << " out of bounds!"
+              << std::endl;
+    throw std::runtime_error("Index out of bounds in replaceTensorToOptimizer");
+  }
+
+  auto& param_group = this->optimizer_->param_groups()[tensor_idx];
+  if (param_group.params().empty()) {
+    std::cerr << "ERROR: No parameters in group " << tensor_idx << std::endl;
+    throw std::runtime_error("Empty param group in replaceTensorToOptimizer");
+  }
+
+  auto& param = param_group.params()[0];
   auto& state = optimizer_->state();
   auto key = param.unsafeGetTensorImpl();
-  auto& stored_state = static_cast<torch::optim::AdamParamState&>(*state[key]);
-  auto new_state = std::make_unique<torch::optim::AdamParamState>();
-  new_state->step(stored_state.step());
-  new_state->exp_avg(torch::zeros_like(tensor));
-  new_state->exp_avg_sq(torch::zeros_like(tensor));
-  // new_state->max_exp_avg_sq(stored_state.max_exp_avg_sq().clone()); // needed
-  // only when options.amsgrad(true), which is false by default
 
-  state.erase(key);
-  param = tensor.requires_grad_();
-  key = param.unsafeGetTensorImpl();
-  state[key] = std::move(new_state);
+  std::cout << "[DEBUG-Optimizer] Checking state for key..." << std::endl;
+  if (state.find(key) == state.end()) {
+    std::cerr << "WARNING: No optimizer state found for tensor_idx "
+              << tensor_idx << std::endl;
+    // Create a new state instead of crashing
+    auto new_state = std::make_unique<torch::optim::AdamParamState>();
+    new_state->step(0);
+    new_state->exp_avg(torch::zeros_like(tensor));
+    new_state->exp_avg_sq(torch::zeros_like(tensor));
+    state[key] = std::move(new_state);
+    std::cout << "[DEBUG-Optimizer] Created new state" << std::endl;
+  }
 
-  auto optimizable_tensors = param;
-  return optimizable_tensors;
+  try {
+    auto& stored_state =
+        static_cast<torch::optim::AdamParamState&>(*state[key]);
+    std::cout << "[DEBUG-Optimizer] Got stored state with step: "
+              << stored_state.step() << std::endl;
+
+    auto new_state = std::make_unique<torch::optim::AdamParamState>();
+    new_state->step(stored_state.step());
+
+    std::cout << "[DEBUG-Optimizer] Creating exp_avg and exp_avg_sq..."
+              << std::endl;
+    new_state->exp_avg(torch::zeros_like(tensor));
+    new_state->exp_avg_sq(torch::zeros_like(tensor));
+
+    std::cout << "[DEBUG-Optimizer] Erasing old state..." << std::endl;
+    state.erase(key);
+
+    std::cout << "[DEBUG-Optimizer] Setting requires_grad..." << std::endl;
+    param = tensor.requires_grad_();
+    key = param.unsafeGetTensorImpl();
+
+    std::cout << "[DEBUG-Optimizer] Storing new state..." << std::endl;
+    state[key] = std::move(new_state);
+
+    std::cout << "[DEBUG-Optimizer] Completed replaceTensorToOptimizer for "
+                 "tensor_idx: "
+              << tensor_idx << std::endl;
+    return param;
+  } catch (const std::exception& e) {
+    std::cerr << "ERROR in replaceTensorToOptimizer: " << e.what() << std::endl;
+    throw;
+  }
 }
 
 void GaussianModel::prunePoints(torch::Tensor& mask) {

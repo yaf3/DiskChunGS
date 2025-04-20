@@ -563,9 +563,10 @@ void GaussianMapper::run() {
     // Invoke training once
     trainForOneIteration();
 
-    if (getIteration() == 2000)
+    if (getIteration() % 2000 == 0) {
       keyframe_queue_->visualizeClusters(
           "/workspaces/large_scale_gaussian_slam/cluster_visualization.svg");
+    }
 
     if (pSLAM_->isShutDown()) {
       SLAM_stop_iter = getIteration();
@@ -579,6 +580,11 @@ void GaussianMapper::run() {
   while (!isStopped()) {
     // Invoke training once
     trainForOneIteration();
+
+    if (getIteration() % 2000 == 0) {
+      keyframe_queue_->visualizeClusters(
+          "/workspaces/large_scale_gaussian_slam/cluster_visualization.svg");
+    }
 
     if (getIteration() >= opt_params_.iterations_) break;
   }
@@ -759,11 +765,14 @@ void GaussianMapper::trainForOneIteration() {
   std::shared_ptr<GaussianKeyframe> viewpoint_cam =
       useOneRandomSlidingWindowKeyframe();
   timer_pickKeyframe.stop();
-  // std::cout << "Using keyframe id: " << viewpoint_cam->fid_ << std::endl;
   if (!viewpoint_cam) {
     increaseIteration(-1);
+    throw std::runtime_error(
+        "[GaussianMapper] Keyframe not found for training");
     return;
   }
+
+  // std::cout << "Using keyframe id: " << viewpoint_cam->fid_ << std::endl;
 
   writeKeyframeUsedTimes(result_dir_ / "used_times");
 
@@ -1250,6 +1259,9 @@ void GaussianMapper::combineMappingOperations() {
                 int chunk_transformed = 0;
                 std::cout << "Calling scaledTransformVisiblePointsOfKeyframe"
                           << std::endl;
+                assert(chunk_manager_->getChunkState(chunk_coord) ==
+                           ChunkState::OPTIMIZING &&
+                       "Chunk should be in optimizing state");
                 gaussians->scaledTransformVisiblePointsOfKeyframe(
                     chunk_point_flags, diff_pose_tensor,
                     pkf->world_view_transform_, pkf->full_proj_transform_,
