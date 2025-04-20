@@ -236,6 +236,8 @@ void KeyframeQueue::generateVisibilityBasedClusters() {
 
   // Pre-warm cache for current cluster
   preloadClusterChunks();
+
+  cullSmallClusters(3);
 }
 
 // Helper to pre-warm cache for current cluster
@@ -451,6 +453,10 @@ void KeyframeQueue::notifyNewKeyframeAdded(
 
   // Otherwise, just add to existing clusters
   addKeyframeToExistingClusters(keyframe);
+
+  if (keyframes_since_last_full_clustering_ % 15 == 0) {
+    cullSmallClusters(3);
+  }
 }
 
 // Modified to handle visibility-based clusters
@@ -555,6 +561,143 @@ void KeyframeQueue::forceNextCluster() {
             << " with " << kfid_shuffle_.size() << " keyframes" << std::endl;
 
   // Pre-warm cache for the new cluster
+  preloadClusterChunks();
+}
+
+void KeyframeQueue::cullSmallClusters(int size_threshold) {
+  if (clusters_.empty()) return;
+
+  auto start_time = std::chrono::steady_clock::now();
+  auto timer = ProfilingUtils::Timer("cullSmallClusters");
+
+  // First, identify small clusters and mark them for culling
+  std::vector<bool> cull_marker(clusters_.size(), false);
+  std::vector<int> cluster_sizes(clusters_.size());
+  int culled_count = 0;
+
+  for (size_t i = 0; i < clusters_.size(); i++) {
+    cluster_sizes[i] = clusters_[i].size();
+    if (cluster_sizes[i] < size_threshold) {
+      cull_marker[i] = true;
+      culled_count++;
+    }
+  }
+
+  if (culled_count == 0) {
+    std::cout << "No small clusters to cull (< " << size_threshold
+              << " keyframes)" << std::endl;
+    return;
+  }
+
+  std::cout << "Found " << culled_count << " clusters smaller than "
+            << size_threshold << " keyframes to be culled" << std::endl;
+
+  // Now we'll reassign keyframes from small clusters to bigger ones
+  std::vector<std::vector<std::size_t>> new_clusters;
+  int reassigned_frames = 0;
+
+  // First add all large clusters to the new list
+  for (size_t i = 0; i < clusters_.size(); i++) {
+    if (!cull_marker[i]) {
+      new_clusters.push_back(clusters_[i]);
+    }
+  }
+
+  // If all clusters are marked for culling, keep at least the largest one
+  if (new_clusters.empty()) {
+    int largest_idx = 0;
+    for (size_t i = 1; i < clusters_.size(); i++) {
+      if (cluster_sizes[i] > cluster_sizes[largest_idx]) {
+        largest_idx = i;
+      }
+    }
+    cull_marker[largest_idx] = false;
+    new_clusters.push_back(clusters_[largest_idx]);
+    std::cout << "All clusters were small - keeping the largest one with "
+              << cluster_sizes[largest_idx] << " keyframes" << std::endl;
+  }
+
+  // For each small cluster, find the best matching large cluster
+  for (size_t small_idx = 0; small_idx < clusters_.size(); small_idx++) {
+    if (!cull_marker[small_idx]) continue;  // Skip large clusters
+
+    float best_similarity = -1.0f;
+    int best_large_idx = 0;
+
+    // Find most similar large cluster
+    for (size_t large_idx = 0; large_idx < new_clusters.size(); large_idx++) {
+      float total_similarity = 0.0f;
+      int comparisons = 0;
+
+      // Compare each keyframe in small cluster with a sample from large cluster
+      for (std::size_t small_kf_id : clusters_[small_idx]) {
+        // Sample a few frames from the large cluster
+        const int max_samples = 5;
+        int step = std::max(
+            1, static_cast<int>(new_clusters[large_idx].size() / max_samples));
+
+        for (size_t j = 0; j < new_clusters[large_idx].size(); j += step) {
+          std::size_t large_kf_id = new_clusters[large_idx][j];
+          total_similarity +=
+              computeChunkOverlapSimilarity(small_kf_id, large_kf_id);
+          comparisons++;
+        }
+      }
+
+      float avg_similarity =
+          comparisons > 0 ? total_similarity / comparisons : 0.0f;
+
+      // Update best match
+      if (avg_similarity > best_similarity) {
+        best_similarity = avg_similarity;
+        best_large_idx = large_idx;
+      }
+    }
+
+    // Merge small cluster into the best matching large cluster
+    std::cout << "Merging cluster " << small_idx << " ("
+              << clusters_[small_idx].size() << " keyframes) into cluster "
+              << best_large_idx << " with similarity " << best_similarity
+              << std::endl;
+
+    new_clusters[best_large_idx].insert(new_clusters[best_large_idx].end(),
+                                        clusters_[small_idx].begin(),
+                                        clusters_[small_idx].end());
+
+    reassigned_frames += clusters_[small_idx].size();
+  }
+
+  // Update the clusters
+  clusters_ = new_clusters;
+
+  // If current cluster was culled, reset to the first cluster
+  if (current_cluster_ >= clusters_.size()) {
+    current_cluster_ = 0;
+  }
+
+  // Update the shuffle if needed
+  kfid_shuffle_ = clusters_[current_cluster_];
+  kfid_shuffle_idx_ =
+      std::min(kfid_shuffle_idx_, static_cast<int>(kfid_shuffle_.size() - 1));
+
+  // Shuffle the keyframes within the current cluster
+  std::mt19937 g(std::random_device{}());
+  std::shuffle(kfid_shuffle_.begin(), kfid_shuffle_.end(), g);
+
+  // Reset the queue
+  while (!keyframe_queue_.empty()) {
+    keyframe_queue_.pop();
+  }
+
+  auto end_time = std::chrono::steady_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+      end_time - start_time);
+
+  std::cout << "Culled " << culled_count << " small clusters, reassigned "
+            << reassigned_frames << " keyframes in " << duration.count()
+            << "ms. Now have " << clusters_.size() << " clusters." << std::endl;
+
+  // Pre-warm the cache
   preloadClusterChunks();
 }
 

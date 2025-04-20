@@ -82,8 +82,6 @@ class KeyframeQueue {
       0.3f;  // Minimum similarity to consider keyframes in same cluster
   const int MAX_PRELOAD_CHUNKS =
       10;  // Max chunks to preload when switching clusters
-  const std::chrono::seconds VISIBILITY_CACHE_EXPIRY{
-      30};  // How long to keep visibility data
 
   // Helper functions
   std::vector<ChunkCoord> getOrComputeVisibleChunks(
@@ -92,4 +90,5 @@ class KeyframeQueue {
   void preloadClusterChunks();
   void addKeyframeToExistingClusters(
       std::shared_ptr<GaussianKeyframe> keyframe);
+  void cullSmallClusters(int size_threshold = 3);
 };
