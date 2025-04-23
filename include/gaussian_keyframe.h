@@ -81,6 +81,10 @@ class GaussianKeyframe {
                             float appearance_lr = 0.01);
   torch::Tensor applyAppearanceTransform(torch::Tensor& colors);
 
+  void setupStereoData(float baseline, torch::DeviceType device_type);
+  std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
+  getRightCameraTransforms() const;
+
  public:
   std::size_t fid_;
   int creation_iter_;
@@ -130,6 +134,14 @@ class GaussianKeyframe {
   torch::Tensor projection_matrix_;     ///< transform tensors
   torch::Tensor full_proj_transform_;   ///< transform tensors
   torch::Tensor camera_center_;         ///< transform tensors
+
+  bool is_stereo_ = false;
+  torch::Tensor right_original_image_;  // Pre-processed right image
+  torch::Tensor
+      world_view_transform_right_;  // Right camera world-to-view transform
+  torch::Tensor
+      full_proj_transform_right_;      // Right camera full projection transform
+  torch::Tensor camera_center_right_;  // Right camera center
 
   std::vector<Point2D> points2D_;
   std::vector<float> kps_pixel_;

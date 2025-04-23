@@ -235,3 +235,74 @@ torch::Tensor GaussianKeyframe::applyAppearanceTransform(
   // Apply affine transform: color * scale + bias
   return colors * scale + bias;
 }
+
+void GaussianKeyframe::setupStereoData(float baseline,
+                                       torch::DeviceType device_type) {
+  if (img_auxiliary_undist_.empty()) {
+    return;  // No stereo image available
+  }
+
+  is_stereo_ = true;
+
+  // Calculate right camera pose from left camera
+  Sophus::SE3f Tcw_left = this->getPosef();
+  Sophus::SE3f Twc_left = Tcw_left.inverse();
+
+  // Right camera is offset along camera's x-axis by baseline
+  Eigen::Vector3f baseline_offset(baseline, 0, 0);
+
+  // Transform baseline from camera to world coordinates
+  Eigen::Vector3f baseline_in_world =
+      Twc_left.rotationMatrix() * baseline_offset;
+
+  // Right camera position = left camera position - baseline in world
+  Eigen::Vector3f right_pos = Twc_left.translation() + baseline_in_world;
+
+  // Create right camera world-to-camera transform (same rotation, different
+  // position)
+  Sophus::SE3f Twc_right(Twc_left.rotationMatrix(), right_pos);
+  Sophus::SE3f Tcw_right = Twc_right.inverse();
+
+  // Compute and store right camera transformation matrices
+  Eigen::Matrix4f right_world_view = Tcw_right.matrix();
+  this->world_view_transform_right_ =
+      tensor_utils::EigenMatrix2TorchTensor(right_world_view, device_type)
+          .transpose(0, 1);
+
+  // The projection matrix is the same for both cameras
+  this->full_proj_transform_right_ =
+      (this->world_view_transform_right_.unsqueeze(0).bmm(
+           this->projection_matrix_.unsqueeze(0)))
+          .squeeze(0);
+
+  // Calculate and store right camera center
+  this->camera_center_right_ =
+      this->world_view_transform_right_.inverse().index(
+          {3, torch::indexing::Slice(0, 3)});
+
+  // Preprocess and store right image tensor
+  if (device_type == torch::kCUDA) {
+    cv::cuda::GpuMat right_gpu;
+    right_gpu.upload(this->img_auxiliary_undist_);
+    this->right_original_image_ =
+        tensor_utils::cvGpuMat2TorchTensor_Float32(right_gpu);
+  } else {
+    this->right_original_image_ = tensor_utils::cvMat2TorchTensor_Float32(
+        this->img_auxiliary_undist_, device_type);
+  }
+
+  // Also handle multi-resolution if needed
+  if (!gaus_pyramid_original_image_.empty()) {
+    // Create right pyramid images similar to left ones
+  }
+}
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
+GaussianKeyframe::getRightCameraTransforms() const {
+  if (!is_stereo_) {
+    throw std::runtime_error(
+        "Attempted to get right camera transforms for non-stereo keyframe");
+  }
+  return std::make_tuple(world_view_transform_right_,
+                         full_proj_transform_right_, camera_center_right_);
+}

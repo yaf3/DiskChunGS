@@ -1078,9 +1078,12 @@ void GaussianMapper::trainForOneIteration() {
 
   // Render
   auto timer_render = ProfilingUtils::Timer("render");
-  auto render_pkg =
-      GaussianRenderer::render(models, viewpoint_cam, image_height, image_width,
-                               pipe_params_, background_, override_color_);
+  auto render_pkg = GaussianRenderer::render(
+      models, viewpoint_cam, image_height, image_width, pipe_params_,
+      background_, override_color_, 1.0f, false, viewpoint_cam->FoVx_,
+      viewpoint_cam->FoVy_, viewpoint_cam->world_view_transform_,
+      viewpoint_cam->full_proj_transform_, viewpoint_cam->camera_center_);
+
   timer_render.stop();
   auto rendered_image = std::get<0>(render_pkg);
 
@@ -1115,69 +1118,21 @@ void GaussianMapper::trainForOneIteration() {
   float lambda_dssim = lambdaDssim();
   auto loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - Lssim);
 
-  // Add right frame supervision if in stereo mode
-  if (this->sensor_type_ == STEREO &&
-      viewpoint_cam->img_auxiliary_undist_.rows > 0) {
-    // Create a new keyframe for right camera (shallow copy is fine)
-    std::shared_ptr<GaussianKeyframe> right_cam =
-        std::make_shared<GaussianKeyframe>(viewpoint_cam->fid_,
-                                           viewpoint_cam->creation_iter_);
+  if (this->sensor_type_ == STEREO && viewpoint_cam->is_stereo_) {
+    // Get precomputed right image
+    torch::Tensor gt_image_right = viewpoint_cam->right_original_image_.cuda();
 
-    // Copy essential properties from left camera
-    right_cam->camera_id_ = viewpoint_cam->camera_id_;
-    right_cam->image_width_ = viewpoint_cam->image_width_;
-    right_cam->image_height_ = viewpoint_cam->image_height_;
-    right_cam->znear_ = viewpoint_cam->znear_;
-    right_cam->zfar_ = viewpoint_cam->zfar_;
-    right_cam->FoVx_ = viewpoint_cam->FoVx_;
-    right_cam->FoVy_ = viewpoint_cam->FoVy_;
-
-    // Calculate right camera pose from left camera
-    Sophus::SE3f Tcw_left = viewpoint_cam->getPosef();
-    Sophus::SE3f Twc_left = Tcw_left.inverse();
-
-    // Right camera is offset along camera's x-axis by baseline
-    float baseline = stereo_baseline_length_;
-    Eigen::Vector3f baseline_offset(baseline, 0, 0);
-
-    // Transform baseline from camera to world coordinates
-    Eigen::Vector3f baseline_in_world =
-        Twc_left.rotationMatrix() * baseline_offset;
-
-    // Right camera position = left camera position - baseline in world
-    Eigen::Vector3f right_pos = Twc_left.translation() + baseline_in_world;
-
-    // Create right camera world-to-camera transform (same rotation, different
-    // position)
-    Sophus::SE3f Twc_right(Twc_left.rotationMatrix(), right_pos);
-    Sophus::SE3f Tcw_right = Twc_right.inverse();
-
-    // Set pose for right camera
-    right_cam->setPose(Tcw_right.unit_quaternion().cast<double>(),
-                       Tcw_right.translation().cast<double>());
-
-    // Generate right camera transformation matrices
-    right_cam->set_camera_ = true;
-    right_cam->set_projection_matrix_ = true;
-    right_cam->projection_matrix_ = viewpoint_cam->projection_matrix_.clone();
-    right_cam->computeTransformTensors();
-
-    // Convert right image to tensor
-    torch::Tensor gt_image_right;
-    if (device_type_ == torch::kCUDA) {
-      cv::cuda::GpuMat right_gpu;
-      right_gpu.upload(viewpoint_cam->img_auxiliary_undist_);
-      gt_image_right =
-          tensor_utils::cvGpuMat2TorchTensor_Float32(right_gpu).cuda();
-    } else {
-      gt_image_right = tensor_utils::cvMat2TorchTensor_Float32(
-          viewpoint_cam->img_auxiliary_undist_, device_type_);
-    }
-
-    // Render from right camera viewpoint using existing renderer
-    auto render_pkg_right =
-        GaussianRenderer::render(models, right_cam, image_height, image_width,
-                                 pipe_params_, background_, override_color_);
+    // Render using the right camera transformation
+    auto render_pkg_right = GaussianRenderer::render(
+        models,
+        viewpoint_cam,  // Still use the same keyframe object
+        image_height, image_width, pipe_params_, background_, override_color_,
+        1.0f,   // scaling_modifier
+        false,  // use_override_color
+        viewpoint_cam->FoVx_, viewpoint_cam->FoVy_,
+        viewpoint_cam->world_view_transform_right_,  // Pass right transforms
+        viewpoint_cam->full_proj_transform_right_,
+        viewpoint_cam->camera_center_right_);
 
     auto rendered_image_right = std::get<0>(render_pkg_right);
 
@@ -1207,11 +1162,8 @@ void GaussianMapper::trainForOneIteration() {
     auto loss_right =
         (1.0 - lambda_dssim) * Ll1_right + lambda_dssim * (1.0 - Lssim_right);
 
-    // Weight for right frame loss (could be tuned as a hyperparameter)
-    float right_frame_weight = 1.0f;
-
     // Add right frame loss to total loss
-    loss += right_frame_weight * loss_right;
+    loss += loss_right;
   }
 
   if (opt_params_.opacity_reg_) {
@@ -1828,6 +1780,10 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
       pkf->gaus_pyramid_original_image_[l] =
           tensor_utils::cvMat2TorchTensor_Float32(img_resized, device_type_);
     }
+  }
+
+  if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
+    pkf->setupStereoData(stereo_baseline_length_, device_type_);
   }
 }
 
@@ -2480,7 +2436,9 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
 
   // Render
   auto render_pkg = GaussianRenderer::render(
-      models, pkf, height, width, pipe_params_, background_, override_color_);
+      models, pkf, height, width, pipe_params_, background_, override_color_,
+      1.0f, false, pkf->FoVx_, pkf->FoVy_, pkf->world_view_transform_,
+      pkf->full_proj_transform_, pkf->camera_center_);
 
   // Return rendered image
   chunk_manager_->releaseChunksFromOptimization(visible_chunks);
@@ -2518,9 +2476,12 @@ void GaussianMapper::renderAndRecordKeyframe(
     return;  // Early return if no valid models
   }
 
-  auto render_pkg = GaussianRenderer::render(models, pkf, pkf->image_height_,
-                                             pkf->image_width_, pipe_params_,
-                                             background_, override_color_);
+  auto render_pkg = GaussianRenderer::render(
+      models, pkf, pkf->image_height_, pkf->image_width_, pipe_params_,
+      background_, override_color_, 1.0f, false, pkf->FoVx_, pkf->FoVy_,
+      pkf->world_view_transform_, pkf->full_proj_transform_,
+      pkf->camera_center_);
+
   chunk_manager_->releaseChunksFromOptimization(visible_chunks);
   auto rendered_image = std::get<0>(render_pkg);
   torch::cuda::synchronize();

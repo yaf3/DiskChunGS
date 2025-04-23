@@ -62,7 +62,12 @@ std::
         torch::Tensor& bg_color,
         torch::Tensor& override_color,
         float scaling_modifier,
-        bool use_override_color) {
+        bool use_override_color,
+        float FoVx,
+        float FoVy,
+        torch::Tensor& world_view_transform,
+        torch::Tensor& full_proj_transform,
+        torch::Tensor& camera_center) {
   /* Render the scene.
 
      Background tensor (bg_color) must be on GPU!
@@ -154,8 +159,8 @@ std::
         torch::Tensor shs_view = pc->getFeatures().transpose(1, 2).view(
             {-1, 3, max_sh_degree * max_sh_degree});
         torch::Tensor dir_pp =
-            (pc->getXYZ() - viewpoint_camera->camera_center_.repeat(
-                                {pc->getFeatures().size(0), 1}));
+            (pc->getXYZ() -
+             camera_center.repeat({pc->getFeatures().size(0), 1}));
         auto dir_pp_normalized =
             dir_pp /
             torch::frobenius_norm(dir_pp, /*dim=*/{1}, /*keepdim=*/true);
@@ -359,14 +364,13 @@ std::
   // auto timer_raster = ProfilingUtils::Timer("raster");
 
   // Set up rasterization configuration
-  float tanfovx = std::tan(viewpoint_camera->FoVx_ * 0.5f);
-  float tanfovy = std::tan(viewpoint_camera->FoVy_ * 0.5f);
+  float tanfovx = std::tan(FoVx * 0.5f);
+  float tanfovy = std::tan(FoVy * 0.5f);
 
   GaussianRasterizationSettings raster_settings(
       image_height, image_width, tanfovx, tanfovy, bg_color, scaling_modifier,
-      viewpoint_camera->world_view_transform_,
-      viewpoint_camera->full_proj_transform_, active_sh_degree,
-      viewpoint_camera->camera_center_, false, false);
+      world_view_transform, full_proj_transform, active_sh_degree,
+      camera_center, false, false);
 
   GaussianRasterizer rasterizer(raster_settings);
 

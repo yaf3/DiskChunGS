@@ -38,6 +38,11 @@ class GaussianRenderer {
          GaussianPipelineParams& pipe,
          torch::Tensor& bg_color,
          torch::Tensor& override_color,
-         float scaling_modifier = 1.0f,
-         bool has_override_color = false);
+         float scaling_modifier,
+         bool use_override_color,
+         float FoVx,
+         float FoVy,
+         torch::Tensor& world_view_transform,
+         torch::Tensor& full_proj_transform,
+         torch::Tensor& camera_center);
 };
