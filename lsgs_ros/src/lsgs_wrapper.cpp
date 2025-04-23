@@ -40,6 +40,7 @@ GaussianSLAMWrapper::GaussianSLAMWrapper(ros::NodeHandle &nh,
   pnh_.param<std::string>("target_frame", target_frame_, "map");
   pnh_.param<std::string>("source_frame", source_frame_,
                           "zed2i_left_camera_frame");
+  pnh_.param<double>("timeout_duration", timeout_duration_, 20.0);
 
   ROS_INFO("Parameters loaded:");
   ROS_INFO("  mode: %s", mode_.c_str());
@@ -47,6 +48,7 @@ GaussianSLAMWrapper::GaussianSLAMWrapper(ros::NodeHandle &nh,
   ROS_INFO("  orb_settings_path: %s", orb_settings_path_.c_str());
   ROS_INFO("  gaussian_settings_path: %s", gaussian_settings_path_.c_str());
   ROS_INFO("  output_directory: %s", output_directory_.c_str());
+  ROS_INFO("  timeout_duration: %.1f seconds", timeout_duration_);
   ROS_INFO("  use_viewer: %d", use_viewer_);
   ROS_INFO("  slam_mode: %s", slam_mode_.c_str());
   if (slam_mode_ == "external" || slam_mode_ == "hybrid") {
@@ -56,6 +58,11 @@ GaussianSLAMWrapper::GaussianSLAMWrapper(ros::NodeHandle &nh,
   if (mode_ == "rgbd-imu" || mode_ == "stereo-imu") {
     ROS_INFO("  imu_topic: %s", imu_topic_.c_str());
   }
+
+  timeout_timer_ = nh_.createTimer(ros::Duration(1.0),
+                                   &GaussianSLAMWrapper::timeoutCallback, this);
+  status_check_timer_ = nh_.createTimer(
+      ros::Duration(1.0), &GaussianSLAMWrapper::checkMappingStatus, this);
 
   // Verify files exist
   if (!std::filesystem::exists(vocabulary_path_)) {
@@ -262,6 +269,9 @@ void GaussianSLAMWrapper::initializeGaussianMapper() {
         torch::kCUDA  // assuming CUDA is available
     );
 
+    gaussian_mapper_->setCompletionCallback(
+        [this]() { this->mapping_completed_.store(true); });
+
     mapper_thread_ = std::thread(&GaussianMapper::run_external_poses,
                                  gaussian_mapper_.get());
 
@@ -289,6 +299,7 @@ void GaussianSLAMWrapper::initializeGaussianMapper() {
 }
 
 void GaussianSLAMWrapper::monoCallback(const sensor_msgs::ImageConstPtr &msg) {
+  updateCallbackTime();
   cv_bridge::CvImageConstPtr cv_ptr;
   try {
     if (msg->encoding == "bayer_rggb8") {
@@ -321,6 +332,7 @@ void GaussianSLAMWrapper::monoCallback(const sensor_msgs::ImageConstPtr &msg) {
 void GaussianSLAMWrapper::stereoCallback(
     const sensor_msgs::ImageConstPtr &msg_left,
     const sensor_msgs::ImageConstPtr &msg_right) {
+  updateCallbackTime();
   // ROS_INFO("Received stereo images. Left encoding: %s, Right encoding: %s",
   //          msg_left->encoding.c_str(), msg_right->encoding.c_str());
 
@@ -384,6 +396,7 @@ void GaussianSLAMWrapper::stereoCallback(
 void GaussianSLAMWrapper::rgbdCallback(
     const sensor_msgs::ImageConstPtr &msg_rgb,
     const sensor_msgs::ImageConstPtr &msg_depth) {
+  updateCallbackTime();
   cv_bridge::CvImageConstPtr cv_rgb, cv_depth;
   try {
     // Convert RGB image (existing code)
@@ -501,8 +514,54 @@ void GaussianSLAMWrapper::rgbdCallback(
     return;
   }
 }
+void GaussianSLAMWrapper::timeoutCallback(const ros::TimerEvent &event) {
+  std::lock_guard<std::mutex> lock(timeout_mutex_);
+
+  // Only check for timeout if we've started receiving data and haven't already
+  // stopped
+  if (data_started_ && !stopped_) {
+    ros::Duration elapsed = ros::Time::now() - last_callback_time_;
+
+    if (elapsed.toSec() > timeout_duration_) {
+      ROS_INFO(
+          "No callbacks received for %.1f seconds, signaling data stream "
+          "stopped",
+          elapsed.toSec());
+
+      // Signal to the gaussian mapper that the external data has stopped
+      if (gaussian_mapper_) {
+        ROS_INFO("Calling signalExternalDataStopped on gaussian mapper");
+        gaussian_mapper_->signalExternalDataStopped();
+        stopped_ = true;
+      }
+    }
+  }
+}
+
+// Add a helper method to update the last callback time
+void GaussianSLAMWrapper::updateCallbackTime() {
+  std::lock_guard<std::mutex> lock(timeout_mutex_);
+  last_callback_time_ = ros::Time::now();
+  if (!data_started_) {
+    data_started_ = true;
+    ROS_INFO("Data stream has started, timeout monitoring active");
+  }
+}
+
+void GaussianSLAMWrapper::checkMappingStatus(const ros::TimerEvent &event) {
+  // Check if mapper has signaled completion
+  if (mapping_completed_) {
+    ROS_INFO("Mapping process complete, shutting down node.");
+    ros::shutdown();
+  }
+}
 
 GaussianSLAMWrapper::~GaussianSLAMWrapper() {
+  // Stop the timeout timer
+  timeout_timer_.stop();
+
+  std::cout << "Shutting down GaussianSLAMWrapper..." << std::endl;
+
   if (slam_system_) {
     slam_system_->Shutdown();
   }

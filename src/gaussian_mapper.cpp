@@ -836,6 +836,10 @@ void GaussianMapper::run() {
   writeKeyframeUsedTimes(result_dir_ / "used_times", "final");
 
   signalStop();
+
+  if (completion_callback_) {
+    completion_callback_();
+  }
 }
 
 void GaussianMapper::trainColmap() {
@@ -3017,51 +3021,85 @@ void GaussianMapper::handleNewFrameExternal(const cv::Mat& rgb_image,
 }
 
 void GaussianMapper::run_external_poses() {
+  // Process frames until we have enough keyframes
+  while (!initial_mapped_ && !isStopped()) {
+    auto maybe_frame = frame_queue_.pop(true);
+    if (!maybe_frame) continue;
+
+    auto& frame = *maybe_frame;
+    processNewFrame(frame.rgb_image, frame.depth_image, frame.pose,
+                    frame.timestamp);
+
+    if (scene_->keyframes().size() >= min_num_initial_map_kfs_) {
+      std::cout << "Initializing with " << scene_->keyframes().size()
+                << " keyframes" << std::endl;
+      initializeMapFromExternal();
+      break;
+    }
+  }
+
+  if (!initial_mapped_) {
+    std::cout << "Failed to initialize, stopping" << std::endl;
+    return;
+  }
+
+  int SLAM_stop_iter = 0;
+  // Start training loop while still processing new frames
+  std::cout << "Starting training loop" << std::endl;
+  while (!isExternalDataStopped() && !isStopped()) {
+    // Process any pending frames
+    while (auto maybe_frame = frame_queue_.pop(false)) {
+      processNewFrame(maybe_frame->rgb_image, maybe_frame->depth_image,
+                      maybe_frame->pose, maybe_frame->timestamp);
+    }
+
+    trainForOneIteration();
+    SLAM_stop_iter = getIteration();
+  }
+
   while (!isStopped()) {
-    // Process frames until we have enough keyframes
-    while (!initial_mapped_ && !isStopped()) {
-      auto maybe_frame = frame_queue_.pop(true);
-      if (!maybe_frame) continue;
+    trainForOneIteration();
+    if (getIteration() >= opt_params_.iterations_) break;
+  }
 
-      auto& frame = *maybe_frame;
-      processNewFrame(frame.rgb_image, frame.depth_image, frame.pose,
-                      frame.timestamp);
-
-      if (scene_->keyframes().size() >= min_num_initial_map_kfs_) {
-        std::cout << "Initializing with " << scene_->keyframes().size()
-                  << " keyframes" << std::endl;
-        initializeMapFromExternal();
-        break;
-      }
-    }
-
-    if (!initial_mapped_) {
-      std::cout << "Failed to initialize, stopping" << std::endl;
-      return;
-    }
-
-    // Start training loop while still processing new frames
-    std::cout << "Starting training loop" << std::endl;
-    while (getIteration() < 20000 && !isStopped()) {
-      // Process any pending frames
-      while (auto maybe_frame = frame_queue_.pop(false)) {
-        processNewFrame(maybe_frame->rgb_image, maybe_frame->depth_image,
-                        maybe_frame->pose, maybe_frame->timestamp);
-      }
-
-      trainForOneIteration();
-    }
-
-    // Final cleanup
-    renderAndRecordAllKeyframes("_shutdown");
-    savePly(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
-            "ply");
-    writeKeyframeUsedTimes(result_dir_ / "used_times", "final");
-
-    signalStop();
+  // Fourth loop: Tail gaussian optimization
+  int densify_interval = densifyInterval();
+  int n_delay_iters = densify_interval * 0.8;
+  while (getIteration() - SLAM_stop_iter < n_delay_iters ||
+         getIteration() % densify_interval < n_delay_iters ||
+         isKeepingTraining()) {
+    trainForOneIteration();
   }
 
   frame_queue_.stop();
+
+  if (render_fly_through_) {
+    auto video_dir = result_dir_ / "flythrough";
+    CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
+    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30, 10.0,
+                          0.8f, 2);
+    // render3DExplorationVideo(video_dir / "3d_exploration", 1920, 1080, 30,
+    //                          20.0f, 0.05f, false);
+  }
+
+  // For debug: basically viewer now
+  // while (getIteration() < 100000) {
+  //   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+  // }
+
+  saveTotalGaussians("_shutdown");
+  // Save and clear
+  renderAndRecordAllKeyframes("_shutdown");
+  // savePly(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
+  // "ply");
+  saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
+            "data");
+  writeKeyframeUsedTimes(result_dir_ / "used_times", "final");
+
+  signalStop();
+  if (completion_callback_) {
+    completion_callback_();
+  }
 }
 
 std::vector<std::shared_ptr<GaussianModel>>
@@ -3656,8 +3694,8 @@ void GaussianMapper::saveChunkManifest(std::filesystem::path scene_dir) {
 
     std::vector<ChunkCoord> all_chunks =
         chunk_manager_->getExistingChunkCoords();
-    std::cout << all_chunks.size() << " chunks during saveChunkManifest"
-              << std::endl;
+    // std::cout << all_chunks.size() << " chunks during saveChunkManifest"
+    //           << std::endl;
     bool success = chunk_manager_->loadChunkSync(chunk_coords[i], true, false);
     if (!success) continue;
 
@@ -4388,4 +4426,8 @@ GaussianMapper::getRecentExternalData() {
   std::unique_lock<std::mutex> lock(mutex_external_data_);
 
   return std::make_tuple(external_image_, external_pose_);
+}
+
+void GaussianMapper::setCompletionCallback(std::function<void()> callback) {
+  completion_callback_ = callback;
 }

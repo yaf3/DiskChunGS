@@ -89,6 +89,17 @@ class GaussianSLAMWrapper {
   std::mutex imu_mutex_;  // Mutex for thread-safe access to IMU buffer
   double last_processed_image_ts_ = 0;  // Timestamp of the last processed image
 
+  // Timeout-related members
+  ros::Timer timeout_timer_;        // Timer to check for timeouts
+  ros::Time last_callback_time_;    // Time of the last callback
+  bool data_started_ = false;       // Flag to track if data has started
+  bool stopped_ = false;            // Flag to track if we've already stopped
+  double timeout_duration_ = 10.0;  // Default timeout duration in seconds
+  std::mutex
+      timeout_mutex_;  // Mutex for thread-safe access to timeout variables
+  std::atomic<bool> mapping_completed_{false};
+  ros::Timer status_check_timer_;
+
   // Callback methods
   void monoCallback(const sensor_msgs::ImageConstPtr &msg);
   void stereoCallback(const sensor_msgs::ImageConstPtr &left,
@@ -96,9 +107,12 @@ class GaussianSLAMWrapper {
   void rgbdCallback(const sensor_msgs::ImageConstPtr &rgb,
                     const sensor_msgs::ImageConstPtr &depth);
   void imuCallback(const sensor_msgs::ImuConstPtr &msg);  // Added IMU callback
+  void timeoutCallback(const ros::TimerEvent &event);  // Added timeout callback
+  void checkMappingStatus(const ros::TimerEvent &event);
 
   // Helper methods
   void initializeSLAMSystem();
   void initializeGaussianMapper();
   bool getExternalPose(Sophus::SE3f &pose, double timestamp);
+  void updateCallbackTime();  // Helper to update the last callback time
 };

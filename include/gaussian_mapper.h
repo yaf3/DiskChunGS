@@ -471,6 +471,13 @@ class GaussianMapper {
   std::tuple<const cv::Mat, const Sophus::SE3f> getRecentExternalData();
   void run_external_poses();
 
+  bool isExternalDataStopped() { return external_data_stopped_; }
+  void signalExternalDataStopped() { external_data_stopped_ = true; }
+
+  bool external_data_stopped_ = false;
+  std::function<void()> completion_callback_;
+  void setCompletionCallback(std::function<void()> callback);
+
   // Member variables for external pose handling
   std::mutex mutex_new_frame_;
   Sophus::SE3f last_keyframe_pose_;
