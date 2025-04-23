@@ -209,7 +209,13 @@ ChunkManager::ChunkManager(const GaussianModelParams& model_params,
 }
 
 // Destructor
-ChunkManager::~ChunkManager() { shutdown(); }
+ChunkManager::~ChunkManager() {
+  // Check if already shut down
+  if (is_shutting_down_.load()) {
+    return;  // Already shut down, nothing to do
+  }
+  shutdown();
+}
 
 // Initialize thread pool
 void ChunkManager::initializeThreadPool(int num_threads) {
@@ -1178,8 +1184,16 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::loadVisibleChunks(
 
         if (chunk && chunk->getGaussians()) {
           result_chunks.push_back(chunk);
+        } else {
+          std::cout << "Warning: Loaded chunk is null or invalid: " << coord.x
+                    << "," << coord.y << "," << coord.z << std::endl;
         }
       }
+    } else {
+      std::cout << "Warning: Chunk load timed out for: " << load_coords[i].x
+                << "," << load_coords[i].y << "," << load_coords[i].z
+                << std::endl;
+      // Handle timeout case if needed
     }
   }
 
@@ -1383,6 +1397,8 @@ void ChunkManager::addPointsToChunks(
     float cameras_extent) {
   torch::NoGradGuard thread_no_grad;
   int min_new_points_threshold = 10;
+  std::cout << "addPointsToChunks called with " << points.size(0) << " points"
+            << std::endl;
 
   // Skip if not enough points
   if (points.size(0) < min_new_points_threshold) {
@@ -1396,6 +1412,9 @@ void ChunkManager::addPointsToChunks(
   // Group points by chunk
   auto [unique_chunks, inverse_indices, points_per_chunk] =
       groupPointsByChunk(points_cuda);
+
+  std::cout << "Adding points to " << unique_chunks.size(0) << " chunks"
+            << std::endl;
 
   // Use a vector to track processing tasks
   std::vector<std::future<void>> processing_tasks;
@@ -1413,6 +1432,10 @@ void ChunkManager::addPointsToChunks(
     // Extract points for this chunk
     torch::Tensor chunk_points = points_cuda.index({chunk_mask}).clone();
     torch::Tensor chunk_colors = colors_cuda.index({chunk_mask}).clone();
+
+    std::cout << "Adding " << chunk_points.sizes()[0]
+              << " points to chunk: " << coord.x << "," << coord.y << ","
+              << coord.z << std::endl;
 
     // Skip if not enough points
     if (chunk_points.size(0) < min_new_points_threshold) {
@@ -1569,7 +1592,27 @@ void ChunkManager::shutdown() {
 // Emergency shutdown without saving anything
 void ChunkManager::shutdownWithoutSaving() {
   std::cout << "ChunkManager emergency shutdown..." << std::endl;
+
+  bool expected = false;
+  if (!is_shutting_down_.compare_exchange_strong(expected, true)) {
+    std::cout << "Shutdown already in progress, ignoring duplicate call"
+              << std::endl;
+    return;  // Already shutting down
+  }
+
   should_terminate_ = true;
+
+  // Stop the LRU thread
+  {
+    std::unique_lock<std::mutex> lock(lru_mutex_);
+    stop_lru_thread_ = true;
+    lru_cv_.notify_all();
+  }
+
+  // Join the LRU thread if it's running
+  if (lru_eviction_thread_.joinable()) {
+    lru_eviction_thread_.join();
+  }
 
   // Just shutdown the thread pool
   shutdownThreadPool();
