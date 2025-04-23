@@ -15,7 +15,11 @@
 
 class KeyframeQueue {
  public:
-  KeyframeQueue(std::shared_ptr<GaussianScene> scene, size_t queue_size = 10);
+  KeyframeQueue(std::shared_ptr<GaussianScene> scene,
+                size_t queue_size = 10,
+                float similarity_threshold = 0.30f,
+                int auto_distribute = 4,
+                const std::map<std::size_t, float>* loss_map = nullptr);
 
   // Set chunk manager reference
   void setChunkManager(std::shared_ptr<ChunkManager> chunk_manager);
@@ -57,6 +61,10 @@ class KeyframeQueue {
       int width = 800,
       int height = 600);
 
+  std::unordered_map<std::size_t, int> getKfsUsedTimes() const {
+    return kfs_used_times_;
+  }
+
  private:
   std::shared_ptr<GaussianScene> scene_;
   size_t queue_size_;
@@ -68,6 +76,8 @@ class KeyframeQueue {
   bool kfid_shuffled_;
   std::queue<std::shared_ptr<GaussianKeyframe>> keyframe_queue_;
   std::unordered_map<std::size_t, int> kfs_used_times_;
+  const std::map<std::size_t, float>* kfs_loss_ptr_;
+  int auto_distribute_k_factor_;
 
   // Visibility-based clustering
   std::vector<std::vector<std::size_t>> clusters_;
@@ -78,8 +88,7 @@ class KeyframeQueue {
 
   // Thresholds and constants
   const int RECLUSTER_THRESHOLD = 15;
-  const float SIMILARITY_THRESHOLD =
-      0.3f;  // Minimum similarity to consider keyframes in same cluster
+  float similarity_threshold_;
   const int MAX_PRELOAD_CHUNKS =
       10;  // Max chunks to preload when switching clusters
 

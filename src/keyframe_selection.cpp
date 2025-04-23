@@ -13,15 +13,21 @@
 
 // Constructor
 KeyframeQueue::KeyframeQueue(std::shared_ptr<GaussianScene> scene,
-                             size_t queue_size)
+                             size_t queue_size,
+                             float similarity_threshold,
+                             int auto_distribute,
+                             const std::map<std::size_t, float>* loss_map)
     : scene_(scene),
       queue_size_(queue_size),
       kfid_shuffled_(false),
       kfid_shuffle_idx_(0),
       current_cluster_(0),
       cluster_iterations_(0),
-      iterations_per_cluster_(200),
-      keyframes_since_last_full_clustering_(0) {
+      iterations_per_cluster_(30),
+      keyframes_since_last_full_clustering_(0),
+      similarity_threshold_(similarity_threshold),
+      auto_distribute_k_factor_(auto_distribute),
+      kfs_loss_ptr_(loss_map) {
   // No initialization needed for visibility-based clustering yet
 }
 
@@ -134,12 +140,8 @@ void KeyframeQueue::generateVisibilityBasedClusters() {
     working_clusters.push_back({kf_id});
   }
 
-  // Limit the number of clusters to create
-  const int target_clusters = std::max(
-      5, std::min(20, static_cast<int>(valid_keyframe_ids.size() / 15)));
-
-  // Merge until we reach the target number of clusters
-  while (working_clusters.size() > target_clusters) {
+  // Merge until best similarity is below threshold
+  while (working_clusters.size() > 1) {
     float best_similarity = -1.0f;
     int best_i = -1, best_j = -1;
 
@@ -180,7 +182,7 @@ void KeyframeQueue::generateVisibilityBasedClusters() {
     }
 
     // If the best similarity is too low, stop merging
-    if (best_similarity < SIMILARITY_THRESHOLD || best_i < 0 || best_j < 0) {
+    if (best_similarity < similarity_threshold_ || best_i < 0 || best_j < 0) {
       break;
     }
 
@@ -235,7 +237,7 @@ void KeyframeQueue::generateVisibilityBasedClusters() {
   std::cout << " keyframes" << std::endl;
 
   // Pre-warm cache for current cluster
-  preloadClusterChunks();
+  // preloadClusterChunks();
 
   cullSmallClusters(3);
 }
@@ -280,7 +282,8 @@ void KeyframeQueue::preloadClusterChunks() {
             << current_cluster_ << std::endl;
 }
 
-// Modified fillQueue to use visibility-based clustering
+// Modified fillQueue method to use loss prioritization when all keyframes in a
+// cluster are exhausted
 void KeyframeQueue::fillQueue() {
   // Check if we should generate clusters
   if (!kfid_shuffled_) {
@@ -312,9 +315,7 @@ void KeyframeQueue::fillQueue() {
       keyframe_queue_.pop();
     }
 
-    // Pre-warm cache for new cluster
-    preloadClusterChunks();
-    return;  // Return after switching clusters and prewarming cache
+    return;  // Return after switching clusters
   }
 
   // Keep filling until we reach desired size or run out of options
@@ -334,6 +335,52 @@ void KeyframeQueue::fillQueue() {
           auto it = scene_->keyframes().find(fid);
           if (it != scene_->keyframes().end()) {
             it->second->remaining_times_of_use_ += 1;
+          }
+        }
+
+        // Apply loss-based prioritization here (moved from queue empty check)
+        // Only do this when we've exhausted all keyframes in the cluster
+        if ((auto_distribute_k_factor_ > 0) && kfs_loss_ptr_ &&
+            !kfs_loss_ptr_->empty()) {
+          // Create a vector of keyframe ID and loss pairs (only for current
+          // cluster)
+          std::vector<std::pair<std::size_t, float>> loss_pairs;
+
+          // Only collect losses for keyframes in the current cluster
+          for (auto fid : kfid_shuffle_) {
+            auto loss_it = kfs_loss_ptr_->find(fid);
+            if (loss_it != kfs_loss_ptr_->end()) {
+              loss_pairs.push_back(*loss_it);
+            }
+          }
+
+          if (!loss_pairs.empty()) {
+            // Calculate k (number of keyframes to prioritize)
+            int k = std::max(1, static_cast<int>(loss_pairs.size() /
+                                                 auto_distribute_k_factor_));
+
+            // Use nth_element instead of sort for better efficiency - just like
+            // GaussianMapper
+            std::nth_element(loss_pairs.begin(), loss_pairs.begin() + k,
+                             loss_pairs.end(),
+                             [](const std::pair<std::size_t, float>& a,
+                                const std::pair<std::size_t, float>& b) {
+                               return a.second > b.second;
+                             });
+
+            // Give extra usage times to high-loss keyframes
+            for (int i = 0; i < k && i < loss_pairs.size(); ++i) {
+              auto it = scene_->keyframes().find(loss_pairs[i].first);
+              if (it != scene_->keyframes().end() && it->second) {
+                // Add additional usage time
+                it->second->remaining_times_of_use_ += 1;
+
+                std::cout << "Added extra usage time to high-loss keyframe "
+                          << loss_pairs[i].first
+                          << " (loss: " << loss_pairs[i].second << ")"
+                          << std::endl;
+              }
+            }
           }
         }
       }
@@ -356,6 +403,9 @@ void KeyframeQueue::fillQueue() {
       break;
     }
   }
+
+  // Remove the original loss-based prioritization that happened on empty queue
+  // This has been moved to the cluster exhaustion point above
 }
 
 // Add a single keyframe to existing clusters
@@ -398,7 +448,7 @@ void KeyframeQueue::addKeyframeToExistingClusters(
   }
 
   // Add to the best cluster or create a new one if none is suitable
-  if (best_cluster >= 0 && best_similarity > SIMILARITY_THRESHOLD) {
+  if (best_cluster >= 0 && best_similarity > similarity_threshold_) {
     clusters_[best_cluster].push_back(keyframe->fid_);
 
     // If we're adding to the current cluster, update the shuffle
@@ -561,7 +611,7 @@ void KeyframeQueue::forceNextCluster() {
             << " with " << kfid_shuffle_.size() << " keyframes" << std::endl;
 
   // Pre-warm cache for the new cluster
-  preloadClusterChunks();
+  // preloadClusterChunks();
 }
 
 void KeyframeQueue::cullSmallClusters(int size_threshold) {
@@ -698,7 +748,7 @@ void KeyframeQueue::cullSmallClusters(int size_threshold) {
             << "ms. Now have " << clusters_.size() << " clusters." << std::endl;
 
   // Pre-warm the cache
-  preloadClusterChunks();
+  // preloadClusterChunks();
 }
 
 void KeyframeQueue::visualizeClusters(const std::string& output_file,
