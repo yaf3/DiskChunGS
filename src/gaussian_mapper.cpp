@@ -4100,21 +4100,6 @@ void GaussianMapper::initializeMapFromExternal() {
   initial_mapped_ = true;
 }
 
-// void GaussianMapper::setRecentExternalData(const cv::Mat& rgb_image,
-//                                            const Sophus::SE3f& pose) {
-//   std::unique_lock<std::mutex> lock(mutex_external_data_);
-
-//   external_image_ = rgb_image.clone();
-//   external_pose_ = pose;
-// }
-
-// std::tuple<const cv::Mat, const Sophus::SE3f>
-// GaussianMapper::getRecentExternalData() {
-//   std::unique_lock<std::mutex> lock(mutex_external_data_);
-
-//   return std::make_tuple(external_image_, external_pose_);
-// }
-
 // Frame implementation
 GaussianMapper::Frame::Frame(const cv::Mat& rgb,
                              const cv::Mat& depth,
@@ -4190,7 +4175,7 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
   try {
     // First, update external data without holding the main lock
     // std::cout << "[ProcessFrame] Updating external data..." << std::endl;
-    // setRecentExternalData(rgb_image, pose);
+    setRecentExternalData(rgb_image, pose);
 
     // Check if this should be a keyframe - use a separate short lock
     bool should_create_keyframe = false;
@@ -4379,6 +4364,8 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
       }
     }
 
+    keyframe_queue_->notifyNewKeyframeAdded(new_kf);
+
     // std::cout << "[ProcessFrame] Successfully completed" << std::endl;
 
   } catch (const std::exception& e) {
@@ -4386,4 +4373,19 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
               << e.what() << std::endl;
     throw;  // Re-throw after logging
   }
+}
+
+void GaussianMapper::setRecentExternalData(const cv::Mat& rgb_image,
+                                           const Sophus::SE3f& pose) {
+  std::unique_lock<std::mutex> lock(mutex_external_data_);
+
+  external_image_ = rgb_image.clone();
+  external_pose_ = pose;
+}
+
+std::tuple<const cv::Mat, const Sophus::SE3f>
+GaussianMapper::getRecentExternalData() {
+  std::unique_lock<std::mutex> lock(mutex_external_data_);
+
+  return std::make_tuple(external_image_, external_pose_);
 }

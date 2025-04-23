@@ -258,23 +258,21 @@ void ImGuiViewer::run() {
       if (!init_Twc_set_)
         pMapDrawer_->GetOpenGLCameraMatrix(false, TcwInit, glmTwcInit, OwInit);
     } else if (external_mode_) {
-      // Todo: External mode for chunked approach
-      // Get the external pose when available
-      // auto [external_img, external_pose] =
-      //     pGausMapper_->getRecentExternalData();
-      // if (!external_img.empty()) {
-      //   // external_pose is Tcw, so invert to get Twc first
-      //   Eigen::Matrix4f Twc = external_pose.inverse().matrix();
-      //   // Convert to OpenGL format
-      //   glmTwc = trans4x4Eigen2glm(Twc);
-      //   // Setup camera center
-      //   Ow = glm::mat4(1.0f);
-      //   Ow[3][0] = Twc(0, 3);
-      //   Ow[3][1] = Twc(1, 3);
-      //   Ow[3][2] = Twc(2, 3);
-      //   // Set Tcw for renderer
-      //   Tcw = external_pose;
-      // }
+      auto [external_img, external_pose] =
+          pGausMapper_->getRecentExternalData();
+      if (!external_img.empty()) {
+        // external_pose is Tcw, so invert to get Twc first
+        Eigen::Matrix4f Twc = external_pose.inverse().matrix();
+        // Convert to OpenGL format
+        glmTwc = trans4x4Eigen2glm(Twc);
+        // Setup camera center
+        Ow = glm::mat4(1.0f);
+        Ow[3][0] = Twc(0, 3);
+        Ow[3][1] = Twc(1, 3);
+        Ow[3][2] = Twc(2, 3);
+        // Set Tcw for renderer
+        Tcw = external_pose;
+      }
     }
     if (tracking_vision_) {
       glm::vec3 cam_target = glm::vec3(Ow[3][0], Ow[3][1], Ow[3][2]);
@@ -390,77 +388,74 @@ void ImGuiViewer::run() {
       }
     }
 
-    // Todo: External mode for chunked approach
-    // if (external_mode_) {
-    //   cv::Mat SLAM_img_to_show;
-    //   // cv::Mat SLAM_img_with_text = pSlamFrameDrawer_->DrawFrame(1.0f);
-    //   auto [external_img, external_pose] =
-    //       pGausMapper_->getRecentExternalData();
-    //   if (!external_img.empty()) {
-    //     cv::Mat SLAM_img_with_text = external_img;
-    //     if (SLAM_image_viewer_scale_ != 1.0f) {
-    //       int width = rendered_image_width_;
-    //       int height = static_cast<int>(SLAM_img_with_text.rows *
-    //                                     SLAM_image_viewer_scale_);
-    //       cv::resize(SLAM_img_with_text, SLAM_img_with_text,
-    //                  cv::Size(width, height));
-    //       SLAM_img_to_show = cv::Mat(height, padded_sub_image_width_,
-    //       CV_8UC3,
-    //                                  cv::Vec3f(0, 0, 0));
-    //     } else {
-    //       SLAM_img_to_show = cv::Mat(image_height_, padded_sub_image_width_,
-    //                                  CV_8UC3, cv::Vec3f(0, 0, 0));
-    //     }
-    //     cv::Rect SLAM_image_rect(0, 0, SLAM_img_with_text.cols,
-    //                              SLAM_img_with_text.rows);
-    //     SLAM_img_with_text.copyTo(SLAM_img_to_show(SLAM_image_rect));
-    //     // Upload SLAM frame
-    //     glBindTexture(GL_TEXTURE_2D, SLAM_img_texture);
-    //     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, SLAM_img_to_show.cols,
-    //                  SLAM_img_to_show.rows, 0, GL_RGB, GL_UNSIGNED_BYTE,
-    //                  (unsigned char*)SLAM_img_to_show.data);
-    //     // Create an ImGui window to show the SLAM frame
-    //     ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Once);
-    //     ImGui::SetNextWindowSize(
-    //         ImVec2(rendered_image_width_ + 12, SLAM_img_to_show.rows + 40),
-    //         ImGuiCond_Once);
-    //     {
-    //       ImGui::Begin("External Frame");
-    //       ImGui::Image((void*)(intptr_t)SLAM_img_texture,
-    //                    ImVec2(SLAM_img_to_show.cols, SLAM_img_to_show.rows));
-    //       ImGui::End();
-    //     }
-    //   }
-    //   //--------------Draw current gaussian mapper frame image--------------
-    //   if (show_current_rendered_) {
-    //     // Render gaussian mapper frame
-    //     cv::Mat rendered_img = pGausMapper_->renderFromPose(
-    //         Tcw, rendered_image_width_, rendered_image_height_, false);
-    //     cv::Mat rendered_img_to_show =
-    //         cv::Mat(rendered_image_height_, padded_sub_image_width_,
-    //         CV_32FC3,
-    //                 cv::Vec3f(0.0f, 0.0f, 0.0f));
-    //     rendered_img.copyTo(rendered_img_to_show(image_rect_sub));
-    //     // Upload rendered frame
-    //     glBindTexture(GL_TEXTURE_2D, rendered_img_texture);
-    //     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, rendered_img_to_show.cols,
-    //                  rendered_img_to_show.rows, 0, GL_RGB, GL_FLOAT,
-    //                  (float*)rendered_img_to_show.data);
-    //     // Create an ImGui window to show the rendered frame
-    //     ImGui::SetNextWindowPos(ImVec2(0, SLAM_img_to_show.rows + 40),
-    //                             ImGuiCond_Once);
-    //     ImGui::SetNextWindowSize(
-    //         ImVec2(rendered_image_width_ + 12, rendered_img_to_show.rows +
-    //         40), ImGuiCond_Once);
-    //     {
-    //       ImGui::Begin("Current Rendered Frame");
-    //       ImGui::Image(
-    //           (void*)(intptr_t)rendered_img_texture,
-    //           ImVec2(rendered_img_to_show.cols, rendered_img_to_show.rows));
-    //       ImGui::End();
-    //     }
-    //   }
-    // }
+    if (external_mode_) {
+      cv::Mat SLAM_img_to_show;
+      // cv::Mat SLAM_img_with_text = pSlamFrameDrawer_->DrawFrame(1.0f);
+      auto [external_img, external_pose] =
+          pGausMapper_->getRecentExternalData();
+      if (!external_img.empty()) {
+        cv::Mat SLAM_img_with_text = external_img;
+        if (SLAM_image_viewer_scale_ != 1.0f) {
+          int width = rendered_image_width_;
+          int height = static_cast<int>(SLAM_img_with_text.rows *
+                                        SLAM_image_viewer_scale_);
+          cv::resize(SLAM_img_with_text, SLAM_img_with_text,
+                     cv::Size(width, height));
+          SLAM_img_to_show = cv::Mat(height, padded_sub_image_width_, CV_8UC3,
+                                     cv::Vec3f(0, 0, 0));
+        } else {
+          SLAM_img_to_show = cv::Mat(image_height_, padded_sub_image_width_,
+                                     CV_8UC3, cv::Vec3f(0, 0, 0));
+        }
+        cv::Rect SLAM_image_rect(0, 0, SLAM_img_with_text.cols,
+                                 SLAM_img_with_text.rows);
+        SLAM_img_with_text.copyTo(SLAM_img_to_show(SLAM_image_rect));
+        // Upload SLAM frame
+        glBindTexture(GL_TEXTURE_2D, SLAM_img_texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, SLAM_img_to_show.cols,
+                     SLAM_img_to_show.rows, 0, GL_RGB, GL_UNSIGNED_BYTE,
+                     (unsigned char*)SLAM_img_to_show.data);
+        // Create an ImGui window to show the SLAM frame
+        ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Once);
+        ImGui::SetNextWindowSize(
+            ImVec2(rendered_image_width_ + 12, SLAM_img_to_show.rows + 40),
+            ImGuiCond_Once);
+        {
+          ImGui::Begin("External Frame");
+          ImGui::Image((void*)(intptr_t)SLAM_img_texture,
+                       ImVec2(SLAM_img_to_show.cols, SLAM_img_to_show.rows));
+          ImGui::End();
+        }
+      }
+      //--------------Draw current gaussian mapper frame image--------------
+      if (show_current_rendered_) {
+        // Render gaussian mapper frame
+        cv::Mat rendered_img = pGausMapper_->renderFromPose(
+            Tcw, rendered_image_width_, rendered_image_height_, false);
+        cv::Mat rendered_img_to_show =
+            cv::Mat(rendered_image_height_, padded_sub_image_width_, CV_32FC3,
+                    cv::Vec3f(0.0f, 0.0f, 0.0f));
+        rendered_img.copyTo(rendered_img_to_show(image_rect_sub));
+        // Upload rendered frame
+        glBindTexture(GL_TEXTURE_2D, rendered_img_texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, rendered_img_to_show.cols,
+                     rendered_img_to_show.rows, 0, GL_RGB, GL_FLOAT,
+                     (float*)rendered_img_to_show.data);
+        // Create an ImGui window to show the rendered frame
+        ImGui::SetNextWindowPos(ImVec2(0, SLAM_img_to_show.rows + 40),
+                                ImGuiCond_Once);
+        ImGui::SetNextWindowSize(
+            ImVec2(rendered_image_width_ + 12, rendered_img_to_show.rows + 40),
+            ImGuiCond_Once);
+        {
+          ImGui::Begin("Current Rendered Frame");
+          ImGui::Image(
+              (void*)(intptr_t)rendered_img_texture,
+              ImVec2(rendered_img_to_show.cols, rendered_img_to_show.rows));
+          ImGui::End();
+        }
+      }
+    }
     //--------------Draw main window image--------------
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     // Draw main window image
