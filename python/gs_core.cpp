@@ -20,6 +20,10 @@ void cleanup() {
               << std::endl;
     g_pGausMapper->signalStopEvalMode();  // Use the eval-specific shutdown
     std::cout << "Cleanup complete." << std::endl;
+
+    // Reset the global pointer to prevent double-destruction
+    g_pGausMapper.reset();
+    std::cout << "Global pointer reset." << std::endl;
   }
 }
 
