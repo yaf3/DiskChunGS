@@ -32,36 +32,80 @@ namespace tensor_utils {
 
 inline void deleter(void* arg) {}
 
-/**
- * @brief
- *
- * @param cv::Mat {rows, cols, channels}
- * @param torch::DeviceType
- * @return torch::Tensor {channels, rows, cols}
- */
 inline torch::Tensor cvMat2TorchTensor_Float32(cv::Mat& mat,
                                                torch::DeviceType device_type) {
-  torch::Tensor mat_tensor, tensor;
-
-  switch (mat.channels()) {
-    case 1: {
-      mat_tensor = torch::from_blob(mat.data, /*sizes=*/{mat.rows, mat.cols});
-      tensor = mat_tensor.clone().to(device_type);
-    } break;
-
-    case 3: {
-      mat_tensor = torch::from_blob(
-          mat.data, /*sizes=*/{mat.rows, mat.cols, mat.channels()});
-      tensor = mat_tensor.clone().to(device_type);
-      tensor = tensor.permute({2, 0, 1});
-    } break;
-
-    default:
-      std::cerr << "The mat has unsupported number of channels!" << std::endl;
-      break;
+  // First make sure we have a continuous matrix
+  cv::Mat continuous_mat;
+  if (!mat.isContinuous()) {
+    continuous_mat = mat.clone();
+  } else {
+    continuous_mat = mat;
   }
 
-  return tensor.contiguous();
+  // Convert to float32 if not already
+  cv::Mat float_mat;
+  if (continuous_mat.type() != CV_32FC1 && continuous_mat.type() != CV_32FC3) {
+    continuous_mat.convertTo(
+        float_mat, continuous_mat.channels() == 1 ? CV_32FC1 : CV_32FC3,
+        1.0 / 255.0);  // Scale to 0-1 range if needed
+  } else {
+    float_mat = continuous_mat;
+  }
+
+  // Set explicit tensor options with proper dtype
+  auto options = torch::TensorOptions()
+                     .dtype(torch::kFloat32)
+                     .layout(torch::kStrided)
+                     .device(torch::kCPU);  // Always create on CPU first
+
+  torch::Tensor cpu_tensor;
+
+  try {
+    switch (float_mat.channels()) {
+      case 1: {
+        cpu_tensor =
+            torch::from_blob(float_mat.data, {float_mat.rows, float_mat.cols},
+                             options)
+                .clone();  // Clone to own data
+        break;
+      }
+      case 3: {
+        cpu_tensor = torch::from_blob(
+                         float_mat.data,
+                         {float_mat.rows, float_mat.cols, float_mat.channels()},
+                         options)
+                         .clone();  // Clone to own data
+        cpu_tensor = cpu_tensor.permute({2, 0, 1});
+        break;
+      }
+      default:
+        std::cerr << "Mat has " << float_mat.channels()
+                  << " channels (unsupported)" << std::endl;
+        return torch::empty({0}, options);
+    }
+
+    // Only transfer to device if needed
+    if (device_type != torch::kCPU) {
+      // Add error handling for CUDA transfer
+      try {
+        return cpu_tensor.to(device_type, true).contiguous();
+      } catch (const c10::Error& e) {
+        std::cerr << "CUDA transfer error: " << e.what() << std::endl;
+        // Fall back to CPU
+        return cpu_tensor.contiguous();
+      }
+    }
+
+    return cpu_tensor.contiguous();
+
+  } catch (const std::exception& e) {
+    std::cerr << "Exception in tensor conversion: " << e.what() << std::endl;
+    std::cerr << "Mat info - rows: " << float_mat.rows
+              << ", cols: " << float_mat.cols
+              << ", channels: " << float_mat.channels()
+              << ", type: " << float_mat.type() << std::endl;
+    return torch::empty({0}, options);
+  }
 }
 
 /**
@@ -106,36 +150,86 @@ inline cv::Mat torchTensor2CvMat_Float32(torch::Tensor& tensor) {
  * @param cv::cuda::GpuMat {rows, cols, channels}
  * @return torch::Tensor {channels, rows, cols}
  */
-inline torch::Tensor cvGpuMat2TorchTensor_Float32(cv::cuda::GpuMat& mat) {
-  torch::Tensor mat_tensor, tensor;
-  int64_t step = mat.step / sizeof(float);
-
-  switch (mat.channels()) {
-    case 1: {
-      std::vector<int64_t> strides = {step, 1};
-      mat_tensor =
-          torch::from_blob(mat.data,
-                           /*sizes=*/{mat.rows, mat.cols}, strides, deleter,
-                           torch::TensorOptions().device(torch::kCUDA));
-      tensor = mat_tensor.clone();
-    } break;
-
-    case 3: {
-      std::vector<int64_t> strides = {step,
-                                      static_cast<int64_t>(mat.channels()), 1};
-      mat_tensor = torch::from_blob(
-          mat.data,
-          /*sizes=*/{mat.rows, mat.cols, mat.channels()}, strides, deleter,
-          torch::TensorOptions().device(torch::kCUDA));
-      tensor = mat_tensor.clone().permute({2, 0, 1});
-    } break;
-
-    default:
-      std::cerr << "The mat has unsupported number of channels!" << std::endl;
-      break;
+/**
+ * @brief Convert cv::cuda::GpuMat to torch::Tensor with enhanced robustness
+ *
+ * @param mat cv::cuda::GpuMat {rows, cols, channels}
+ * @param device_type Target device for tensor (default: torch::kCUDA)
+ * @return torch::Tensor {channels, rows, cols}
+ */
+inline torch::Tensor cvGpuMat2TorchTensor_Float32(
+    cv::cuda::GpuMat& mat,
+    torch::DeviceType device_type = torch::kCUDA) {
+  // First make sure we're working with a float32 GPU mat
+  cv::cuda::GpuMat float_mat;
+  if (mat.type() != CV_32FC1 && mat.type() != CV_32FC3) {
+    // Convert to float32 and scale to 0-1 range if needed
+    cv::cuda::GpuMat tmp_mat;
+    mat.convertTo(tmp_mat, mat.channels() == 1 ? CV_32FC1 : CV_32FC3,
+                  1.0 / 255.0);
+    float_mat = tmp_mat;
+  } else {
+    float_mat = mat;
   }
 
-  return tensor.contiguous();
+  torch::Tensor tensor;
+
+  try {
+    switch (float_mat.channels()) {
+      case 1: {
+        int64_t step = float_mat.step / sizeof(float);
+        std::vector<int64_t> strides = {step, 1};
+        auto mat_tensor = torch::from_blob(
+            float_mat.data,
+            /*sizes=*/{float_mat.rows, float_mat.cols}, strides, deleter,
+            torch::TensorOptions().device(torch::kCUDA).dtype(torch::kFloat32));
+        tensor = mat_tensor.clone();
+      } break;
+
+      case 3: {
+        int64_t step = float_mat.step / sizeof(float);
+        std::vector<int64_t> strides = {
+            step, static_cast<int64_t>(float_mat.channels()), 1};
+        auto mat_tensor = torch::from_blob(
+            float_mat.data,
+            /*sizes=*/{float_mat.rows, float_mat.cols, float_mat.channels()},
+            strides, deleter,
+            torch::TensorOptions().device(torch::kCUDA).dtype(torch::kFloat32));
+        tensor = mat_tensor.clone().permute({2, 0, 1});
+      } break;
+
+      default:
+        std::cerr << "The mat has " << float_mat.channels()
+                  << " channels (unsupported)" << std::endl;
+        return torch::empty(
+            {0},
+            torch::TensorOptions().device(torch::kCUDA).dtype(torch::kFloat32));
+    }
+
+    // Only transfer to different device if needed
+    if (device_type != torch::kCUDA) {
+      try {
+        return tensor.to(device_type, true).contiguous();
+      } catch (const c10::Error& e) {
+        std::cerr << "Device transfer error: " << e.what() << std::endl;
+        // Fall back to current device
+        return tensor.contiguous();
+      }
+    }
+
+    return tensor.contiguous();
+
+  } catch (const std::exception& e) {
+    std::cerr << "Exception in GPU tensor conversion: " << e.what()
+              << std::endl;
+    std::cerr << "GpuMat info - rows: " << float_mat.rows
+              << ", cols: " << float_mat.cols
+              << ", channels: " << float_mat.channels()
+              << ", type: " << float_mat.type() << std::endl;
+    return torch::empty(
+        {0},
+        torch::TensorOptions().device(torch::kCUDA).dtype(torch::kFloat32));
+  }
 }
 
 /**

@@ -158,7 +158,7 @@ class GaussianMapper {
   bool isKeepingTraining();
   bool isdoingGausPyramidTraining();
   bool isdoingInactiveGeoDensify();
-  bool isdoingStereoDensify();
+  bool isdoingDepthDensify();
 
   void setPositionLearningRateInit(const float lr);
   void setFeatureLearningRate(const float lr);
@@ -189,12 +189,6 @@ class GaussianMapper {
 
   void loadPly(std::filesystem::path ply_path,
                std::filesystem::path camera_path = "");
-
-  void handleNewFrameExternal(const cv::Mat &rgb_image,
-                              const cv::Mat &depth_or_right_image,
-                              const Sophus::SE3f &pose,
-                              const double timestamp);
-  void run_external_poses();
 
  protected:
   bool hasMetInitialMappingConditions();
@@ -232,7 +226,7 @@ class GaussianMapper {
   void increasePcdByKeyframeInactiveGeoDensify(
       std::shared_ptr<GaussianKeyframe> pkf);
 
-  void increasePcdByStereoReprojection(std::shared_ptr<GaussianKeyframe> pkf);
+  void increasePcdByDepthReconstruction(std::shared_ptr<GaussianKeyframe> pkf);
 
   // bool needInterruptTraining();
   // void setInterruptTraining(const bool interrupt_training);
@@ -294,6 +288,37 @@ class GaussianMapper {
       int count = 5);
   void initializeChunkManagement();
 
+ private:
+  // Frame structure for the queue
+  struct Frame {
+    cv::Mat rgb_image;
+    cv::Mat depth_image;
+    Sophus::SE3f pose;
+    double timestamp;
+
+    Frame(const cv::Mat &rgb,
+          const cv::Mat &depth,
+          const Sophus::SE3f &p,
+          double ts);
+  };
+
+  class LeakyFrameQueue {
+   public:
+    explicit LeakyFrameQueue(size_t max_size = 20);
+    void push(Frame &&frame);
+    std::optional<Frame> pop(bool wait = true);
+    void stop();
+    bool empty() const;
+    size_t size() const;
+
+   private:
+    std::deque<Frame> queue_;
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    const size_t max_size_;
+    bool stopped_{false};
+  };
+
  public:
   // Parameters
   std::filesystem::path config_file_path_;
@@ -348,6 +373,7 @@ class GaussianMapper {
  public:
   std::map<std::size_t, float> kfs_loss_;
   std::map<std::size_t, int> kfs_used_times_;
+  float keyframe_similarity_threshold_ = 0.30f;
 
   // Status
   bool initial_mapped_;
@@ -364,17 +390,18 @@ class GaussianMapper {
   SystemSensorType sensor_type_;
 
   float monocular_inactive_geo_densify_max_pixel_dist_ = 20.0;
-  float stereo_densify_subsample_ratio_ = 0.1;
+  float depth_densify_subsample_ratio_ = 0.1;
   float stereo_baseline_length_ = 0.0f;
   int stereo_min_disparity_ = 0;
   int stereo_num_disparity_ = 128;
+
   cv::Mat stereo_Q_;
   cv::Ptr<cv::cuda::StereoSGM> stereo_cv_sgm_;
-  float RGBD_min_depth_ = 0.0f;
-  float RGBD_max_depth_ = 100.0f;
+  float min_depth_ = 0.0f;
+  float max_depth_ = 100.0f;
 
   bool inactive_geo_densify_ = true;
-  bool stereo_densify_ = false;
+  bool depth_densify_ = false;
   int depth_cached_ = 0;
   int max_depth_cached_ = 1;
   torch::Tensor depth_cache_points_;
@@ -415,9 +442,41 @@ class GaussianMapper {
   // Tools
   std::random_device rd_;
 
+  cv::Mat external_image_;
+  Sophus::SE3f external_pose_;
+  LeakyFrameQueue frame_queue_;
+
   // Mutex
   std::mutex mutex_status_;
   std::mutex mutex_settings_;
   std::mutex
       mutex_render_;  ///< the model is suppose to be read-only from outside
+  std::mutex mutex_external_data_;
+
+ public:
+  void initializeMapFromExternal();
+  bool isKeyframe(const Sophus::SE3f &current_pose, double current_time);
+  void processNewFrame(const cv::Mat &rgb_image,
+                       const cv::Mat &depth_or_right_image,
+                       const Sophus::SE3f &pose,
+                       const double timestamp);
+  void handleNewFrameExternal(const cv::Mat &rgb_image,
+                              const cv::Mat &depth_or_right_image,
+                              const Sophus::SE3f &pose,
+                              const double timestamp);
+
+  void setRecentExternalData(const cv::Mat &rgb_image,
+                             const Sophus::SE3f &pose);
+
+  std::tuple<const cv::Mat, const Sophus::SE3f> getRecentExternalData();
+  void run_external_poses();
+
+  // Member variables for external pose handling
+  std::mutex mutex_new_frame_;
+  Sophus::SE3f last_keyframe_pose_;
+  float min_keyframe_translation_{
+      0.25f};                           // Minimum translation for new keyframe
+  float min_keyframe_rotation_{0.15f};  // Minimum rotation in radians
+  double last_keyframe_timestamp_{0.0};
+  float min_keyframe_time_{0.5f};  // Minimum time between keyframes
 };

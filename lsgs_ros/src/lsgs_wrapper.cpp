@@ -35,6 +35,7 @@ GaussianSLAMWrapper::GaussianSLAMWrapper(ros::NodeHandle &nh,
   pnh_.param<std::string>("rgb_topic", rgb_topic_, "/camera/rgb/image_raw");
   pnh_.param<std::string>("depth_topic", depth_topic_,
                           "/camera/depth/image_raw");
+  pnh_.param<std::string>("imu_topic", imu_topic_, "/boxi/zed2i/imu/data");
   pnh_.param<std::string>("slam_mode", slam_mode_, "orbslam");
   pnh_.param<std::string>("target_frame", target_frame_, "map");
   pnh_.param<std::string>("source_frame", source_frame_,
@@ -52,6 +53,9 @@ GaussianSLAMWrapper::GaussianSLAMWrapper(ros::NodeHandle &nh,
     ROS_INFO("  target_frame: %s", target_frame_.c_str());
     ROS_INFO("  source_frame: %s", source_frame_.c_str());
   }
+  if (mode_ == "rgbd-imu" || mode_ == "stereo-imu") {
+    ROS_INFO("  imu_topic: %s", imu_topic_.c_str());
+  }
 
   // Verify files exist
   if (!std::filesystem::exists(vocabulary_path_)) {
@@ -67,12 +71,12 @@ GaussianSLAMWrapper::GaussianSLAMWrapper(ros::NodeHandle &nh,
   }
 
   // Initialize subscribers based on mode
-  if (mode_ == "stereo") {
+  if (mode_ == "stereo" || mode_ == "stereo-imu") {
     left_sub_.subscribe(nh_, left_topic_, 1);
     right_sub_.subscribe(nh_, right_topic_, 1);
     sync_.reset(new message_filters::Synchronizer<sync_pol>(
         sync_pol(30), left_sub_, right_sub_));
-  } else if (mode_ == "rgbd") {
+  } else if (mode_ == "rgbd" || mode_ == "rgbd-imu") {
     rgb_sub_.subscribe(nh_, rgb_topic_, 1);
     depth_sub_.subscribe(nh_, depth_topic_, 1);
     rgbd_sync_.reset(new message_filters::Synchronizer<sync_pol>(
@@ -103,6 +107,17 @@ GaussianSLAMWrapper::GaussianSLAMWrapper(ros::NodeHandle &nh,
     mono_sub_ =
         nh_.subscribe(mono_topic_, 1, &GaussianSLAMWrapper::monoCallback, this);
     ROS_INFO("Mono topic: %s", mono_topic_.c_str());
+    // Subscribe to IMU data if using an IMU mode
+  } else if (mode_ == "rgbd-imu") {
+    ROS_INFO("Registering RGB-D callback...");
+    ROS_INFO("RGB topic: %s", rgb_sub_.getTopic().c_str());
+    ROS_INFO("Depth topic: %s", depth_sub_.getTopic().c_str());
+    rgbd_sync_->registerCallback(
+        boost::bind(&GaussianSLAMWrapper::rgbdCallback, this, _1, _2));
+    imu_sub_ = nh_.subscribe(imu_topic_, 1000,
+                             &GaussianSLAMWrapper::imuCallback, this);
+    ROS_INFO("Subscribed to IMU topic: %s", imu_topic_.c_str());
+
   } else {
     throw std::runtime_error("Invalid mode: " + mode_);
   }
@@ -110,10 +125,20 @@ GaussianSLAMWrapper::GaussianSLAMWrapper(ros::NodeHandle &nh,
   ROS_INFO("GaussianSLAMWrapper initialization complete!");
 }
 
-bool GaussianSLAMWrapper::getExternalPose(Sophus::SE3f &pose) {
+bool GaussianSLAMWrapper::getExternalPose(Sophus::SE3f &pose,
+                                          double timestamp) {
+  // First attempt with waitForTransform to block until the transform is
+  // available
+  if (!tfBuffer.canTransform(target_frame_, source_frame_, ros::Time(timestamp),
+                             ros::Duration(0.5))) {
+    ROS_WARN("Transform from %s to %s not available yet, waiting...",
+             source_frame_.c_str(), target_frame_.c_str());
+    return false;
+  }
   try {
-    geometry_msgs::TransformStamped transformStamped =
-        tfBuffer.lookupTransform(target_frame_, source_frame_, ros::Time(0));
+    // Now try to lookup the transform
+    geometry_msgs::TransformStamped transformStamped = tfBuffer.lookupTransform(
+        target_frame_, source_frame_, ros::Time(timestamp));
 
     // Get the rotation quaternion and translation
     Eigen::Quaternionf quat(transformStamped.transform.rotation.w,
@@ -154,20 +179,51 @@ void GaussianSLAMWrapper::initializeSLAMSystem() {
   ROS_INFO("Initializing SLAM system...");
   try {
     ORB_SLAM3::System::eSensor system_mode;
+    // Select the appropriate sensor mode
     if (mode_ == "stereo") {
       system_mode = ORB_SLAM3::System::STEREO;
+    } else if (mode_ == "stereo-imu") {
+      system_mode = ORB_SLAM3::System::IMU_STEREO;
     } else if (mode_ == "rgbd") {
       system_mode = ORB_SLAM3::System::RGBD;
+    } else if (mode_ == "rgbd-imu") {
+      system_mode =
+          ORB_SLAM3::System::IMU_RGBD;  // Using the built-in IMU_RGBD mode
     } else {
       system_mode = ORB_SLAM3::System::MONOCULAR;
     }
 
     slam_system_ = std::make_shared<ORB_SLAM3::System>(
         vocabulary_path_, orb_settings_path_, system_mode);
+    ROS_INFO("SLAM system object created successfully with mode: %d",
+             static_cast<int>(system_mode));
     ROS_INFO("SLAM system object created successfully");
   } catch (const std::exception &e) {
     ROS_ERROR("Exception during SLAM system initialization: %s", e.what());
     throw;
+  }
+}
+
+void GaussianSLAMWrapper::imuCallback(const sensor_msgs::ImuConstPtr &msg) {
+  std::lock_guard<std::mutex> lock(imu_mutex_);
+
+  // Extract IMU measurements
+  const double ax = msg->linear_acceleration.x;
+  const double ay = msg->linear_acceleration.y;
+  const double az = msg->linear_acceleration.z;
+  const double gx = msg->angular_velocity.x;
+  const double gy = msg->angular_velocity.y;
+  const double gz = msg->angular_velocity.z;
+  const double timestamp = msg->header.stamp.toSec();
+
+  // Create IMU measurement point and add to buffer
+  ORB_SLAM3::IMU::Point imu_point(ax, ay, az, gx, gy, gz, timestamp);
+  imu_buffer_.push_back(imu_point);
+
+  // Optionally, limit buffer size to prevent unbounded growth
+  const size_t MAX_IMU_BUFFER_SIZE = 1000;
+  if (imu_buffer_.size() > MAX_IMU_BUFFER_SIZE) {
+    imu_buffer_.erase(imu_buffer_.begin());
   }
 }
 
@@ -299,7 +355,7 @@ void GaussianSLAMWrapper::stereoCallback(
   try {
     if (slam_mode_ == "external") {
       Sophus::SE3f Twc;
-      if (getExternalPose(Twc)) {
+      if (getExternalPose(Twc, timestamp)) {
         // Process frame with GT pose
         gaussian_mapper_->handleNewFrameExternal(
             cv_left->image, cv_right->image, Twc, timestamp);
@@ -330,7 +386,7 @@ void GaussianSLAMWrapper::rgbdCallback(
     const sensor_msgs::ImageConstPtr &msg_depth) {
   cv_bridge::CvImageConstPtr cv_rgb, cv_depth;
   try {
-    // Convert RGB image
+    // Convert RGB image (existing code)
     if (msg_rgb->encoding == "bayer_rggb8") {
       cv_rgb = cv_bridge::toCvCopy(msg_rgb, sensor_msgs::image_encodings::RGB8);
     } else {
@@ -338,7 +394,7 @@ void GaussianSLAMWrapper::rgbdCallback(
           cv_bridge::toCvShare(msg_rgb, sensor_msgs::image_encodings::RGB8);
     }
 
-    // Handle depth image based on its encoding
+    // Handle depth image (existing code)
     cv::Mat depth_converted;
     if (msg_depth->encoding == sensor_msgs::image_encodings::TYPE_32FC1) {
       cv_depth = cv_bridge::toCvShare(msg_depth,
@@ -354,23 +410,65 @@ void GaussianSLAMWrapper::rgbdCallback(
       depth_converted = cv_depth->image;
     }
 
-    // ROS_INFO("Image sizes - RGB: %dx%d, Depth: %dx%d", cv_rgb->image.cols,
-    //          cv_rgb->image.rows, cv_depth->image.cols, cv_depth->image.rows);
-
     // Get timestamp from message
     double timestamp = msg_rgb->header.stamp.toSec();
 
+    // CRITICAL: Process IMU data for the frame
+    std::vector<ORB_SLAM3::IMU::Point> vImuMeas;
+    {
+      std::lock_guard<std::mutex> lock(imu_mutex_);
+
+      // Find relevant IMU measurements for this frame
+      if (mode_ == "rgbd-imu") {
+        // Only use IMU measurements between the last frame and this one
+        double min_time = last_processed_image_ts_;
+        std::cout << "min_time: " << min_time << std::endl;
+        if (min_time == 0) {
+          // For the first frame, use a window before the current timestamp
+          min_time = timestamp - 0.1;  // 100ms window before first frame
+        }
+
+        // Collect all IMU measurements in the window
+        for (const auto &imu_point : imu_buffer_) {
+          if (imu_point.t >= min_time && imu_point.t <= timestamp) {
+            vImuMeas.push_back(imu_point);
+          }
+        }
+
+        // Log IMU integration status
+        if (vImuMeas.empty()) {
+          ROS_WARN(
+              "No IMU measurements for frame at time %.3f (last frame: %.3f)",
+              timestamp, last_processed_image_ts_);
+          ROS_WARN("Buffer has %zu IMU measurements", imu_buffer_.size());
+          if (!imu_buffer_.empty()) {
+            ROS_WARN("IMU buffer time range: %.3f to %.3f",
+                     imu_buffer_.front().t, imu_buffer_.back().t);
+          }
+        } else {
+          ROS_INFO("Using %zu IMU measurements for frame at time %.3f",
+                   vImuMeas.size(), timestamp);
+        }
+
+        // Update last processed timestamp
+        last_processed_image_ts_ = timestamp;
+      }
+    }
+
+    // Tracking logic
     try {
       if (slam_mode_ == "external") {
         Sophus::SE3f Twc;
-        if (getExternalPose(Twc)) {
+        if (getExternalPose(Twc, timestamp)) {
+          // std::cout << "handleNewFrameExternal called" << std::endl;
           gaussian_mapper_->handleNewFrameExternal(
               cv_rgb->image, cv_depth->image, Twc, timestamp);
+          // std::cout << "handleNewFrameExternal finished" << std::endl;
         }
 
       } else if (slam_mode_ == "hybrid") {
         Sophus::SE3f Twc;
-        if (getExternalPose(Twc)) {
+        if (getExternalPose(Twc, timestamp)) {
           try {
             slam_system_->TrackRGBDWithPose(
                 cv_rgb->image.clone(), depth_converted.clone(), Twc, timestamp,
@@ -388,14 +486,12 @@ void GaussianSLAMWrapper::rgbdCallback(
           return;
         }
 
-        try {
-          slam_system_->TrackRGBD(cv_rgb->image, depth_converted, timestamp,
-                                  std::vector<ORB_SLAM3::IMU::Point>(),
-                                  std::to_string(msg_rgb->header.seq));
-        } catch (const std::exception &e) {
-          ROS_ERROR("Exception in TrackRGBD: %s", e.what());
-        }
+        // Track with or without IMU data
+        slam_system_->TrackRGBD(cv_rgb->image, depth_converted, timestamp,
+                                vImuMeas, std::to_string(msg_rgb->header.seq));
       }
+      // Other modes (external, hybrid) remain unchanged
+
     } catch (const std::exception &e) {
       ROS_ERROR("Exception in TrackRGBD: %s", e.what());
     }
