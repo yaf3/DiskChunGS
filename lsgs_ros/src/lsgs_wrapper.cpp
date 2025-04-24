@@ -160,20 +160,20 @@ bool GaussianSLAMWrapper::getExternalPose(Sophus::SE3f &pose,
     // This is Twc (world to camera) from ROS
     Sophus::SE3f Twc_ros(quat, trans);
 
-    if (first_frame) {
-      T_init = Twc_ros;
-      first_frame = false;
-      pose = Sophus::SE3f();  // Identity for first frame
-      return true;
-    }
+    // if (first_frame) {
+    //   T_init = Twc_ros;
+    //   first_frame = false;
+    //   pose = Sophus::SE3f();  // Identity for first frame
+    //   return true;
+    // }
 
     // Sophus::SE3f T_init;
 
     // Get relative transform from first frame
-    Sophus::SE3f Twc_relative = T_init.inverse() * Twc_ros;
+    // Sophus::SE3f Twc_relative = T_init.inverse() * Twc_ros;
 
     // ORBSLAM expects Tcw (camera to world), so invert
-    pose = Twc_relative.inverse();
+    pose = Twc_ros.inverse();
 
     return true;
   } catch (tf2::TransformException &ex) {

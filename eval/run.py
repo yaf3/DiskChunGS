@@ -93,6 +93,8 @@ if __name__ == "__main__":
     parser.add_argument("gt_path", type=str, default=None)
     parser.add_argument("--correct_scale", action="store_true")
     parser.add_argument("--show_plot", action="store_true")
+    parser.add_argument("--skip_trajectory_eval", action="store_true", 
+                        help="Skip trajectory evaluation and use ground truth poses for rendering")
     args = parser.parse_args()
     dirs = os.listdir(args.result_path)
     # load model
@@ -103,7 +105,6 @@ if __name__ == "__main__":
     shutdown_name = None    
     for file_name in dirs:
         if ("shutdown" in file_name):
-            print("found it")
             shutdown_name = file_name
             break
     if shutdown_name is None:
@@ -158,13 +159,8 @@ if __name__ == "__main__":
     else:
         gt_color_paths, gt_tstamp = loadTUM(args.gt_path)
 
-    #### pose evaluation
-    # load estimated poses
-    pose_path = os.path.join(args.result_path, "CameraTrajectory_TUM.txt")
-    traj_est = file_interface.read_tum_trajectory_file(pose_path)
-    # load gt pose
+    # Load ground truth poses for either trajectory evaluation or direct rendering
     if "kitti" in args.gt_path.lower():
-
         def loadKITTIPose(gt_path):
             scene = gt_path.split("/")[-1]
             gt_file = gt_path.replace(scene, "poses/{}.txt".format(scene))
@@ -181,7 +177,6 @@ if __name__ == "__main__":
                     quat[3:] = Rotation.from_matrix(c2w[:3, :3]).as_quat()
                     pose_quat.append(quat)
             pose_quat = np.array(pose_quat)
-
             return pose_quat
 
         pose_quat = loadKITTIPose(args.gt_path)
@@ -190,7 +185,6 @@ if __name__ == "__main__":
             orientations_quat_wxyz=pose_quat[:, 3:],
             timestamps=np.array(gt_tstamp),
         )
-
     elif "replica" in args.gt_path.lower():
         gt_file = os.path.join(args.gt_path, "pose_TUM.txt")
         traj_ref = file_interface.read_tum_trajectory_file(gt_file)
@@ -227,50 +221,66 @@ if __name__ == "__main__":
         gt_file = os.path.join(args.gt_path, "groundtruth.txt")
         traj_ref = file_interface.read_tum_trajectory_file(gt_file)
 
-    traj_ref, traj_est = sync.associate_trajectories(
-        traj_ref, traj_est, max_diff=0.08
-    )
-    traj_ref.align(traj_est, True)
-    poses = traj_est.poses_se3
-    result = main_ape.ape(
-        traj_ref,
-        traj_est,
-        est_name="traj",
-        pose_relation=PoseRelation.translation_part,
-        align=True,
-        correct_scale=args.correct_scale,
-    )
-    result_rotation_part = main_ape.ape(
-        traj_ref,
-        traj_est,
-        est_name="rot",
-        pose_relation=PoseRelation.rotation_part,
-        align=True,
-        correct_scale=args.correct_scale,
-    )
+    # If not skipping trajectory eval, load estimated poses and evaluate them
+    if not args.skip_trajectory_eval:
+        pose_path = os.path.join(args.result_path, "CameraTrajectory_TUM.txt")
+        traj_est = file_interface.read_tum_trajectory_file(pose_path)
+        
+        traj_ref_sync, traj_est = sync.associate_trajectories(
+            traj_ref, traj_est, max_diff=0.08
+        )
+        traj_ref_sync.align(traj_est, True)
+        poses = traj_est.poses_se3
+        tstamp = traj_est.timestamps
+        
+        result = main_ape.ape(
+            traj_ref_sync,
+            traj_est,
+            est_name="traj",
+            pose_relation=PoseRelation.translation_part,
+            align=True,
+            correct_scale=args.correct_scale,
+        )
+        result_rotation_part = main_ape.ape(
+            traj_ref_sync,
+            traj_est,
+            est_name="rot",
+            pose_relation=PoseRelation.rotation_part,
+            align=True,
+            correct_scale=args.correct_scale,
+        )
 
-    out_path = os.path.join(args.result_path, "metrics_traj.txt")
-    with open(out_path, "w") as fp:
-        fp.write(result.pretty_str())
-        fp.write(result_rotation_part.pretty_str())
-    print(result)
+        out_path = os.path.join(args.result_path, "metrics_traj.txt")
+        with open(out_path, "w") as fp:
+            fp.write(result.pretty_str())
+            fp.write(result_rotation_part.pretty_str())
+        print(result)
 
-    if args.show_plot:
-        traj_est_aligned = copy.deepcopy(traj_est)
-        traj_est_aligned.align(traj_ref, correct_scale=True)
-        fig = plt.figure()
-        traj_by_label = {
-            "estimate (not aligned)": traj_est,
-            "estimate (aligned)": traj_est_aligned,
-            "reference": traj_ref,
-        }
-        plot.trajectories(fig, traj_by_label, plot.PlotMode.xyz)
-        plt.show()
+        if args.show_plot:
+            traj_est_aligned = copy.deepcopy(traj_est)
+            traj_est_aligned.align(traj_ref_sync, correct_scale=True)
+            fig = plt.figure()
+            traj_by_label = {
+                "estimate (not aligned)": traj_est,
+                "estimate (aligned)": traj_est_aligned,
+                "reference": traj_ref_sync,
+            }
+            plot.trajectories(fig, traj_by_label, plot.PlotMode.xyz)
+            plt.show()
+    else:
+        # When skipping trajectory eval, use ground truth poses directly
+        print("Skipping trajectory evaluation, using ground truth poses for rendering")
+        poses = traj_ref.poses_se3
+        tstamp = traj_ref.timestamps
+        
+        # Write a note to metrics file
+        out_path = os.path.join(args.result_path, "metrics_traj.txt")
+        with open(out_path, "w") as fp:
+            fp.write("Trajectory evaluation skipped - using ground truth poses for rendering\n")
 
     ## render and evaluation
-    tstamp = traj_est.timestamps
     associations = associate_frames(tstamp, gt_tstamp)
-
+    
     os.makedirs(os.path.join(args.result_path, "image"), exist_ok=True)
     if "_0" in args.result_path:
         os.makedirs(os.path.join(args.result_path, "gt"), exist_ok=True)
@@ -339,16 +349,31 @@ if __name__ == "__main__":
     np.savetxt(os.path.join(args.result_path, "ssim.txt"), ssim_list)
     np.savetxt(os.path.join(args.result_path, "lpips.txt"), lpips_list)
 
-    with open(os.path.join(args.result_path, "TrackingTime.txt"), "r") as fin:
-        tracking_time = fin.readlines()
-    tracking_time = np.array(tracking_time[:-3]).astype(np.float32)
+    # Handle tracking time evaluation if file exists
+    tracking_time_path = os.path.join(args.result_path, "TrackingTime.txt")
+    if os.path.exists(tracking_time_path):
+        with open(tracking_time_path, "r") as fin:
+            tracking_time = fin.readlines()
+        if len(tracking_time) > 3:  # Check if there's enough data to process
+            tracking_time = np.array(tracking_time[:-3]).astype(np.float32)
+            tracking_fps = 1 / np.mean(tracking_time) if np.mean(tracking_time) > 0 else 0
+        else:
+            tracking_time = np.array([0])
+            tracking_fps = 0
+    else:
+        tracking_time = np.array([0])
+        tracking_fps = 0
 
     with open(os.path.join(args.result_path, "eval.txt"), "w") as fout:
         fout.write("psnr: {}\n".format(np.mean(psnr_list)))
         fout.write("ssim: {}\n".format(np.mean(ssim_list)))
         fout.write("lpips: {}\n".format(np.mean(lpips_list)))
-        fout.write("tracking s: {}\n".format(np.mean(tracking_time)))
-        fout.write("tracking FPS: {}\n".format(1 / np.mean(tracking_time)))
+        
+        if not args.skip_trajectory_eval:
+            fout.write("tracking s: {}\n".format(np.mean(tracking_time)))
+            fout.write("tracking FPS: {}\n".format(tracking_fps))
+        else:
+            fout.write("tracking evaluation skipped (using ground truth poses)\n")
 
         fout.write("rendering ms: {}\n".format(np.mean(render_time)))
         fout.write("rendering FPS: {}\n".format(1000 / np.mean(render_time)))
