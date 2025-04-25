@@ -23,7 +23,7 @@ KeyframeQueue::KeyframeQueue(std::shared_ptr<GaussianScene> scene,
       kfid_shuffle_idx_(0),
       current_cluster_(0),
       cluster_iterations_(0),
-      iterations_per_cluster_(30),
+      iterations_per_cluster_(200),
       keyframes_since_last_full_clustering_(0),
       similarity_threshold_(similarity_threshold),
       auto_distribute_k_factor_(auto_distribute),
@@ -307,8 +307,9 @@ void KeyframeQueue::fillQueue() {
     std::mt19937 g(std::random_device{}());
     std::shuffle(kfid_shuffle_.begin(), kfid_shuffle_.end(), g);
 
-    std::cout << "Switching to visibility cluster " << current_cluster_
-              << " with " << kfid_shuffle_.size() << " keyframes" << std::endl;
+    // std::cout << "Switching to visibility cluster " << current_cluster_
+    //           << " with " << kfid_shuffle_.size() << " keyframes" <<
+    //           std::endl;
 
     // When switching clusters, clear the queue for fresh keyframes
     while (!keyframe_queue_.empty()) {
@@ -375,10 +376,10 @@ void KeyframeQueue::fillQueue() {
                 // Add additional usage time
                 it->second->remaining_times_of_use_ += 1;
 
-                std::cout << "Added extra usage time to high-loss keyframe "
-                          << loss_pairs[i].first
-                          << " (loss: " << loss_pairs[i].second << ")"
-                          << std::endl;
+                // std::cout << "Added extra usage time to high-loss keyframe "
+                //           << loss_pairs[i].first
+                //           << " (loss: " << loss_pairs[i].second << ")"
+                //           << std::endl;
               }
             }
           }
@@ -459,23 +460,24 @@ void KeyframeQueue::addKeyframeToExistingClusters(
                                    static_cast<int>(kfid_shuffle_.size() - 1));
     }
 
-    std::cout << "Added new keyframe " << keyframe->fid_
-              << " to visibility cluster " << best_cluster << " (now has "
-              << clusters_[best_cluster].size() << " keyframes)" << std::endl;
+    // std::cout << "Added new keyframe " << keyframe->fid_
+    //           << " to visibility cluster " << best_cluster << " (now has "
+    //           << clusters_[best_cluster].size() << " keyframes)" <<
+    //           std::endl;
   } else {
     // Create a new cluster for this keyframe
     clusters_.push_back({keyframe->fid_});
 
-    std::cout << "Created new visibility cluster " << (clusters_.size() - 1)
-              << " for keyframe " << keyframe->fid_ << std::endl;
+    // std::cout << "Created new visibility cluster " << (clusters_.size() - 1)
+    //           << " for keyframe " << keyframe->fid_ << std::endl;
   }
 
   auto end_time = std::chrono::steady_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_time - start_time);
   // Print cluster information
-  std::cout << "Adding keyframe to queue took " << duration.count() << "ms"
-            << std::endl;
+  // std::cout << "Adding keyframe to queue took " << duration.count() << "ms"
+  //           << std::endl;
 }
 
 // Notify that a new keyframe was added
@@ -634,8 +636,8 @@ void KeyframeQueue::cullSmallClusters(int size_threshold) {
   }
 
   if (culled_count == 0) {
-    std::cout << "No small clusters to cull (< " << size_threshold
-              << " keyframes)" << std::endl;
+    // std::cout << "No small clusters to cull (< " << size_threshold
+    //           << " keyframes)" << std::endl;
     return;
   }
 
