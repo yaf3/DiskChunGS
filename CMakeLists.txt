@@ -168,6 +168,7 @@ add_library(
     include/render_flythrough.h
     include/keyframe_selection.h
     include/nanoflann.hpp
+    include/debugging_utils.h
     src/gaussian_keyframe.cpp
     src/gaussian_model.cpp
     src/gaussian_parameters.cpp
@@ -178,6 +179,7 @@ add_library(
     src/chunk_manager.cpp
     src/render_flythrough.cpp
     src/keyframe_selection.cpp
+    src/debugging_utils.cpp
 )
 target_link_libraries(
     gaussian_mapper

@@ -76,8 +76,13 @@ RUN wget https://github.com/Kitware/CMake/releases/download/v3.22.1/cmake-3.22.1
 RUN apt-get update && apt-get install -y ninja-build
 
 RUN apt-get install python3-tk -y
-RUN pip3 install optuna optuna-dashboard
+RUN pip3 install optuna optuna-dashboard networkx==2.8.8 torchmetrics evo
 RUN apt-get install ffmpeg -y
+
+# RUN build.sh
+# RUN pip install opencv-python==4.10.0.84
+
+# RUN build_pytorch.sh
 
 # Add ROS setup to bashrc
 RUN echo "source /opt/ros/noetic/setup.bash" >> /root/.bashrc
