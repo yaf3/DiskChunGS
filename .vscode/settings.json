@@ -93,7 +93,13 @@
         "__config": "cpp",
         "core": "cpp",
         "specialfunctions": "cpp",
-        "geometry": "cpp"
+        "geometry": "cpp",
+        "ios": "cpp",
+        "gsl_narrow": "cpp",
+        "__split_buffer": "cpp",
+        "__node_handle": "cpp",
+        "queue": "cpp",
+        "stack": "cpp"
     },
     "editor.formatOnSave": true,
 }
