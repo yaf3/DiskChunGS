@@ -304,7 +304,7 @@ ChunkState ChunkManager::getChunkState(const ChunkCoord& coord) {
   if (it != chunk_metadata_.end()) {
     return it->second.state.load();
   }
-  std::cout << "Warning: No metadata found for this coord!" << std::endl;
+  throw std::runtime_error("Warning: No metadata found for this coord!");
   return ChunkState::INACTIVE;
 }
 
@@ -382,6 +382,7 @@ std::future<bool> ChunkManager::loadChunkAsync(const ChunkCoord& coord,
                                                bool load_for_optimization,
                                                bool skip_busy_chunks) {
   // std::cout << "Called loadChunkAsync" << std::endl;
+  assert(chunkExists(coord) && "Chunk must exist in order to load it!");
   ChunkState current_state = getChunkState(coord);
   // std::cout << "loadChunkAsync: " << static_cast<int>(current_state)
   //           << std::endl;
@@ -513,6 +514,7 @@ std::future<bool> ChunkManager::loadChunkAsync(const ChunkCoord& coord,
 std::future<bool> ChunkManager::saveChunkAsync(const ChunkCoord& coord,
                                                int priority) {
   // std::cout << "Called saveChunkAsync" << std::endl;
+  assert(chunkExists(coord) && "Chunk must exist in order to save it!");
   ChunkState current_state = getChunkState(coord);
 
   // Can't save if not active
@@ -658,7 +660,7 @@ bool ChunkManager::processLoadOperation(const ChunkCoord& coord,
       end_time - start_time);
   std::cout << "Chunk [" << coord.x << "," << coord.y << "," << coord.z
             << "]: " << "Load completed in " << duration.count() << "ms"
-            << " QL: " << is_active << std::endl;
+            << std::endl;
   return true;
 }
 
@@ -863,6 +865,7 @@ std::future<bool> ChunkManager::createWaitFuture(const ChunkCoord& coord,
 std::future<bool> ChunkManager::deleteChunkAsync(const ChunkCoord& coord,
                                                  int priority) {
   // std::cout << "Called deleteChunkAsync" << std::endl;
+  assert(chunkExists(coord) && "Chunk must exist in order to delete it!");
   ChunkState current_state = getChunkState(coord);
 
   // If already deleting, return a future that waits for completion
@@ -1137,6 +1140,7 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::loadVisibleChunks(
   for (const auto& coord : visible_chunk_coords) {
     if (!chunkExists(coord)) continue;
 
+    // std::cout << "getChunkState called in loadVisibleChunks" << std::endl;
     ChunkState state = getChunkState(coord);
 
     if (state == ChunkState::ACTIVE) {
@@ -1224,6 +1228,7 @@ void ChunkManager::preloadVisibleChunks(
     // Check if chunk has been seen before
     if (!chunkExists(coord)) continue;
 
+    std::cout << "getChunkState called in preloadVisibleChunks" << std::endl;
     ChunkState state = getChunkState(coord);
 
     if (state == ChunkState::ACTIVE) {
@@ -1397,7 +1402,7 @@ void ChunkManager::addPointsToChunks(
     float cameras_extent) {
   torch::NoGradGuard thread_no_grad;
   int min_new_points_threshold = 10;
-  std::cout << "addPointsToChunks called with " << points.size(0) << " points"
+  std::cout << "addPointsToChunks called with " << points.size(0) << "points "
             << std::endl;
 
   // Skip if not enough points
@@ -1439,6 +1444,7 @@ void ChunkManager::addPointsToChunks(
 
     // Skip if not enough points
     if (chunk_points.size(0) < min_new_points_threshold) {
+      std::cout << "Skip as not enough points" << std::endl;
       continue;
     }
 
@@ -1453,26 +1459,29 @@ void ChunkManager::addPointsToChunks(
           bool needs_loading = false;
 
           if (chunkExists(coord)) {
+            // std::cout << "Chunk exists, checking state" << std::endl;
             ChunkState state = getChunkState(coord);
             if (state == ChunkState::INACTIVE) {
+              std::cout << "Chunk is inactive, loading..." << std::endl;
               // Start loading the chunk
               load_future = loadChunkAsync(coord, 10, true, false);
               needs_loading = true;
             } else if (state == ChunkState::ACTIVE) {
+              std::cout << "Chunk is active, no loading needed" << std::endl;
               // Transition to OPTIMIZING
               transitionChunkState(coord, ChunkState::ACTIVE,
                                    ChunkState::OPTIMIZING);
             }
-          }
 
-          // Wait for load to complete if necessary
-          if (needs_loading) {
-            try {
-              bool loaded = load_future.get();
-              if (!loaded) return;  // Loading failed
-            } catch (const std::exception& e) {
-              std::cerr << "Error loading chunk: " << e.what() << std::endl;
-              return;
+            // Wait for load to complete if necessary
+            if (needs_loading) {
+              try {
+                bool loaded = load_future.get();
+                if (!loaded) return;  // Loading failed
+              } catch (const std::exception& e) {
+                std::cerr << "Error loading chunk: " << e.what() << std::endl;
+                return;
+              }
             }
           }
 
@@ -1481,19 +1490,26 @@ void ChunkManager::addPointsToChunks(
 
           if (chunkExists(coord)) {
             // For existing chunks
+            // std::cout << "getChunkState called in addPointsToChunks" <<
+            // std::endl;
             ChunkState state = getChunkState(coord);
             if (state == ChunkState::OPTIMIZING) {
               chunk = getChunkAt(coord);
               if (!chunk || !chunk->getGaussians()) return;
+              std::cout << "Chunk is in OPTIMIZING state, adding points"
+                        << std::endl;
 
               // Add points to existing chunk
               chunk->getGaussians()->increasePcd(chunk_points, chunk_colors,
                                                  getCurrentIteration());
             } else {
+              std::cout << "Can't add points chunk is in state: "
+                        << static_cast<int>(state) << std::endl;
               return;  // Unexpected state
             }
           } else {
             // Create new chunk
+            std::cout << "Creating new chunk" << std::endl;
             chunk = std::make_shared<Chunk>(model_params_, coord);
 
             // Update data structures (with proper locking)
@@ -1502,6 +1518,7 @@ void ChunkManager::addPointsToChunks(
               active_chunks_[coord] = chunk;
             }
 
+            std::cout << "Chunk created, updating metadata" << std::endl;
             {
               std::unique_lock<std::mutex> lock(metadata_mutex_);
               auto& meta = chunk_metadata_[coord];
@@ -2120,7 +2137,7 @@ void ChunkManager::lruEvictionThreadFunction() {
   std::cout << "Starting LRU eviction thread" << std::endl;
 
   // Add a small buffer to avoid thrashing at the limit
-  const int BUFFER_CHUNKS = 25;
+  const int BUFFER_CHUNKS = 2;
 
   while (!stop_lru_thread_) {
     // Wait for the interval or until explicitly woken up
@@ -2211,6 +2228,7 @@ void ChunkManager::lruEvictionThreadFunction() {
 
     // If no valid candidates, try again later
     if (candidates.empty()) {
+      std::cout << "No valid candidates for eviction" << std::endl;
       continue;
     }
 
@@ -2228,8 +2246,8 @@ void ChunkManager::lruEvictionThreadFunction() {
       evicted++;
     }
 
-    std::cout << "LRU Eviction: Scheduled " << evicted << " chunks for eviction"
-              << std::endl;
+    std::cout << "LRU Eviction: Scheduled " << evicted
+              << " chunks for eviction " << std::endl;
     std::cout << "LRU Eviction: Skipped: Inactive: " << chunk_inactive_count
               << ", Optimizing: " << chunk_optimizing_count
               << ", Loading: " << chunk_loading_count

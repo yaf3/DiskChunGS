@@ -461,7 +461,20 @@ void ImGuiViewer::run() {
     // Draw main window image
     if (show_main_rendered_) {
       auto drawlist = ImGui::GetBackgroundDrawList();
-      if (pSLAM_ && tracking_vision_) {
+      if (tracking_vision_) {
+        if (!show_current_rendered_) {
+          cv::Mat rendered_img = pGausMapper_->renderFromPose(
+              Tcw, rendered_image_width_, rendered_image_height_, false);
+          cv::Mat rendered_img_to_show =
+              cv::Mat(rendered_image_height_, padded_sub_image_width_, CV_32FC3,
+                      cv::Vec3f(0.0f, 0.0f, 0.0f));
+          rendered_img.copyTo(rendered_img_to_show(image_rect_sub));
+          // Upload rendered frame
+          glBindTexture(GL_TEXTURE_2D, rendered_img_texture);
+          glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, rendered_img_to_show.cols,
+                       rendered_img_to_show.rows, 0, GL_RGB, GL_FLOAT,
+                       (float*)rendered_img_to_show.data);
+        }
         drawlist->AddImage((void*)(intptr_t)rendered_img_texture, ImVec2(0, 0),
                            ImVec2(glfw_window_width_, glfw_window_height_));
       } else {

@@ -79,6 +79,7 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
 
   chunk_save_dir_ = result_dir / "chunks";
+  std::filesystem::remove_all(chunk_save_dir_);
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
 
   config_file_path_ = gaussian_config_file_path;
@@ -292,6 +293,7 @@ GaussianMapper::GaussianMapper(const SystemSensorType sensor_type,
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
 
   chunk_save_dir_ = result_dir / "chunks";
+  std::filesystem::remove_all(chunk_save_dir_);
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
 
   config_file_path_ = gaussian_config_file_path;
@@ -555,6 +557,8 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       (settings_file["Record.record_loop_ply"].operator int()) != 0;
   render_fly_through_ =
       (settings_file["Record.render_fly_through"].operator int()) != 0;
+  render_fly_through_speed_ =
+      (settings_file["Record.render_fly_through_speed"].operator float()) > 0;
 
   // Optimization Parameters
   opt_params_.iterations_ =
@@ -815,8 +819,8 @@ void GaussianMapper::run() {
   if (render_fly_through_) {
     auto video_dir = result_dir_ / "flythrough";
     CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
-    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30, 10.0,
-                          0.8f, 2);
+    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30,
+                          render_fly_through_speed_, 0.8f, 2);
     // render3DExplorationVideo(video_dir / "3d_exploration", 1920, 1080, 30,
     //                          20.0f, 0.05f, false);
   }
@@ -928,8 +932,8 @@ void GaussianMapper::trainColmap() {
   if (render_fly_through_) {
     auto video_dir = result_dir_ / "flythrough";
     CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
-    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30, 10.0,
-                          0.8f, 2);
+    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30,
+                          render_fly_through_speed_, 0.8f, 2);
     // render3DExplorationVideo(video_dir / "3d_exploration", 1920, 1080, 30,
     //                          20.0f, 0.05f, false);
   }
@@ -976,8 +980,7 @@ void GaussianMapper::trainForOneIteration() {
   // std::cout << std::endl;
 
   auto timer_pickKeyframe = ProfilingUtils::Timer("pickKeyframe");
-  std::shared_ptr<GaussianKeyframe> viewpoint_cam =
-      useOneRandomSlidingWindowKeyframe();
+  std::shared_ptr<GaussianKeyframe> viewpoint_cam = useRecentKeyframe();
   timer_pickKeyframe.stop();
   if (!viewpoint_cam) {
     increaseIteration(-1);
@@ -1020,7 +1023,6 @@ void GaussianMapper::trainForOneIteration() {
   size_t keyframe_lookahead = 3;
   std::vector<std::shared_ptr<GaussianKeyframe>> upcoming_keyframes =
       getUpcomingKeyframes(keyframe_lookahead);
-
   // std::cout << "Keyframes lookahead: ";
   // auto timer_preload = ProfilingUtils::Timer("preloadUpcomingKeyframes");
   // Only load keyframe after next (so basically get ready for the next
@@ -2195,8 +2197,8 @@ void GaussianMapper::increasePcdByDepthReconstruction(
 
       // Add to gaussian model when cache is full
       if (depth_cached_ >= max_depth_cached_ && initial_mapped_) {
-        std::cout << "Depth cache is full, adding points to the model"
-                  << std::endl;
+        // std::cout << "Depth cache is full, adding points to the model"
+        //           << std::endl;
         depth_cached_ = 0;
         std::unique_lock<std::mutex> lock_render(mutex_render_);
         addPoints(depth_cache_points_, depth_cache_colors_,
@@ -2301,8 +2303,8 @@ void GaussianMapper::increasePcdByDepthReconstruction(
 
       // Add to gaussian model when cache is full
       if (depth_cached_ >= max_depth_cached_ && initial_mapped_) {
-        std::cout << "Depth cache is full, adding points to the model"
-                  << std::endl;
+        // std::cout << "Depth cache is full, adding points to the model"
+        //           << std::endl;
         depth_cached_ = 0;
         std::unique_lock<std::mutex> lock_render(mutex_render_);
         addPoints(depth_cache_points_, depth_cache_colors_,
@@ -2637,11 +2639,21 @@ void GaussianMapper::keyframesToJson(std::filesystem::path result_dir) {
 
     auto& keyframe_cam = scene_->getCamera(pkf->camera_id_);
 
-    json_kf["k1"] = keyframe_cam.dist_coeff_.at<float>(0);
-    json_kf["k2"] = keyframe_cam.dist_coeff_.at<float>(1);
-    json_kf["p1"] = keyframe_cam.dist_coeff_.at<float>(2);
-    json_kf["p2"] = keyframe_cam.dist_coeff_.at<float>(3);
-    json_kf["k3"] = keyframe_cam.dist_coeff_.at<float>(4);
+    if (!keyframe_cam.dist_coeff_.empty() &&
+        keyframe_cam.dist_coeff_.total() >= 5) {
+      json_kf["k1"] = keyframe_cam.dist_coeff_.at<float>(0);
+      json_kf["k2"] = keyframe_cam.dist_coeff_.at<float>(1);
+      json_kf["p1"] = keyframe_cam.dist_coeff_.at<float>(2);
+      json_kf["p2"] = keyframe_cam.dist_coeff_.at<float>(3);
+      json_kf["k3"] = keyframe_cam.dist_coeff_.at<float>(4);
+    } else {
+      // For rectified images, set distortion to zero
+      json_kf["k1"] = 0.0f;
+      json_kf["k2"] = 0.0f;
+      json_kf["p1"] = 0.0f;
+      json_kf["p2"] = 0.0f;
+      json_kf["k3"] = 0.0f;
+    }
 
     json_root[i] = Json::Value(json_kf);
     ++i;
@@ -3014,9 +3026,10 @@ void GaussianMapper::handleNewFrameExternal(const cv::Mat& rgb_image,
                                             const Sophus::SE3f& pose,
                                             const double timestamp) {
   static int frame_count = 0;
-  std::cout << "External frame #" << frame_count++ << " with timestamp "
-            << timestamp << " and position " << pose.translation().transpose()
-            << std::endl;
+  // std::cout << "External frame #" << frame_count++ << " with timestamp "
+  //           << timestamp << " and position " <<
+  //           pose.translation().transpose()
+  //           << std::endl;
   frame_queue_.push(Frame(rgb_image, depth_or_right_image, pose, timestamp));
 }
 
@@ -3076,8 +3089,8 @@ void GaussianMapper::run_external_poses() {
   if (render_fly_through_) {
     auto video_dir = result_dir_ / "flythrough";
     CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
-    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30, 10.0,
-                          0.8f, 2);
+    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30,
+                          render_fly_through_speed_, 0.8f, 2);
     // render3DExplorationVideo(video_dir / "3d_exploration", 1920, 1080, 30,
     //                          20.0f, 0.05f, false);
   }
@@ -4107,7 +4120,7 @@ bool GaussianMapper::isKeyframe(const Sophus::SE3f& current_pose,
 
   if (translation > min_keyframe_translation_ ||
       rotation > min_keyframe_rotation_) {
-    std::cout << "[isKeyframe] Suitable keyframe" << std::endl;
+    // std::cout << "[isKeyframe] Suitable keyframe" << std::endl;
     last_keyframe_pose_ = current_pose;
     return true;
   } else {
@@ -4236,7 +4249,7 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
     std::shared_ptr<GaussianKeyframe> new_kf =
         std::make_shared<GaussianKeyframe>(scene_->keyframes().size(),
                                            getIteration());
-    std::cout << "New kf. fid: " << new_kf->fid_ << std::endl;
+    // std::cout << "New kf. fid: " << new_kf->fid_ << std::endl;
 
     new_kf->zfar_ = z_far_;
     new_kf->znear_ = z_near_;
@@ -4374,7 +4387,8 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
     // Generate point cloud after releasing the lock
     // std::cout << "[ProcessFrame] Generating point cloud..." << std::endl;
 
-    assert(isdoingDepthDensify());
+    assert(isdoingDepthDensify() &&
+           "Depth densification needs to be enabled for external mode!");
     increasePcdByDepthReconstruction(new_kf);
 
     // Prepare multi resolution images for training
