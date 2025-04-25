@@ -16,8 +16,8 @@ def objective(trial):
         # 'Model.resolution': trial.suggest_float('resolution', 0.6, 2.0),
         
         # Camera/Geometry parameters
-        'Camera.z_near': trial.suggest_float('z_near', 0.01, 1.0),
-        'Camera.z_far': trial.suggest_float('z_far', 50.0, 200.0),
+        # 'Camera.z_near': trial.suggest_float('z_near', 0.01, 1.0),
+        # 'Camera.z_far': trial.suggest_float('z_far', 50.0, 200.0),
         # 'Monocular.inactive_geo_densify_max_pixel_dist': trial.suggest_float('inactive_geo_densify_max_pixel_dist', 0.5, 2.0),
         
         # Mapper parameters
@@ -27,6 +27,8 @@ def objective(trial):
         # 'Mapper.large_translation_threshold': trial.suggest_float('large_translation_threshold', 0.05, 0.3),
         
         # GausPyramid parameters
+        # 'GausPyramid.do': trial.suggest_categorical('do', [0, 1]),
+
         # 'GausPyramid.num_sub_levels': int(trial.suggest_int('num_sub_levels', 1, 4)),
         # 'GausPyramid.sub_level_times_of_use': int(trial.suggest_int('sub_level_times_of_use', 2, 16)),
         
@@ -51,7 +53,9 @@ def objective(trial):
         # 'Optimization.opacity_reset_interval': trial.suggest_categorical('opacity_reset_interval', [0, 100, 300, 500]),
         # 'Optimization.prune_big_point_after_iter': int(trial.suggest_categorical('prune_big_point_after_iter', [-1, 500, 2000])),
         # 'Optimization.max_num_iterations': int(trial.suggest_int('max_num_iterations', 5000, 40000)),
-        # 'Chunking.chunk_size': trial.suggest_categorical('chunk_size', [20, 50, 100])
+        # 'Chunking.chunk_size': trial.suggest_categorical('chunk_size', [20, 50, 100]),
+        
+         'Optimization.appearance_embedding': trial.suggest_categorical('appearance_embedding', [0, 1]),
         
     }
     
@@ -73,7 +77,7 @@ def objective(trial):
         yaml_content += f"{key}: {value}\n"
     
     # Save modified config
-    trial_config_path = f"cfg/gaussian_mapper/Stereo/KITTI/runs/run1/KITTI_trial_{trial.number}.yaml"
+    trial_config_path = f"cfg/gaussian_mapper/Stereo/KITTI/runs/run2/KITTI_trial_{trial.number}.yaml"
     os.makedirs(os.path.dirname(trial_config_path), exist_ok=True)
     with open(trial_config_path, 'w') as f:
         f.write(yaml_content)
@@ -81,7 +85,7 @@ def objective(trial):
     gt_path = "/data/kitti/data_odometry_color/dataset/sequences_modified/00_500f"
     
     # Run the program
-    result_dir = f"results/kitti/runs/run1/00_trial_{trial.number}"
+    result_dir = f"results/kitti/runs/run2/00_trial_{trial.number}"
     try:
         subprocess.run([
             "./bin/kitti_stereo",
@@ -133,7 +137,7 @@ if __name__ == "__main__":
     )
     
     study = optuna.create_study(
-        storage="sqlite:///kitti_hypertune_09_04.db",
+        storage="sqlite:///kitti_hypertune_19_04.db",
         study_name="kitti_gaussian_optimization",
         direction="minimize",
         load_if_exists=True
