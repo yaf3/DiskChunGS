@@ -59,6 +59,8 @@ int main(int argc, char **argv) {
   if (argc == 7)
     use_viewer = (std::string(argv[6]) == "no_viewer" ? false : true);
 
+  float slowdown_factor = 1.0;
+
   std::string output_directory = std::string(argv[5]);
   if (output_directory.back() != '/') output_directory += "/";
   std::filesystem::path output_dir(output_directory);
@@ -129,7 +131,7 @@ int main(int argc, char **argv) {
   // Main loop
   cv::Mat imLeft, imRight;
   for (int ni = 0; ni < nImages; ni++) {
-    if (ni > 100) {
+    if (ni > 499) {
       break;
     }
     if (pSLAM->isShutDown()) break;
@@ -180,6 +182,8 @@ int main(int argc, char **argv) {
       T = vTimestamps[ni + 1] - tframe;
     else if (ni > 0)
       T = tframe - vTimestamps[ni - 1];
+
+    T *= slowdown_factor;
 
     if (ttrack < T) usleep((T - ttrack) * 1e6);
   }
