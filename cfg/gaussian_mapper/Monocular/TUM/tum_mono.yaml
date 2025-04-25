@@ -18,10 +18,12 @@ Camera.z_far: 100.0
 Monocular.inactive_geo_densify_max_pixel_dist: 1.0 # (squared distance)
 Stereo.min_disparity: 8
 Stereo.num_disparity: 128
-RGBD.min_depth: 0.0000000001
-RGBD.max_depth: 40.0
+Mapper.min_depth_: 0.0000000001
+Mapper.max_depth_: 40.0
 
 Mapper.inactive_geo_densify: 1  # 0:false, 1 or other integer:true
+Mapper.depth_densify_subsample_ratio: 0.05
+Mapper.depth_densify: 0  # 0:false, 1 or other integer:true
 Mapper.depth_cache: 10
 Mapper.min_num_initial_map_kfs: 20
 Mapper.new_keyframe_times_of_use: 2
@@ -31,6 +33,7 @@ Mapper.cull_keyframes: 0  # 0:false, 1 or other integer:true
 Mapper.large_rotation_threshold: 30.0 #10.0 #
 Mapper.large_translation_threshold: 1.0 #0.1 #
 Mapper.stable_num_iter_existence: 1
+Mapper.keyframe_similarity_threshold: 0.0
 
 GausPyramid.do: 0  # 0:false, 1 or other integer:true
 GausPyramid.num_sub_levels: 2
@@ -68,7 +71,7 @@ Optimization.opacity_reg: 0.001
 # Chunking
 Chunking.chunk_size: 50.0
 Chunking.overlap_margin: 0.0
-Chunking.max_chunks: 20
+Chunking.max_chunks: 100
 
 # Densification
 Optimization.percent_dense: 0.01
@@ -81,6 +84,7 @@ Optimization.densify_from_iter: 500
 Optimization.densify_until_iter: -1 # -1:forever
 Optimization.densify_grad_threshold: 0.001
 Optimization.auto_distribute: 4  # 0:false, 1 or other integer:true
+Optimization.appearance_embedding: 0
 
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters

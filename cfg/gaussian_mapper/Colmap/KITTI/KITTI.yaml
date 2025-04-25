@@ -5,8 +5,8 @@ Model.white_background: 0  # 0:false, 1 or other integer:true
 Model.eval: 0  # 0:false, 1 or other integer:true
 Stereo.min_disparity: 0
 Stereo.num_disparity: 256
-RGBD.min_depth: 0.0000000001
-RGBD.max_depth: 40.0
+Mapper.min_depth_: 0.0000000001
+Mapper.max_depth_: 40.0
 Mapper.inactive_geo_densify: 0  # 0:false, 1 or other integer:true
 Mapper.depth_cache: 10
 Mapper.local_BA_increased_times_of_use: 0

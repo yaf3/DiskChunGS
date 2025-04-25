@@ -18,8 +18,8 @@ Camera.z_far: 100.0
 Monocular.inactive_geo_densify_max_pixel_dist: 0.0 # NOT used
 Stereo.min_disparity: 0 # NOT used
 Stereo.num_disparity: 0 # NOT used
-RGBD.min_depth: 0.0 # NOT used
-RGBD.max_depth: 0.0 # NOT used
+Mapper.min_depth_: 0.0 # NOT used
+Mapper.max_depth_: 0.0 # NOT used
 
 Mapper.inactive_geo_densify: 0 # NOT used
 Mapper.depth_cache: 0 # NOT used

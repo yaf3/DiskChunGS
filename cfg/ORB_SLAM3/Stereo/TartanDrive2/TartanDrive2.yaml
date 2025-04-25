@@ -7,25 +7,55 @@ File.version: "1.0"
 
 Camera.type: "Rectified"
 
-# Camera calibration and distortion parameters (OpenCV) 
-Camera1.fx: 707.0912
-Camera1.fy: 707.0912
-Camera1.cx: 601.8873
-Camera1.cy: 183.1104
+# Camera calibration and distortion parameters (OpenCV)
+Camera1.fx: 455.77496337890625
+Camera1.fy: 456.319091796875
+Camera1.cx: 497.1180114746094
+Camera1.cy: 251.58502197265625
 
-Camera.width: 1226
-Camera.height: 370
+Camera1.k1: -0.03597196191549301
+Camera1.k2: 0.08101943135261536
+Camera1.k3: -0.03709280863404274
+Camera1.p1: -0.00028405245393514633 
+Camera1.p2: 0.0011874435003846884
 
-# Camera frames per second 
+Camera2.fx: 454.614990234375
+Camera2.fy: 455.0911865234375
+Camera2.cx: 509.3581848144531
+Camera2.cy: 243.64178466796875
+
+Camera2.k1: -0.03452092036604881
+Camera2.k2: 0.077264204621315
+Camera2.k3: -0.03449925407767296
+Camera2.p1: 0.00067000841954723
+Camera2.p2: 0.002273165388032794
+
+
+# Camera frames per second
 Camera.fps: 10
-
-Stereo.b: 0.53715
 
 # Color order of the images (0: BGR, 1: RGB. It is ignored if images are grayscale)
 Camera.RGB: 1
 
+# Camera resolution
+Camera.width: 1024
+Camera.height: 544
+
 # Close/Far threshold. Baseline times.
-Stereo.ThDepth: 40.0
+Stereo.ThDepth: 35.0
+Stereo.b: 0.2097979
+
+Stereo.T_c1_c2: !!opencv-matrix
+ rows: 4
+ cols: 4
+ dt: f
+ data: [0.9999784827232361, -0.005057673901319504, 0.004178035072982311, -0.2097979,
+        0.005057305097579956, 0.9999871850013733, 9.877845150185749e-05, 0.0,
+        -0.004178481176495552, -7.764672773191705e-05, 0.999991238117218, 0.0,
+        0.0, 0.0, 0.0, 1.0]
+
+# Depth map values factor
+RGBD.DepthMapFactor: 1000.0
 
 #--------------------------------------------------------------------------------------------
 # ORB Parameters
@@ -44,19 +74,19 @@ ORBextractor.nLevels: 8
 # Image is divided in a grid. At each cell FAST are extracted imposing a minimum response.
 # Firstly we impose iniThFAST. If no corners are detected we impose a lower value minThFAST
 # You can lower these values if your images have low contrast			
-ORBextractor.iniThFAST: 12
+ORBextractor.iniThFAST: 20
 ORBextractor.minThFAST: 7
 
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters
 #--------------------------------------------------------------------------------------------
-Viewer.KeyFrameSize: 0.6
-Viewer.KeyFrameLineWidth: 2.0
-Viewer.GraphLineWidth: 1.0
+Viewer.KeyFrameSize: 0.05
+Viewer.KeyFrameLineWidth: 1.0
+Viewer.GraphLineWidth: 0.9
 Viewer.PointSize: 2.0
-Viewer.CameraSize: 0.7
+Viewer.CameraSize: 0.08
 Viewer.CameraLineWidth: 3.0
 Viewer.ViewpointX: 0.0
-Viewer.ViewpointY: -100.0
-Viewer.ViewpointZ: -0.1
-Viewer.ViewpointF: 2000.0
+Viewer.ViewpointY: -0.7
+Viewer.ViewpointZ: -1.8
+Viewer.ViewpointF: 500.0

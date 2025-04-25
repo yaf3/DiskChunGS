@@ -18,8 +18,8 @@ Camera.z_far: 1000.0
 Monocular.inactive_geo_densify_max_pixel_dist: 12.0  # Increased significantly for more geometric points
 Stereo.min_disparity: 8
 Stereo.num_disparity: 128
-RGBD.min_depth: 0.0000000001
-RGBD.max_depth: 40.0
+Mapper.min_depth_: 0.0000000001
+Mapper.max_depth_: 40.0
 
 Mapper.inactive_geo_densify: 1
 Mapper.depth_cache: 30  # Increased to accumulate more points
