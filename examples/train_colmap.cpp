@@ -184,7 +184,7 @@ void readColmapImagesBinary(std::shared_ptr<GaussianMapper> pMapper,
     }
 
     new_kf->computeTransformTensors();
-    pMapper->scene_->addKeyframe(new_kf, &pMapper->kfid_shuffled_);
+    pMapper->scene_->addKeyframe(new_kf);
     new_kf->img_undist_ = imgRGB_undistorted;
   }
 
