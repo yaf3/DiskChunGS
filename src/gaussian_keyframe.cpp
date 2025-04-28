@@ -286,14 +286,33 @@ void GaussianKeyframe::setupStereoData(float baseline,
     right_gpu.upload(this->img_auxiliary_undist_);
     this->right_original_image_ =
         tensor_utils::cvGpuMat2TorchTensor_Float32(right_gpu);
+    // Also handle multi-resolution if needed
+    if (!gaus_pyramid_original_image_.empty()) {
+      gaus_pyramid_right_original_image_.resize(num_gaus_pyramid_sub_levels_);
+      for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
+        cv::cuda::GpuMat img_resized;
+        cv::cuda::resize(
+            right_gpu, img_resized,
+            cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]));
+        gaus_pyramid_right_original_image_[l] =
+            tensor_utils::cvGpuMat2TorchTensor_Float32(img_resized);
+      }
+    }
   } else {
     this->right_original_image_ = tensor_utils::cvMat2TorchTensor_Float32(
         this->img_auxiliary_undist_, device_type);
-  }
 
-  // Also handle multi-resolution if needed
-  if (!gaus_pyramid_original_image_.empty()) {
-    // Create right pyramid images similar to left ones
+    // Also handle multi-resolution pyramid for right image
+    if (!gaus_pyramid_original_image_.empty()) {
+      gaus_pyramid_right_original_image_.resize(num_gaus_pyramid_sub_levels_);
+      for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
+        cv::Mat img_resized;
+        cv::resize(this->img_auxiliary_undist_, img_resized,
+                   cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]));
+        gaus_pyramid_right_original_image_[l] =
+            tensor_utils::cvMat2TorchTensor_Float32(img_resized, device_type);
+      }
+    }
   }
 }
 

@@ -78,9 +78,7 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   result_dir_ = result_dir;
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
 
-  chunk_save_dir_ = result_dir / "chunks";
-  std::filesystem::remove_all(chunk_save_dir_);
-  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
+  chunk_save_dir_ = result_dir_ / "chunks";
 
   config_file_path_ = gaussian_config_file_path;
   readConfigFromFile(gaussian_config_file_path);
@@ -104,7 +102,7 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   initializeChunkManagement();
 
   keyframe_queue_ = std::make_shared<KeyframeQueue>(
-      scene_, 10, keyframe_similarity_threshold_, opt_params_.auto_distribute_,
+      scene_, 20, keyframe_similarity_threshold_, opt_params_.auto_distribute_,
       &kfs_loss_);
   keyframe_queue_->setChunkManager(chunk_manager_);
 
@@ -293,8 +291,6 @@ GaussianMapper::GaussianMapper(const SystemSensorType sensor_type,
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
 
   chunk_save_dir_ = result_dir / "chunks";
-  std::filesystem::remove_all(chunk_save_dir_);
-  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
 
   config_file_path_ = gaussian_config_file_path;
   readConfigFromFile(gaussian_config_file_path);
@@ -621,12 +617,8 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
 
 void GaussianMapper::run() {
   // Delete existing chunks since training
-  if (!chunk_save_dir_.empty() && std::filesystem::exists(chunk_save_dir_)) {
-    for (const auto& entry :
-         std::filesystem::directory_iterator(chunk_save_dir_)) {
-      std::filesystem::remove_all(entry.path());
-    }
-  }
+  std::filesystem::remove_all(chunk_save_dir_);
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
 
   // First loop: Initial gaussian mapping
   while (!isStopped()) {
@@ -739,6 +731,12 @@ void GaussianMapper::run() {
                 tensor_utils::cvMat2TorchTensor_Float32(img_resized,
                                                         device_type_);
           }
+        }
+
+        if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
+          pkf->setupStereoData(stereo_baseline_length_, device_type_);
+        } else {
+          std::cout << "Stereo data not available" << std::endl;
         }
       }
 
@@ -962,7 +960,7 @@ void GaussianMapper::trainForOneIteration() {
 
   auto timer_cullSparseChunks = ProfilingUtils::Timer("cullSparseChunks");
   int min_points_chunk_threshold = 1000;
-  int min_chunk_iterations = 2000;
+  int min_chunk_iterations = 200;
   chunk_manager_->cullSparseChunks(min_points_chunk_threshold,
                                    min_chunk_iterations);
   timer_cullSparseChunks.stop();
@@ -980,7 +978,8 @@ void GaussianMapper::trainForOneIteration() {
   // std::cout << std::endl;
 
   auto timer_pickKeyframe = ProfilingUtils::Timer("pickKeyframe");
-  std::shared_ptr<GaussianKeyframe> viewpoint_cam = useRecentKeyframe();
+  std::shared_ptr<GaussianKeyframe> viewpoint_cam =
+      useOneRandomSlidingWindowKeyframe();
   timer_pickKeyframe.stop();
   if (!viewpoint_cam) {
     increaseIteration(-1);
@@ -1021,8 +1020,8 @@ void GaussianMapper::trainForOneIteration() {
   timer_waitForMutex.stop();
 
   size_t keyframe_lookahead = 3;
-  std::vector<std::shared_ptr<GaussianKeyframe>> upcoming_keyframes =
-      getUpcomingKeyframes(keyframe_lookahead);
+  // std::vector<std::shared_ptr<GaussianKeyframe>> upcoming_keyframes =
+  //     getUpcomingKeyframes(keyframe_lookahead);
   // std::cout << "Keyframes lookahead: ";
   // auto timer_preload = ProfilingUtils::Timer("preloadUpcomingKeyframes");
   // Only load keyframe after next (so basically get ready for the next
@@ -1126,7 +1125,18 @@ void GaussianMapper::trainForOneIteration() {
 
   if (this->sensor_type_ == STEREO && viewpoint_cam->is_stereo_) {
     // Get precomputed right image
-    torch::Tensor gt_image_right = viewpoint_cam->right_original_image_.cuda();
+    torch::Tensor gt_image_right;
+    if (training_level == num_gaus_pyramid_sub_levels_) {
+      gt_image_right = viewpoint_cam->right_original_image_.cuda();
+    } else {
+      // Use the matching pyramid level for right image
+      gt_image_right =
+          viewpoint_cam->gaus_pyramid_right_original_image_[training_level]
+              .cuda();
+    }
+
+    // std::cout << "Image size: " << image_height << " " << image_width
+    //           << std::endl;
 
     // Render using the right camera transformation
     auto render_pkg_right = GaussianRenderer::render(
@@ -1317,14 +1327,14 @@ void GaussianMapper::trainForOneIteration() {
   }
   timer_optimizer_step.stop();
 
-  auto timer_evictUnusedChunks = ProfilingUtils::Timer("evictUnusedChunks");
+  // auto timer_evictUnusedChunks = ProfilingUtils::Timer("evictUnusedChunks");
   // Periodically cull gaussians outside of borders & evict unused chunks
-  if (getIteration() % 200 == 0) {
-    // chunk_manager_->transferGaussiansAcrossChunks(scene_->cameras_extent_);
-    // chunk_manager_->cullGaussiansOutsideChunkBorders();
-    // chunk_manager_->evictUnusedChunks();
-  }
-  timer_evictUnusedChunks.stop();
+  // if (getIteration() % 200 == 0) {
+  // chunk_manager_->transferGaussiansAcrossChunks(scene_->cameras_extent_);
+  // chunk_manager_->cullGaussiansOutsideChunkBorders();
+  // chunk_manager_->evictUnusedChunks();
+  // }
+  // timer_evictUnusedChunks.stop();
 
   auto timer_releaseChunksFromOptimization =
       ProfilingUtils::Timer("releaseChunksFromOptimization");
@@ -1790,17 +1800,14 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
 
   if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
     pkf->setupStereoData(stereo_baseline_length_, device_type_);
+  } else {
+    std::cout << "Stereo data not available" << std::endl;
   }
 }
 
 std::shared_ptr<GaussianKeyframe>
 GaussianMapper::useOneRandomSlidingWindowKeyframe() {
   return keyframe_queue_->getNextKeyframe();
-}
-
-std::vector<std::shared_ptr<GaussianKeyframe>>
-GaussianMapper::getUpcomingKeyframes(size_t count) {
-  return keyframe_queue_->peekUpcomingKeyframes(count);
 }
 
 std::shared_ptr<GaussianKeyframe> GaussianMapper::useOneRandomKeyframe() {
@@ -3034,6 +3041,9 @@ void GaussianMapper::handleNewFrameExternal(const cv::Mat& rgb_image,
 }
 
 void GaussianMapper::run_external_poses() {
+  std::filesystem::remove_all(chunk_save_dir_);
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
+
   // Process frames until we have enough keyframes
   while (!initial_mapped_ && !isStopped()) {
     auto maybe_frame = frame_queue_.pop(true);
@@ -3567,10 +3577,16 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
   for (const auto& [coord, chunk] : active_chunks) {
     if (chunk_manager_->getChunkState(coord) == ChunkState::ACTIVE) {
       if (!chunk_manager_->saveChunkSync(coord)) {
-        std::cerr << "Failed to save chunk: " << coord.x << "," << coord.y
-                  << "," << coord.z << std::endl;
+        throw std::runtime_error(
+            "Failed to save chunk: " + std::to_string(coord.x) + "," +
+            std::to_string(coord.y) + "," + std::to_string(coord.z));
         all_saved = false;
       }
+    } else {
+      throw std::runtime_error(
+          "Chunk state is not ACTIVE, cannot save chunk: " +
+          std::to_string(coord.x) + "," + std::to_string(coord.y) + "," +
+          std::to_string(coord.z));
     }
   }
 
@@ -3934,74 +3950,30 @@ void GaussianMapper::saveTotalGaussians(std::string name_suffix) {
   std::vector<ChunkCoord> allChunkCoords =
       chunk_manager_->getExistingChunkCoords();
 
-  // std::cout << "Counting Gaussians in " << allChunkCoords.size() << "
-  // chunks..."
-  //           << std::endl;
-
-  // Remember which chunks were originally active
-  auto activeChunks = chunk_manager_->getActiveChunks();
-  std::unordered_set<ChunkCoord, ChunkCoordHash> activeCoords;
-  for (const auto& [coord, _] : activeChunks) {
-    activeCoords.insert(coord);
-  }
-
-  // Process chunks in batches to avoid VRAM issues
-  const int batchSize = 5;  // Adjust based on VRAM capacity
-  int processed = 0;
-
-  for (size_t i = 0; i < allChunkCoords.size(); i += batchSize) {
-    size_t batchEnd = std::min(i + batchSize, allChunkCoords.size());
-
-    // Process current batch
-    for (size_t j = i; j < batchEnd; j++) {
-      const auto& coord = allChunkCoords[j];
-      bool wasActive = activeCoords.find(coord) != activeCoords.end();
-
-      try {
-        // If chunk is already active, just count its Gaussians
-        if (wasActive) {
-          auto chunk = chunk_manager_->getChunkAt(coord);
-          if (chunk && chunk->getGaussians()) {
-            int chunkGaussians = chunk->getGaussians()->getXYZ().size(0);
-            totalGaussians += chunkGaussians;
-            // std::cout << "Chunk [" << coord.x << "," << coord.y << ","
-            //           << coord.z << "] has " << chunkGaussians << "
-            //           Gaussians"
-            //           << std::endl;
-          }
-        }
-        // Otherwise, load chunk, count Gaussians, then save it back
-        else {
-          if (chunk_manager_->loadChunkSync(coord)) {
-            auto chunk = chunk_manager_->getChunkAt(coord);
-            if (chunk && chunk->getGaussians()) {
-              int chunkGaussians = chunk->getGaussians()->getXYZ().size(0);
-              totalGaussians += chunkGaussians;
-              // std::cout << "Chunk [" << coord.x << "," << coord.y << ","
-              //           << coord.z << "] has " << chunkGaussians << "
-              //           Gaussians"
-              //           << std::endl;
-            }
-            // Save back to disk and remove from memory
-            chunk_manager_->saveChunkAsync(coord);
-          }
-        }
-      } catch (const std::exception& e) {
-        std::cerr << "Error processing chunk [" << coord.x << "," << coord.y
-                  << "," << coord.z << "]: " << e.what() << std::endl;
-      }
-
-      // Update progress
-      processed++;
-      // float progress = (100.0f * processed) / allChunkCoords.size();
-      // std::cout << "Progress: " << std::fixed << std::setprecision(1)
-      //           << progress << "% (" << processed << "/"
-      //           << allChunkCoords.size() << " chunks processed)" <<
-      //           std::endl;
+  for (size_t i = 0; i < allChunkCoords.size(); i++) {
+    ChunkCoord coord = allChunkCoords[i];
+    if (!chunk_manager_->loadChunkSync(coord, true, false)) {
+      std::cout << "Skipping chunk, can't load" << std::endl;
+      chunk_manager_->releaseChunksFromOptimization({coord});
+      chunk_manager_->triggerLruCheck();
+      continue;
     }
 
-    // Clear CUDA cache after each batch to free memory
-    c10::cuda::CUDACachingAllocator::emptyCache();
+    std::shared_ptr<Chunk> chunk = chunk_manager_->getChunkAt(coord);
+
+    if (!chunk || !chunk->getGaussians()) {
+      throw std::runtime_error("Gaussians/Chunk invalid");
+      chunk_manager_->releaseChunksFromOptimization({coord});
+      chunk_manager_->triggerLruCheck();
+      continue;
+    }
+
+    auto gaussians = chunk->getGaussians();
+    auto num_points = gaussians->getXYZ().size(0);
+    totalGaussians += num_points;
+
+    chunk_manager_->releaseChunksFromOptimization({coord});
+    chunk_manager_->triggerLruCheck();
   }
 
   std::filesystem::path result_dir =
@@ -4065,39 +4037,6 @@ std::shared_ptr<GaussianKeyframe> GaussianMapper::useRecentKeyframe() {
   }
 
   return most_recent_kf;
-}
-
-std::vector<std::shared_ptr<GaussianKeyframe>>
-GaussianMapper::predictUpcomingKeyframes(int count) {
-  std::vector<std::shared_ptr<GaussianKeyframe>> upcoming_keyframes;
-
-  if (scene_->keyframes().empty()) {
-    return upcoming_keyframes;
-  }
-
-  int next_idx = kfid_shuffle_idx_;
-  int loops = 0;
-
-  while (upcoming_keyframes.size() < count && loops < kfid_shuffle_.size()) {
-    // Move to next index in shuffle
-    next_idx = (next_idx + 1) % kfid_shuffle_.size();
-    loops++;
-
-    // Get keyframe index from shuffle
-    size_t kf_idx = kfid_shuffle_[next_idx];
-
-    // Find the keyframe in the map
-    auto it = scene_->keyframes().begin();
-    std::advance(it, std::min(kf_idx, scene_->keyframes().size() - 1));
-    auto kf = it->second;
-
-    // Only add keyframes with remaining uses
-    if (kf && kf->remaining_times_of_use_ > 0) {
-      upcoming_keyframes.push_back(kf);
-    }
-  }
-
-  return upcoming_keyframes;
 }
 
 bool GaussianMapper::isKeyframe(const Sophus::SE3f& current_pose,
@@ -4414,6 +4353,10 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
         new_kf->gaus_pyramid_original_image_[l] =
             tensor_utils::cvMat2TorchTensor_Float32(img_resized, device_type_);
       }
+    }
+
+    if (sensor_type_ == STEREO && !depth_or_right_image.empty()) {
+      new_kf->setupStereoData(stereo_baseline_length_, device_type_);
     }
 
     keyframe_queue_->notifyNewKeyframeAdded(new_kf);
