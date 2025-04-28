@@ -50,6 +50,8 @@ class Pinhole;
 // BOOST_CLASS_EXPORT_GUID(Pinhole, "Pinhole")
 // BOOST_CLASS_EXPORT_GUID(KannalaBrandt8, "KannalaBrandt8")
 
+static const size_t MAX_QUEUE_SIZE = 10;  // Adjust based on your needs
+
 class MappingOperation {
  public:
   enum OprType { LocalMappingBA = 1, LoopClosingBA = 2, ScaleRefinement = 3 };
@@ -58,8 +60,8 @@ class MappingOperation {
   MappingOperation(const MappingOperation& opr,
                    const std::lock_guard<std::mutex>&,
                    const std::lock_guard<std::mutex>&)
-      : mvAssociatedKeyFrames(std::move(opr.mvAssociatedKeyFrames)),
-        mvAssociatedMapPoints(std::move(opr.mvAssociatedMapPoints)),
+      : mvAssociatedKeyFrames(opr.mvAssociatedKeyFrames),
+        mvAssociatedMapPoints(opr.mvAssociatedMapPoints),
         meOperationType(opr.meOperationType),
         mfScale(opr.mfScale),
         mT(opr.mT) {}

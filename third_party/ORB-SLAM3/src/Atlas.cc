@@ -354,7 +354,16 @@ map<long unsigned int, KeyFrame*> Atlas::GetAtlasKeyframes() {
 
 void Atlas::pushMappingOperation(MappingOperation opr) {
   std::unique_lock<std::mutex> lock(mMutexMappingOperations);
-  this->mqMappingOperations.push(opr);
+
+  // If queue is at capacity, remove oldest operation
+  if (mqMappingOperations.size() >= MAX_QUEUE_SIZE) {
+    std::cout << "[Atlas] Warning: Queue full, dropping oldest operation"
+              << std::endl;
+    mqMappingOperations.pop();  // Remove oldest operation
+  }
+
+  // Add new operation
+  mqMappingOperations.push(opr);
 }
 
 MappingOperation Atlas::getAndPopMappingOperation() {
