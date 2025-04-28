@@ -107,6 +107,7 @@ class GaussianKeyframe {
   std::vector<std::size_t> gaus_pyramid_height_;  ///< gaus_pyramid image
   std::vector<torch::Tensor>
       gaus_pyramid_original_image_;  ///< gaus_pyramid image
+  std::vector<torch::Tensor> gaus_pyramid_right_original_image_;
   // Tensor gt_alpha_mask_;
 
   std::vector<float> intr_;  ///< intrinsics
