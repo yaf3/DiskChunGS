@@ -50,7 +50,7 @@ class Pinhole;
 // BOOST_CLASS_EXPORT_GUID(Pinhole, "Pinhole")
 // BOOST_CLASS_EXPORT_GUID(KannalaBrandt8, "KannalaBrandt8")
 
-static const size_t MAX_QUEUE_SIZE = 10;  // Adjust based on your needs
+static const size_t MAX_QUEUE_SIZE = 50;  // Adjust based on your needs
 
 class MappingOperation {
  public:
