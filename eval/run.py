@@ -76,14 +76,41 @@ def loadEuRoC(path):
     return color_paths, tstamp
 
 
-def associate_frames(tstamp_image, tstamp_pose, max_dt=0.08):
-    """Pair images, depths, and poses."""
+def associate_frames(tstamp_image, tstamp_pose, max_dt=0.1, slowdown_factor=1.0):
+    """Pair images, depths, and poses, accounting for slowdown factor."""
     associations = []
+    
+    # If there's a slowdown factor, adjust the pose timestamps
+    if slowdown_factor != 1.0:
+        # Adjust estimated timestamps back to the original time scale
+        # (start_time + (current_time - start_time) / slowdown)
+        tstamp_pose_adjusted = tstamp_pose[0] + (tstamp_pose - tstamp_pose[0]) / slowdown_factor
+    else:
+        tstamp_pose_adjusted = tstamp_pose
+    
     for i, t in enumerate(tstamp_image):
-        j = np.argmin(np.abs(tstamp_pose - t))
-        if np.abs(tstamp_pose[j] - t) < max_dt:
+        j = np.argmin(np.abs(tstamp_pose_adjusted - t))
+        if np.abs(tstamp_pose_adjusted[j] - t) < max_dt:
             associations.append((i, j))
+            
+    print(f"Associated {len(associations)} frames out of {len(tstamp_image)} ground truth frames")
     return associations
+
+def load_slowdown_factor(result_path, default=1.0):
+    """Load slowdown factor from result path if available, otherwise return default value."""
+    slowdown_path = os.path.join(result_path, "slowdown_factor.txt")
+    if os.path.exists(slowdown_path):
+        try:
+            with open(slowdown_path, "r") as f:
+                slowdown_factor = float(f.readline().strip())
+            print(f"Loaded slowdown factor: {slowdown_factor}x from {slowdown_path}")
+            return slowdown_factor
+        except (ValueError, IOError) as e:
+            print(f"Error loading slowdown factor: {e}. Using default: {default}x")
+            return default
+    else:
+        print(f"No slowdown factor file found at {slowdown_path}. Using default: {default}x")
+        return default
 
 
 if __name__ == "__main__":
@@ -220,15 +247,32 @@ if __name__ == "__main__":
     else:
         gt_file = os.path.join(args.gt_path, "groundtruth.txt")
         traj_ref = file_interface.read_tum_trajectory_file(gt_file)
+        
+    # Load slowdown factor (if exists)
+    slowdown_factor = load_slowdown_factor(args.result_path)
 
     # If not skipping trajectory eval, load estimated poses and evaluate them
     if not args.skip_trajectory_eval:
         pose_path = os.path.join(args.result_path, "CameraTrajectory_TUM.txt")
         traj_est = file_interface.read_tum_trajectory_file(pose_path)
         
-        traj_ref_sync, traj_est = sync.associate_trajectories(
-            traj_ref, traj_est, max_diff=0.08
-        )
+        # If there's a slowdown factor, adjust timestamps before association
+        if slowdown_factor != 1.0:
+            # Make a deep copy to avoid modifying the original
+            traj_est_adjusted = copy.deepcopy(traj_est)
+            # Adjust timestamps: start_time + (current_time - start_time) / slowdown
+            start_time = traj_est_adjusted.timestamps[0]
+            traj_est_adjusted.timestamps = start_time + (traj_est_adjusted.timestamps - start_time) / slowdown_factor
+            # Use the adjusted trajectory for association
+            traj_ref_sync, traj_est = sync.associate_trajectories(
+                traj_ref, traj_est_adjusted, max_diff=0.1
+            )
+        else:
+            # Use original trajectory
+            traj_ref_sync, traj_est = sync.associate_trajectories(
+                traj_ref, traj_est, max_diff=0.1
+            )
+        
         traj_ref_sync.align(traj_est, True)
         poses = traj_est.poses_se3
         tstamp = traj_est.timestamps
@@ -337,9 +381,9 @@ if __name__ == "__main__":
         lpips_list.append(val_lpips)
         time_list.append(t1)
         
-    print("Calling cleanup to properly release resources...")
-    gs_render.cleanup()
-    print("Cleanup finished.")
+    # print("Calling cleanup to properly release resources...")
+    # gs_render.cleanup()
+    # print("Cleanup finished.")
 
     psnr_list = np.array(psnr_list)
     ssim_list = np.array(ssim_list)

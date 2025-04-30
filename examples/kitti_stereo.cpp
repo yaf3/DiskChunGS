@@ -1,23 +1,3 @@
-/**
- * This file is part of Photo-SLAM
- *
- * Copyright (C) 2023-2024 Longwei Li and Hui Cheng, Sun Yat-sen University.
- * Copyright (C) 2023-2024 Huajian Huang and Sai-Kit Yeung, Hong Kong University
- * of Science and Technology.
- *
- * Photo-SLAM is free software: you can redistribute it and/or modify it under
- * the terms of the GNU General Public License as published by the Free Software
- * Foundation, either version 3 of the License, or (at your option) any later
- * version.
- *
- * Photo-SLAM is distributed in the hope that it will be useful, but WITHOUT ANY
- * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
- * A PARTICULAR PURPOSE. See the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * Photo-SLAM. If not, see <http://www.gnu.org/licenses/>.
- */
-
 #include <torch/torch.h>
 
 #include <algorithm>
@@ -26,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <opencv2/core/core.hpp>
 #include <sstream>
@@ -43,8 +24,76 @@ void saveTrackingTime(std::vector<float> &vTimesTrack,
                       const std::string &strSavePath);
 void saveGpuPeakMemoryUsage(std::filesystem::path pathSave);
 
+void saveSlowdownFactor(float slowdown_factor,
+                        const std::filesystem::path &output_dir);
+
+// New function to calculate slowdown factor based on the sequence
+float calculateSlowdownFactor(const std::string &sequencePath,
+                              float targetSpeedKmh = 5.0) {
+  // Extract sequence number from path
+  std::string seqNum = "";
+  std::size_t found = sequencePath.find_last_of("/\\");
+  if (found != std::string::npos) {
+    std::string dirName = sequencePath.substr(found + 1);
+    // Try to extract sequence number (last digits in the path)
+    for (auto it = dirName.rbegin(); it != dirName.rend(); ++it) {
+      if (std::isdigit(*it)) {
+        seqNum = *it + seqNum;
+      } else if (!seqNum.empty()) {
+        break;
+      }
+    }
+  }
+
+  // Predefined speeds for known KITTI sequences (km/h)
+  std::map<std::string, float> sequenceSpeeds = {
+      {"00", 29.52},
+      {"01", 80.21},
+      {"02", 39.14},
+      {"03", 25.21},
+      {"04", 52.29},
+      {"05", 28.76},
+      {"06", 40.31},
+      {"07", 21.24},
+      {"08", 28.50},
+      {"09", 38.58},
+      {"10", 27.56}
+  };
+
+  // Default slowdown factor if sequence not found
+  float defaultFactor = 6.87;  // Weighted average of all sequences
+
+  // Calculate slowdown factor based on original speed
+  if (!seqNum.empty() && sequenceSpeeds.find(seqNum) != sequenceSpeeds.end()) {
+    float factor = sequenceSpeeds[seqNum] / targetSpeedKmh;
+    std::cout << "Sequence " << seqNum
+              << " detected: Original speed = " << sequenceSpeeds[seqNum]
+              << " km/h, Slowdown factor = " << factor << "x to achieve "
+              << targetSpeedKmh << " km/h" << std::endl;
+    return factor;
+  }
+
+  std::cout << "Sequence not recognized, using default slowdown factor: "
+            << defaultFactor << "x" << std::endl;
+  return defaultFactor;
+}
+
+// Function to calculate speed based on frames, length and framerate
+float calculateOriginalSpeed(int numFrames,
+                             float lengthInMeters,
+                             float frameRate = 10.0) {
+  // Time taken in seconds
+  float timeInSeconds = numFrames / frameRate;
+
+  // Distance in kilometers
+  float distanceInKm = lengthInMeters / 1000.0f;
+
+  // Speed in km/h
+  return (distanceInKm / timeInSeconds) * 3600.0f;
+}
+
 int main(int argc, char **argv) {
-  if (argc != 6 && argc != 7) {
+  if (argc != 6 && argc != 7 && argc != 8 && argc != 9) {
     std::cerr << std::endl
               << "Usage: " << argv[0] << " path_to_vocabulary" /*1*/
               << " path_to_ORB_SLAM3_settings"                 /*2*/
@@ -52,14 +101,41 @@ int main(int argc, char **argv) {
               << " path_to_sequence"                           /*4*/
               << " path_to_trajectory_output_directory/"       /*5*/
               << " (optional)no_viewer"                        /*6*/
+              << " (optional)target_speed_kmh"                 /*7*/
+              << " (optional)adjust_fps_in_config"             /*8*/
               << std::endl;
     return 1;
   }
+
   bool use_viewer = true;
-  if (argc == 7)
+  if (argc >= 7)
     use_viewer = (std::string(argv[6]) == "no_viewer" ? false : true);
 
-  float slowdown_factor = 1.0;
+  float target_speed_kmh = 5.0;  // Default target speed (walking pace)
+  if (argc >= 8) {
+    try {
+      target_speed_kmh = std::stof(argv[7]);
+      if (target_speed_kmh <= 0) {
+        std::cerr << "Target speed must be positive. Using default of 5.0 km/h."
+                  << std::endl;
+        target_speed_kmh = 5.0;
+      }
+    } catch (std::exception &e) {
+      std::cerr << "Invalid target speed. Using default of 5.0 km/h."
+                << std::endl;
+    }
+  }
+
+  // Whether to adjust FPS in the ORB-SLAM3 config file
+  bool adjust_fps_in_config = false;
+  if (argc == 9) {
+    adjust_fps_in_config = (std::string(argv[8]) == "true" ? true : false);
+  }
+
+  std::string sequence_path = std::string(argv[4]);
+  // Calculate the appropriate slowdown factor based on the sequence
+  float slowdown_factor =
+      calculateSlowdownFactor(sequence_path, target_speed_kmh);
 
   std::string output_directory = std::string(argv[5]);
   if (output_directory.back() != '/') output_directory += "/";
@@ -92,11 +168,49 @@ int main(int argc, char **argv) {
     device_type = torch::kCPU;
   }
 
+  // Optionally adjust the FPS in the config file to match the slowdown
+  std::string orbslam_settings_path = std::string(argv[2]);
+  if (adjust_fps_in_config) {
+    std::string adjusted_settings_path = orbslam_settings_path + ".adjusted";
+    float adjusted_fps =
+        std::max(1, static_cast<int>(std::round(10.0f / slowdown_factor)));
+
+    std::cout << "Adjusting Camera.fps from 10.0 to " << adjusted_fps
+              << " to match slowdown factor of " << slowdown_factor << "x"
+              << std::endl;
+
+    // Read the original config file
+    std::ifstream original_config(orbslam_settings_path);
+    std::ofstream adjusted_config(adjusted_settings_path);
+
+    if (original_config.is_open() && adjusted_config.is_open()) {
+      std::string line;
+      while (std::getline(original_config, line)) {
+        if (line.find("Camera.fps:") != std::string::npos) {
+          // Replace the fps line
+          adjusted_config << "Camera.fps: " << adjusted_fps << std::endl;
+        } else {
+          // Keep original line
+          adjusted_config << line << std::endl;
+        }
+      }
+      original_config.close();
+      adjusted_config.close();
+
+      // Use the adjusted config file instead
+      orbslam_settings_path = adjusted_settings_path;
+    } else {
+      std::cerr << "Warning: Could not adjust fps in config file. Using "
+                   "original settings."
+                << std::endl;
+    }
+  }
+
   // Create SLAM system. It initializes all system threads and gets ready to
   // process frames.
   std::shared_ptr<ORB_SLAM3::System> pSLAM =
-      std::make_shared<ORB_SLAM3::System>(argv[1], argv[2],
-                                          ORB_SLAM3::System::STEREO);
+      std::make_shared<ORB_SLAM3::System>(
+          argv[1], orbslam_settings_path.c_str(), ORB_SLAM3::System::STEREO);
   float imageScale = pSLAM->GetImageScale();
 
   // Create GaussianMapper
@@ -122,7 +236,10 @@ int main(int argc, char **argv) {
 
   std::cout << std::endl << "-------" << std::endl;
   std::cout << "Start processing sequence ..." << std::endl;
-  std::cout << "Images in the sequence: " << nImages << std::endl << std::endl;
+  std::cout << "Images in the sequence: " << nImages << std::endl;
+  std::cout << "Target speed: " << target_speed_kmh << " km/h" << std::endl;
+  std::cout << "Slowdown factor: " << slowdown_factor << "x" << std::endl
+            << std::endl;
 
   double t_resize = 0;
   double t_rect = 0;
@@ -130,18 +247,30 @@ int main(int argc, char **argv) {
   int num_rect = 0;
   // Main loop
   cv::Mat imLeft, imRight;
+  double start_timestamp =
+      vTimestamps[0];  // Store the first timestamp as reference
   for (int ni = 0; ni < nImages; ni++) {
-    if (ni > 499) {
-      break;
-    }
+    // if (ni > 1000) {
+    //   break;
+    // }
     if (pSLAM->isShutDown()) break;
+    // if (ni % 100 == 0) {
+    //   std::cout << "-----Reached " << ni << " -----" << std::endl;
+    // }
 
     // Read left and right images from file
     imLeft = cv::imread(vstrImageLeft[ni], cv::IMREAD_UNCHANGED);
     cv::cvtColor(imLeft, imLeft, CV_BGR2RGB);
     imRight = cv::imread(vstrImageRight[ni], cv::IMREAD_UNCHANGED);
     cv::cvtColor(imRight, imRight, CV_BGR2RGB);
-    double tframe = vTimestamps[ni];
+
+    // Get original timestamp
+    double original_tframe = vTimestamps[ni];
+
+    // Scale timestamp to match slowdown (relative to start time)
+    // This ensures timestamps grow at the slowed down rate
+    double scaled_tframe =
+        start_timestamp + (original_tframe - start_timestamp) * slowdown_factor;
 
     if (imLeft.empty()) {
       std::cerr << std::endl
@@ -165,8 +294,8 @@ int main(int argc, char **argv) {
 
     std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
 
-    // Pass the images to the SLAM system
-    pSLAM->TrackStereo(imLeft, imRight, tframe,
+    // Pass the images to the SLAM system with scaled timestamp
+    pSLAM->TrackStereo(imLeft, imRight, scaled_tframe,
                        std::vector<ORB_SLAM3::IMU::Point>(), vstrImageLeft[ni]);
 
     std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
@@ -179,11 +308,12 @@ int main(int argc, char **argv) {
     // Wait to load the next frame
     double T = 0;
     if (ni < nImages - 1)
-      T = vTimestamps[ni + 1] - tframe;
+      T = vTimestamps[ni + 1] -
+          vTimestamps[ni];  // Use original timestamps for interval calculation
     else if (ni > 0)
-      T = tframe - vTimestamps[ni - 1];
+      T = vTimestamps[ni] - vTimestamps[ni - 1];
 
-    T *= slowdown_factor;
+    T *= slowdown_factor;  // Apply the calculated slowdown factor
 
     if (ttrack < T) usleep((T - ttrack) * 1e6);
   }
@@ -199,6 +329,8 @@ int main(int argc, char **argv) {
   // Tracking time statistics
   saveTrackingTime(vTimesTrack, (output_dir / "TrackingTime.txt").string());
 
+  saveSlowdownFactor(slowdown_factor, output_dir);
+
   // Save camera trajectory
   pSLAM->SaveTrajectoryTUM((output_dir / "CameraTrajectory_TUM.txt").string());
   pSLAM->SaveKeyFrameTrajectoryTUM(
@@ -213,6 +345,7 @@ int main(int argc, char **argv) {
   return 0;
 }
 
+// The rest of the functions remain unchanged
 void LoadImages(const string &strPathToSequence,
                 vector<string> &vstrImageLeft,
                 vector<string> &vstrImageRight,
@@ -285,4 +418,18 @@ void saveGpuPeakMemoryUsage(std::filesystem::path pathSave) {
   out << "Peak reserved (MB): " << max_reserved_MB << std::endl;
   out << "Peak allocated (MB): " << max_alloc_MB << std::endl;
   out.close();
+}
+
+void saveSlowdownFactor(float slowdown_factor,
+                        const std::filesystem::path &output_dir) {
+  std::ofstream out((output_dir / "slowdown_factor.txt").string());
+  if (out.is_open()) {
+    out << std::fixed << std::setprecision(6) << slowdown_factor << std::endl;
+    std::cout << "Saved slowdown factor " << slowdown_factor << "x to "
+              << (output_dir / "slowdown_factor.txt").string() << std::endl;
+    out.close();
+  } else {
+    std::cerr << "Warning: Could not save slowdown factor to "
+              << (output_dir / "slowdown_factor.txt").string() << std::endl;
+  }
 }
