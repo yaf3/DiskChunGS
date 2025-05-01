@@ -13,11 +13,11 @@ Camera1.fy: 721.5377
 Camera1.cx: 609.5593
 Camera1.cy: 172.854
 
-Camera.width: 1241
-Camera.height: 376
+Camera.width: 1242
+Camera.height: 375
 
 # Camera frames per second 
-Camera.fps: 10
+Camera.fps: 2
 
 Stereo.b: 0.53715
 
