@@ -48,6 +48,10 @@ find_package(glfw3 REQUIRED)
 
 find_package(realsense2)
 
+find_package(OpenMP REQUIRED)
+
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS} -pthread ${OpenMP_CXX_FLAGS}")
+
 set(ORB_SLAM3_SOURCE_DIR "${PROJECT_SOURCE_DIR}/third_party/ORB-SLAM3")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
@@ -190,6 +194,7 @@ target_link_libraries(
     Eigen3::Eigen
     simple_knn
     cuda_rasterizer
+    OpenMP::OpenMP_CXX
 )
 
 ##################################################################################
