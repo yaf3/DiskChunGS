@@ -481,7 +481,10 @@ class GaussianMapper {
   void run_external_poses();
 
   bool isExternalDataStopped() { return external_data_stopped_; }
-  void signalExternalDataStopped() { external_data_stopped_ = true; }
+  void signalExternalDataStopped() {
+    std::cout << "External data stopped" << std::endl;
+    external_data_stopped_ = true;
+  }
 
   bool external_data_stopped_ = false;
   std::function<void()> completion_callback_;
@@ -491,8 +494,8 @@ class GaussianMapper {
   std::mutex mutex_new_frame_;
   Sophus::SE3f last_keyframe_pose_;
   float min_keyframe_translation_{
-      0.25f};                           // Minimum translation for new keyframe
-  float min_keyframe_rotation_{0.15f};  // Minimum rotation in radians
+      0.1f};                            // Minimum translation for new keyframe
+  float min_keyframe_rotation_{0.05f};  // Minimum rotation in radians
   double last_keyframe_timestamp_{0.0};
-  float min_keyframe_time_{0.5f};  // Minimum time between keyframes
+  float min_keyframe_time_{0.1f};  // Minimum time between keyframes
 };

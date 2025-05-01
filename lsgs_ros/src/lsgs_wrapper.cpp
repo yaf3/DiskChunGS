@@ -533,6 +533,7 @@ void GaussianSLAMWrapper::timeoutCallback(const ros::TimerEvent &event) {
         ROS_INFO("Calling signalExternalDataStopped on gaussian mapper");
         gaussian_mapper_->signalExternalDataStopped();
         stopped_ = true;
+        ROS_INFO("Called signalExternalDataStopped on gaussian mapper");
       }
     }
   }

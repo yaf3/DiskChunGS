@@ -1260,7 +1260,7 @@ void GaussianMapper::trainForOneIteration() {
   }
 
   auto timer_cuda_sync = ProfilingUtils::Timer("cuda_sync");
-  torch::cuda::synchronize();
+  // torch::cuda::synchronize();
   timer_cuda_sync.stop();
   auto timer_densification = ProfilingUtils::Timer("densification");
   {
@@ -1408,8 +1408,8 @@ bool GaussianMapper::hasMetIncrementalMappingConditions() {
 }
 
 void GaussianMapper::combineMappingOperations() {
-  auto timer_combineMappingOperations =
-      ProfilingUtils::Timer("combineMappingOperations");
+  // auto timer_combineMappingOperations =
+  //     ProfilingUtils::Timer("combineMappingOperations");
 
   // Collect and group all operations
   std::vector<ORB_SLAM3::MappingOperation> localBAOps;
@@ -1439,9 +1439,9 @@ void GaussianMapper::combineMappingOperations() {
 
   // Process all LocalMappingBA operations together
   if (!localBAOps.empty()) {
-    auto timer_processLocalBA = ProfilingUtils::Timer("processLocalBA");
+    // auto timer_processLocalBA = ProfilingUtils::Timer("processLocalBA");
     processLocalMappingBABatch(localBAOps);
-    timer_processLocalBA.stop();
+    // timer_processLocalBA.stop();
   }
 
   // Process loop closure operations (these are usually more complex and less
@@ -1460,13 +1460,13 @@ void GaussianMapper::combineMappingOperations() {
     timer_scaleRefinement.stop();
   }
 
-  timer_combineMappingOperations.stop();
+  // timer_combineMappingOperations.stop();
 }
 
 void GaussianMapper::processLocalMappingBABatch(
     std::vector<ORB_SLAM3::MappingOperation>& operations) {
-  auto timer_LocalMapping_before_addPoints =
-      ProfilingUtils::Timer("LocalMapping_before_addPoints");
+  // auto timer_LocalMapping_before_addPoints =
+  //     ProfilingUtils::Timer("LocalMapping_before_addPoints");
   if (operations.empty()) return;
 
   // Containers for batching
@@ -1512,9 +1512,9 @@ void GaussianMapper::processLocalMappingBABatch(
     all_colors.insert(all_colors.end(), colors.begin(), colors.end());
   }
 
-  timer_LocalMapping_before_addPoints.stop();
+  // timer_LocalMapping_before_addPoints.stop();
 
-  auto timer_addPoints = ProfilingUtils::Timer("addPoints");
+  // auto timer_addPoints = ProfilingUtils::Timer("addPoints");
   // Add all collected points to the model in a single call
   if (initial_mapped_ && all_points.size() >= 30) {
     int num_new_points = static_cast<int>(all_points.size() / 3);
@@ -1539,7 +1539,7 @@ void GaussianMapper::processLocalMappingBABatch(
     std::unique_lock<std::mutex> lock_render(mutex_render_);
     addPoints(points_tensor, colors_tensor, associated_keyframe_map);
   }
-  timer_addPoints.stop();
+  // timer_addPoints.stop();
 }
 
 void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
@@ -3233,7 +3233,7 @@ void GaussianMapper::run_external_poses() {
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
 
   // Process frames until we have enough keyframes
-  while (!initial_mapped_ && !isStopped()) {
+  while (!initial_mapped_ && !isStopped() && !isExternalDataStopped()) {
     auto maybe_frame = frame_queue_.pop(true);
     if (!maybe_frame) continue;
 
@@ -3268,7 +3268,7 @@ void GaussianMapper::run_external_poses() {
     SLAM_stop_iter = getIteration();
   }
 
-  while (!isStopped()) {
+  while (!isExternalDataStopped() && !isStopped()) {
     trainForOneIteration();
     if (getIteration() >= opt_params_.iterations_) break;
   }
@@ -3276,11 +3276,14 @@ void GaussianMapper::run_external_poses() {
   // Fourth loop: Tail gaussian optimization
   int densify_interval = densifyInterval();
   int n_delay_iters = densify_interval * 0.8;
+  std::cout << "Starting tail optimization loop" << std::endl;
   while (getIteration() - SLAM_stop_iter < n_delay_iters ||
          getIteration() % densify_interval < n_delay_iters ||
          isKeepingTraining()) {
     trainForOneIteration();
   }
+
+  std::cout << "Tail optimization loop stopped" << std::endl;
 
   frame_queue_.stop();
 

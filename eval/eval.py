@@ -63,6 +63,14 @@ gt_dataset = {
                 
         ],
     },
+    "rsl": {
+        "path": os.path.join(dataset_center_path, "RSL/datasets"),
+        "scenes": [
+            "train1",
+            "train2",
+            "gazebo1",
+        ],
+    },
 }
 
 # path the all results
@@ -82,15 +90,18 @@ for result in results:
         result_path = os.path.join(result_main_folder, result, scene)
         gt_path = os.path.join(gt_dataset_path, scene)
         # if not os.path.exists(os.path.join(result_path, "eval.txt")):
+        skip_tracking_eval = ""
+        if "rsl" in result.lower():
+            skip_tracking_eval = "--skip_trajectory_eval"
         if "mono" in result.lower():
             os.system(
-                "python3 run.py {} {} --correct_scale".format(
-                    result_path, gt_path
+                "python3 run.py {} {} --correct_scale {}".format(
+                    result_path, gt_path, skip_tracking_eval
                 )
             )
         else:
             os.system(
-                "python3 run.py {} {}".format(result_path, gt_path)
+                "python3 run.py {} {} {}".format(result_path, gt_path, skip_tracking_eval)
             )
 
 
