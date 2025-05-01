@@ -94,30 +94,6 @@ bool test_AABB_against_frustum_eigen(const Eigen::Matrix4f& MVP,
   return true;
 }
 
-// Main culling function using Eigen types
-void cull_AABBs_against_frustum(const Cam& camera,
-                                const std::vector<Eigen::Matrix4f>& transforms,
-                                const std::vector<AABB>& aabb_list,
-                                std::vector<u32>& out_visible_list,
-                                bool use_simd) {
-  // Compute view-projection matrix
-  Eigen::Matrix4f VP = camera.projection * camera.view;
-
-  // Reserve space for visible objects
-  out_visible_list.reserve(aabb_list.size());
-  out_visible_list.clear();
-
-  for (size_t i = 0; i < aabb_list.size(); i++) {
-    // Compute model-view-projection matrix
-    Eigen::Matrix4f MVP = VP * transforms[i];
-
-    bool visible = test_AABB_against_frustum_eigen(MVP, aabb_list[i]);
-
-    if (visible) {
-      out_visible_list.push_back(static_cast<u32>(i));
-    }
-  }
-}
 // Get chunk coordinate from 3D position
 ChunkCoord ChunkManager::getChunkCoord(const Eigen::Vector3f& position) {
   float effective_size = chunk_size_ - overlap_margin_;  // Account for overlap
@@ -331,7 +307,8 @@ bool ChunkManager::transitionChunkState(const ChunkCoord& coord,
   metadata.state.store(new_state);
   // std::cout << "Successful state transition for " << coord.x << "," <<
   // coord.y
-  //           << "," << coord.z << ": " << static_cast<int>(expected) << " -> "
+  //           << "," << coord.z << ": " << static_cast<int>(expected) << " ->
+  //           "
   //           << static_cast<int>(new_state) << std::endl;
   return true;
 }
@@ -423,7 +400,8 @@ std::future<bool> ChunkManager::loadChunkAsync(const ChunkCoord& coord,
   if (current_state == ChunkState::ACTIVE && load_for_optimization) {
     // std::cout << "Attempting to transition chunk " << coord.x << "," <<
     // coord.y
-    //           << "," << coord.z << " from ACTIVE to OPTIMIZING" << std::endl;
+    //           << "," << coord.z << " from ACTIVE to OPTIMIZING" <<
+    //           std::endl;
 
     if (transitionChunkState(coord, ChunkState::ACTIVE,
                              ChunkState::OPTIMIZING)) {
@@ -667,7 +645,8 @@ bool ChunkManager::processLoadOperation(const ChunkCoord& coord,
   incrementStat(stats_.active_chunks);
   incrementStat(stats_.disk_loads);
 
-  // std::cout << "IO Thread: Load operation successful for: " << coord.x << " "
+  // std::cout << "IO Thread: Load operation successful for: " << coord.x << "
+  // "
   //           << coord.y << " " << coord.z << " " << std::endl;
   auto end_time = std::chrono::steady_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -742,7 +721,8 @@ bool ChunkManager::processSaveOperation(const ChunkCoord& coord) {
     // Clear CUDA cache after saving to free memory
     c10::cuda::CUDACachingAllocator::emptyCache();
 
-    // std::cout << "IO Thread: Save operation successful for: " << coord.x << "
+    // std::cout << "IO Thread: Save operation successful for: " << coord.x <<
+    // "
     // "
     //           << coord.y << " " << coord.z << " " << std::endl;
     auto end_time = std::chrono::steady_clock::now();
@@ -1150,8 +1130,11 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::loadVisibleChunks(
 
   triggerLruCheck();
 
+  auto timer_frustumCullChunks =
+      ProfilingUtils::Timer("ChunkManager::frustumCullChunks");
   std::vector<ChunkCoord> visible_chunk_coords =
       frustumCullChunks(keyframe, use_cache);
+  timer_frustumCullChunks.stop();
 
   // Now we have the list of visible chunk coordinates
   // Start asynchronous loading of chunks
@@ -1281,27 +1264,20 @@ std::vector<ChunkCoord> ChunkManager::frustumCullChunks(
   std::size_t keyframe_id = keyframe->fid_;
   Sophus::SE3d current_pose = keyframe->getPose();
 
-  // Check if we can use cached visibility results
+  // Check cache (keep original cache logic)
   if (use_cache) {
     std::lock_guard<std::mutex> lock(cache_mutex_);
     auto now = std::chrono::steady_clock::now();
-
-    // Check cache entry exists and is valid
     auto cache_it = visibility_cache_.find(keyframe_id);
     if (cache_it != visibility_cache_.end()) {
       auto& entry = cache_it->second;
-
-      // Check if cache entry is recent enough and pose hasn't changed
       if ((now - entry.timestamp) < cache_expiry_time_ &&
           pose_nearly_equal(current_pose, entry.pose)) {
-        // Update timestamp to keep this entry fresh
         entry.timestamp = now;
         return entry.visible_chunks;
       }
     }
   }
-
-  std::vector<ChunkCoord> visible_coords;
 
   Eigen::Matrix4f view_matrix =
       keyframe->getWorld2View2(keyframe->trans_, keyframe->scale_);
@@ -1309,12 +1285,17 @@ std::vector<ChunkCoord> ChunkManager::frustumCullChunks(
   Eigen::Matrix4f vp_matrix = proj_matrix * view_matrix;
 
   // Get camera position for chunk search
-  Sophus::SE3d Twc = current_pose.inverse();  // World to camera transform
+  Sophus::SE3d Twc = current_pose.inverse();
   Eigen::Vector3f camera_position = Twc.translation().cast<float>();
   ChunkCoord camera_chunk = getChunkCoord(camera_position);
 
-  // Determine search radius based on far plane distance
+  // Determine search radius - consider reducing for small chunks
   int search_radius = std::min(std::ceil(keyframe->zfar_ / chunk_size_), 10.0f);
+
+  // Create a flattened list of candidate chunks for parallel processing
+  std::vector<ChunkCoord> candidate_chunks;
+  candidate_chunks.reserve((2 * search_radius + 1) * (2 * search_radius + 1) *
+                           (2 * search_radius + 1));
 
   for (int dx = -search_radius; dx <= search_radius; dx++) {
     for (int dy = -search_radius; dy <= search_radius; dy++) {
@@ -1322,25 +1303,39 @@ std::vector<ChunkCoord> ChunkManager::frustumCullChunks(
         ChunkCoord check_coord{camera_chunk.x + dx, camera_chunk.y + dy,
                                camera_chunk.z + dz};
 
-        // Skip chunks that are too far from camera (rough distance check)
+        // Quick distance check before adding to candidates
         Eigen::Vector3f chunk_center = getChunkCenter(check_coord);
         float dist_to_camera = (chunk_center - camera_position).norm();
-        if (dist_to_camera >
-            keyframe->zfar_ + chunk_size_ * 1.732f) {  // sqrt(3) for diagonal
-          continue;
-        }
-
-        // Get AABB for the chunk and test against frustum
-        AABB chunk_aabb = getChunkAABB(check_coord);
-        bool visible = test_AABB_against_frustum_eigen(vp_matrix, chunk_aabb);
-        if (visible) {
-          visible_coords.push_back(check_coord);
+        if (dist_to_camera <= keyframe->zfar_ + chunk_size_ * 1.732f) {
+          candidate_chunks.push_back(check_coord);
         }
       }
     }
   }
 
-  // Update the cache if enabled
+  // Vector to hold visibility results
+  std::vector<bool> visibility_results(candidate_chunks.size(), false);
+
+// Parallel processing of candidate chunks
+#pragma omp parallel for
+  for (size_t i = 0; i < candidate_chunks.size(); i++) {
+    const ChunkCoord& check_coord = candidate_chunks[i];
+    AABB chunk_aabb = getChunkAABB(check_coord);
+    visibility_results[i] =
+        test_AABB_against_frustum_eigen(vp_matrix, chunk_aabb);
+  }
+
+  // Collect visible chunks (serial operation)
+  std::vector<ChunkCoord> visible_coords;
+  visible_coords.reserve(candidate_chunks.size() / 4);  // Estimate
+
+  for (size_t i = 0; i < candidate_chunks.size(); i++) {
+    if (visibility_results[i]) {
+      visible_coords.push_back(candidate_chunks[i]);
+    }
+  }
+
+  // Update cache (keep original cache update logic)
   if (use_cache) {
     std::lock_guard<std::mutex> lock(cache_mutex_);
     VisibilityCacheEntry entry;
@@ -1349,6 +1344,7 @@ std::vector<ChunkCoord> ChunkManager::frustumCullChunks(
     entry.timestamp = std::chrono::steady_clock::now();
     visibility_cache_[keyframe_id] = entry;
   }
+
   return visible_coords;
 }
 
@@ -1427,7 +1423,8 @@ void ChunkManager::addPointsToChunks(
   auto start_time = std::chrono::steady_clock::now();
   torch::NoGradGuard no_grad;
   const int min_new_points_threshold = 10;
-  // std::cout << "addPointsToChunks called with " << points.size(0) << " points
+  // std::cout << "addPointsToChunks called with " << points.size(0) << "
+  // points
   // "
   //           << std::endl;
 

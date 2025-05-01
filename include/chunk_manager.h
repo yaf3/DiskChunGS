@@ -46,13 +46,6 @@ struct Cam {
 bool test_AABB_against_frustum_eigen(const Eigen::Matrix4f& MVP,
                                      const AABB& aabb);
 
-// Main culling function using Eigen types
-void cull_AABBs_against_frustum(const Cam& camera,
-                                const std::vector<Eigen::Matrix4f>& transforms,
-                                const std::vector<AABB>& aabb_list,
-                                std::vector<u32>& out_visible_list,
-                                bool use_simd = true);
-
 // Define chunk state enum for tracking lifecycle
 enum class ChunkState {
   INACTIVE,    // Not in memory
