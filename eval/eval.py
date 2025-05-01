@@ -44,6 +44,25 @@ gt_dataset = {
             "rgbd_dataset_freiburg3_long_office_household",
         ],
     },
+    "kitti": {
+        "path": os.path.join(dataset_center_path, "kitti/data_odometry_color/dataset/sequences"),
+        "scenes": [
+            "00",
+            "01",
+            "02",
+            "03",
+            "04",
+            "05",
+            "06",
+            "07",
+            "08",
+            "09",
+            "10",
+            "11",
+            "12"
+                
+        ],
+    },
 }
 
 # path the all results
