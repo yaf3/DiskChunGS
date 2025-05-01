@@ -44,6 +44,7 @@
 #include <vector>
 
 #include "ORB-SLAM3/Thirdparty/Sophus/sophus/se3.hpp"
+#include "ORB-SLAM3/include/MapDrawer.h"
 #include "ORB-SLAM3/include/System.h"
 #include "chunk_manager.h"
 #include "chunk_types.h"
@@ -195,6 +196,10 @@ class GaussianMapper {
   bool hasMetIncrementalMappingConditions();
 
   void combineMappingOperations();
+  void processLocalMappingBABatch(
+      std::vector<ORB_SLAM3::MappingOperation> &operations);
+  void processLoopClosureBA(ORB_SLAM3::MappingOperation &opr);
+  void processScaleRefinement(ORB_SLAM3::MappingOperation &opr);
 
   void handleNewKeyframe(std::tuple<unsigned long,
                                     unsigned long,
@@ -210,6 +215,7 @@ class GaussianMapper {
       size_t count);
   std::shared_ptr<GaussianKeyframe> useOneRandomKeyframe();
   std::shared_ptr<GaussianKeyframe> useRecentKeyframe();
+  void generateKfidRandomShuffle();
 
  public:
   void increaseKeyframeTimesOfUse(std::shared_ptr<GaussianKeyframe> pkf,
@@ -357,6 +363,7 @@ class GaussianMapper {
   std::map<camera_id_t, torch::Tensor> undistort_mask_;
   std::map<camera_id_t, torch::Tensor> viewer_main_undistort_mask_;
   std::map<camera_id_t, torch::Tensor> viewer_sub_undistort_mask_;
+  bool kfid_shuffled_ = false;
 
  protected:
   // Parameters
@@ -394,6 +401,7 @@ class GaussianMapper {
   float stereo_baseline_length_ = 0.0f;
   int stereo_min_disparity_ = 0;
   int stereo_num_disparity_ = 128;
+  bool do_stereo_loss_ = false;
 
   cv::Mat stereo_Q_;
   cv::Ptr<cv::cuda::StereoSGM> stereo_cv_sgm_;

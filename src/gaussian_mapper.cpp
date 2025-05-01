@@ -104,7 +104,7 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   keyframe_queue_ = std::make_shared<KeyframeQueue>(
       scene_, 20, keyframe_similarity_threshold_, opt_params_.auto_distribute_,
       &kfs_loss_);
-  keyframe_queue_->setChunkManager(chunk_manager_);
+  // keyframe_queue_->setChunkManager(chunk_manager_);
 
   // Mode
   if (!pSLAM) {
@@ -316,7 +316,7 @@ GaussianMapper::GaussianMapper(const SystemSensorType sensor_type,
   keyframe_queue_ = std::make_shared<KeyframeQueue>(
       scene_, 10, keyframe_similarity_threshold_, opt_params_.auto_distribute_,
       &kfs_loss_);
-  keyframe_queue_->setChunkManager(chunk_manager_);
+  // keyframe_queue_->setChunkManager(chunk_manager_);
 
   ORB_SLAM3::System::eSensor system_mode;
   if (sensor_type == STEREO) {
@@ -489,6 +489,7 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
 
   stereo_min_disparity_ = settings_file["Stereo.min_disparity"].operator int();
   stereo_num_disparity_ = settings_file["Stereo.num_disparity"].operator int();
+  do_stereo_loss_ = settings_file["Stereo.do_stereo_loss"].operator int();
   min_depth_ = settings_file["Mapper.min_depth_"].operator float();
   max_depth_ = settings_file["Mapper.max_depth_"].operator float();
 
@@ -688,6 +689,7 @@ void GaussianMapper::run() {
           }
           new_kf->computeTransformTensors();
           scene_->addKeyframe(new_kf);
+          kfid_shuffled_ = false;
           keyframe_queue_->notifyNewKeyframeAdded(new_kf);
 
           increaseKeyframeTimesOfUse(new_kf, newKeyframeTimesOfUse());
@@ -766,6 +768,8 @@ void GaussianMapper::run() {
   // Second loop: Incremental gaussian mapping
   int SLAM_stop_iter = 0;
   while (!isStopped()) {
+    auto timer_TotalLoop = ProfilingUtils::Timer("TotalLoop");
+
     // Check conditions for incremental mapping
     if (hasMetIncrementalMappingConditions()) {
       combineMappingOperations();
@@ -774,6 +778,7 @@ void GaussianMapper::run() {
 
     // Invoke training once
     trainForOneIteration();
+    timer_TotalLoop.stop();
 
     // if (getIteration() % 2000 == 0) {
     //   keyframe_queue_->visualizeClusters(
@@ -978,8 +983,19 @@ void GaussianMapper::trainForOneIteration() {
   // std::cout << std::endl;
 
   auto timer_pickKeyframe = ProfilingUtils::Timer("pickKeyframe");
+
+  // if (pSLAM_) {
+  //   ORB_SLAM3::MapDrawer* pSlamMapDrawer = pSLAM_->getMapDrawer();
+  //   Sophus::SE3f slam_Twc = pSlamMapDrawer->GetCurrentCameraPose();
+  //   keyframe_queue_->setCurrentPose(slam_Twc);
+  // } else {
+  //   auto [_, external_Twc] = getRecentExternalData();
+  //   keyframe_queue_->setCurrentPose(external_Twc);
+  // }
+  // std::shared_ptr<GaussianKeyframe> viewpoint_cam =
+  //     useOneRandomSlidingWindowKeyframe();
   std::shared_ptr<GaussianKeyframe> viewpoint_cam =
-      useOneRandomSlidingWindowKeyframe();
+      keyframe_queue_->getNextKeyframe();
   timer_pickKeyframe.stop();
   if (!viewpoint_cam) {
     increaseIteration(-1);
@@ -1122,8 +1138,11 @@ void GaussianMapper::trainForOneIteration() {
   auto Lssim = loss_utils::fast_ssim(rendered_image, gt_image);
   float lambda_dssim = lambdaDssim();
   auto loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - Lssim);
+  // std::cout << "Ll1: " << Ll1.item<float>() << std::endl;
+  // std::cout << "Lssim: " << Lssim.item<float>() << std::endl;
 
-  if (this->sensor_type_ == STEREO && viewpoint_cam->is_stereo_) {
+  if (do_stereo_loss_ && this->sensor_type_ == STEREO &&
+      viewpoint_cam->is_stereo_) {
     // Get precomputed right image
     torch::Tensor gt_image_right;
     if (training_level == num_gaus_pyramid_sub_levels_) {
@@ -1186,20 +1205,29 @@ void GaussianMapper::trainForOneIteration() {
     for (const auto& gaussians : models) {
       loss += opt_params_.opacity_reg_ *
               gaussians->getOpacityActivation().abs().mean();
+      // std::cout << "opacity_reg: "
+      //           << (opt_params_.opacity_reg_ *
+      //               gaussians->getOpacityActivation().abs().mean())
+      //                  .item<float>()
+      //           << std::endl;
     }
   }
 
-  // float anisotropy_reg_weight = 0.01f;  // Adjust strength as needed
+  // float iso_reg_weight = 1.0f;  // Adjust as needed
   // for (const auto& gaussians : models) {
-  //   // Get scaling and calculate anisotropy
+  //   // Get scaling
   //   torch::Tensor scaling = gaussians->getScalingActivation();
-  //   torch::Tensor max_scale = std::get<1>(scaling.max(1));
-  //   torch::Tensor min_scale = std::get<1>(scaling.min(1));
-  //   torch::Tensor anisotropy =
-  //       (max_scale - min_scale) / (max_scale + min_scale + 1e-7f);
+
+  //   // Calculate mean scaling for each Gaussian
+  //   torch::Tensor mean_scale = scaling.mean(1, /*keepdim=*/true);
+
+  //   // Calculate L1 distance from each scaling component to the mean
+  //   // This penalizes primitives with high aspect ratio as in Eq. (9)
+  //   torch::Tensor iso_penalty = (scaling - mean_scale).abs().sum(1).mean();
 
   //   // Add weighted regularization term to loss
-  //   loss += anisotropy_reg_weight * anisotropy.mean();
+  //   loss += iso_reg_weight * iso_penalty;
+  //   std::cout << "iso_penalty: " << iso_penalty.item<float>() << std::endl;
   // }
 
   timer_loss_calculation.stop();
@@ -1380,341 +1408,403 @@ bool GaussianMapper::hasMetIncrementalMappingConditions() {
 }
 
 void GaussianMapper::combineMappingOperations() {
-  // Get Mapping Operations
+  auto timer_combineMappingOperations =
+      ProfilingUtils::Timer("combineMappingOperations");
+
+  // Collect and group all operations
+  std::vector<ORB_SLAM3::MappingOperation> localBAOps;
+  std::vector<ORB_SLAM3::MappingOperation> loopClosureOps;
+  std::vector<ORB_SLAM3::MappingOperation> scaleRefinementOps;
+
+  // Collect all operations first
   while (pSLAM_->getAtlas()->hasMappingOperation()) {
     ORB_SLAM3::MappingOperation opr =
         pSLAM_->getAtlas()->getAndPopMappingOperation();
 
+    // Group by operation type
     switch (opr.meOperationType) {
-      case ORB_SLAM3::MappingOperation::OprType::LocalMappingBA: {
-        // std::cout << "[Gaussian Mapper]Local BA Detected." << std::endl;
-
-        // Get new keyframes
-        auto& associated_kfs = opr.associatedKeyFrames();
-        std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>
-            associated_keyframe_map;
-
-        // Add keyframes to the scene
-        for (auto& kf : associated_kfs) {
-          // Keyframe Id
-          auto kfid = std::get<0>(kf);
-          std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
-          // If the keyframe is already in the scene, only update the pose.
-          // Otherwise create a new one
-          if (pkf) {
-            auto& pose = std::get<2>(kf);
-            pkf->setPose(pose.unit_quaternion().cast<double>(),
-                         pose.translation().cast<double>());
-            pkf->computeTransformTensors();
-
-            // Give local BA keyframes times of use
-            increaseKeyframeTimesOfUse(pkf, local_BA_increased_times_of_use_);
-          } else {
-            handleNewKeyframe(kf);
-          }
-          associated_keyframe_map[kfid] = scene_->getKeyframe(kfid);
-        }
-
-        // Get new points
-        auto& associated_points = opr.associatedMapPoints();
-        auto& points = std::get<0>(associated_points);
-        auto& colors = std::get<1>(associated_points);
-
-        int num_new_points = static_cast<int>(points.size() / 3);
-        torch::Tensor points_tensor =
-            torch::from_blob(points.data(), {num_new_points, 3},
-                             torch::TensorOptions().dtype(torch::kFloat32))
-                .to(device_type_);
-        torch::Tensor colors_tensor =
-            torch::from_blob(colors.data(), {num_new_points, 3},
-                             torch::TensorOptions().dtype(torch::kFloat32))
-                .to(device_type_);
-
-        // Add new points to the model
-        if (initial_mapped_ && points.size() >= 30) {
-          torch::NoGradGuard no_grad;
-          std::unique_lock<std::mutex> lock_render(mutex_render_);
-          addPoints(points_tensor, colors_tensor, associated_keyframe_map);
-        }
-      } break;
-
-      case ORB_SLAM3::MappingOperation::OprType::LoopClosingBA: {
-        std::cout << "[Gaussian Mapper]Loop Closure Detected." << std::endl;
-        std::cout << "[DEBUG] Starting loop closure with scale factor: "
-                  << opr.mfScale << std::endl;
-
-        // Get the loop keyframe scale modification factor
-        float loop_kf_scale = opr.mfScale;
-
-        // Get new keyframes (scaled transformation applied in ORB-SLAM3)
-        auto& associated_kfs = opr.associatedKeyFrames();
-
-        std::cout << "[DEBUG] Processing " << associated_kfs.size()
-                  << " keyframes" << std::endl;
-
-        if (record_loop_ply_)
-          savePly(result_dir_ / (std::to_string(getIteration()) +
-                                 "_0_before_loop_correction"));
-
-        int num_transformed = 0;
-
-        // Instead of tracking processed chunks as a set
-        std::unordered_map<ChunkCoord, torch::Tensor, ChunkCoordHash>
-            chunk_transformed_flags;
-
-        for (auto& kf : associated_kfs) {
-          auto kfid = std::get<0>(kf);
-          std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
-
-          if (pkf) {
-            auto& pose = std::get<2>(kf);
-            Sophus::SE3f original_pose = pkf->getPosef();
-            Sophus::SE3f inv_pose = pose.inverse();
-            Sophus::SE3f diff_pose = inv_pose * original_pose;
-            bool large_rot = !diff_pose.rotationMatrix().isApprox(
-                Eigen::Matrix3f::Identity(), large_rot_th_);
-            bool large_trans = !diff_pose.translation().isMuchSmallerThan(
-                1.0, large_trans_th_);
-
-            if (large_rot || large_trans) {
-              std::unique_lock<std::mutex> lock_render(mutex_render_);
-              std::cout
-                  << "[Gaussian Mapper]Large loop correction detected for kf "
-                  << kfid << std::endl;
-
-              // Get chunks visible from this keyframe
-              std::vector<std::shared_ptr<Chunk>> visible_chunks =
-                  chunk_manager_->loadVisibleChunks(pkf);
-
-              for (const auto& chunk : visible_chunks) {
-                std::cout << "Now processing: " << chunk->getCoord().x << " "
-                          << chunk->getCoord().y << " " << chunk->getCoord().z
-                          << std::endl;
-              }
-
-              // Calculate the transformation
-              diff_pose.translation() -= inv_pose.translation();
-              diff_pose.translation() *= loop_kf_scale;
-              diff_pose.translation() += inv_pose.translation();
-
-              torch::Tensor diff_pose_tensor =
-                  tensor_utils::EigenMatrix2TorchTensor(diff_pose.matrix(),
-                                                        device_type_)
-                      .transpose(0, 1);
-
-              for (auto& chunk : visible_chunks) {
-                if (!chunk || !chunk->getGaussians()) {
-                  throw std::runtime_error("Chunk or gaussians are null");
-                }
-
-                auto gaussians = chunk->getGaussians();
-                auto chunk_coord = chunk->getCoord();
-
-                // Get or create the transformed flags for this chunk
-                auto it = chunk_transformed_flags.find(chunk_coord);
-                torch::Tensor chunk_point_flags;
-
-                if (it == chunk_transformed_flags.end()) {
-                  // First time seeing this chunk, initialize all flags to
-                  // "not transformed"
-                  std::cout << "First time seeing this chunk, set all flags to "
-                               "not transformed"
-                            << std::endl;
-                  chunk_point_flags =
-                      torch::full({gaussians->xyz_.size(0)}, true,
-                                  torch::TensorOptions()
-                                      .device(device_type_)
-                                      .dtype(torch::kBool));
-                  chunk_transformed_flags[chunk_coord] = chunk_point_flags;
-                } else {
-                  chunk_point_flags = it->second;
-                  // If chunk size has changed (new points added), resize the
-                  // flags tensor
-                  if (chunk_point_flags.size(0) != gaussians->xyz_.size(0)) {
-                    std::cout << "[DEBUG] Resizing flags tensor from "
-                              << chunk_point_flags.size(0) << " to "
-                              << gaussians->xyz_.size(0) << std::endl;
-                    int64_t num_new_points =
-                        gaussians->xyz_.size(0) - chunk_point_flags.size(0);
-                    if (num_new_points > 0) {
-                      chunk_point_flags =
-                          torch::cat({chunk_point_flags,
-                                      torch::full({num_new_points}, true,
-                                                  chunk_point_flags.options())},
-                                     /*dim=*/0);
-                      chunk_transformed_flags[chunk_coord] = chunk_point_flags;
-                    }
-                  }
-                }
-
-                std::cout << "[DEBUG] Before transform - xyz: "
-                          << gaussians->xyz_.sizes()
-                          << ", flags: " << chunk_point_flags.sizes()
-                          << std::endl;
-
-                int chunk_transformed = 0;
-                std::cout << "Calling scaledTransformVisiblePointsOfKeyframe"
-                          << std::endl;
-                assert(chunk_manager_->getChunkState(chunk_coord) ==
-                           ChunkState::OPTIMIZING &&
-                       "Chunk should be in optimizing state");
-                gaussians->scaledTransformVisiblePointsOfKeyframe(
-                    chunk_point_flags, diff_pose_tensor,
-                    pkf->world_view_transform_, pkf->full_proj_transform_,
-                    pkf->creation_iter_, stableNumIterExistence(),
-                    chunk_transformed, loop_kf_scale);
-
-                std::cout << "[DEBUG] Transformed " << chunk_transformed
-                          << " points successfully" << std::endl;
-
-                num_transformed += chunk_transformed;
-              }
-
-              // Give loop keyframes times of use
-              increaseKeyframeTimesOfUse(pkf,
-                                         loop_closure_increased_times_of_use_);
-
-              chunk_manager_->releaseChunksFromOptimization(visible_chunks);
-              chunk_manager_->triggerLruCheck();
-            }
-
-            // Update keyframe pose
-            pkf->setPose(pose.unit_quaternion().cast<double>(),
-                         pose.translation().cast<double>());
-            pkf->computeTransformTensors();
-          } else {
-            std::cout << "Actually new keyframe in LC" << std::endl;
-            handleNewKeyframe(kf);
-          }
-        }
-
-        std::cout << "All points transformed, now time to add new points"
-                  << std::endl;
-        // Get new points (scaled transformation applied in ORB-SLAM3, so this
-        // step is performed at last to avoid scaling twice)
-        auto& associated_points = opr.associatedMapPoints();
-        auto& points = std::get<0>(associated_points);
-        auto& colors = std::get<1>(associated_points);
-
-        // Add new points to the appropriate chunks
-        if (initial_mapped_ && points.size() >= 30) {
-          torch::NoGradGuard no_grad;
-          std::unique_lock<std::mutex> lock_render(mutex_render_);
-
-          // Convert to tensors
-          int num_new_points = static_cast<int>(points.size() / 3);
-          torch::Tensor points_tensor =
-              torch::from_blob(points.data(), {num_new_points, 3},
-                               torch::TensorOptions().dtype(torch::kFloat32))
-                  .to(device_type_);
-          torch::Tensor colors_tensor =
-              torch::from_blob(colors.data(), {num_new_points, 3},
-                               torch::TensorOptions().dtype(torch::kFloat32))
-                  .to(device_type_);
-
-          // Create a map of keyframes for the chunk manager
-          std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>
-              loop_keyframes;
-          for (auto& kf : associated_kfs) {
-            auto kfid = std::get<0>(kf);
-            auto pkf = scene_->getKeyframe(kfid);
-            if (pkf) {
-              loop_keyframes[kfid] = pkf;
-            }
-          }
-
-          std::cout << "Adding points to chunks" << std::endl;
-          chunk_manager_->addPointsToChunks(points_tensor, colors_tensor,
-                                            loop_keyframes,
-                                            scene_->cameras_extent_);
-        }
-
-        chunk_manager_->releaseAllChunksFromOptimization();
-
-        // Gaussians will be all over the place, transfer them to their
-        // respective chunks
-        std::cout << "Transferring gaussians across chunks" << std::endl;
-        chunk_manager_->transferGaussiansAcrossChunks(scene_->cameras_extent_);
-
-        chunk_manager_->releaseAllChunksFromOptimization();
-
-        // Mark this iteration
-        loop_closure_iteration_ = true;
-      } break;
-
-      case ORB_SLAM3::MappingOperation::OprType::ScaleRefinement: {
-        std::cout << "[Gaussian Mapper]Scale refinement Detected. Transforming "
-                     "all kfs and points..."
-                  << std::endl;
-
-        float s = opr.mfScale;
-        Sophus::SE3f& T = opr.mT;
-        if (initial_mapped_) {
-          // Apply the scaled transformation on ALL gaussian model points,
-          // including those on disk
-          {
-            std::unique_lock<std::mutex> lock_render(mutex_render_);
-
-            // Get all existing chunk coordinates (both in memory and on disk)
-            std::vector<ChunkCoord> all_chunks =
-                chunk_manager_->getExistingChunkCoords();
-
-            std::cout << "Applying scale transformation to "
-                      << all_chunks.size() << " chunks" << std::endl;
-
-            // Process chunks in batches to manage memory
-            const int batch_size = 5;  // Adjust based on memory constraints
-            for (size_t i = 0; i < all_chunks.size(); i += batch_size) {
-              size_t end = std::min(i + batch_size, all_chunks.size());
-
-              // Process current batch
-              for (size_t j = i; j < end; j++) {
-                const auto& coord = all_chunks[j];
-                if (chunk_manager_->loadChunkSync(coord, true)) {
-                  std::shared_ptr<Chunk> chunk =
-                      chunk_manager_->getChunkAt(coord);
-                  chunk->getGaussians()->applyScaledTransformation(s, T);
-                  chunk_manager_->releaseChunksFromOptimization({chunk});
-                  chunk_manager_->saveChunkAsync(coord);
-                }
-              }
-            }
-          }
-          // Apply the scaled transformation to the scene
-          scene_->applyScaledTransformation(s, T);
-        } else {  // TODO: the workflow should not come here, delete this
-                  // branch
-          // Apply the scaled transformation to the cached points
-          for (auto& pt : scene_->cached_point_cloud_) {
-            // pt <- (s * Ryw * pt + tyw)
-            auto& pt_xyz = pt.second.xyz_;
-            pt_xyz *= s;
-            pt_xyz = T.cast<double>() * pt_xyz;
-          }
-
-          // Apply the scaled transformation on gaussian keyframes
-          for (auto& kfit : scene_->keyframes()) {
-            std::shared_ptr<GaussianKeyframe> pkf = kfit.second;
-            Sophus::SE3f Twc = pkf->getPosef().inverse();
-            Twc.translation() *= s;
-            Sophus::SE3f Tyc = T * Twc;
-            Sophus::SE3f Tcy = Tyc.inverse();
-            pkf->setPose(Tcy.unit_quaternion().cast<double>(),
-                         Tcy.translation().cast<double>());
-            pkf->computeTransformTensors();
-          }
-        }
-
-        // Gaussians will be all over the place, transfer them to their
-        // respective chunks
-        chunk_manager_->transferGaussiansAcrossChunks(scene_->cameras_extent_);
-      } break;
-
-      default: {
+      case ORB_SLAM3::MappingOperation::OprType::LocalMappingBA:
+        localBAOps.push_back(std::move(opr));
+        break;
+      case ORB_SLAM3::MappingOperation::OprType::LoopClosingBA:
+        loopClosureOps.push_back(std::move(opr));
+        break;
+      case ORB_SLAM3::MappingOperation::OprType::ScaleRefinement:
+        scaleRefinementOps.push_back(std::move(opr));
+        break;
+      default:
         throw std::runtime_error("MappingOperation type not supported!");
-      } break;
     }
   }
+
+  // Process all LocalMappingBA operations together
+  if (!localBAOps.empty()) {
+    auto timer_processLocalBA = ProfilingUtils::Timer("processLocalBA");
+    processLocalMappingBABatch(localBAOps);
+    timer_processLocalBA.stop();
+  }
+
+  // Process loop closure operations (these are usually more complex and less
+  // frequent)
+  for (auto& opr : loopClosureOps) {
+    auto timer_loopClosure = ProfilingUtils::Timer("processLoopClosure");
+    processLoopClosureBA(opr);
+    timer_loopClosure.stop();
+  }
+
+  // Process scale refinement operations
+  for (auto& opr : scaleRefinementOps) {
+    auto timer_scaleRefinement =
+        ProfilingUtils::Timer("processScaleRefinement");
+    processScaleRefinement(opr);
+    timer_scaleRefinement.stop();
+  }
+
+  timer_combineMappingOperations.stop();
+}
+
+void GaussianMapper::processLocalMappingBABatch(
+    std::vector<ORB_SLAM3::MappingOperation>& operations) {
+  auto timer_LocalMapping_before_addPoints =
+      ProfilingUtils::Timer("LocalMapping_before_addPoints");
+  if (operations.empty()) return;
+
+  // Containers for batching
+  std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>
+      associated_keyframe_map;
+  std::vector<float> all_points;
+  std::vector<float> all_colors;
+
+  // Process all keyframes first
+  for (auto& opr : operations) {
+    auto& associated_kfs = opr.associatedKeyFrames();
+
+    // Add/update keyframes
+    for (auto& kf : associated_kfs) {
+      auto kfid = std::get<0>(kf);
+      std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
+
+      // If the keyframe is already in the scene, only update the pose
+      if (pkf) {
+        auto& pose = std::get<2>(kf);
+        pkf->setPose(pose.unit_quaternion().cast<double>(),
+                     pose.translation().cast<double>());
+        pkf->computeTransformTensors();
+
+        // Give local BA keyframes times of use
+        increaseKeyframeTimesOfUse(pkf, local_BA_increased_times_of_use_);
+      } else {
+        // Create a new keyframe
+        handleNewKeyframe(kf);
+      }
+
+      // Add to the collection of keyframes for point processing
+      associated_keyframe_map[kfid] = scene_->getKeyframe(kfid);
+    }
+
+    // Collect all points
+    auto& associated_points = opr.associatedMapPoints();
+    auto& points = std::get<0>(associated_points);
+    auto& colors = std::get<1>(associated_points);
+
+    // Append to our batched points/colors vectors
+    all_points.insert(all_points.end(), points.begin(), points.end());
+    all_colors.insert(all_colors.end(), colors.begin(), colors.end());
+  }
+
+  timer_LocalMapping_before_addPoints.stop();
+
+  auto timer_addPoints = ProfilingUtils::Timer("addPoints");
+  // Add all collected points to the model in a single call
+  if (initial_mapped_ && all_points.size() >= 30) {
+    int num_new_points = static_cast<int>(all_points.size() / 3);
+
+    // Use pinned memory for faster GPU transfer if using CUDA
+    torch::TensorOptions tensor_options =
+        torch::TensorOptions().dtype(torch::kFloat32);
+    if (device_type_ == torch::kCUDA) {
+      tensor_options = tensor_options.pinned_memory(true);
+    }
+
+    // Create tensors optimized for transfer
+    torch::Tensor points_tensor =
+        torch::from_blob(all_points.data(), {num_new_points, 3}, tensor_options)
+            .to(device_type_);
+    torch::Tensor colors_tensor =
+        torch::from_blob(all_colors.data(), {num_new_points, 3}, tensor_options)
+            .to(device_type_);
+
+    // Process all points at once
+    torch::NoGradGuard no_grad;
+    std::unique_lock<std::mutex> lock_render(mutex_render_);
+    addPoints(points_tensor, colors_tensor, associated_keyframe_map);
+  }
+  timer_addPoints.stop();
+}
+
+void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
+  // Existing loop closure code...
+  std::cout << "[Gaussian Mapper]Loop Closure Detected." << std::endl;
+  std::cout << "[DEBUG] Starting loop closure with scale factor: "
+            << opr.mfScale << std::endl;
+
+  // Get the loop keyframe scale modification factor
+  float loop_kf_scale = opr.mfScale;
+
+  // Get new keyframes (scaled transformation applied in ORB-SLAM3)
+  auto& associated_kfs = opr.associatedKeyFrames();
+
+  std::cout << "[DEBUG] Processing " << associated_kfs.size() << " keyframes"
+            << std::endl;
+
+  if (record_loop_ply_)
+    savePly(result_dir_ /
+            (std::to_string(getIteration()) + "_0_before_loop_correction"));
+
+  int num_transformed = 0;
+
+  // Instead of tracking processed chunks as a set
+  std::unordered_map<ChunkCoord, torch::Tensor, ChunkCoordHash>
+      chunk_transformed_flags;
+
+  for (auto& kf : associated_kfs) {
+    auto kfid = std::get<0>(kf);
+    std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
+
+    if (pkf) {
+      auto& pose = std::get<2>(kf);
+      Sophus::SE3f original_pose = pkf->getPosef();
+      Sophus::SE3f inv_pose = pose.inverse();
+      Sophus::SE3f diff_pose = inv_pose * original_pose;
+      bool large_rot = !diff_pose.rotationMatrix().isApprox(
+          Eigen::Matrix3f::Identity(), large_rot_th_);
+      bool large_trans =
+          !diff_pose.translation().isMuchSmallerThan(1.0, large_trans_th_);
+
+      if (large_rot || large_trans) {
+        std::unique_lock<std::mutex> lock_render(mutex_render_);
+        std::cout << "[Gaussian Mapper]Large loop correction detected for kf "
+                  << kfid << std::endl;
+
+        // Get chunks visible from this keyframe
+        std::vector<std::shared_ptr<Chunk>> visible_chunks =
+            chunk_manager_->loadVisibleChunks(pkf);
+
+        for (const auto& chunk : visible_chunks) {
+          std::cout << "Now processing: " << chunk->getCoord().x << " "
+                    << chunk->getCoord().y << " " << chunk->getCoord().z
+                    << std::endl;
+        }
+
+        // Calculate the transformation
+        diff_pose.translation() -= inv_pose.translation();
+        diff_pose.translation() *= loop_kf_scale;
+        diff_pose.translation() += inv_pose.translation();
+
+        torch::Tensor diff_pose_tensor = tensor_utils::EigenMatrix2TorchTensor(
+                                             diff_pose.matrix(), device_type_)
+                                             .transpose(0, 1);
+
+        for (auto& chunk : visible_chunks) {
+          if (!chunk || !chunk->getGaussians()) {
+            throw std::runtime_error("Chunk or gaussians are null");
+          }
+
+          auto gaussians = chunk->getGaussians();
+          auto chunk_coord = chunk->getCoord();
+
+          // Get or create the transformed flags for this chunk
+          auto it = chunk_transformed_flags.find(chunk_coord);
+          torch::Tensor chunk_point_flags;
+
+          if (it == chunk_transformed_flags.end()) {
+            // First time seeing this chunk, initialize all flags to
+            // "not transformed"
+            std::cout << "First time seeing this chunk, set all flags to "
+                         "not transformed"
+                      << std::endl;
+            chunk_point_flags = torch::full({gaussians->xyz_.size(0)}, true,
+                                            torch::TensorOptions()
+                                                .device(device_type_)
+                                                .dtype(torch::kBool));
+            chunk_transformed_flags[chunk_coord] = chunk_point_flags;
+          } else {
+            chunk_point_flags = it->second;
+            // If chunk size has changed (new points added), resize the
+            // flags tensor
+            if (chunk_point_flags.size(0) != gaussians->xyz_.size(0)) {
+              std::cout << "[DEBUG] Resizing flags tensor from "
+                        << chunk_point_flags.size(0) << " to "
+                        << gaussians->xyz_.size(0) << std::endl;
+              int64_t num_new_points =
+                  gaussians->xyz_.size(0) - chunk_point_flags.size(0);
+              if (num_new_points > 0) {
+                chunk_point_flags =
+                    torch::cat({chunk_point_flags,
+                                torch::full({num_new_points}, true,
+                                            chunk_point_flags.options())},
+                               /*dim=*/0);
+                chunk_transformed_flags[chunk_coord] = chunk_point_flags;
+              }
+            }
+          }
+
+          std::cout << "[DEBUG] Before transform - xyz: "
+                    << gaussians->xyz_.sizes()
+                    << ", flags: " << chunk_point_flags.sizes() << std::endl;
+
+          int chunk_transformed = 0;
+          std::cout << "Calling scaledTransformVisiblePointsOfKeyframe"
+                    << std::endl;
+          assert(chunk_manager_->getChunkState(chunk_coord) ==
+                     ChunkState::OPTIMIZING &&
+                 "Chunk should be in optimizing state");
+          gaussians->scaledTransformVisiblePointsOfKeyframe(
+              chunk_point_flags, diff_pose_tensor, pkf->world_view_transform_,
+              pkf->full_proj_transform_, pkf->creation_iter_,
+              stableNumIterExistence(), chunk_transformed, loop_kf_scale);
+
+          std::cout << "[DEBUG] Transformed " << chunk_transformed
+                    << " points successfully" << std::endl;
+
+          num_transformed += chunk_transformed;
+        }
+
+        // Give loop keyframes times of use
+        increaseKeyframeTimesOfUse(pkf, loop_closure_increased_times_of_use_);
+
+        chunk_manager_->releaseChunksFromOptimization(visible_chunks);
+        chunk_manager_->triggerLruCheck();
+      }
+
+      // Update keyframe pose
+      pkf->setPose(pose.unit_quaternion().cast<double>(),
+                   pose.translation().cast<double>());
+      pkf->computeTransformTensors();
+    } else {
+      std::cout << "Actually new keyframe in LC" << std::endl;
+      handleNewKeyframe(kf);
+    }
+  }
+
+  std::cout << "All points transformed, now time to add new points"
+            << std::endl;
+  // Get new points (scaled transformation applied in ORB-SLAM3, so this
+  // step is performed at last to avoid scaling twice)
+  auto& associated_points = opr.associatedMapPoints();
+  auto& points = std::get<0>(associated_points);
+  auto& colors = std::get<1>(associated_points);
+
+  // Add new points to the appropriate chunks
+  if (initial_mapped_ && points.size() >= 30) {
+    torch::NoGradGuard no_grad;
+    std::unique_lock<std::mutex> lock_render(mutex_render_);
+
+    // Convert to tensors
+    int num_new_points = static_cast<int>(points.size() / 3);
+    torch::Tensor points_tensor =
+        torch::from_blob(points.data(), {num_new_points, 3},
+                         torch::TensorOptions().dtype(torch::kFloat32))
+            .to(device_type_);
+    torch::Tensor colors_tensor =
+        torch::from_blob(colors.data(), {num_new_points, 3},
+                         torch::TensorOptions().dtype(torch::kFloat32))
+            .to(device_type_);
+
+    // Create a map of keyframes for the chunk manager
+    std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> loop_keyframes;
+    for (auto& kf : associated_kfs) {
+      auto kfid = std::get<0>(kf);
+      auto pkf = scene_->getKeyframe(kfid);
+      if (pkf) {
+        loop_keyframes[kfid] = pkf;
+      }
+    }
+
+    std::cout << "Adding points to chunks" << std::endl;
+    chunk_manager_->addPointsToChunks(points_tensor, colors_tensor,
+                                      loop_keyframes, scene_->cameras_extent_);
+  }
+
+  chunk_manager_->releaseAllChunksFromOptimization();
+
+  // Gaussians will be all over the place, transfer them to their
+  // respective chunks
+  std::cout << "Transferring gaussians across chunks" << std::endl;
+  chunk_manager_->transferGaussiansAcrossChunks(scene_->cameras_extent_);
+
+  chunk_manager_->releaseAllChunksFromOptimization();
+
+  // Mark this iteration
+  loop_closure_iteration_ = true;
+}
+
+void GaussianMapper::processScaleRefinement(ORB_SLAM3::MappingOperation& opr) {
+  // Existing scale refinement code...
+  std::cout << "[Gaussian Mapper]Scale refinement Detected. Transforming "
+               "all kfs and points..."
+            << std::endl;
+
+  float s = opr.mfScale;
+  Sophus::SE3f& T = opr.mT;
+  if (initial_mapped_) {
+    // Apply the scaled transformation on ALL gaussian model points,
+    // including those on disk
+    {
+      std::unique_lock<std::mutex> lock_render(mutex_render_);
+
+      // Get all existing chunk coordinates (both in memory and on disk)
+      std::vector<ChunkCoord> all_chunks =
+          chunk_manager_->getExistingChunkCoords();
+
+      std::cout << "Applying scale transformation to " << all_chunks.size()
+                << " chunks" << std::endl;
+
+      // Process chunks in batches to manage memory
+      const int batch_size = 5;  // Adjust based on memory constraints
+      for (size_t i = 0; i < all_chunks.size(); i += batch_size) {
+        size_t end = std::min(i + batch_size, all_chunks.size());
+
+        // Process current batch
+        for (size_t j = i; j < end; j++) {
+          const auto& coord = all_chunks[j];
+          if (chunk_manager_->loadChunkSync(coord, true)) {
+            std::shared_ptr<Chunk> chunk = chunk_manager_->getChunkAt(coord);
+            chunk->getGaussians()->applyScaledTransformation(s, T);
+            chunk_manager_->releaseChunksFromOptimization({chunk});
+            chunk_manager_->saveChunkAsync(coord);
+          }
+        }
+      }
+    }
+    // Apply the scaled transformation to the scene
+    scene_->applyScaledTransformation(s, T);
+  } else {  // TODO: the workflow should not come here, delete this
+            // branch
+    // Apply the scaled transformation to the cached points
+    for (auto& pt : scene_->cached_point_cloud_) {
+      // pt <- (s * Ryw * pt + tyw)
+      auto& pt_xyz = pt.second.xyz_;
+      pt_xyz *= s;
+      pt_xyz = T.cast<double>() * pt_xyz;
+    }
+
+    // Apply the scaled transformation on gaussian keyframes
+    for (auto& kfit : scene_->keyframes()) {
+      std::shared_ptr<GaussianKeyframe> pkf = kfit.second;
+      Sophus::SE3f Twc = pkf->getPosef().inverse();
+      Twc.translation() *= s;
+      Sophus::SE3f Tyc = T * Twc;
+      Sophus::SE3f Tcy = Tyc.inverse();
+      pkf->setPose(Tcy.unit_quaternion().cast<double>(),
+                   Tcy.translation().cast<double>());
+      pkf->computeTransformTensors();
+    }
+  }
+
+  // Gaussians will be all over the place, transfer them to their
+  // respective chunks
+  chunk_manager_->transferGaussiansAcrossChunks(scene_->cameras_extent_);
 }
 
 void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
@@ -1757,6 +1847,7 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   // Add the new keyframe to the scene
   pkf->computeTransformTensors();
   scene_->addKeyframe(pkf);
+  kfid_shuffled_ = false;
   keyframe_queue_->notifyNewKeyframeAdded(pkf);
 
   // Give new keyframes times of use and add it to the training sliding window
@@ -1805,9 +1896,85 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   }
 }
 
+void GaussianMapper::generateKfidRandomShuffle() {
+  if (scene_->keyframes().empty()) return;
+
+  std::size_t nkfs = scene_->keyframes().size();
+  kfid_shuffle_.resize(nkfs);
+  std::iota(kfid_shuffle_.begin(), kfid_shuffle_.end(), 0);
+  std::mt19937 g(rd_());
+  std::shuffle(kfid_shuffle_.begin(), kfid_shuffle_.end(), g);
+
+  kfid_shuffled_ = true;
+}
+
+// std::shared_ptr<GaussianKeyframe>
+// GaussianMapper::useOneRandomSlidingWindowKeyframe() {
+//   return keyframe_queue_->getNextKeyframe();
+// }
+
 std::shared_ptr<GaussianKeyframe>
 GaussianMapper::useOneRandomSlidingWindowKeyframe() {
-  return keyframe_queue_->getNextKeyframe();
+  // auto t1 = std::chrono::steady_clock::now();
+  if (scene_->keyframes().empty()) return nullptr;
+
+  if (!kfid_shuffled_) generateKfidRandomShuffle();
+
+  std::shared_ptr<GaussianKeyframe> viewpoint_cam = nullptr;
+  int random_cam_idx;
+
+  if (kfid_shuffled_) {
+    int start_shuffle_idx = kfid_shuffle_idx_;
+    do {
+      // Next shuffled idx
+      ++kfid_shuffle_idx_;
+      if (kfid_shuffle_idx_ >= kfid_shuffle_.size()) kfid_shuffle_idx_ = 0;
+      // Add 1 time of use to all kfs if they are all unavalible
+      if (kfid_shuffle_idx_ == start_shuffle_idx) {
+        for (auto& kfit : scene_->keyframes()) {
+          increaseKeyframeTimesOfUse(kfit.second, 1);
+        }
+        if (opt_params_.auto_distribute_) {
+          std::vector<std::pair<std::size_t, float>> vec(kfs_loss_.begin(),
+                                                         kfs_loss_.end());
+          // std::vector<std::pair<std::size_t, int>>
+          // vec(kfs_used_times_.begin(), kfs_used_times_.end());
+          int k = std::max(
+              1, static_cast<int>(vec.size() / opt_params_.auto_distribute_));
+          std::nth_element(vec.begin(), vec.begin() + k, vec.end(),
+                           [](const std::pair<std::size_t, float>& a,
+                              const std::pair<std::size_t, float>& b) {
+                             return a.second > b.second;
+                           });
+          for (int i = 0; i < k; ++i) {
+            increaseKeyframeTimesOfUse(scene_->keyframes()[vec[i].first], 1);
+          }
+        }
+      }
+      // Get viewpoint kf
+      random_cam_idx = kfid_shuffle_[kfid_shuffle_idx_];
+      auto random_cam_it = scene_->keyframes().begin();
+      for (int cam_idx = 0; cam_idx < random_cam_idx; ++cam_idx)
+        ++random_cam_it;
+      viewpoint_cam = (*random_cam_it).second;
+    } while (viewpoint_cam->remaining_times_of_use_ <= 0);
+  }
+
+  // Count used times
+  auto viewpoint_fid = viewpoint_cam->fid_;
+  if (kfs_used_times_.find(viewpoint_fid) == kfs_used_times_.end())
+    kfs_used_times_[viewpoint_fid] = 1;
+  else
+    ++kfs_used_times_[viewpoint_fid];
+
+  // Handle times of use
+  --(viewpoint_cam->remaining_times_of_use_);
+
+  // auto t2 = std::chrono::steady_clock::now();
+  // auto t21 =
+  // std::chrono::duration_cast<std::chrono::nanoseconds>(t2-t1).count();
+  // std::cout<<t21 <<" ns"<<std::endl;
+  return viewpoint_cam;
 }
 
 std::shared_ptr<GaussianKeyframe> GaussianMapper::useOneRandomKeyframe() {
@@ -2073,6 +2240,9 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
     std::unique_lock<std::mutex> lock_render(mutex_render_);
     addPoints(depth_cache_points_, depth_cache_colors_, depth_cache_keyframes_);
     depth_cache_keyframes_.clear();
+    // visualizePointCloud(depth_cache_points_, depth_cache_colors_,
+    //                     result_dir_ / (std::to_string(getIteration()) +
+    //                                    "_inactive_geo_densify.ply"));
   }
 
   // auto end_timing = std::chrono::steady_clock::now();
@@ -2152,6 +2322,17 @@ void GaussianMapper::increasePcdByDepthReconstruction(
           tensor_utils::cvGpuMat2TorchTensor_Float32(disparity_gpu);
       disparity = disparity.flatten(0, 1).contiguous();
 
+      // Save colorized depth map from the disparity before processing
+      // Convert the flattened disparity tensor back to 2D for visualization
+      // std::string depth_vis_path =
+      //     "/workspaces/large_scale_gaussian_slam/debug/depth_visualization_"
+      //     + std::to_string(pkf->fid_) + ".png";
+      // saveColorizedDepthMap(disparity.reshape({new_height, new_width})
+      //                           .flatten(),  // Reshape to 2D then flatten to
+      //                                        // match function expectation
+      //                       new_height, new_width, depth_vis_path,
+      //                       min_depth_, max_depth_);
+
       torch::Tensor points3D =
           tensor_utils::cvGpuMat2TorchTensor_Float32(points3D_gpu);
       points3D = points3D.permute({1, 2, 0}).flatten(0, 1).contiguous();
@@ -2167,9 +2348,11 @@ void GaussianMapper::increasePcdByDepthReconstruction(
 
       // Depth range filtering (adjust these thresholds as needed)
       valid_points = torch::logical_and(
-          valid_points, points3D.index({torch::indexing::Slice(), 2}) > 4.0f);
+          valid_points,
+          points3D.index({torch::indexing::Slice(), 2}) > min_depth_);
       valid_points = torch::logical_and(
-          valid_points, points3D.index({torch::indexing::Slice(), 2}) < 50.0f);
+          valid_points,
+          points3D.index({torch::indexing::Slice(), 2}) < max_depth_);
 
       // Further random subsampling if needed
       // Keep only 25% of the valid points randomly
@@ -2181,6 +2364,10 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       // Keep only valid points
       points3D = points3D.index({valid_points});
       colors = colors.index({valid_points});
+
+      // visualizePointCloud(points3D, colors,
+      //                     result_dir_ / (std::to_string(getIteration()) +
+      //                                    "_stereo_densify.ply"));
 
       // Transform to world coordinates
       torch::Tensor Twc_tensor =
@@ -2705,12 +2892,13 @@ void GaussianMapper::writeKeyframeUsedTimes(std::filesystem::path result_dir,
 
   out_stream << "##[Gaussian Mapper]Iteration " << getIteration()
              << " keyframe id, used times, remaining times:\n";
-  for (const auto& used_times_it : keyframe_queue_->getKfsUsedTimes()) {
-    out_stream
-        << used_times_it.first << " " << used_times_it.second << " "
-        << scene_->keyframes().at(used_times_it.first)->remaining_times_of_use_
-        << "\n";
-  }
+  // for (const auto& used_times_it : keyframe_queue_->getKfsUsedTimes()) {
+  //   out_stream
+  //       << used_times_it.first << " " << used_times_it.second << " "
+  //       <<
+  //       scene_->keyframes().at(used_times_it.first)->remaining_times_of_use_
+  //       << "\n";
+  // }
   out_stream << "##=========================================" << std::endl;
 
   out_stream.close();
@@ -3916,6 +4104,7 @@ void GaussianMapper::loadCamerasFromJson(std::filesystem::path json_path) {
 
     // Add keyframe to scene
     scene_->addKeyframe(pkf);
+    kfid_shuffled_ = false;
     keyframe_queue_->notifyNewKeyframeAdded(pkf);
 
     break;
@@ -4080,8 +4269,8 @@ void GaussianMapper::initializeMapFromExternal() {
     std::cout << "Scene extent: " << scene_->cameras_extent_ << std::endl;
     std::cout << "Adding initial points\n";
     addPoints(depth_cache_points_, depth_cache_colors_, scene_->keyframes());
-    visualizePointCloud(depth_cache_points_, depth_cache_colors_,
-                        "/workspaces/large_scale_gaussian_slam/debug_pcd.ply");
+    // visualizePointCloud(depth_cache_points_, depth_cache_colors_,
+    //                     "/workspaces/large_scale_gaussian_slam/debug_pcd.ply");
 
     depth_cached_ = 0;
     depth_cache_keyframes_.clear();
@@ -4317,6 +4506,7 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
       increaseKeyframeTimesOfUse(new_kf, newKeyframeTimesOfUse());
 
       scene_->addKeyframe(new_kf);
+      kfid_shuffled_ = false;
 
       // Update tracking info
       last_keyframe_pose_ = pose;
