@@ -66,6 +66,7 @@ class GaussianOptimizationParams {
                              float rotation_lr = 0.001f,
                              float percent_dense = 0.01f,
                              float lambda_dssim = 0.2f,
+                             float lambda_depth = 0.001f,
                              int densification_interval = 100,
                              int opacity_reset_interval = 3000,
                              int densify_from_iter = 500,
@@ -87,6 +88,7 @@ class GaussianOptimizationParams {
   float rotation_lr_;
   float percent_dense_;
   float lambda_dssim_;
+  float lambda_depth_;
   int densification_interval_;
   int opacity_reset_interval_;
   int densify_from_iter_;

@@ -88,7 +88,9 @@ class GaussianKeyframe {
 
   void setupStereoData(float baseline,
                        torch::DeviceType device_type,
-                       cv::Ptr<cv::cuda::StereoSGM> stereo_cv_sgm);
+                       cv::Ptr<cv::cuda::StereoSGM> stereo_cv_sgm,
+                       float min_depth,
+                       float max_depth);
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
   getRightCameraTransforms() const;
 

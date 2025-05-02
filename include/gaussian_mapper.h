@@ -151,6 +151,7 @@ class GaussianMapper {
   float rotationLearningRate();
   float percentDense();
   float lambdaDssim();
+  float lambdaDepth();
   int opacityResetInterval();
   float densifyGradThreshold();
   int densifyInterval();

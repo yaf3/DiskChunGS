@@ -594,6 +594,8 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       settings_file["Optimization.percent_dense"].operator float();
   opt_params_.lambda_dssim_ =
       settings_file["Optimization.lambda_dssim"].operator float();
+  opt_params_.lambda_depth_ =
+      settings_file["Optimization.lambda_depth"].operator float();
   opt_params_.densification_interval_ =
       settings_file["Optimization.densification_interval"].operator int();
   opt_params_.opacity_reset_interval_ =
@@ -746,7 +748,7 @@ void GaussianMapper::run() {
 
         if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
           pkf->setupStereoData(stereo_baseline_length_, device_type_,
-                               stereo_cv_sgm_);
+                               stereo_cv_sgm_, min_depth_, max_depth_);
         } else {
           std::cout << "Stereo data not available" << std::endl;
         }
@@ -1145,27 +1147,27 @@ void GaussianMapper::trainForOneIteration() {
   auto rendered_depth = std::get<0>(render_pkg);
   auto rendered_image = std::get<1>(render_pkg);
 
-  std::cout << "Rendered depth statistics: min "
-            << rendered_depth.min().item<float>() << " max "
-            << rendered_depth.max().item<float>() << " mean"
-            << rendered_depth.mean().item<float>() << " median "
-            << rendered_depth.median().item<float>() << std::endl;
+  // std::cout << "Rendered depth statistics: min "
+  //           << rendered_depth.min().item<float>() << " max "
+  //           << rendered_depth.max().item<float>() << " mean"
+  //           << rendered_depth.mean().item<float>() << " median "
+  //           << rendered_depth.median().item<float>() << std::endl;
 
   torch::Tensor gt_depth = viewpoint_cam->depth_image_.cuda();
 
-  std::cout << "GT Depth statistics: min " << gt_depth.min().item<float>()
-            << " max " << gt_depth.max().item<float>() << " mean"
-            << gt_depth.mean().item<float>() << " median "
-            << gt_depth.median().item<float>() << std::endl;
+  // std::cout << "GT Depth statistics: min " << gt_depth.min().item<float>()
+  //           << " max " << gt_depth.max().item<float>() << " mean"
+  //           << gt_depth.mean().item<float>() << " median "
+  //           << gt_depth.median().item<float>() << std::endl;
 
-  colorize_and_save_depth(
-      rendered_depth.detach().cpu(),
-      "/workspaces/large_scale_gaussian_slam/debug_depth_pred.png", min_depth_,
-      max_depth_);
-  colorize_and_save_depth(
-      gt_depth.detach().cpu(),
-      "/workspaces/large_scale_gaussian_slam/debug_depth_gt.png", min_depth_,
-      max_depth_);
+  // colorize_and_save_depth(
+  //     rendered_depth.detach().cpu(),
+  //     "/workspaces/large_scale_gaussian_slam/debug_depth_pred.png",
+  //     min_depth_, max_depth_);
+  // colorize_and_save_depth(
+  //     gt_depth.detach().cpu(),
+  //     "/workspaces/large_scale_gaussian_slam/debug_depth_gt.png", min_depth_,
+  //     max_depth_);
 
   // {
   //   // Save PyTorch tensor image
@@ -1189,8 +1191,6 @@ void GaussianMapper::trainForOneIteration() {
   std ::vector<torch::Tensor> screenspace_points_vec = std::get<2>(render_pkg);
   std::vector<torch::Tensor> radii_vec = std::get<3>(render_pkg);
 
-  float lambda_depth = 0.001f;
-
   auto timer_loss_calculation = ProfilingUtils::Timer("loss_calculation");
   // Loss calculation (same as before)
   auto l1_loss =
@@ -1198,12 +1198,13 @@ void GaussianMapper::trainForOneIteration() {
   auto Ll1 = l1_loss(rendered_image, gt_image, 1.0f);
   auto Lssim = loss_utils::fast_ssim(rendered_image, gt_image);
   float lambda_dssim = lambdaDssim();
+  float lambda_depth = lambdaDepth();
   auto Ll1_depth = loss_utils::l1_depth_loss(rendered_depth, gt_depth);
   auto loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - Lssim) +
               lambda_depth * Ll1_depth;
-  std::cout << "Ll1: " << Ll1.item<float>() << std::endl;
-  std::cout << "Lssim: " << Lssim.item<float>() << std::endl;
-  std::cout << "Ll1_depth: " << Ll1_depth.item<float>() << std::endl;
+  // std::cout << "Ll1: " << Ll1.item<float>() << std::endl;
+  // std::cout << "Lssim: " << Lssim.item<float>() << std::endl;
+  // std::cout << "Ll1_depth: " << Ll1_depth.item<float>() << std::endl;
 
   if (do_stereo_loss_ && this->sensor_type_ == STEREO &&
       viewpoint_cam->is_stereo_) {
@@ -1955,7 +1956,8 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   }
 
   if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
-    pkf->setupStereoData(stereo_baseline_length_, device_type_, stereo_cv_sgm_);
+    pkf->setupStereoData(stereo_baseline_length_, device_type_, stereo_cv_sgm_,
+                         min_depth_, max_depth_);
   } else {
     std::cout << "Stereo data not available" << std::endl;
   }
@@ -3018,6 +3020,10 @@ float GaussianMapper::percentDense() {
 float GaussianMapper::lambdaDssim() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return opt_params_.lambda_dssim_;
+}
+float GaussianMapper::lambdaDepth() {
+  std::unique_lock<std::mutex> lock(mutex_settings_);
+  return opt_params_.lambda_depth_;
 }
 int GaussianMapper::opacityResetInterval() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
@@ -4556,6 +4562,9 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
       new_kf->img_auxiliary_undist_ = depth_or_right_image;
     } else if (sensor_type_ == RGBD) {
       new_kf->img_auxiliary_undist_ = depth_or_right_image;
+    } else {
+      throw std::runtime_error(
+          "[GaussianMapper] Unsupported sensor type for auxiliary image");
     }
 
     // Compute transforms - no lock needed
@@ -4628,18 +4637,46 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
 
     if (sensor_type_ == STEREO && !depth_or_right_image.empty()) {
       new_kf->setupStereoData(stereo_baseline_length_, device_type_,
-                              stereo_cv_sgm_);
+                              stereo_cv_sgm_, min_depth_, max_depth_);
     }
 
     if (sensor_type_ == RGBD && !new_kf->img_auxiliary_undist_.empty()) {
+      // Create a clean version of the depth map
+      cv::Mat depth_cleaned = new_kf->img_auxiliary_undist_.clone();
+
+      // First replace NaN values with 0 (or some invalid depth marker)
+      cv::patchNaNs(depth_cleaned, 0.0);
+
+      // Now threshold to handle infinity values
+      cv::threshold(depth_cleaned, depth_cleaned, max_depth_, max_depth_,
+                    cv::THRESH_TRUNC);
+
+      // Finally, create a valid mask to exclude zeros from later computations
+      cv::Mat valid_mask = (depth_cleaned > min_depth_);
+
+      double min_val, max_val;
+      cv::minMaxLoc(depth_cleaned, &min_val, &max_val);
+      cv::Scalar mean = cv::mean(depth_cleaned, valid_mask);
+
+      // std::cout << "Cleaned depth matrix - type: " << depth_cleaned.type()
+      //           << ", min: " << min_val << ", max: " << max_val
+      //           << ", mean: " << mean[0] << std::endl;
+
       // Preprocess and store right image tensor
       if (device_type_ == torch::kCUDA) {
         cv::cuda::GpuMat depth_gpu;
-        depth_gpu.upload(new_kf->img_auxiliary_undist_);
+        depth_gpu.upload(depth_cleaned);
         new_kf->depth_image_ =
             tensor_utils::cvGpuMat2TorchTensor_Float32(depth_gpu);
+        // std::cout << "GT Depth statistics: min "
+        //           << new_kf->depth_image_.min().item<float>() << " max "
+        //           << new_kf->depth_image_.max().item<float>() << " mean"
+        //           << new_kf->depth_image_.mean().item<float>() << " median "
+        //           << new_kf->depth_image_.median().item<float>() <<
+        //           std::endl;
       } else {
-        // Do nothing right now
+        throw std::runtime_error(
+            "[GaussianMapper] RGBD mode only supported on CUDA for now");
       }
     } else {
       std::cout << "RGBD data not available" << std::endl;

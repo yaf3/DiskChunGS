@@ -239,7 +239,9 @@ torch::Tensor GaussianKeyframe::applyAppearanceTransform(
 void GaussianKeyframe::setupStereoData(
     float baseline,
     torch::DeviceType device_type,
-    cv::Ptr<cv::cuda::StereoSGM> stereo_cv_sgm) {
+    cv::Ptr<cv::cuda::StereoSGM> stereo_cv_sgm,
+    float min_depth,
+    float max_depth) {
   if (img_auxiliary_undist_.empty()) {
     return;  // No stereo image available
   }
@@ -324,8 +326,23 @@ void GaussianKeyframe::setupStereoData(
     cv::cuda::GpuMat depth_gpu(disparity_gpu.size(), CV_32FC1);
     cv::cuda::divide(bf_mat, disparity_gpu, depth_gpu);
 
-    // Set invalid depths to zero
+    // Apply valid mask to eliminate invalid disparities
     cv::cuda::multiply(depth_gpu, valid_mask, depth_gpu);
+
+    // Create min/max depth masks and apply them
+    cv::cuda::GpuMat min_depth_mask, max_depth_mask;
+    cv::cuda::threshold(depth_gpu, min_depth_mask, min_depth, 1.0,
+                        cv::THRESH_BINARY);
+    cv::cuda::threshold(depth_gpu, max_depth_mask, max_depth, 1.0,
+                        cv::THRESH_BINARY_INV);
+
+    // Combine all masks
+    cv::cuda::GpuMat combined_mask;
+    cv::cuda::multiply(valid_mask, min_depth_mask, combined_mask);
+    cv::cuda::multiply(combined_mask, max_depth_mask, combined_mask);
+
+    // Apply final mask to depth map
+    cv::cuda::multiply(depth_gpu, combined_mask, depth_gpu);
 
     // Store depth image as tensor
     this->depth_image_ = tensor_utils::cvGpuMat2TorchTensor_Float32(depth_gpu);
