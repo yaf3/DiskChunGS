@@ -69,6 +69,7 @@ def objective(trial):
         # 'Camera.z_near': trial.suggest_float('z_near', 0.01, 1.0),
         # 'Camera.z_far': trial.suggest_float('z_far', 50.0, 200.0),
         # 'Monocular.inactive_geo_densify_max_pixel_dist': trial.suggest_float('inactive_geo_densify_max_pixel_dist', 0.5, 2.0),
+        'Mapper.depth_densify_subsample_ratio': trial.suggest_categorical('depth_densify_subsample_ratio', [0, 0.0001, 0.001, .01, 0.05, 0.1, 0.5]),
         
         # Mapper parameters
         # 'Mapper.min_num_initial_map_kfs': int(trial.suggest_int('min_num_initial_map_kfs', 10, 30)),
@@ -76,9 +77,9 @@ def objective(trial):
         # 'Mapper.large_rotation_threshold': trial.suggest_float('large_rotation_threshold', 6.0, 30.0),
         # 'Mapper.large_translation_threshold': trial.suggest_float('large_translation_threshold', 0.05, 0.3),
         
-        'External.min_keyframe_translation': trial.suggest_float('min_keyframe_translation', 0.1, 1),
-        'External.min_keyframe_rotation': trial.suggest_float('min_keyframe_rotation', 0.1, 1),
-        'External.min_keyframe_time': trial.suggest_float('min_keyframe_time', 0.1, 1),
+        'External.min_keyframe_translation': trial.suggest_float('min_keyframe_translation', 0.1, 0.5),
+        'External.min_keyframe_rotation': trial.suggest_float('min_keyframe_rotation', 0.1, 0.5),
+        'External.min_keyframe_time': trial.suggest_float('min_keyframe_time', 0.1, 0.5),
         
         # GausPyramid parameters
         # 'GausPyramid.do': trial.suggest_categorical('do', [0, 1]),
@@ -183,9 +184,6 @@ def objective(trial):
     
     score = 9999999999999
     PSNR, SSIM, LPIPS = (
-        None,
-        None,
-        None,
         None,
         None,
         None,
