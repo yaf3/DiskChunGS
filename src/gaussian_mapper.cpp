@@ -518,6 +518,8 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       settings_file["Mapper.stable_num_iter_existence"].operator int();
   keyframe_similarity_threshold_ =
       settings_file["Mapper.keyframe_similarity_threshold"].operator float();
+  keyframe_selection_strategy_ =
+      settings_file["Mapper.keyframe_selection_strategy"].operator float();
 
   pipe_params_.convert_SHs_ =
       (settings_file["Pipeline.convert_SHs"].operator int()) != 0;
@@ -992,10 +994,22 @@ void GaussianMapper::trainForOneIteration() {
   //   auto [_, external_Twc] = getRecentExternalData();
   //   keyframe_queue_->setCurrentPose(external_Twc);
   // }
-  // std::shared_ptr<GaussianKeyframe> viewpoint_cam =
-  //     useOneRandomSlidingWindowKeyframe();
-  std::shared_ptr<GaussianKeyframe> viewpoint_cam =
-      keyframe_queue_->getNextKeyframe();
+
+  std::shared_ptr<GaussianKeyframe> viewpoint_cam;
+  switch (keyframe_selection_strategy_) {
+    // Random sliding window keyframe
+    case 0: {
+      viewpoint_cam = useOneRandomSlidingWindowKeyframe();
+    } break;
+    // Recent k
+    case 1: {
+      viewpoint_cam = keyframe_queue_->getNextKeyframe();
+    } break;
+    default: {
+      throw std::runtime_error(
+          "[GaussianMapper] Invalid keyframe selection strategy");
+    }
+  }
   timer_pickKeyframe.stop();
   if (!viewpoint_cam) {
     increaseIteration(-1);

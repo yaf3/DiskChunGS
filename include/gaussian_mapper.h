@@ -381,6 +381,7 @@ class GaussianMapper {
   std::map<std::size_t, float> kfs_loss_;
   std::map<std::size_t, int> kfs_used_times_;
   float keyframe_similarity_threshold_ = 0.30f;
+  int keyframe_selection_strategy_ = 0;  // 0: all, 1: recent k
 
   // Status
   bool initial_mapped_;
@@ -494,8 +495,8 @@ class GaussianMapper {
   std::mutex mutex_new_frame_;
   Sophus::SE3f last_keyframe_pose_;
   float min_keyframe_translation_{
-      0.1f};                            // Minimum translation for new keyframe
-  float min_keyframe_rotation_{0.05f};  // Minimum rotation in radians
+      0.25f};                           // Minimum translation for new keyframe
+  float min_keyframe_rotation_{0.15f};  // Minimum rotation in radians
   double last_keyframe_timestamp_{0.0};
-  float min_keyframe_time_{0.1f};  // Minimum time between keyframes
+  float min_keyframe_time_{0.5f};  // Minimum time between keyframes
 };
