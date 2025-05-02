@@ -521,6 +521,13 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
   keyframe_selection_strategy_ =
       settings_file["Mapper.keyframe_selection_strategy"].operator float();
 
+  min_keyframe_translation_ =
+      settings_file["External.min_keyframe_translation"].operator float();
+  min_keyframe_rotation_ =
+      settings_file["External.min_keyframe_rotation"].operator float();
+  min_keyframe_time_ =
+      settings_file["External.min_keyframe_time"].operator float();
+
   pipe_params_.convert_SHs_ =
       (settings_file["Pipeline.convert_SHs"].operator int()) != 0;
   pipe_params_.compute_cov3D_ =
