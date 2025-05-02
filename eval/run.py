@@ -10,6 +10,7 @@ import gs_render
 from argparse import ArgumentParser
 from scipy.spatial.transform import Rotation
 from PIL import Image
+import cv2
 
 
 from torchmetrics.image.psnr import PeakSignalNoiseRatio
@@ -333,12 +334,14 @@ if __name__ == "__main__":
         len(associations),
         desc="rendering {}".format(args.result_path.split("/")[-1]),
     ):
+        t_start = time.time()
         (result_indx, gt_indx) = associations[index]
         w2c = torch.tensor(np.linalg.inv(poses[result_indx]))
         t0 = time.time()
         render_image = gs_render.render_from_pose(w2c, width, height).clone().detach().to('cuda')
-        t1 = time.time() - t0      
+        t_render = time.time() - t0  
         
+        t0 = time.time()
         render_image = render_image.permute(1, 2, 0)
         render_image = torch.clamp(render_image, 0.0, 1.0)
         render_image_torch = render_image.permute([2, 0, 1])[None]
@@ -346,44 +349,51 @@ if __name__ == "__main__":
         pil_image = Image.open(gt_color_paths[gt_indx])
         gt_image = np.array(pil_image).astype(np.float32) / 255.0
         gt_image_torch = torch.from_numpy(gt_image).float().permute(2, 0, 1).unsqueeze(0).to('cuda')
+        t_process = time.time() - t0
         
+        t0 = time.time()
         val_psnr = calc_psnr(render_image_torch, gt_image_torch).item()
         val_ssim = calc_ssim(render_image_torch, gt_image_torch).item()
         val_lpips = calc_lpips(render_image_torch, gt_image_torch).item()
+        t_metrics = time.time() - t0
 
-        gt_image = np.array(pil_image)  # Convert to numpy array if needed
+        t0 = time.time()
+        gt_image = cv2.cvtColor(gt_image, cv2.COLOR_BGR2RGB)
         if "_0" in args.result_path:
-            gt_pil_image = Image.fromarray(gt_image)
-            gt_pil_image.save(
+            cv2.imwrite(
                 os.path.join(
                     args.result_path,
                     "gt",
-                    gt_color_paths[gt_indx].split("/")[-1]
-                )
+                    gt_color_paths[gt_indx].split("/")[-1],
+                ),
+                gt_image,
             )
-            
-        predict_np = render_image.detach().cpu().numpy()
-        # If in [0,1] range, convert to [0,255]
-        if predict_np.max() <= 1.0:
-            predict_np = (predict_np * 255).astype(np.uint8)
-        # Create PIL image and save
-        predict_pil = Image.fromarray(predict_np)
-        predict_pil.save(
+        predict_image_np = render_image.detach().cpu().numpy()
+        predict_image_img = np.uint8(predict_image_np * 255)
+        predict_image_img = cv2.cvtColor(predict_image_img, cv2.COLOR_BGR2RGB)
+        cv2.imwrite(
             os.path.join(
                 args.result_path,
                 "image",
-                gt_color_paths[gt_indx].split("/")[-1]
-            )
+                gt_color_paths[gt_indx].split("/")[-1],
+            ),
+            predict_image_img,
         )
+        t_save = time.time() - t0
 
         psnr_list.append(val_psnr)
         ssim_list.append(val_ssim)
         lpips_list.append(val_lpips)
-        time_list.append(t1)
+        time_list.append(t_render)
         
-    # print("Calling cleanup to properly release resources...")
-    # gs_render.cleanup()
-    # print("Cleanup finished.")
+        t_total = time.time() - t_start
+        # print(f"Render: {t_render*1000:.1f}ms, Process: {t_process*1000:.1f}ms, " 
+        #     f"Metrics: {t_metrics*1000:.1f}ms, Save: {t_save*1000:.1f}ms, " 
+        #     f"Total: {t_total*1000:.1f}ms")
+        
+    print("Calling cleanup to properly release resources...")
+    gs_render.cleanup()
+    print("Cleanup finished.")
 
     psnr_list = np.array(psnr_list)
     ssim_list = np.array(ssim_list)

@@ -67,7 +67,13 @@ torch::Tensor renderFromPose(torch::Tensor pose_tensor, int width, int height) {
   try {
     // Convert pose tensor to Sophus::SE3f
     // std::cout << "Converting pose tensor to Sophus::SE3f..." << std::endl;
+    auto start_time = std::chrono::steady_clock::now();
     Sophus::SE3f Tcw = utils::tensor_to_pose(pose_tensor);
+    auto end_time = std::chrono::steady_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        end_time - start_time);
+    // std::cout << "Pose conversion took" << duration.count() << "ms"
+    //           << std::endl;
 
     // Print the Sophus SE3 pose for debugging
     // std::cout << "Converted SE3 pose:" << std::endl;
@@ -79,9 +85,13 @@ torch::Tensor renderFromPose(torch::Tensor pose_tensor, int width, int height) {
     // std::cout << "Rendering image from pose with dimensions: " << width <<
     // "x"
     //           << height << std::endl;
+    start_time = std::chrono::steady_clock::now();
     cv::Mat rendered_image =
         g_pGausMapper->renderFromPose(Tcw, width, height, true);
-
+    end_time = std::chrono::steady_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        end_time - start_time);
+    // std::cout << "Rendering took " << duration.count() << "ms" << std::endl;
     // Check if the rendered image is valid
     if (rendered_image.empty()) {
       throw std::runtime_error(
@@ -95,6 +105,7 @@ torch::Tensor renderFromPose(torch::Tensor pose_tensor, int width, int height) {
 
     // Convert the OpenCV Mat to a PyTorch tensor
     // The rendered image is CV_32FC3 (float, 3 channels)
+    start_time = std::chrono::steady_clock::now();
     auto options =
         torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU);
     torch::Tensor tensor = torch::zeros({height, width, 3}, options);
@@ -102,6 +113,11 @@ torch::Tensor renderFromPose(torch::Tensor pose_tensor, int width, int height) {
     // Copy data from OpenCV Mat to PyTorch tensor
     std::memcpy(tensor.data_ptr(), rendered_image.data,
                 sizeof(float) * height * width * 3);
+    end_time = std::chrono::steady_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        end_time - start_time);
+    // std::cout << "Conversion to tensor took " << duration.count() << "ms"
+    //           << std::endl;
 
     // Return tensor in standard PyTorch format (C, H, W)
     return tensor.permute({2, 0, 1}).contiguous();
