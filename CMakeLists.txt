@@ -104,7 +104,7 @@ add_library(
     cuda_rasterizer/stereo_vision.h
     cuda_rasterizer/adam.cu
     cuda_rasterizer/adam.h
-    cuda_rasterizer/conv.cu
+    cuda_rasterizer/ssim.cu
 )
 set_target_properties(cuda_rasterizer PROPERTIES CUDA_ARCHITECTURES "86")
 # target_compile_features(cuda_rasterizer PUBLIC cxx_std_17)

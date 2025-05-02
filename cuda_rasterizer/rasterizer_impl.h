@@ -16,6 +16,7 @@
 #include <iostream>
 #include <vector>
 
+#include "forward.h"
 #include "rasterizer.h"
 
 namespace CudaRasterizer {
@@ -39,7 +40,7 @@ struct GeometryState {
   int* internal_radii;
   float2* means2D;
   float* cov3D;
-  float4* conic_opacity;
+  float6* conic_opacity;
   float* rgb;
   uint32_t* point_offsets;
   uint32_t* tiles_touched;
@@ -52,6 +53,7 @@ struct ImageState {
   uint32_t* bucket_offsets;
   size_t bucket_count_scan_size;
   char* bucket_count_scanning_space;
+  float* pixel_depths;
   float* pixel_colors;
   uint32_t* max_contrib;
 
@@ -82,7 +84,9 @@ struct BinningState {
 struct SampleState {
   uint32_t* bucket_to_tile;
   float* T;
+  float* ad;
   float* ar;
+
   static SampleState fromChunk(char*& chunk, size_t C);
 };
 

@@ -10,14 +10,16 @@
  */
 
 #pragma once
-#include <torch/all.h>
 
-#include <cstdio>
-#include <string>
-#include <tuple>
+#include <cuda_runtime_api.h>
+
+#include <iostream>
+#include <vector>
 
 std::tuple<int,
            int,
+           torch::Tensor,
+           torch::Tensor,
            torch::Tensor,
            torch::Tensor,
            torch::Tensor,
@@ -66,6 +68,7 @@ RasterizeGaussiansBackwardCUDA(const torch::Tensor& background,
                                const torch::Tensor& projmatrix,
                                const float tan_fovx,
                                const float tan_fovy,
+                               const torch::Tensor& dL_dout_depth,  // added
                                const torch::Tensor& dL_dout_color,
                                const torch::Tensor& dc,
                                const torch::Tensor& sh,
@@ -95,13 +98,18 @@ void adamUpdate(torch::Tensor& param,
                 const uint32_t N,
                 const uint32_t M);
 
-torch::Tensor fusedssim(float C1,
-                        float C2,
-                        const torch::Tensor& img1,
-                        const torch::Tensor& img2);
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+fusedssim(float C1,
+          float C2,
+          torch::Tensor& img1,
+          torch::Tensor& img2,
+          bool train);
 
 torch::Tensor fusedssim_backward(float C1,
                                  float C2,
-                                 const torch::Tensor& img1,
-                                 const torch::Tensor& img2,
-                                 const torch::Tensor& dL_dmap);
+                                 torch::Tensor& img1,
+                                 torch::Tensor& img2,
+                                 torch::Tensor& dL_dmap,
+                                 torch::Tensor& dm_dmu1,
+                                 torch::Tensor& dm_dsigma1_sq,
+                                 torch::Tensor& dm_dsigma12);

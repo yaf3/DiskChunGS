@@ -29,6 +29,7 @@
 class GaussianRenderer {
  public:
   static std::tuple<torch::Tensor,
+                    torch::Tensor,
                     std::vector<torch::Tensor>,
                     std::vector<torch::Tensor>>
   render(const std::vector<std::shared_ptr<GaussianModel>>& models,

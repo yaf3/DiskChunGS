@@ -10,7 +10,7 @@ void visualizePointCloud(const torch::Tensor& points3D,
   // Open file for writing
   std::ofstream ply_file(output_path);
   if (!ply_file.is_open()) {
-    throw std::runtime_error("Failed to open file for writing point cloud"); 
+    throw std::runtime_error("Failed to open file for writing point cloud");
   }
 
   // Write PLY header
@@ -92,5 +92,85 @@ void saveColorizedDepthMap(const torch::Tensor& depth,
 
   } catch (const std::exception& e) {
     std::cerr << "Error in saveColorizedDepthMap: " << e.what() << std::endl;
+  }
+}
+
+/**
+ * Colorizes a depth tensor and saves it to a file
+ * @param depth_tensor The input depth tensor (1 x H x W)
+ * @param output_path Path where the colorized image will be saved
+ * @param min_depth Optional minimum depth value for normalization
+ * @param max_depth Optional maximum depth value for normalization
+ * @param colormap OpenCV colormap type (default: COLORMAP_JET)
+ * @return true if successful, false otherwise
+ */
+bool colorize_and_save_depth(const torch::Tensor& depth_tensor,
+                             const std::string& output_path,
+                             float min_depth,
+                             float max_depth,
+                             int colormap) {
+  try {
+    // Ensure tensor is on CPU and get dimensions
+    auto depth = depth_tensor.cpu();
+
+    // Handle different tensor shapes
+    if (depth.dim() == 4 && depth.size(0) == 1) {  // N x C x H x W with N=1
+      depth = depth.squeeze(0);
+    }
+
+    if (depth.dim() == 3 && depth.size(0) == 1) {  // C x H x W with C=1
+      depth = depth.squeeze(0);
+    }
+
+    // Ensure we have a 2D tensor now
+    if (depth.dim() != 2) {
+      std::cerr << "Error: Depth tensor must be 2D after squeezing, but got "
+                   "dimensions: "
+                << depth.dim() << std::endl;
+      return false;
+    }
+
+    // Get tensor dimensions
+    int height = depth.size(0);
+    int width = depth.size(1);
+
+    // Clone and normalize the depth values between 0 and 1
+    auto normalized = depth.clone();
+
+    // Auto-detect min/max if not provided
+    if (min_depth < 0 || max_depth < 0) {
+      min_depth = depth.min().item<float>();
+      max_depth = depth.max().item<float>();
+    }
+
+    // Handle case where min == max (flat depth)
+    if (std::abs(max_depth - min_depth) < 1e-6) {
+      normalized.fill_(0.5f);
+    } else {
+      // Normalize to 0-1 range
+      normalized = (normalized - min_depth) / (max_depth - min_depth);
+    }
+
+    // Convert to OpenCV format (0-255 uint8)
+    normalized = normalized * 255.0f;
+    auto depth_cv = cv::Mat(height, width, CV_8UC1);
+
+    // Copy data from tensor to OpenCV mat
+    auto accessor = normalized.accessor<float, 2>();
+    for (int y = 0; y < height; y++) {
+      for (int x = 0; x < width; x++) {
+        depth_cv.at<uchar>(y, x) = static_cast<uchar>(accessor[y][x]);
+      }
+    }
+
+    // Apply colormap
+    cv::Mat colored;
+    cv::applyColorMap(depth_cv, colored, colormap);
+
+    // Save image
+    return cv::imwrite(output_path, colored);
+  } catch (const std::exception& e) {
+    std::cerr << "Error in colorize_and_save_depth: " << e.what() << std::endl;
+    return false;
   }
 }

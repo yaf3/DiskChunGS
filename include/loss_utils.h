@@ -34,6 +34,13 @@ inline torch::Tensor l1_loss(torch::Tensor &network_output,
   return torch::abs(network_output - gt).mean();
 }
 
+inline torch::Tensor l1_depth_loss(torch::Tensor &network_output,
+                                   torch::Tensor &gt) {
+  torch::Tensor loss = torch::abs(network_output - gt);
+  loss = loss.masked_fill(gt == 0, 0);
+  return loss.mean();
+}
+
 inline torch::Tensor smooth_l1_loss(torch::Tensor &network_output,
                                     torch::Tensor &gt,
                                     const float beta = 1.0f) {
@@ -168,12 +175,24 @@ class FusedSSIMMap : public torch::autograd::Function<FusedSSIMMap> {
       torch::autograd::AutogradContext *ctx,
       const float C1,
       const float C2,
-      const torch::Tensor &img1,
-      const torch::Tensor &img2) {
-    auto ssim_map = fusedssim(C1, C2, img1, img2);
-    ctx->save_for_backward({img1, img2});
+      torch::Tensor &img1,
+      torch::Tensor &img2,
+      bool train = true) {
+    // The new function returns four tensors instead of one
+    auto result = fusedssim(C1, C2, img1, img2, train);
+    auto ssim_map = std::get<0>(result);
+
+    // Save gradients for backward pass
+    auto dm_dmu1 = std::get<1>(result);
+    auto dm_dsigma1_sq = std::get<2>(result);
+    auto dm_dsigma12 = std::get<3>(result);
+
+    ctx->save_for_backward({img1, img2, dm_dmu1, dm_dsigma1_sq, dm_dsigma12});
+
     ctx->saved_data["C1"] = C1;
     ctx->saved_data["C2"] = C2;
+    ctx->saved_data["train"] = train;
+
     return {ssim_map};
   }
 
@@ -185,17 +204,41 @@ class FusedSSIMMap : public torch::autograd::Function<FusedSSIMMap> {
     auto img2 = saved[1];
     auto C1 = static_cast<float>(ctx->saved_data["C1"].toDouble());
     auto C2 = static_cast<float>(ctx->saved_data["C2"].toDouble());
-    auto grad = fusedssim_backward(C1, C2, img1, img2, grad_outputs[0]);
-    return {torch::Tensor(), torch::Tensor(), grad, torch::Tensor()};
+    auto train = ctx->saved_data["train"].toBool();
+
+    torch::Tensor grad;
+    auto dm_dmu1 = saved[2];
+    auto dm_dsigma1_sq = saved[3];
+    auto dm_dsigma12 = saved[4];
+
+    grad = fusedssim_backward(C1, C2, img1, img2, grad_outputs[0], dm_dmu1,
+                              dm_dsigma1_sq, dm_dsigma12);
+
+    // Return gradients for C1, C2, img1, img2, train
+    return {torch::Tensor(), torch::Tensor(), grad, torch::Tensor(),
+            torch::Tensor()};
   }
 };
 
 inline torch::Tensor fast_ssim(const torch::Tensor &img1,
                                const torch::Tensor &img2,
                                const float C1 = 0.01 * 0.01,
-                               const float C2 = 0.03 * 0.03) {
-  auto ssim_map = FusedSSIMMap::apply(C1, C2, img1, img2)[0];
-  return ssim_map.mean();
+                               const float C2 = 0.03 * 0.03,
+                               bool train = true) {
+  // The new implementation expects 4D tensors [B, C, H, W]
+  // Check if we need to add batch dimension
+  torch::Tensor img1_4d = img1;
+  torch::Tensor img2_4d = img2;
+
+  if (img1.dim() == 3) {
+    img1_4d = img1.unsqueeze(0);
+    img2_4d = img2.unsqueeze(0);
+  }
+
+  auto ssim_map = FusedSSIMMap::apply(C1, C2, img1_4d, img2_4d, train)[0];
+
+  // Take mean across all dimensions except batch
+  return ssim_map.mean({1, 2, 3});
 }
 
 }  // namespace loss_utils

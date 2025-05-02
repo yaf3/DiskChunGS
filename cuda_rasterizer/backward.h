@@ -18,6 +18,8 @@
 #define GLM_FORCE_CUDA
 #include <glm/glm.hpp>
 
+#include "forward.h"
+
 namespace BACKWARD {
 void render(const dim3 grid,
             dim3 block,
@@ -30,19 +32,24 @@ void render(const dim3 grid,
             const uint32_t* per_bucket_tile_offset,
             const uint32_t* bucket_to_tile,
             const float* sampled_T,
+            const float* sampled_ad,
             const float* sampled_ar,
             const float* bg_color,
             const float2* means2D,
-            const float4* conic_opacity,
+            const float6* conic_opacity,
+            const float* depth,  // added
             const float* colors,
             const float* final_Ts,
             const uint32_t* n_contrib,
             const uint32_t* max_contrib,
+            const float* pixel_depths,
             const float* pixel_colors,
+            const float* dL_dpixels_depth,  // added
             const float* dL_dpixels,
             float3* dL_dmean2D,
-            float4* dL_dconic2D,
+            float6* dL_dconic2D,
             float* dL_dopacity,
+            float* dL_ddepths,  // added
             float* dL_dcolors);
 
 void preprocess(int P,
@@ -65,8 +72,9 @@ void preprocess(int P,
                 float tan_fovy,
                 const glm::vec3* campos,
                 const float3* dL_dmean2D,
-                const float* dL_dconics,
+                const float6* dL_dconics,
                 glm::vec3* dL_dmeans,
+                float* dL_ddepth,  // added
                 float* dL_dcolor,
                 float* dL_dcov3D,
                 float* dL_ddc,

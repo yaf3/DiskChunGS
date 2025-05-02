@@ -82,7 +82,8 @@ class GaussianRasterizerFunction
 
   static torch::autograd::tensor_list backward(
       torch::autograd::AutogradContext* ctx,
-      torch::autograd::tensor_list grad_out_color);
+      torch::autograd::tensor_list
+          grad_outputs);  // WARN_0205: Could need two args
 };
 
 inline torch::autograd::tensor_list rasterizeGaussians(
@@ -108,15 +109,16 @@ class GaussianRasterizer : public torch::nn::Module {
 
   torch::Tensor markVisibleGaussians(torch::Tensor& positions);
 
-  std::tuple<torch::Tensor, torch::Tensor> forward(torch::Tensor means3D,
-                                                   torch::Tensor means2D,
-                                                   torch::Tensor opacities,
-                                                   torch::Tensor dc,
-                                                   torch::Tensor shs,
-                                                   torch::Tensor colors_precomp,
-                                                   torch::Tensor scales,
-                                                   torch::Tensor rotations,
-                                                   torch::Tensor cov3D_precomp);
+  std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+  forward(torch::Tensor means3D,
+          torch::Tensor means2D,
+          torch::Tensor opacities,
+          torch::Tensor dc,
+          torch::Tensor shs,
+          torch::Tensor colors_precomp,
+          torch::Tensor scales,
+          torch::Tensor rotations,
+          torch::Tensor cov3D_precomp);
 
  public:
   GaussianRasterizationSettings raster_settings_;

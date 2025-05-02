@@ -24,6 +24,11 @@
 
 #include <Eigen/Geometry>
 #include <memory>
+#include <opencv2/core/cuda.hpp>
+#include <opencv2/cudaarithm.hpp>
+#include <opencv2/cudaimgproc.hpp>
+#include <opencv2/cudastereo.hpp>
+#include <opencv2/cudawarping.hpp>
 #include <opencv2/opencv.hpp>
 #include <string>
 #include <vector>
@@ -81,7 +86,9 @@ class GaussianKeyframe {
                             float appearance_lr = 0.01);
   torch::Tensor applyAppearanceTransform(torch::Tensor& colors);
 
-  void setupStereoData(float baseline, torch::DeviceType device_type);
+  void setupStereoData(float baseline,
+                       torch::DeviceType device_type,
+                       cv::Ptr<cv::cuda::StereoSGM> stereo_cv_sgm);
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
   getRightCameraTransforms() const;
 
@@ -97,9 +104,9 @@ class GaussianKeyframe {
 
   std::string img_filename_;
   cv::Mat img_undist_, img_auxiliary_undist_;
-  torch::Tensor original_image_;  ///< image
-  int image_width_;               ///< image
-  int image_height_;              ///< image
+  torch::Tensor original_image_, depth_image_;  ///< image, depth
+  int image_width_;                             ///< image
+  int image_height_;                            ///< image
 
   int num_gaus_pyramid_sub_levels_;
   std::vector<int> gaus_pyramid_times_of_use_;

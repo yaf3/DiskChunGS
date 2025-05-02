@@ -50,8 +50,10 @@ class Rasterizer {
       const float tan_fovx,
       float tan_fovy,
       const bool prefiltered,
+      float* out_depth,  // added
       float* out_color,
       int* radii = nullptr,
+      bool* is_used = nullptr,
       bool debug = false);
 
   static void backward(const int P,
@@ -80,10 +82,12 @@ class Rasterizer {
                        char* binning_buffer,
                        char* image_buffer,
                        char* sample_buffer,
+                       const float* dL_dpix_depth,  // added
                        const float* dL_dpix,
                        float* dL_dmean2D,
                        float* dL_dconic,
                        float* dL_dopacity,
+                       float* dL_ddepths,  // added
                        float* dL_dcolor,
                        float* dL_dmean3D,
                        float* dL_dcov3D,

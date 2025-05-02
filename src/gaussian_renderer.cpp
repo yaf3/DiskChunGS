@@ -51,23 +51,25 @@ void assertTensorDims(const std::vector<torch::Tensor>& tensors,
  which
  * are all `torch::Tensor`
  */
-std::
-    tuple<torch::Tensor, std::vector<torch::Tensor>, std::vector<torch::Tensor>>
-    GaussianRenderer::render(
-        const std::vector<std::shared_ptr<GaussianModel>>& models,
-        std::shared_ptr<GaussianKeyframe> viewpoint_camera,
-        int image_height,
-        int image_width,
-        GaussianPipelineParams& pipe,
-        torch::Tensor& bg_color,
-        torch::Tensor& override_color,
-        float scaling_modifier,
-        bool use_override_color,
-        float FoVx,
-        float FoVy,
-        torch::Tensor& world_view_transform,
-        torch::Tensor& full_proj_transform,
-        torch::Tensor& camera_center) {
+std::tuple<torch::Tensor,
+           torch::Tensor,
+           std::vector<torch::Tensor>,
+           std::vector<torch::Tensor>>
+GaussianRenderer::render(
+    const std::vector<std::shared_ptr<GaussianModel>>& models,
+    std::shared_ptr<GaussianKeyframe> viewpoint_camera,
+    int image_height,
+    int image_width,
+    GaussianPipelineParams& pipe,
+    torch::Tensor& bg_color,
+    torch::Tensor& override_color,
+    float scaling_modifier,
+    bool use_override_color,
+    float FoVx,
+    float FoVy,
+    torch::Tensor& world_view_transform,
+    torch::Tensor& full_proj_transform,
+    torch::Tensor& camera_center) {
   /* Render the scene.
 
      Background tensor (bg_color) must be on GPU!
@@ -380,8 +382,9 @@ std::
                          scales, rotations, cov3D_precomp);
 
   // timer_raster.stop();
-  auto rendered_image = std::get<0>(rasterizer_result);
-  auto radii = std::get<1>(rasterizer_result);
+  auto rendered_depth = std::get<0>(rasterizer_result);
+  auto rendered_image = std::get<1>(rasterizer_result);
+  auto radii = std::get<2>(rasterizer_result);
 
   if (viewpoint_camera->has_appearance_params_) {
     rendered_image = viewpoint_camera->applyAppearanceTransform(rendered_image);
@@ -405,7 +408,7 @@ std::
    */
 
   // timer_render.stop();
-  return std::make_tuple(rendered_image,         /*render*/
+  return std::make_tuple(rendered_depth, /*depth*/ rendered_image, /*render*/
                          screenspace_points_vec, /*viewspace_points*/
                          radii_vec /*radii*/);
 }

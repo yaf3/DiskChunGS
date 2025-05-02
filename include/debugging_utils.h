@@ -13,6 +13,7 @@
 #include <opencv2/cudastereo.hpp>
 #include <opencv2/cudawarping.hpp>
 #include <opencv2/opencv.hpp>
+#include <string>
 
 void visualizePointCloud(const torch::Tensor &points3D,
                          const torch::Tensor &colors,
@@ -24,3 +25,9 @@ void saveColorizedDepthMap(const torch::Tensor &depth,
                            const std::string &filepath,
                            float min_depth = 0.0f,
                            float max_depth = 20.0f);
+
+bool colorize_and_save_depth(const torch::Tensor &depth_tensor,
+                             const std::string &output_path,
+                             float min_depth = -1.0f,
+                             float max_depth = -1.0f,
+                             int colormap = cv::COLORMAP_JET);

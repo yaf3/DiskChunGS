@@ -745,9 +745,24 @@ void GaussianMapper::run() {
         }
 
         if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
-          pkf->setupStereoData(stereo_baseline_length_, device_type_);
+          pkf->setupStereoData(stereo_baseline_length_, device_type_,
+                               stereo_cv_sgm_);
         } else {
           std::cout << "Stereo data not available" << std::endl;
+        }
+
+        if (sensor_type_ == RGBD && !pkf->img_auxiliary_undist_.empty()) {
+          // Preprocess and store right image tensor
+          if (device_type_ == torch::kCUDA) {
+            cv::cuda::GpuMat depth_gpu;
+            depth_gpu.upload(pkf->img_auxiliary_undist_);
+            pkf->depth_image_ =
+                tensor_utils::cvGpuMat2TorchTensor_Float32(depth_gpu);
+          } else {
+            // Do nothing right now
+          }
+        } else {
+          std::cout << "RGBD data not available" << std::endl;
         }
       }
 
@@ -1127,7 +1142,30 @@ void GaussianMapper::trainForOneIteration() {
       viewpoint_cam->full_proj_transform_, viewpoint_cam->camera_center_);
 
   timer_render.stop();
-  auto rendered_image = std::get<0>(render_pkg);
+  auto rendered_depth = std::get<0>(render_pkg);
+  auto rendered_image = std::get<1>(render_pkg);
+
+  std::cout << "Rendered depth statistics: min "
+            << rendered_depth.min().item<float>() << " max "
+            << rendered_depth.max().item<float>() << " mean"
+            << rendered_depth.mean().item<float>() << " median "
+            << rendered_depth.median().item<float>() << std::endl;
+
+  torch::Tensor gt_depth = viewpoint_cam->depth_image_.cuda();
+
+  std::cout << "GT Depth statistics: min " << gt_depth.min().item<float>()
+            << " max " << gt_depth.max().item<float>() << " mean"
+            << gt_depth.mean().item<float>() << " median "
+            << gt_depth.median().item<float>() << std::endl;
+
+  colorize_and_save_depth(
+      rendered_depth.detach().cpu(),
+      "/workspaces/large_scale_gaussian_slam/debug_depth_pred.png", min_depth_,
+      max_depth_);
+  colorize_and_save_depth(
+      gt_depth.detach().cpu(),
+      "/workspaces/large_scale_gaussian_slam/debug_depth_gt.png", min_depth_,
+      max_depth_);
 
   // {
   //   // Save PyTorch tensor image
@@ -1148,8 +1186,10 @@ void GaussianMapper::trainForOneIteration() {
   //             << std::endl;
   // }
 
-  std::vector<torch::Tensor> screenspace_points_vec = std::get<1>(render_pkg);
-  std::vector<torch::Tensor> radii_vec = std::get<2>(render_pkg);
+  std ::vector<torch::Tensor> screenspace_points_vec = std::get<2>(render_pkg);
+  std::vector<torch::Tensor> radii_vec = std::get<3>(render_pkg);
+
+  float lambda_depth = 0.001f;
 
   auto timer_loss_calculation = ProfilingUtils::Timer("loss_calculation");
   // Loss calculation (same as before)
@@ -1158,9 +1198,12 @@ void GaussianMapper::trainForOneIteration() {
   auto Ll1 = l1_loss(rendered_image, gt_image, 1.0f);
   auto Lssim = loss_utils::fast_ssim(rendered_image, gt_image);
   float lambda_dssim = lambdaDssim();
-  auto loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - Lssim);
-  // std::cout << "Ll1: " << Ll1.item<float>() << std::endl;
-  // std::cout << "Lssim: " << Lssim.item<float>() << std::endl;
+  auto Ll1_depth = loss_utils::l1_depth_loss(rendered_depth, gt_depth);
+  auto loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - Lssim) +
+              lambda_depth * Ll1_depth;
+  std::cout << "Ll1: " << Ll1.item<float>() << std::endl;
+  std::cout << "Lssim: " << Lssim.item<float>() << std::endl;
+  std::cout << "Ll1_depth: " << Ll1_depth.item<float>() << std::endl;
 
   if (do_stereo_loss_ && this->sensor_type_ == STEREO &&
       viewpoint_cam->is_stereo_) {
@@ -1190,7 +1233,8 @@ void GaussianMapper::trainForOneIteration() {
         viewpoint_cam->full_proj_transform_right_,
         viewpoint_cam->camera_center_right_);
 
-    auto rendered_image_right = std::get<0>(render_pkg_right);
+    auto rendered_depth_right = std::get<0>(render_pkg_right);
+    auto rendered_image_right = std::get<1>(render_pkg_right);
 
     // {
     //   // Save PyTorch tensor image
@@ -1911,9 +1955,22 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   }
 
   if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
-    pkf->setupStereoData(stereo_baseline_length_, device_type_);
+    pkf->setupStereoData(stereo_baseline_length_, device_type_, stereo_cv_sgm_);
   } else {
     std::cout << "Stereo data not available" << std::endl;
+  }
+
+  if (sensor_type_ == RGBD && !pkf->img_auxiliary_undist_.empty()) {
+    // Preprocess and store right image tensor
+    if (device_type_ == torch::kCUDA) {
+      cv::cuda::GpuMat depth_gpu;
+      depth_gpu.upload(pkf->img_auxiliary_undist_);
+      pkf->depth_image_ = tensor_utils::cvGpuMat2TorchTensor_Float32(depth_gpu);
+    } else {
+      // Do nothing right now
+    }
+  } else {
+    std::cout << "RGBD data not available" << std::endl;
   }
 }
 
@@ -2663,7 +2720,7 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
 
   // Return rendered image
   chunk_manager_->releaseChunksFromOptimization(visible_chunks);
-  return tensor_utils::torchTensor2CvMat_Float32(std::get<0>(render_pkg));
+  return tensor_utils::torchTensor2CvMat_Float32(std::get<1>(render_pkg));
 }
 
 void GaussianMapper::renderAndRecordKeyframe(
@@ -2704,7 +2761,7 @@ void GaussianMapper::renderAndRecordKeyframe(
       pkf->camera_center_);
 
   chunk_manager_->releaseChunksFromOptimization(visible_chunks);
-  auto rendered_image = std::get<0>(render_pkg);
+  auto rendered_image = std::get<1>(render_pkg);
   torch::cuda::synchronize();
   auto end_timing = std::chrono::steady_clock::now();
   auto render_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -4570,7 +4627,22 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
     }
 
     if (sensor_type_ == STEREO && !depth_or_right_image.empty()) {
-      new_kf->setupStereoData(stereo_baseline_length_, device_type_);
+      new_kf->setupStereoData(stereo_baseline_length_, device_type_,
+                              stereo_cv_sgm_);
+    }
+
+    if (sensor_type_ == RGBD && !new_kf->img_auxiliary_undist_.empty()) {
+      // Preprocess and store right image tensor
+      if (device_type_ == torch::kCUDA) {
+        cv::cuda::GpuMat depth_gpu;
+        depth_gpu.upload(new_kf->img_auxiliary_undist_);
+        new_kf->depth_image_ =
+            tensor_utils::cvGpuMat2TorchTensor_Float32(depth_gpu);
+      } else {
+        // Do nothing right now
+      }
+    } else {
+      std::cout << "RGBD data not available" << std::endl;
     }
 
     keyframe_queue_->notifyNewKeyframeAdded(new_kf);

@@ -37,8 +37,8 @@ torch::autograd::tensor_list GaussianRasterizerFunction::forward(
     torch::Tensor cov3Ds_precomp,
     GaussianRasterizationSettings raster_settings) {
   // Invoke C++/CUDA rasterizer
-  auto [num_rendered, num_buckets, color, radii, geomBuffer, binningBuffer,
-        imgBuffer, sampleBuffer] =
+  auto [num_rendered, num_buckets, depth, color, radii, is_used, geomBuffer,
+        binningBuffer, imgBuffer, sampleBuffer] =
       RasterizeGaussiansCUDA(
           raster_settings.bg_, means3D, colors_precomp, opacities, scales,
           rotations, raster_settings.scale_modifier_, cov3Ds_precomp,
@@ -62,7 +62,7 @@ torch::autograd::tensor_list GaussianRasterizerFunction::forward(
                           cov3Ds_precomp, radii, dc, sh, geomBuffer,
                           binningBuffer, imgBuffer, sampleBuffer});
 
-  return {color, radii};
+  return {depth, color, radii, is_used};
 }
 
 torch::autograd::tensor_list GaussianRasterizerFunction::backward(
@@ -98,14 +98,17 @@ torch::autograd::tensor_list GaussianRasterizerFunction::backward(
   auto sampleBuffer = saved[15];
 
   // Compute gradients for relevant tensors by invoking backward method
-  auto grad_out_color = grad_outputs[0];
+  // WARN_0205: This could be wrong (switched or different index!)
+  auto grad_out_depth = grad_outputs[0];
+  auto grad_out_color = grad_outputs[1];
   auto [grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D,
         grad_cov3Ds_precomp, grad_dc, grad_sh, grad_scales, grad_rotations] =
       RasterizeGaussiansBackwardCUDA(
           bg, means3D, radii, colors_precomp, scales, rotations, scale_modifier,
           cov3Ds_precomp, viewmatrix, projmatrix, tanfovx, tanfovy,
-          grad_out_color, dc, sh, sh_degree, campos, geomBuffer, num_rendered,
-          binningBuffer, imgBuffer, num_buckets, sampleBuffer, debug);
+          grad_out_depth, grad_out_color, dc, sh, sh_degree, campos, geomBuffer,
+          num_rendered, binningBuffer, imgBuffer, num_buckets, sampleBuffer,
+          debug);
 
   return {
       grad_means3D,   grad_means2D,        grad_dc,
@@ -125,16 +128,16 @@ torch::autograd::tensor_list GaussianRasterizerFunction::backward(
   };
 }
 
-std::tuple<torch::Tensor, torch::Tensor> GaussianRasterizer::forward(
-    torch::Tensor means3D,
-    torch::Tensor means2D,
-    torch::Tensor opacities,
-    torch::Tensor dc,
-    torch::Tensor shs,
-    torch::Tensor colors_precomp,
-    torch::Tensor scales,
-    torch::Tensor rotations,
-    torch::Tensor cov3D_precomp) {
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+GaussianRasterizer::forward(torch::Tensor means3D,
+                            torch::Tensor means2D,
+                            torch::Tensor opacities,
+                            torch::Tensor dc,
+                            torch::Tensor shs,
+                            torch::Tensor colors_precomp,
+                            torch::Tensor scales,
+                            torch::Tensor rotations,
+                            torch::Tensor cov3D_precomp) {
   auto raster_settings = this->raster_settings_;
 
   if ((!shs.defined() /*shs is None*/ &&
@@ -169,7 +172,8 @@ std::tuple<torch::Tensor, torch::Tensor> GaussianRasterizer::forward(
       rasterizeGaussians(means3D, means2D, dc, shs, colors_precomp, opacities,
                          scales, rotations, cov3D_precomp, raster_settings);
 
-  return std::make_tuple(result[0] /*color*/, result[1] /*radii*/);
+  return std::make_tuple(result[0] /*depth*/, result[1] /*color*/,
+                         result[2] /*radii*/, result[3] /*is_used*/);
 }
 
 void SparseGaussianAdam::step(torch::Tensor& visibility, const uint32_t N) {

@@ -236,8 +236,10 @@ torch::Tensor GaussianKeyframe::applyAppearanceTransform(
   return colors * scale + bias;
 }
 
-void GaussianKeyframe::setupStereoData(float baseline,
-                                       torch::DeviceType device_type) {
+void GaussianKeyframe::setupStereoData(
+    float baseline,
+    torch::DeviceType device_type,
+    cv::Ptr<cv::cuda::StereoSGM> stereo_cv_sgm) {
   if (img_auxiliary_undist_.empty()) {
     return;  // No stereo image available
   }
@@ -286,6 +288,48 @@ void GaussianKeyframe::setupStereoData(float baseline,
     right_gpu.upload(this->img_auxiliary_undist_);
     this->right_original_image_ =
         tensor_utils::cvGpuMat2TorchTensor_Float32(right_gpu);
+
+    // Create disparity and compute depth image
+    cv::cuda::GpuMat gray_left_gpu, gray_right_gpu;
+    cv::cuda::GpuMat left_gpu;
+    left_gpu.upload(this->img_undist_);
+
+    // Convert to grayscale for disparity computation
+    cv::cuda::cvtColor(left_gpu, gray_left_gpu, cv::COLOR_RGB2GRAY);
+    cv::cuda::cvtColor(right_gpu, gray_right_gpu, cv::COLOR_RGB2GRAY);
+
+    // Convert to uint8 required by stereo algorithm
+    gray_left_gpu.convertTo(gray_left_gpu, CV_8UC1, 255.0);
+    gray_right_gpu.convertTo(gray_right_gpu, CV_8UC1, 255.0);
+
+    // Compute disparity
+    cv::cuda::GpuMat disparity_gpu;
+    // Assuming stereo_cv_sgm_ is accessible through external function
+    stereo_cv_sgm->compute(gray_left_gpu, gray_right_gpu, disparity_gpu);
+    disparity_gpu.convertTo(disparity_gpu, CV_32F, 1.0 / 16.0);
+
+    // Convert disparity to depth
+    float focal_length = this->intr_[0];  // fx
+    float bf = baseline * focal_length;  // baseline * focal_length (stereo_bf_)
+
+    // Create a valid disparity mask (disparity > 0.1)
+    cv::cuda::GpuMat valid_mask;
+    cv::cuda::threshold(disparity_gpu, valid_mask, 0.1, 1.0, cv::THRESH_BINARY);
+    valid_mask.convertTo(valid_mask, CV_32F);
+
+    // Create constant bf matrix
+    cv::cuda::GpuMat bf_mat(disparity_gpu.size(), CV_32FC1, cv::Scalar(bf));
+
+    // Compute depth = bf / disparity for valid disparities
+    cv::cuda::GpuMat depth_gpu(disparity_gpu.size(), CV_32FC1);
+    cv::cuda::divide(bf_mat, disparity_gpu, depth_gpu);
+
+    // Set invalid depths to zero
+    cv::cuda::multiply(depth_gpu, valid_mask, depth_gpu);
+
+    // Store depth image as tensor
+    this->depth_image_ = tensor_utils::cvGpuMat2TorchTensor_Float32(depth_gpu);
+
     // Also handle multi-resolution if needed
     if (!gaus_pyramid_original_image_.empty()) {
       gaus_pyramid_right_original_image_.resize(num_gaus_pyramid_sub_levels_);

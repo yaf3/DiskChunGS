@@ -19,6 +19,24 @@
 #include <functional>
 #include <glm/glm.hpp>
 
+struct cov6 {
+  float xx;
+  float xy;
+  float zx;
+  float yy;
+  float yz;
+  float zz;
+};
+
+struct float6 {
+  float x;
+  float y;
+  float z;
+  float w;
+  float i;
+  float j;
+};
+
 namespace FORWARD {
 // Perform initial steps for each Gaussian prior to rasterization.
 void preprocess(int P,
@@ -45,13 +63,14 @@ void preprocess(int P,
                 float tan_fovy,
                 int* radii,
                 float2* points_xy_image,
-                float* depths,
+                float* depths,  // added
                 float* cov3Ds,
                 float* colors,
-                float4* conic_opacity,
+                float6* conic_opacity,
                 const dim3 grid,
                 uint32_t* tiles_touched,
-                bool prefiltered);
+                bool prefiltered,
+                bool* is_used);  // added
 
 // Main rasterization method.
 void render(const dim3 grid,
@@ -61,15 +80,18 @@ void render(const dim3 grid,
             const uint32_t* per_tile_bucket_offset,
             uint32_t* bucket_to_tile,
             float* sampled_T,
+            float* sampled_ad,
             float* sampled_ar,
             int W,
             int H,
             const float2* points_xy_image,
+            const float* depths,  // added
             const float* features,
-            const float4* conic_opacity,
+            const float6* conic_opacity,
             float* final_T,
             uint32_t* n_contrib,
             uint32_t* max_contrib,
             const float* bg_color,
+            float* out_depth,  // added
             float* out_color);
 }  // namespace FORWARD
