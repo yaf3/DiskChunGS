@@ -1130,11 +1130,11 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::loadVisibleChunks(
 
   triggerLruCheck();
 
-  auto timer_frustumCullChunks =
-      ProfilingUtils::Timer("ChunkManager::frustumCullChunks");
+  // auto timer_frustumCullChunks =
+  //     ProfilingUtils::Timer("ChunkManager::frustumCullChunks");
   std::vector<ChunkCoord> visible_chunk_coords =
       frustumCullChunks(keyframe, use_cache);
-  timer_frustumCullChunks.stop();
+  // timer_frustumCullChunks.stop();
 
   // Now we have the list of visible chunk coordinates
   // Start asynchronous loading of chunks
@@ -1316,13 +1316,16 @@ std::vector<ChunkCoord> ChunkManager::frustumCullChunks(
   // Vector to hold visibility results
   std::vector<bool> visibility_results(candidate_chunks.size(), false);
 
-// Parallel processing of candidate chunks
+  // Parallel processing of candidate chunks
 #pragma omp parallel for
   for (size_t i = 0; i < candidate_chunks.size(); i++) {
     const ChunkCoord& check_coord = candidate_chunks[i];
     AABB chunk_aabb = getChunkAABB(check_coord);
-    visibility_results[i] =
-        test_AABB_against_frustum_eigen(vp_matrix, chunk_aabb);
+    bool visible = test_AABB_against_frustum_eigen(vp_matrix, chunk_aabb);
+#pragma omp critical
+    {
+      visibility_results[i] = visible;
+    }
   }
 
   // Collect visible chunks (serial operation)
