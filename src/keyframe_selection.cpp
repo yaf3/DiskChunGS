@@ -58,6 +58,6 @@ void KeyframeQueue::notifyNewKeyframeAdded(
   }
   keyframe_ids_.push_back(keyframe->fid_);
 
-  std::cout << "Added keyframe " << keyframe->fid_ << ", now tracking "
-            << keyframe_ids_.size() << " keyframes" << std::endl;
+  // std::cout << "Added keyframe " << keyframe->fid_ << ", now tracking "
+  //           << keyframe_ids_.size() << " keyframes" << std::endl;
 }
