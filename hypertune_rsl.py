@@ -115,12 +115,13 @@ def objective(trial):
     }
     
     # Load base config
-    config_path = "/workspaces/large_scale_gaussian_slam/cfg/gaussian_mapper/RGB-D/RSL/arche_train1.yaml"
-    trial_config_path = f"/workspaces/large_scale_gaussian_slam/cfg/gaussian_mapper/RGB-D/RSL/runs/run0/train1_trial_{trial.number}.yaml"
+    base_path = "/workspace/repo"
+    config_path = f"{base_path}/cfg/gaussian_mapper/RGB-D/RSL/arche_train1.yaml"
+    trial_config_path = f"{base_path}/cfg/gaussian_mapper/RGB-D/RSL/runs/run0/train1_trial_{trial.number}.yaml"
     gt_path = "/data/RSL/datasets/train1"
-    orbslam_cfg_path = "/workspaces/large_scale_gaussian_slam/cfg/ORB_SLAM3/RGB-D/RSL/arche_train1.yaml"
-    orbslam_vocab_path = "/workspaces/large_scale_gaussian_slam/third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt"
-    result_dir = f"/workspaces/large_scale_gaussian_slam/results/RSL/runs/run0/train1_trial_{trial.number}"
+    orbslam_cfg_path = f"{base_path}/cfg/ORB_SLAM3/RGB-D/RSL/arche_train1.yaml"
+    orbslam_vocab_path = f"{base_path}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt"
+    result_dir = f"{base_path}/results/RSL/runs/run0/train1_trial_{trial.number}"
 
     with open(config_path, 'r') as f:
         base_content = f.read()
@@ -179,7 +180,7 @@ def objective(trial):
     print("Training done, now running eval")
     # Now evaluate
     os.system(
-                "python3 /workspaces/large_scale_gaussian_slam/eval/run.py {} {} --skip_trajectory_eval".format(result_dir, gt_path)
+                f"python3 {base_path}/eval/run.py {} {} --skip_trajectory_eval".format(result_dir, gt_path)
             )
     
     score = 9999999999999

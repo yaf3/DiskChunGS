@@ -65,4 +65,4 @@ repos:
            '--duplicates=key', '--no-escape', '--sort-fields', '--modify',
            '--remove-empty-fields', '--no-remove-dupe-fields', '--wrap=80']
 
-exclude: '^(third_party/ORB-SLAM3/|viewer/)'
+exclude: '^(slam_deps/ORB-SLAM3/|viewer/)'

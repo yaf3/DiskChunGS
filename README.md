@@ -8,9 +8,15 @@ ETH Zurich<sup>1</sup>, Google<sup>2</sup>
 
 DiskChunGS is a 3D Gaussian Splatting SLAM system that enables unbounded scene reconstruction through dynamic memory management, partitioning environments into spatial chunks that are selectively loaded between GPU and disk storage. This innovative approach achieves substantially higher Gaussian density than previous methods, resulting in significantly improved reconstruction quality across diverse environments while maintaining real-time performance.
 
-## Installation
+## Installation using Docker Compose
 
-Installation herer (docker image)
+```bash
+# Start the development container
+docker-compose run --rm dev
+
+# Inside the container, build the application
+./build.sh
+```
 
 ## Getting Started
 
@@ -48,14 +54,14 @@ kitti
             ---
 ```
 
-2. For testing, you could use the below commands to run the system after specifying the `PATH_TO_Replica` and `PATH_TO_SAVE_RESULTS`. We would disable the viewer by adding `no_viewer` during the evaluation.
+2. For testing, you could use the below commands to run the system after specifying the `PATH_TO_Replica` and `PATH_TO_SAVE_RESULTS`. We can disable the viewer by adding `no_viewer` for the evaluation.
 ``` bash
 bin/replica_rgbd \
-    ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/RGB-D/Replica/office0.yaml \
     cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml \
-    PATH_TO_Replica/office0 \
-    PATH_TO_SAVE_RESULTS
+    /data/Replica/office0 \ # If non-default mount is chosen change this
+    results/replica_rgbd/office0 # Or PATH_TO_SAVE_RESULTS
     # no_viewer
 ```
 
@@ -107,6 +113,23 @@ python3 eval/eval.py --dataset_center_path PATH_TO_ALL_DATASET --result_main_fol
 - PATH_TO_ALL_DATASET: Should be /data if you've bound your datasets folder to /data
 Results will be summarized in two files: `RESULTS_PATH/log.txt` and `RESULTS_PATH/log.csv`.
 
+
+## ROS usage:
+
+In one terminal launch and build
+
+```bash
+docker-compose run --rm dev
+source build_ros.sh
+```
+
+In another terminal launch the roscore if needed
+```bash
+docker ps
+docker exec -it container_namer bash
+source /opt/ros/noetic/setup.bash
+roscore
+```
 
 ## Configuration Options
 

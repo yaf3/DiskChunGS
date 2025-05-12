@@ -5,7 +5,7 @@ num_trials=$2
 for ((i=0; i<num_trials; i++))
 do
 bin/kitti_stereo \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Stereo/KITTI/KITTI00-02.yaml \
     cfg/gaussian_mapper/Stereo/KITTI/KITTI00.yaml \
     /data/kitti/data_odometry_color/dataset/sequences/00 \
@@ -18,7 +18,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/kitti_stereo \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Stereo/KITTI/KITTI00-02.yaml \
     cfg/gaussian_mapper/Stereo/KITTI/KITTI01.yaml \
     /data/kitti/data_odometry_color/dataset/sequences/01 \
@@ -31,7 +31,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/kitti_stereo \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Stereo/KITTI/KITTI00-02.yaml \
     cfg/gaussian_mapper/Stereo/KITTI/KITTI02.yaml \
     /data/kitti/data_odometry_color/dataset/sequences/02 \
@@ -44,7 +44,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/kitti_stereo \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Stereo/KITTI/KITTI03.yaml \
     cfg/gaussian_mapper/Stereo/KITTI/KITTI03.yaml \
     /data/kitti/data_odometry_color/dataset/sequences/03 \
@@ -57,7 +57,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/kitti_stereo \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Stereo/KITTI/KITTI04-12.yaml \
     cfg/gaussian_mapper/Stereo/KITTI/KITTI04.yaml \
     /data/kitti/data_odometry_color/dataset/sequences/04 \
@@ -70,7 +70,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/kitti_stereo \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Stereo/KITTI/KITTI04-12.yaml \
     cfg/gaussian_mapper/Stereo/KITTI/KITTI05.yaml \
     /data/kitti/data_odometry_color/dataset/sequences/05 \
@@ -83,7 +83,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/kitti_stereo \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Stereo/KITTI/KITTI04-12.yaml \
     cfg/gaussian_mapper/Stereo/KITTI/KITTI06.yaml \
     /data/kitti/data_odometry_color/dataset/sequences/06 \
@@ -96,7 +96,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/kitti_stereo \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Stereo/KITTI/KITTI04-12.yaml \
     cfg/gaussian_mapper/Stereo/KITTI/KITTI07.yaml \
     /data/kitti/data_odometry_color/dataset/sequences/07 \
@@ -109,7 +109,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/kitti_stereo \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Stereo/KITTI/KITTI04-12.yaml \
     cfg/gaussian_mapper/Stereo/KITTI/KITTI08.yaml \
     /data/kitti/data_odometry_color/dataset/sequences/08 \
@@ -122,7 +122,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/kitti_stereo \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Stereo/KITTI/KITTI04-12.yaml \
     cfg/gaussian_mapper/Stereo/KITTI/KITTI09.yaml \
     /data/kitti/data_odometry_color/dataset/sequences/09 \
@@ -135,7 +135,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/kitti_stereo \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Stereo/KITTI/KITTI04-12.yaml \
     cfg/gaussian_mapper/Stereo/KITTI/KITTI10.yaml \
     /data/kitti/data_odometry_color/dataset/sequences/10 \
@@ -148,7 +148,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/kitti_stereo \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Stereo/KITTI/KITTI04-12.yaml \
     cfg/gaussian_mapper/Stereo/KITTI/KITTI11.yaml \
     /data/kitti/data_odometry_color/dataset/sequences/11 \
@@ -161,7 +161,7 @@ bin/kitti_stereo \
 for ((i=0; i<num_trials; i++))
 do
 bin/kitti_stereo \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Stereo/KITTI/KITTI04-12.yaml \
     cfg/gaussian_mapper/Stereo/KITTI/KITTI12.yaml \
     /data/kitti/data_odometry_color/dataset/sequences/12 \

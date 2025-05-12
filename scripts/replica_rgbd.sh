@@ -5,7 +5,7 @@ num_trials=$2
 for ((i=0; i<num_trials; i++))
 do
 bin/replica_rgbd \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/RGB-D/Replica/office0.yaml \
     cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml \
     /data/Replica/office0 \
@@ -16,7 +16,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/replica_rgbd \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/RGB-D/Replica/office1.yaml \
     cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml \
     /data/Replica/office1 \
@@ -27,7 +27,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/replica_rgbd \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/RGB-D/Replica/office2.yaml \
     cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml \
     /data/Replica/office2 \
@@ -38,7 +38,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/replica_rgbd \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/RGB-D/Replica/office3.yaml \
     cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml \
     /data/Replica/office3 \
@@ -49,7 +49,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/replica_rgbd \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/RGB-D/Replica/office4.yaml \
     cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml \
     /data/Replica/office4 \
@@ -60,7 +60,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/replica_rgbd \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/RGB-D/Replica/room0.yaml \
     cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml \
     /data/Replica/room0 \
@@ -71,7 +71,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/replica_rgbd \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/RGB-D/Replica/room1.yaml \
     cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml \
     /data/Replica/room1 \
@@ -82,7 +82,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/replica_rgbd \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/RGB-D/Replica/room2.yaml \
     cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml \
     /data/Replica/room2 \

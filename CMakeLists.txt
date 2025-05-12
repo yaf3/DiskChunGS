@@ -30,7 +30,8 @@ set(CAFFE2_USE_CUDNN on)
 # Uncomment the following line if you want to solve CMake Warning "Failed to compute shorthash for libnvrtc.so"
 # set(PYTHON_EXECUTABLE "/usr/bin/python3")
 
-set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libtorch")
+# Updated path to libtorch in the base Docker image
+set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} "/workspace/third_party/libtorch")
 find_package(Torch REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS} -pthread")
 
@@ -39,26 +40,27 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS} -pthread")
 
 find_package(CUDA REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(OpenCV 4 REQUIRED)
-find_package(jsoncpp REQUIRED)
 
+# Updated path to OpenCV - using the pre-built version in the base image
+set(OpenCV_DIR "/workspace/third_party/install/opencv/lib/cmake/opencv4")
+find_package(OpenCV 4 REQUIRED)
+
+find_package(jsoncpp REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(glm REQUIRED)
 find_package(glfw3 REQUIRED)
-
 find_package(realsense2)
-
 find_package(OpenMP REQUIRED)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS} -pthread ${OpenMP_CXX_FLAGS}")
 
-set(ORB_SLAM3_SOURCE_DIR "${PROJECT_SOURCE_DIR}/third_party/ORB-SLAM3")
+set(ORB_SLAM3_SOURCE_DIR "${PROJECT_SOURCE_DIR}/slam_deps/ORB-SLAM3")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 
 include_directories(
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/third_party
+    ${PROJECT_SOURCE_DIR}/slam_deps
     ${ORB_SLAM3_SOURCE_DIR}
     ${ORB_SLAM3_SOURCE_DIR}/include
     ${ORB_SLAM3_SOURCE_DIR}/include/CameraModels
@@ -74,10 +76,10 @@ include_directories(
 add_library(
     simple_knn
     SHARED
-    third_party/simple-knn/simple_knn.cu
-    third_party/simple-knn/simple_knn.h
-    third_party/simple-knn/spatial.cu
-    third_party/simple-knn/spatial.h
+    slam_deps/simple-knn/simple_knn.cu
+    slam_deps/simple-knn/simple_knn.h
+    slam_deps/simple-knn/spatial.cu
+    slam_deps/simple-knn/spatial.h
 )
 # target_compile_features(simple_knn PUBLIC cxx_std_17)
 target_link_libraries(simple_knn ${TORCH_LIBRARIES})
@@ -147,8 +149,8 @@ target_link_libraries(imgui glfw OpenGL::GL)
 add_library(
     gaussian_mapper
     SHARED
-    third_party/tinyply/tinyply.h
-    third_party/tinyply/tinyply.cpp
+    slam_deps/tinyply/tinyply.h
+    slam_deps/tinyply/tinyply.cpp
     include/gaussian_keyframe.h
     include/gaussian_model.h
     include/gaussian_parameters.h

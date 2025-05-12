@@ -1,25 +1,8 @@
 {
     "name": "LSGS Development",
-    "build": {
-        "dockerfile": "../Dockerfile",
-        "context": ".."
-    },
-    "runArgs": [
-        "--gpus=all",
-        "--privileged",
-        "--net=host",
-        "--shm-size=20G",
-        "-e",
-        "DISPLAY=${env:DISPLAY}",
-        "-e",
-        "NVIDIA_DRIVER_CAPABILITIES=all",
-        "-e",
-        "NVIDIA_VISIBLE_DEVICES=all",
-        "-v",
-        "/tmp/.X11-unix:/tmp/.X11-unix",
-        "-v",
-        "/mnt/auxiliary1/datasets:/data"
-    ],
+    "dockerComposeFile": "../docker-compose.yml",
+    "service": "dev",
+    "workspaceFolder": "/workspace",
     "customizations": {
         "vscode": {
             "extensions": [

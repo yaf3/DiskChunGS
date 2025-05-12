@@ -8,36 +8,27 @@ echo "Cleaning build in: $workdir"
 echo "Cleaning main project build directory..."
 rm -rf build/
 
-# Clean libtorch
-echo "Cleaning libtorch..."
-rm -rf third_party/libtorch/
-
-# Clean OpenCV
-echo "Cleaning OpenCV..."
-rm -rf third_party/opencv/build/
-rm -rf third_party/install/opencv/
-
 # Clean DBoW2
 echo "Cleaning DBoW2..."
-rm -rf third_party/ORB-SLAM3/Thirdparty/DBoW2/build/
+rm -rf slam_deps/ORB-SLAM3/Thirdparty/DBoW2/build/
 
 # Clean g2o
 echo "Cleaning g2o..."
-rm -rf third_party/ORB-SLAM3/Thirdparty/g2o/build/
+rm -rf slam_deps/ORB-SLAM3/Thirdparty/g2o/build/
 
 # Clean Sophus
 echo "Cleaning Sophus..."
-rm -rf third_party/ORB-SLAM3/Thirdparty/Sophus/build/
+rm -rf slam_deps/ORB-SLAM3/Thirdparty/Sophus/build/
 
 # Clean ORB-SLAM3
 echo "Cleaning ORB-SLAM3..."
-rm -rf third_party/ORB-SLAM3/build/
-rm -f third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt
+rm -rf slam_deps/ORB-SLAM3/build/
+rm -f slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt
 
-# Remove any leftover build artifacts
-echo "Cleaning additional build artifacts..."
-find . -name "CMakeCache.txt" -delete
-find . -name "CMakeFiles" -type d -exec rm -rf {} +
-find . -name "compile_commands.json" -delete
+# # Remove any leftover build artifacts
+# echo "Cleaning additional build artifacts..."
+# find . -name "CMakeCache.txt" -delete
+# find . -name "CMakeFiles" -type d -exec rm -rf {} +
+# find . -name "compile_commands.json" -delete
 
 echo "Clean completed!"

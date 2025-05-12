@@ -89,7 +89,7 @@ def objective(trial):
     try:
         subprocess.run([
             "./bin/kitti_stereo",
-            "third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt",
+            "slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
             "cfg/ORB_SLAM3/Stereo/KITTI/KITTI00-02.yaml",
             trial_config_path,
             gt_path,

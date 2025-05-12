@@ -57,8 +57,6 @@ docs/
 #data
 data
 
-third_party/magma-2.7.1
-third_party/pytorch
 gs_render.egg-info
 dist
 cfg/gaussian_mapper/Stereo/KITTI/runs

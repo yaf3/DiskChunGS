@@ -5,7 +5,7 @@ num_trials=$2
 for ((i=0; i<num_trials; i++))
 do
 bin/replica_mono \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Monocular/Replica/office0.yaml \
     cfg/gaussian_mapper/Monocular/Replica/replica_mono.yaml \
     /data/Replica/office0 \
@@ -16,7 +16,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/replica_mono \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Monocular/Replica/office1.yaml \
     cfg/gaussian_mapper/Monocular/Replica/replica_mono.yaml \
     /data/Replica/office1 \
@@ -27,7 +27,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/replica_mono \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Monocular/Replica/office2.yaml \
     cfg/gaussian_mapper/Monocular/Replica/replica_mono.yaml \
     /data/Replica/office2 \
@@ -38,7 +38,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/replica_mono \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Monocular/Replica/office3.yaml \
     cfg/gaussian_mapper/Monocular/Replica/replica_mono.yaml \
     /data/Replica/office3 \
@@ -49,7 +49,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/replica_mono \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Monocular/Replica/office4.yaml \
     cfg/gaussian_mapper/Monocular/Replica/replica_mono.yaml \
     /data/Replica/office4 \
@@ -60,7 +60,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/replica_mono \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Monocular/Replica/room0.yaml \
     cfg/gaussian_mapper/Monocular/Replica/replica_mono.yaml \
     /data/Replica/room0 \
@@ -71,7 +71,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/replica_mono \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Monocular/Replica/room1.yaml \
     cfg/gaussian_mapper/Monocular/Replica/replica_mono.yaml \
     /data/Replica/room1 \
@@ -82,7 +82,7 @@ done
 for ((i=0; i<num_trials; i++))
 do
 bin/replica_mono \
-    third_party/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
     cfg/ORB_SLAM3/Monocular/Replica/room2.yaml \
     cfg/gaussian_mapper/Monocular/Replica/replica_mono.yaml \
     /data/Replica/room2 \

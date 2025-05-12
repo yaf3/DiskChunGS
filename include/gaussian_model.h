@@ -33,8 +33,8 @@
 #include "point3d.h"
 #include "sh_utils.h"
 #include "tensor_utils.h"
-#include "third_party/simple-knn/spatial.h"
-#include "third_party/tinyply/tinyply.h"
+#include "slam_deps/simple-knn/spatial.h"
+#include "slam_deps/tinyply/tinyply.h"
 #include "types.h"
 
 #define GAUSSIAN_MODEL_TENSORS_TO_VEC                      \

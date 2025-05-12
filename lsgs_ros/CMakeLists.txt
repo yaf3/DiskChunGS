@@ -4,7 +4,7 @@ project(lsgs_ros LANGUAGES CXX CUDA)
 set(CMAKE_DEPENDS_IN_PROJECT_ONLY ON)
 
 # Set OpenCV_DIR to the installation directory
-set(OpenCV_DIR "/workspaces/large_scale_gaussian_slam/third_party/install/opencv/lib/cmake/opencv4")
+set(OpenCV_DIR "/workspace/third_party/install/opencv/lib/cmake/opencv4")
 if(NOT EXISTS "${OpenCV_DIR}")
     message(FATAL_ERROR "Custom OpenCV installation not found at ${OpenCV_DIR}")
 endif()
@@ -17,10 +17,10 @@ message(STATUS "OpenCV_LIBRARIES: ${OpenCV_LIBRARIES}")
 
 # Set RPATH settings
 list(APPEND CMAKE_INSTALL_RPATH 
-    "${LSGS_MAIN_DIR}/third_party/install/opencv/lib"
-    "${LSGS_MAIN_DIR}/lib"
+    "/workspace/third_party/install/opencv/lib"
+    "${LSGS_MAIN_DIR}/lib" #Maybe needs to be changed
     "${ORB_SLAM3_SOURCE_DIR}/lib"
-    "${LSGS_MAIN_DIR}/third_party/libtorch/lib"
+    "/workspace/third_party/libtorch/lib"
 )
 set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
@@ -57,10 +57,10 @@ set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations")
 set(CAFFE2_USE_CUDNN on)
 
-set(LSGS_MAIN_DIR "/workspaces/large_scale_gaussian_slam")
+set(LSGS_MAIN_DIR "/workspace/repo")
 
 # Point directly to the Torch config file
-set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} "${LSGS_MAIN_DIR}/third_party/libtorch")
+set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} "/workspace/third_party/libtorch")
 find_package(Torch REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS} -pthread")
 
@@ -74,7 +74,7 @@ find_package(glfw3 REQUIRED)
 
 # Set the path to your project root and ORB_SLAM3
 set(GAUSSIAN_SLAM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/..)
-set(ORB_SLAM3_SOURCE_DIR "${GAUSSIAN_SLAM_DIR}/third_party/ORB-SLAM3")
+set(ORB_SLAM3_SOURCE_DIR "${GAUSSIAN_SLAM_DIR}/slam_deps/ORB-SLAM3")
 
 # Specify catkin package information
 catkin_package(
@@ -90,7 +90,7 @@ include_directories(BEFORE
     include
     ${catkin_INCLUDE_DIRS}
     ${LSGS_MAIN_DIR}
-    ${LSGS_MAIN_DIR}/third_party
+    ${LSGS_MAIN_DIR}/slam_deps
     ${ORB_SLAM3_SOURCE_DIR}
     ${ORB_SLAM3_SOURCE_DIR}/include
     ${ORB_SLAM3_SOURCE_DIR}/include/CameraModels

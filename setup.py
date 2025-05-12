@@ -8,9 +8,9 @@ from torch.utils.cpp_extension import CppExtension, BuildExtension, CUDAExtensio
 project_root = os.path.dirname(os.path.abspath(__file__))
 
 # Get dependencies directories
-libtorch_path = os.path.join(project_root, "third_party/libtorch")
-opencv_path = os.path.join(project_root, "third_party/install/opencv")
-orb_slam_path = os.path.join(project_root, "third_party/ORB-SLAM3")
+libtorch_path =  "/workspace/third_party/libtorch"
+opencv_path = "/workspace/third_party/install/opencv"
+orb_slam_path = os.path.join(project_root, "slam_deps/ORB-SLAM3")
 
 # Try to find Eigen include directory
 eigen_include_dirs = [
@@ -18,9 +18,9 @@ eigen_include_dirs = [
     "/usr/include/eigen3",
     "/usr/local/include/eigen3",
     # Possible locations in the project
-    os.path.join(project_root, "third_party/eigen"),
-    os.path.join(project_root, "third_party/eigen3"),
-    os.path.join(project_root, "third_party/Eigen"),
+    os.path.join(project_root, "slam_deps/eigen"),
+    os.path.join(project_root, "slam_deps/eigen3"),
+    os.path.join(project_root, "slam_deps/Eigen"),
 ]
 
 # Try to find Eigen via pkg-config
@@ -37,7 +37,8 @@ except (subprocess.SubprocessError, FileNotFoundError):
 # Extra include directories
 include_dirs = [
     project_root,
-    os.path.join(project_root, "third_party"),
+    os.path.join(project_root, "slam_deps"),
+    "/workspace/third_party",
     os.path.join(project_root, "python"),  # Directory containing our extension source files
     os.path.join(orb_slam_path),
     os.path.join(orb_slam_path, "include"),
