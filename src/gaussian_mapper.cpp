@@ -102,7 +102,7 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   initializeChunkManagement();
 
   keyframe_queue_ = std::make_shared<KeyframeQueue>(
-      scene_, 20, keyframe_similarity_threshold_, opt_params_.auto_distribute_,
+      scene_, 40, keyframe_similarity_threshold_, opt_params_.auto_distribute_,
       &kfs_loss_);
   // keyframe_queue_->setChunkManager(chunk_manager_);
 
@@ -314,7 +314,7 @@ GaussianMapper::GaussianMapper(const SystemSensorType sensor_type,
   initializeChunkManagement();
 
   keyframe_queue_ = std::make_shared<KeyframeQueue>(
-      scene_, 10, keyframe_similarity_threshold_, opt_params_.auto_distribute_,
+      scene_, 40, keyframe_similarity_threshold_, opt_params_.auto_distribute_,
       &kfs_loss_);
   // keyframe_queue_->setChunkManager(chunk_manager_);
 
@@ -1144,49 +1144,7 @@ void GaussianMapper::trainForOneIteration() {
       viewpoint_cam->full_proj_transform_, viewpoint_cam->camera_center_);
 
   timer_render.stop();
-  auto rendered_depth = std::get<0>(render_pkg);
   auto rendered_image = std::get<1>(render_pkg);
-
-  // std::cout << "Rendered depth statistics: min "
-  //           << rendered_depth.min().item<float>() << " max "
-  //           << rendered_depth.max().item<float>() << " mean"
-  //           << rendered_depth.mean().item<float>() << " median "
-  //           << rendered_depth.median().item<float>() << std::endl;
-
-  torch::Tensor gt_depth = viewpoint_cam->depth_image_.cuda();
-
-  // std::cout << "GT Depth statistics: min " << gt_depth.min().item<float>()
-  //           << " max " << gt_depth.max().item<float>() << " mean"
-  //           << gt_depth.mean().item<float>() << " median "
-  //           << gt_depth.median().item<float>() << std::endl;
-
-  // colorize_and_save_depth(
-  //     rendered_depth.detach().cpu(),
-  //     "/workspaces/large_scale_gaussian_slam/debug_depth_pred.png",
-  //     min_depth_, max_depth_);
-  // colorize_and_save_depth(
-  //     gt_depth.detach().cpu(),
-  //     "/workspaces/large_scale_gaussian_slam/debug_depth_gt.png", min_depth_,
-  //     max_depth_);
-
-  // {
-  //   // Save PyTorch tensor image
-  //   torch::Tensor cpu_tensor = rendered_image.cpu().clone();
-  //   if (cpu_tensor.dim() == 3 && cpu_tensor.size(0) == 3) {
-  //     cpu_tensor = cpu_tensor.permute({1, 2, 0}).contiguous();
-  //   }
-  //   cv::Mat tensor_img(cpu_tensor.size(0), cpu_tensor.size(1), CV_32FC3);
-  //   std::memcpy(tensor_img.data, cpu_tensor.data_ptr<float>(),
-  //               sizeof(float) * tensor_img.rows * tensor_img.cols * 3);
-
-  //   tensor_img.convertTo(tensor_img, CV_8UC3, 255.0);
-  //   cv::cvtColor(tensor_img, tensor_img, cv::COLOR_RGB2BGR);
-  //   cv::imwrite("/workspaces/large_scale_gaussian_slam/debug_image_left.png",
-  //               tensor_img);
-  //   std::cout << "Saved tensor image to "
-  //                "/workspaces/large_scale_gaussian_slam/debug_image_left.png"
-  //             << std::endl;
-  // }
 
   std ::vector<torch::Tensor> screenspace_points_vec = std::get<2>(render_pkg);
   std::vector<torch::Tensor> radii_vec = std::get<3>(render_pkg);
@@ -1199,9 +1157,15 @@ void GaussianMapper::trainForOneIteration() {
   auto Lssim = loss_utils::fast_ssim(rendered_image, gt_image);
   float lambda_dssim = lambdaDssim();
   float lambda_depth = lambdaDepth();
-  auto Ll1_depth = loss_utils::l1_depth_loss(rendered_depth, gt_depth);
-  auto loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - Lssim) +
-              lambda_depth * Ll1_depth;
+  auto loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - Lssim);
+
+  if (viewpoint_cam->depth_image_.defined()) {
+    torch::Tensor gt_depth = viewpoint_cam->depth_image_.cuda();
+    auto rendered_depth = std::get<0>(render_pkg);
+    auto Ll1_depth = loss_utils::l1_depth_loss(rendered_depth, gt_depth);
+    loss += lambda_depth * Ll1_depth;
+  }
+
   // std::cout << "Ll1: " << Ll1.item<float>() << std::endl;
   // std::cout << "Lssim: " << Lssim.item<float>() << std::endl;
   // std::cout << "Ll1_depth: " << Ll1_depth.item<float>() << std::endl;
@@ -1435,10 +1399,10 @@ void GaussianMapper::trainForOneIteration() {
   chunk_manager_->releaseChunksFromOptimization(visible_chunks);
   timer_releaseChunksFromOptimization.stop();
   timer_trainForOneIteration.stop();
-  if (getIteration() % 500 == 0) {
-    ProfilingUtils::getInstance().printStats();
-    ProfilingUtils::getInstance().reset();
-  }
+  // if (getIteration() % 500 == 0) {
+  //   ProfilingUtils::getInstance().printStats();
+  //   ProfilingUtils::getInstance().reset();
+  // }
 }
 
 bool GaussianMapper::isStopped() {
@@ -1450,9 +1414,9 @@ void GaussianMapper::signalStop(const bool going_to_stop) {
   std::unique_lock<std::mutex> lock_status(this->mutex_status_);
   this->stopped_ = going_to_stop;
   std::cout << "Signal stop received" << std::endl;
-  if (chunk_manager_) {
-    chunk_manager_->shutdown();
-  }
+  // if (chunk_manager_) {
+  //   chunk_manager_->shutdown();
+  // }
 }
 
 bool GaussianMapper::hasMetInitialMappingConditions() {
@@ -2426,6 +2390,26 @@ void GaussianMapper::increasePcdByDepthReconstruction(
           disparity > static_cast<float>(stereo_cv_sgm_->getMinDisparity()),
           disparity < static_cast<float>(stereo_cv_sgm_->getNumDisparities()));
 
+      // Create a mask to exclude the top portion of the image (sky region)
+      cv::Mat cpu_height_mask(gray_left_gpu.size(), CV_8UC1, cv::Scalar(0));
+      // Only keep the bottom 60% of the image (adjust this value based on your
+      // scenes)
+      int valid_start_y =
+          static_cast<int>(cpu_height_mask.rows * 0.4);  // Skip top 40%
+      cv::rectangle(cpu_height_mask, cv::Point(0, valid_start_y),
+                    cv::Point(cpu_height_mask.cols, cpu_height_mask.rows),
+                    cv::Scalar(255), -1);
+
+      // Upload to GPU
+      cv::cuda::GpuMat height_mask;
+      height_mask.upload(cpu_height_mask);
+
+      // Convert to tensor
+      torch::Tensor height_mask_tensor =
+          tensor_utils::cvGpuMat2TorchTensor_Float32(height_mask).flatten();
+      valid_points =
+          torch::logical_and(valid_points, height_mask_tensor > 0.5f);
+
       // Depth range filtering (adjust these thresholds as needed)
       valid_points = torch::logical_and(
           valid_points,
@@ -2434,11 +2418,24 @@ void GaussianMapper::increasePcdByDepthReconstruction(
           valid_points,
           points3D.index({torch::indexing::Slice(), 2}) < max_depth_);
 
+      torch::Tensor depth_values =
+          points3D.index({torch::indexing::Slice(), 2});
+      torch::Tensor inverse_depth =
+          1.0f / (depth_values +
+                  1e-6f);  // Add small epsilon to avoid division by zero
+      torch::Tensor depth_confidence =
+          torch::clamp(inverse_depth / (1.0f / min_depth_), 0.0f, 1.0f);
+
+      // More aggressive filtering of distant points (which are more likely to
+      // be floaters)
+      torch::Tensor random_mask =
+          torch::rand_like(depth_confidence) < depth_confidence;
+      valid_points = torch::logical_and(valid_points, random_mask);
+
       // Further random subsampling if needed
       // Keep only 25% of the valid points randomly
-      torch::Tensor random_mask =
-          torch::rand_like(valid_points.to(torch::kFloat)) <
-          depth_densify_subsample_ratio_;
+      random_mask = torch::rand_like(valid_points.to(torch::kFloat)) <
+                    depth_densify_subsample_ratio_;
       valid_points = torch::logical_and(valid_points, random_mask);
 
       // Keep only valid points
@@ -2448,6 +2445,19 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       // visualizePointCloud(points3D, colors,
       //                     result_dir_ / (std::to_string(getIteration()) +
       //                                    "_stereo_densify.ply"));
+
+      // Create a visualization of the depth map
+      // std::string depth_vis_path = result_dir_.string() +
+      //                              "/depth_visualization_" +
+      //                              std::to_string(pkf->fid_) + "_" +
+      //                              std::to_string(getIteration()) + ".png";
+
+      // visualizeDepthReconstruction(
+      //     pkf, points3D,
+      //     torch::ones(
+      //         {points3D.size(0)},
+      //         torch::TensorOptions().dtype(torch::kBool).device(device_type_)),
+      //     depth_vis_path);
 
       // Transform to world coordinates
       torch::Tensor Twc_tensor =
@@ -3350,24 +3360,34 @@ void GaussianMapper::run_external_poses() {
 
     trainForOneIteration();
     SLAM_stop_iter = getIteration();
+
+    // std::cout << "Loop check: isExternalDataStopped()="
+    //           << (isExternalDataStopped() ? "true" : "false")
+    //           << ", isStopped()=" << (isStopped() ? "true" : "false")
+    //           << std::endl;
   }
 
+  // std::cout << "Starting post-training loop" << std::endl;
   while (!isExternalDataStopped() && !isStopped()) {
+    // std::cout << "Loop check: isExternalDataStopped()="
+    //           << (isExternalDataStopped() ? "true" : "false")
+    //           << ", isStopped()=" << (isStopped() ? "true" : "false")
+    //           << std::endl;
     trainForOneIteration();
     if (getIteration() >= opt_params_.iterations_) break;
   }
 
+  // std::cout << "Starting Tail gaussian optimization" << std::endl;
   // Fourth loop: Tail gaussian optimization
   int densify_interval = densifyInterval();
   int n_delay_iters = densify_interval * 0.8;
   std::cout << "Starting tail optimization loop" << std::endl;
   while (getIteration() - SLAM_stop_iter < n_delay_iters ||
-         getIteration() % densify_interval < n_delay_iters ||
-         isKeepingTraining()) {
+         getIteration() % densify_interval < n_delay_iters) {
     trainForOneIteration();
   }
 
-  std::cout << "Tail optimization loop stopped" << std::endl;
+  // std::cout << "Training finished" << std::endl;
 
   frame_queue_.stop();
 
@@ -4278,6 +4298,8 @@ void GaussianMapper::signalStopEvalMode() {
   if (chunk_manager_) {
     chunk_manager_->shutdownWithoutSaving();
   }
+
+  torch::cuda::synchronize();
 }
 
 std::shared_ptr<GaussianKeyframe> GaussianMapper::useRecentKeyframe() {
@@ -4710,4 +4732,147 @@ GaussianMapper::getRecentExternalData() {
 
 void GaussianMapper::setCompletionCallback(std::function<void()> callback) {
   completion_callback_ = callback;
+}
+void GaussianMapper::visualizeDepthReconstruction(
+    std::shared_ptr<GaussianKeyframe> pkf,
+    const torch::Tensor& points3D,
+    const torch::Tensor& valid_points,
+    const std::string& save_path) {
+  // Step 1: Get the original image dimensions
+  int height = pkf->img_undist_.rows;
+  int width = pkf->img_undist_.cols;
+
+  // Step 2: Create empty depth map tensor (initialize with zero values)
+  torch::Tensor depth_map = torch::zeros(
+      {height, width},
+      torch::TensorOptions().dtype(torch::kFloat32).device(device_type_));
+
+  // Step 3: Project 3D points back to 2D using camera parameters
+  torch::Tensor camera_points = points3D.clone();
+
+  // Get camera intrinsics
+  float fx = pkf->intr_[0];
+  float fy = pkf->intr_[1];
+  float cx = pkf->intr_[2];
+  float cy = pkf->intr_[3];
+
+  // Calculate pixel coordinates and depths
+  torch::Tensor z = camera_points.index({torch::indexing::Slice(), 2});
+  torch::Tensor x = camera_points.index({torch::indexing::Slice(), 0});
+  torch::Tensor y = camera_points.index({torch::indexing::Slice(), 1});
+
+  // Project to pixel coordinates: u = fx * x / z + cx, v = fy * y / z + cy
+  torch::Tensor u = fx * x.div(z) + cx;
+  torch::Tensor v = fy * y.div(z) + cy;
+
+  // Convert to integer pixel coordinates
+  torch::Tensor u_int = u.round().to(torch::kInt64);
+  torch::Tensor v_int = v.round().to(torch::kInt64);
+
+  // Step 4: Filter out points outside the image boundaries
+  torch::Tensor in_bounds = (u_int >= 0) & (u_int < width) & (v_int >= 0) &
+                            (v_int < height) & (z > 0);
+
+  // Apply the valid_points mask (from our filtering steps)
+  in_bounds = in_bounds & valid_points;
+
+  // Get points that are in bounds
+  torch::Tensor valid_u = u_int.index({in_bounds});
+  torch::Tensor valid_v = v_int.index({in_bounds});
+  torch::Tensor valid_z = z.index({in_bounds});
+
+  // Step 5: Create depth map by filling in valid depth values
+  // Note: This might have conflicts where multiple 3D points project to same
+  // pixel In that case, we take the closest point (minimum z value)
+
+  // Convert to CPU for processing
+  torch::Tensor valid_u_cpu = valid_u.to(torch::kCPU);
+  torch::Tensor valid_v_cpu = valid_v.to(torch::kCPU);
+  torch::Tensor valid_z_cpu = valid_z.to(torch::kCPU);
+
+  // Get size as int for loop
+  int num_valid_points = valid_u_cpu.size(0);
+
+  // Create depth map on CPU and fill
+  cv::Mat depth_map_cv(height, width, CV_32FC1, 0.0f);
+
+  for (int i = 0; i < num_valid_points; i++) {
+    int u = valid_u_cpu[i].item<int64_t>();
+    int v = valid_v_cpu[i].item<int64_t>();
+    float depth = valid_z_cpu[i].item<float>();
+
+    // If pixel is empty or new depth is closer
+    if (depth_map_cv.at<float>(v, u) == 0.0f ||
+        depth < depth_map_cv.at<float>(v, u)) {
+      depth_map_cv.at<float>(v, u) = depth;
+    }
+  }
+
+  // Step 6: Create a colorized visualization using JET colormap
+  cv::Mat depth_colored;
+  double min_depth = min_depth_;
+  double max_depth = max_depth_;
+
+  // Normalize the depth map to 0-1 range for visualization
+  cv::Mat depth_normalized;
+  cv::Mat valid_mask = (depth_map_cv > 0);
+
+  // Find actual min/max in the valid depth values
+  double actual_min, actual_max;
+  cv::minMaxLoc(depth_map_cv, &actual_min, &actual_max, nullptr, nullptr,
+                valid_mask);
+
+  // Use actual min/max values with clamping
+  min_depth = std::max(min_depth_, static_cast<float>(actual_min));
+  max_depth = std::min(max_depth_, static_cast<float>(actual_max));
+
+  // Normalize between the clamped min/max values
+  depth_map_cv = (depth_map_cv - min_depth) / (max_depth - min_depth);
+  depth_map_cv.setTo(0, ~valid_mask);  // Set invalid regions to 0
+
+  // Apply JET colormap for better visualization
+  // Normalize depth_map_cv to the range [0, 255] and convert to 8-bit
+  cv::Mat depth_norm255;
+  depth_map_cv.convertTo(depth_norm255, CV_8UC1, 255.0);
+
+  // Apply the JET colormap
+  cv::applyColorMap(depth_norm255, depth_colored, cv::COLORMAP_JET);
+
+  // Add original image as background where depth is not available
+  cv::Mat rgb_display;
+  pkf->img_undist_.convertTo(rgb_display, CV_8UC3, 255.0);
+  cv::cvtColor(rgb_display, rgb_display, cv::COLOR_RGB2BGR);
+
+  cv::Mat mask_8uc1 = (depth_map_cv > 0) * 255;
+  mask_8uc1.convertTo(mask_8uc1, CV_8UC1);
+
+  // Blend the colored depth map with the original image
+  cv::Mat blended = rgb_display.clone();
+  depth_colored.copyTo(blended, mask_8uc1);
+
+  // Step 7: Add information overlay
+  float coverage =
+      100.0f * cv::countNonZero(valid_mask) / (float)(width * height);
+
+  std::stringstream ss;
+  ss << "Depth " << std::fixed << std::setprecision(1) << min_depth << "m - "
+     << max_depth << "m | Coverage: " << std::setprecision(1) << coverage
+     << "%";
+
+  cv::putText(blended, ss.str(), cv::Point(20, 30), cv::FONT_HERSHEY_SIMPLEX,
+              0.7, cv::Scalar(255, 255, 255), 2);
+
+  // Save the visualization
+  cv::imwrite(save_path, blended);
+
+  // Create a pure depth map visualization as well
+  cv::Mat depth_only;
+  cv::Mat depth_normalized_8u;
+  depth_map_cv.convertTo(depth_normalized_8u, CV_8UC1, 255.0);
+  cv::applyColorMap(depth_normalized_8u, depth_only, cv::COLORMAP_JET);
+  cv::imwrite(
+      save_path.substr(0, save_path.find_last_of('.')) + "_depth_only.png",
+      depth_only);
+
+  std::cout << "Saved depth visualization to " << save_path << std::endl;
 }
