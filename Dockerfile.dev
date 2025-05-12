@@ -5,7 +5,7 @@ FROM casimirfeldmann/diskchungs:base AS dev
 RUN pip3 install optuna optuna-dashboard networkx==2.8.8 opencv-python==4.10.0.84 pynput
 
 # Install Python packages for evaluation
-# RUN pip3 install torchmetrics evo
+RUN pip3 install torchmetrics evo
 
 # Install additional development tools
 RUN apt-get update && apt-get install -y \

@@ -145,53 +145,58 @@ RUN mkdir -p /ws_cv_bridge/src && \
     -DCMAKE_INSTALL_RPATH=/workspace/third_party/install/opencv/lib \
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=TRUE"
 
-# # Install Magma for PyTorch
-# WORKDIR /workspace/third_party
-# RUN wget http://icl.utk.edu/projectsfiles/magma/downloads/magma-2.7.1.tar.gz && \
-#     tar -xvf magma-2.7.1.tar.gz && \
-#     rm magma-2.7.1.tar.gz && \
-#     cd magma-2.7.1 && \
-#     CUDA_DIR=/usr/local/cuda && \
-#     cmake -DGPU_TARGET=sm_80 \
-#     -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
-#     -DCMAKE_INSTALL_PREFIX=build/target . -Bbuild && \
-#     cmake --build build -j $(nproc) --target install
-# RUN mkdir -p /usr/local/include/ && \
-#     cp build/target/include/* /usr/local/include/ && \
-#     mkdir -p /usr/local/lib/ && \
-#     cp build/target/lib/*.so /usr/local/lib/ && \
-#     mkdir -p /usr/local/lib/pkgconfig/ && \
-#     cp build/target/lib/pkgconfig/*.pc /usr/local/lib/pkgconfig/
+# Install Magma for PyTorch
+WORKDIR /workspace/third_party
+RUN wget http://icl.utk.edu/projectsfiles/magma/downloads/magma-2.7.1.tar.gz && \
+    tar -xvf magma-2.7.1.tar.gz && \
+    rm magma-2.7.1.tar.gz && \
+    cd magma-2.7.1 && \
+    CUDA_DIR=/usr/local/cuda && \
+    cmake -DGPU_TARGET=sm_80 \
+    -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+    -DCMAKE_INSTALL_PREFIX=build/target . -Bbuild && \
+    cmake --build build -j $(nproc) --target install
+# Correctly copy Magma files from the magma-2.7.1 directory
+# Create directories first to ensure they exist
+RUN mkdir -p /usr/local/include/ && \
+    mkdir -p /usr/local/lib/ && \
+    mkdir -p /usr/local/lib/pkgconfig/
 
-# # Build PyTorch 
-# WORKDIR /workspace/third_party
-# RUN git clone --recursive https://github.com/pytorch/pytorch.git && \
-#     cd pytorch && \
-#     git checkout v2.3.1 && \
-#     git submodule sync && \
-#     git submodule update --init --recursive && \
-#     pip install -r requirements.txt && \
-#     GLIBCXX_USE_CXX11_ABI=1 \
-#     USE_CUDA=1 \
-#     CUDA_HOME=/usr/local/cuda \
-#     TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6" \
-#     BUILD_TEST=0 \
-#     USE_DISTRIBUTED=0 \
-#     USE_MKLDNN=1 \
-#     USE_OPENMP=1 \
-#     CMAKE_PREFIX_PATH=${CONDA_PREFIX:-"$(dirname $(which python3))/../"} \
-#     MAX_JOBS=8 \
-#     python3 setup.py install
+# Then copy the files in a separate command to troubleshoot any issues
+RUN cp /workspace/third_party/magma-2.7.1/build/target/include/* /usr/local/include/ && \
+    cp /workspace/third_party/magma-2.7.1/build/target/lib/*.so /usr/local/lib/ && \
+    cp /workspace/third_party/magma-2.7.1/build/target/lib/pkgconfig/*.pc /usr/local/lib/pkgconfig/
 
-# # Build torchvision
-# WORKDIR /workspace/third_party
-# RUN git clone https://github.com/pytorch/vision.git && \
-#     cd vision && \
-#     git checkout v0.18.1 && \
-#     GLIBCXX_USE_CXX11_ABI=1 \
-#     FORCE_CUDA=1 \
-#     CUDA_HOME=/usr/local/cuda \
-#     python3 setup.py install
+# Build PyTorch 
+WORKDIR /workspace/third_party
+RUN git clone --recursive https://github.com/pytorch/pytorch.git && \
+    cd pytorch && \
+    git checkout v2.3.1 && \
+    git submodule sync && \
+    git submodule update --init --recursive && \
+    pip install -r requirements.txt && \
+    GLIBCXX_USE_CXX11_ABI=1 \
+    USE_CUDA=1 \
+    CUDA_HOME=/usr/local/cuda \
+    TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6" \
+    BUILD_TEST=0 \
+    USE_DISTRIBUTED=0 \
+    USE_MKLDNN=1 \
+    USE_OPENMP=1 \
+    CMAKE_PREFIX_PATH=${CONDA_PREFIX:-"$(dirname $(which python3))/../"} \
+    MAX_JOBS=8 \
+    python3 setup.py install
+
+# Build torchvision
+WORKDIR /workspace/third_party
+RUN git clone https://github.com/pytorch/vision.git && \
+    cd vision && \
+    git checkout v0.18.1 && \
+    GLIBCXX_USE_CXX11_ABI=1 \
+    FORCE_CUDA=1 \
+    CUDA_HOME=/usr/local/cuda \
+    TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6" \
+    python3 setup.py install
 
 # Create environment setup for all dependencies
 RUN echo 'source /opt/ros/noetic/setup.bash' >> /workspace/setup_env.sh && \

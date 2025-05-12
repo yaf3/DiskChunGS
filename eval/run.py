@@ -397,12 +397,13 @@ if __name__ == "__main__":
         #     f"Metrics: {t_metrics*1000:.1f}ms, Save: {t_save*1000:.1f}ms, " 
         #     f"Total: {t_total*1000:.1f}ms")
         
-    # print("Calling cleanup to properly release resources...")
-    # try: 
-    #     gs_render.cleanup()
-    # except Exception as e:
-    #     print(f"Error during cleanup: {e}")
-    # print("Cleanup finished.")
+    print("Calling cleanup to properly release resources...")
+    try: 
+        gs_render.cleanup()
+        time.sleep(3)
+    except Exception as e:
+        print(f"Error during cleanup: {e}")
+    print("Cleanup finished.")
 
     psnr_list = np.array(psnr_list)
     ssim_list = np.array(ssim_list)

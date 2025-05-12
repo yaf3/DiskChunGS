@@ -12,7 +12,6 @@ services:
     shm_size: 20G
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix
-      - /mnt/auxiliary1/datasets:/data
     environment:
       - DISPLAY=${DISPLAY}
       - NVIDIA_VISIBLE_DEVICES=all
