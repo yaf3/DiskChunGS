@@ -5,6 +5,19 @@ rosrun image_transport republish compressed in:=/boxi/zed2i/right/image_raw out:
 rosrun image_transport republish compressedDepth in:=/boxi/zed2i/depth/image_raw out:=/boxi/zed2i/depth/image_raw_uncompressed
 rosbag play --clock --pause 2024-11-11-12-07-40_jetson_zed2i_depth.bag 2024-11-11-12-07-40_jetson_zed2i_images.bag 2024-11-11-12-07-40_jetson_zed2i_prop.bag 2024-11-11-12-07-40_jetson_zed2i_prop_intrinsics.bag 2024-11-11-12-07-40_jetson_zed2i_tf.bag 2024-11-11-12-07-40_tf_minimal.bag 
 
+python3 scripts/rosbag_extractor.py \
+"/data/RSL/grand_tour/2024-11-11-12-07-40_jetson_zed2i_depth.bag \
+/data/RSL/grand_tour/2024-11-11-12-07-40_jetson_zed2i_images.bag \
+/data/RSL/grand_tour/2024-11-11-12-07-40_jetson_zed2i_prop.bag \
+/data/RSL/grand_tour/2024-11-11-12-07-40_jetson_zed2i_prop_intrinsics.bag \
+/data/RSL/grand_tour/2024-11-11-12-07-40_jetson_zed2i_tf.bag \
+/data/RSL/grand_tour/2024-11-11-12-07-40_tf_minimal.bag" \
+/data/RSL/datasets/grand_tour_mount_pilatus_stairs \
+--image_topic /boxi/zed2i/left/image_raw_uncompressed \
+--target_frame dlio_map \
+--source_frame zed2i_left
+
+
 #arche train 1
 rosbag play --clock --pause train1.bag 
 rosrun image_transport republish compressed in:=/zed2/zed_node/left/image_rect_color raw out:=/left_camera_rgb
