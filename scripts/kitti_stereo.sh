@@ -23,7 +23,9 @@ bin/kitti_stereo \
     cfg/gaussian_mapper/Stereo/KITTI/KITTI01.yaml \
     /data/kitti/data_odometry_color/dataset/sequences/01 \
     results/$exp/kitti_stereo_$i/01 \
-    no_viewer
+    no_viewer \
+    5.0 \
+    true
 done
 
 for ((i=0; i<num_trials; i++))
