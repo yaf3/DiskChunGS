@@ -62,5 +62,4 @@ Optimization.densify_from_iter: 500
 Optimization.densify_grad_threshold: 0.0001048290258510252
 Optimization.opacity_reg: 0.00012127924923507568
 Chunking.chunk_size: 50.0
-Chunking.overlap_margin: 0.0
 Chunking.max_chunks: 20

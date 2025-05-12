@@ -73,7 +73,6 @@ Optimization.opacity_reg: 0.001
 
 # Chunking
 Chunking.chunk_size: 50.0
-Chunking.overlap_margin: 0.0
 Chunking.max_chunks: 100
 
 # Densification
