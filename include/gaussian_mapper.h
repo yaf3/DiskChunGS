@@ -32,6 +32,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <opencv2/cudafilters.hpp>
 #include <opencv2/cudaimgproc.hpp>
 #include <opencv2/cudastereo.hpp>
 #include <opencv2/cudawarping.hpp>
@@ -481,14 +482,21 @@ class GaussianMapper {
 
   std::tuple<const cv::Mat, const Sophus::SE3f> getRecentExternalData();
   void run_external_poses();
+  void visualizeDepthReconstruction(std::shared_ptr<GaussianKeyframe> pkf,
+                                    const torch::Tensor &points3D,
+                                    const torch::Tensor &valid_points,
+                                    const std::string &save_path);
 
-  bool isExternalDataStopped() { return external_data_stopped_; }
-  void signalExternalDataStopped() {
-    std::cout << "External data stopped" << std::endl;
-    external_data_stopped_ = true;
+  volatile bool isExternalDataStopped() {
+    return external_data_stopped_.load(std::memory_order_acquire);
   }
 
-  bool external_data_stopped_ = false;
+  volatile void signalExternalDataStopped() {
+    std::cout << "External data stopped" << std::endl;
+    external_data_stopped_.store(true, std::memory_order_release);
+  }
+
+  std::atomic<bool> external_data_stopped_{false};
   std::function<void()> completion_callback_;
   void setCompletionCallback(std::function<void()> callback);
 
