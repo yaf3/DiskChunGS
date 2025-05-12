@@ -34,6 +34,8 @@ Mapper.large_rotation_threshold: 20.0
 Mapper.large_translation_threshold: 0.5
 Mapper.stable_num_iter_existence: 1
 Mapper.keyframe_similarity_threshold: 0.0
+Mapper.keyframe_selection_strategy: 0 # 0:all, 1:recent k
+
 
 GausPyramid.do: 0  # 0:false, 1 or other integer:true
 GausPyramid.num_sub_levels: 2
@@ -50,6 +52,7 @@ Record.record_loss_image: 0 # 0:false, 1 or other integer:true
 Record.training_report_interval: 0 # 0:never, 1:always, others:periodically
 Record.record_loop_ply: 0 # 0:false, 1 or other integer:true
 Record.render_fly_through: 0 # 0:false, 1 or other integer:true
+Record.render_fly_through_speed: 5.0 # 0:false, 1 or other integer:true
 
 #--------------------------------------------------------------------------------------------
 # Optimization Parameters

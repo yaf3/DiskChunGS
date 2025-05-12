@@ -55,6 +55,7 @@ Record.record_loss_image: 0 # 0:false, 1 or other integer:true
 Record.training_report_interval: 0 # 0:never, 1:always, others:periodically
 Record.record_loop_ply: 0 # 0:false, 1 or other integer:true
 Record.render_fly_through: 0 # 0:false, 1 or other integer:true
+Record.render_fly_through_speed: 5.0 # 0:false, 1 or other integer:true
 
 #--------------------------------------------------------------------------------------------
 # Optimization Parameters

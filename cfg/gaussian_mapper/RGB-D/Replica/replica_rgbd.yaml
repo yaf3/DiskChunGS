@@ -50,6 +50,7 @@ Record.record_loss_image: 0 # 0:false, 1 or other integer:true
 Record.training_report_interval: 0 # 0:never, 1:always, others:periodically
 Record.record_loop_ply: 0 # 0:false, 1 or other integer:true
 Record.render_fly_through: 0 # 0:false, 1 or other integer:true
+Record.render_fly_through_speed: 5.0 # 0:false, 1 or other integer:true
 
 #--------------------------------------------------------------------------------------------
 # Optimization Parameters
@@ -76,6 +77,7 @@ Chunking.max_chunks: 100
 # Densification
 Optimization.percent_dense: 0.01
 Optimization.lambda_dssim: 0.2
+Optimization.lambda_depth: 0.0
 Optimization.densification_interval: 500
 Optimization.opacity_reset_interval: 0  # 0:never, 1:always, others:periodically
 Optimization.prune_big_point_after_iter: -1
