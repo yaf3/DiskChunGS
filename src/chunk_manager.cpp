@@ -186,11 +186,40 @@ ChunkManager::ChunkManager(const GaussianModelParams& model_params,
 
 // Destructor
 ChunkManager::~ChunkManager() {
-  // Check if already shut down
-  if (is_shutting_down_.load()) {
-    return;  // Already shut down, nothing to do
+  if (!is_shutting_down_.exchange(true)) {  // Atomic exchange for thread safety
+    // Full shutdown logic here - same code that was in shutdown()
+    should_terminate_ = true;
+    releaseAllChunksFromOptimization();
+
+    // Stop the LRU thread
+    {
+      std::unique_lock<std::mutex> lock(lru_mutex_);
+      stop_lru_thread_ = true;
+      lru_cv_.notify_all();
+    }
+
+    // Join the LRU thread if it's running
+    if (lru_eviction_thread_.joinable()) {
+      lru_eviction_thread_.join();
+    }
+
+    // Save all active chunks
+    std::vector<std::future<bool>> pending_saves;
+    {
+      std::unique_lock<std::mutex> lock(active_chunks_mutex_);
+      for (const auto& [coord, chunk] : active_chunks_) {
+        pending_saves.push_back(saveChunkAsync(coord, 20));
+      }
+    }
+
+    // Wait for all saves to complete
+    for (auto& future : pending_saves) {
+      future.wait();  // Wait without timeout
+    }
+
+    // Shutdown the thread pool
+    shutdownThreadPool();
   }
-  shutdown();
 }
 
 // Initialize thread pool
@@ -1290,7 +1319,7 @@ std::vector<ChunkCoord> ChunkManager::frustumCullChunks(
   ChunkCoord camera_chunk = getChunkCoord(camera_position);
 
   // Determine search radius - consider reducing for small chunks
-  int search_radius = std::min(std::ceil(keyframe->zfar_ / chunk_size_), 10.0f);
+  int search_radius = std::ceil(keyframe->zfar_ / chunk_size_);
 
   // Create a flattened list of candidate chunks for parallel processing
   std::vector<ChunkCoord> candidate_chunks;
@@ -1471,13 +1500,15 @@ void ChunkManager::addPointsToChunks(
       continue;  // Skip to next chunk
     }
 
+    bool loaded = false;
+
     // Handle chunk loading - simplified to be synchronous
     if (chunkExists(coord)) {
       ChunkState state = getChunkState(coord);
       if (state == ChunkState::INACTIVE) {
         // std::cout << "Chunk is inactive, loading..." << std::endl;
         // Load the chunk synchronously
-        bool loaded = loadChunkSync(coord, 10, true);
+        loaded = loadChunkSync(coord, 10, true);
         if (!loaded) {
           std::cout << "Failed to load chunk, skipping" << std::endl;
           continue;  // Skip to next chunk
@@ -1549,6 +1580,9 @@ void ChunkManager::addPointsToChunks(
 
     // Release the chunk from optimization
     releaseChunksFromOptimization({coord});
+    if (loaded) {
+      saveChunkAsync(coord, 10);
+    }
     triggerLruCheck();
   }
 
@@ -1557,8 +1591,8 @@ void ChunkManager::addPointsToChunks(
   auto end_time = std::chrono::steady_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_time - start_time);
-  std::cout << "addPointsToChunks completed in " << duration.count() << "ms"
-            << std::endl;
+  // std::cout << "addPointsToChunks completed in " << duration.count() << "ms"
+  //           << std::endl;
 }
 
 // Updated shutdown to properly clean up threads
