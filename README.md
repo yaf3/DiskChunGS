@@ -10,8 +10,12 @@ DiskChunGS is a 3D Gaussian Splatting SLAM system that enables unbounded scene r
 
 ## Installation using Docker Compose
 
-
 ```bash
+# Clone this repo
+git clone git@github.com:leggedrobotics/large_scale_gaussian_slam.git
+
+cd large_scale_gaussian_slam
+
 # Build the development container
 docker-compose build dev
 
