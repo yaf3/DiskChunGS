@@ -4,6 +4,12 @@ ETH Zurich<sup>1</sup>, Google<sup>2</sup>
 <br>
 [[`Paper`]()] [[`Project`]()] [[`Demo`]()] [[`Dataset`]()] [[`BibTeX`]()]
 
+![Pipeline](assets/main_pipeline_resized.png?raw=true)
+
+## Overview
+
+DiskChunGS is a 3D Gaussian Splatting SLAM system that enables unbounded scene reconstruction through dynamic memory management, partitioning environments into spatial chunks that are selectively loaded between GPU and disk storage. This innovative approach achieves substantially higher Gaussian density than previous methods, resulting in significantly improved reconstruction quality across diverse environments while maintaining real-time performance.
+
 ## Table of Contents
 - [Overview](#overview)
 - [Installation](#installation-using-docker-compose)
@@ -18,12 +24,6 @@ ETH Zurich<sup>1</sup>, Google<sup>2</sup>
 - [Additional Information](#other-info)
 - [Acknowledgements](#acknowledgement)
 - [Citation](#citation)
-
-![Pipeline](assets/main_pipeline_resized.png?raw=true)
-
-## Overview
-
-DiskChunGS is a 3D Gaussian Splatting SLAM system that enables unbounded scene reconstruction through dynamic memory management, partitioning environments into spatial chunks that are selectively loaded between GPU and disk storage. This innovative approach achieves substantially higher Gaussian density than previous methods, resulting in significantly improved reconstruction quality across diverse environments while maintaining real-time performance.
 
 ## Installation using Docker Compose
 
