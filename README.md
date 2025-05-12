@@ -4,7 +4,24 @@ ETH Zurich<sup>1</sup>, Google<sup>2</sup>
 <br>
 [[`Paper`]()] [[`Project`]()] [[`Demo`]()] [[`Dataset`]()] [[`BibTeX`]()]
 
+## Table of Contents
+- [Overview](#overview)
+- [Installation](#installation-using-docker-compose)
+- [Getting Started](#getting-started)
+  - [Preparing Datasets](#preparing-datasets)
+  - [Running the System](#running-the-system)
+- [Evaluation](#diskchungs-evaluation)
+- [ROS Usage](#ros-usage)
+- [Configuration Options](#mapping-configuration-options)
+- [ROS Parameters](#ros-options)
+- [Troubleshooting](#common-issues)
+- [Additional Information](#other-info)
+- [Acknowledgements](#acknowledgement)
+- [Citation](#citation)
+
 ![Pipeline](assets/main_pipeline_resized.png?raw=true)
+
+## Overview
 
 DiskChunGS is a 3D Gaussian Splatting SLAM system that enables unbounded scene reconstruction through dynamic memory management, partitioning environments into spatial chunks that are selectively loaded between GPU and disk storage. This innovative approach achieves substantially higher Gaussian density than previous methods, resulting in significantly improved reconstruction quality across diverse environments while maintaining real-time performance.
 
@@ -28,69 +45,77 @@ docker-compose run --rm dev
 
 ## Getting Started
 
-The benchmark datasets mentioned in our paper: [Replica (NICE-SLAM Version)](https://github.com/cvg/nice-slam), [TUM RGB-D](https://cvg.cit.tum.de/data/datasets/rgbd-dataset/download) and [KITTI](https://www.cvlibs.net/datasets/kitti/eval_odometry.php).
+### Preparing Datasets
 
-0. Create a dataset folder which we can bind to the docker container. Then edit the dev section [docker-compose.yml](docker-compose.yml) to set the right path to your datasets.
-E.g ```- /path/to/your/datasets:/data```
+The benchmark datasets mentioned in our paper:
+- [Replica (NICE-SLAM Version)](https://github.com/cvg/nice-slam)
+- [TUM RGB-D](https://cvg.cit.tum.de/data/datasets/rgbd-dataset/download)
+- [KITTI](https://www.cvlibs.net/datasets/kitti/eval_odometry.php)
 
-1. Download the desired dataset
-```
-scripts/download_replica.sh
-scripts/download_tum.sh
-```
+1. Create a dataset folder which we can bind to the docker container. Then edit the dev section [docker-compose.yml](docker-compose.yml) to set the right path to your datasets.
+   E.g. ```- /path/to/your/datasets:/data```
 
-For KITTI:
-- Download odometry data set (color, 65 GB)
-- Download odometry ground truth poses (4 MB)
-- Download odometry data set (calibration files, 1 MB)
+2. Download the desired dataset:
+   ```bash
+   scripts/download_replica.sh
+   scripts/download_tum.sh
+   ```
 
-Then combine these to create the following file structure
-```
-kitti
-├── data_odometry_color
-    └── dataset
-        |── sequences
-        |   |── 00
-        |   |   |── calib.txt
-        |   |   |── image_2
-        |   |   |── image_3
-        |   |   |── times.txt
-        |   |── 01
-        |   ...
-        └── poses
-            |── 00.txt
-            |── 01.txt
-            ---
-```
+   For KITTI:
+   - Download odometry data set (color, 65 GB)
+   - Download odometry ground truth poses (4 MB)
+   - Download odometry data set (calibration files, 1 MB)
 
-2. Outside of your container, run the below command to allow the docker container to connect to your display:
-``` bash
-xhost +local:root
-```
-You can run `xhost -local:root` when you are done using DiskChunGS.
+   Then combine these to create the following file structure:
+   ```
+   kitti
+   ├── data_odometry_color
+       └── dataset
+           |── sequences
+           |   |── 00
+           |   |   |── calib.txt
+           |   |   |── image_2
+           |   |   |── image_3
+           |   |   |── times.txt
+           |   |── 01
+           |   ...
+           └── poses
+               |── 00.txt
+               |── 01.txt
+               ...
+   ```
 
-3. For testing, you could use the below commands to run the system after specifying the `PATH_TO_Replica` and `PATH_TO_SAVE_RESULTS`. We can disable the viewer by adding `no_viewer` for the evaluation.
-``` bash
-bin/replica_rgbd \
-    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
-    cfg/ORB_SLAM3/RGB-D/Replica/office0.yaml \
-    cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml \
-    /data/Replica/office0 \
-    results/replica_rgbd/office0
-    # no_viewer
-```
+### Running the System
 
-We also provide scripts to conduct experiments on all benchmark datasets mentioned in our paper. In case you use a different data location, you need to change the dataset root lines in scripts/*.sh. Specify the experiment name and the number of trials and then run:
-``` bash
-scripts/replica_mono.sh exp_name num_trials
-scripts/replica_rgbd.sh exp_name num_trials
-scripts/tum_mono.sh exp_name num_trials
-scripts/tum_rgbd.sh exp_name num_trials
-scripts/kitti_stereo.sh exp_name num_trials
-# etc.
-```
+1. Outside of your container, run the below command to allow the docker container to connect to your display:
+   ```bash
+   xhost +local:root
+   ```
+   You can run `xhost -local:root` when you are done using DiskChunGS.
+
+2. For testing, use the below commands to run the system after specifying the paths. Disable the viewer by adding `no_viewer` for evaluation:
+   ```bash
+   bin/replica_rgbd \
+       slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+       cfg/ORB_SLAM3/RGB-D/Replica/office0.yaml \
+       cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml \
+       /data/Replica/office0 \
+       results/replica_rgbd/office0
+       # no_viewer
+   ```
+
+3. We also provide scripts to conduct experiments on all benchmark datasets. In case you use a different data location, change the dataset root lines in scripts/*.sh:
+   ```bash
+   scripts/replica_mono.sh exp_name num_trials
+   scripts/replica_rgbd.sh exp_name num_trials
+   scripts/tum_mono.sh exp_name num_trials
+   scripts/tum_rgbd.sh exp_name num_trials
+   scripts/kitti_stereo.sh exp_name num_trials
+   # etc.
+   ```
 
 ## DiskChunGS Evaluation
+
 To use evaluate, your results need to be in the expected format. If you use our `./xxx.sh` scripts to conduct your experiments, the results are stored like this:
 ```
 results
@@ -109,37 +134,35 @@ results
     └── scene_n
 ```
 
-### Install the the python wrapper for rendering:
-```
+### Install the Python wrapper for rendering:
+```bash
 python3 setup.py install
 ```
 
-### Convert Replica GT camera pose files to suitable pose files to run EVO package
-``` bash
+### Convert Replica GT camera pose files for EVO package:
+```bash
 cd eval
 python3 shapeReplicaGT.py --replica_dataset_path PATH_TO_REPLICA_DATASET
 ```
 
-### To get all metrics, you can run
-``` bash
+### To get all metrics:
+```bash
 cd eval
 python3 eval.py --dataset_center_path PATH_TO_ALL_DATASET --result_main_folder RESULTS_PATH
 ```
 
 - PATH_TO_ALL_DATASET: Should be /data if you've bound your datasets folder to /data
-Results will be summarized in two files: `RESULTS_PATH/log.txt` and `RESULTS_PATH/log.csv`.
+- Results will be summarized in two files: `RESULTS_PATH/log.txt` and `RESULTS_PATH/log.csv`.
 
+## ROS Usage
 
-## ROS usage:
-
-In one terminal launch and build
-
+In one terminal launch and build:
 ```bash
 docker-compose run --rm dev
 source build_ros.sh
 ```
 
-In another terminal launch the roscore if needed
+In another terminal launch the roscore if needed:
 ```bash
 docker ps
 docker exec -it container_name bash
@@ -300,13 +323,11 @@ This section explains all available configuration options for the system. The co
 | `GaussianViewer.image_scale_main` | Scale factor for the main displayed image. |
 | `GaussianViewer.camera_watch_dist` | Distance for camera watching. |
 
-
-## ROS Configuration Options
-# ROS Options
+## ROS Options
 
 This section documents the ROS parameters, topics, and configuration options for the Gaussian SLAM wrapper.
 
-## Parameters
+### Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -327,8 +348,6 @@ This section documents the ROS parameters, topics, and configuration options for
 | `source_frame` | string | `"zed2i_left_camera_frame"` | Source frame for TF transformations (external and hybrid modes) |
 | `timeout_duration` | double | `20.0` | Duration (in seconds) after which the system considers data stream stopped |
 
-## Modes Explained
-
 ### Sensor Modes
 
 - **mono**: Uses a single camera for visual SLAM
@@ -343,7 +362,7 @@ This section documents the ROS parameters, topics, and configuration options for
 - **external**: Uses external pose information from TF transformations
 - **hybrid**: Combines ORB-SLAM3 with external pose information from TF
 
-## TF Configuration
+### TF Configuration
 
 When using `external` or `hybrid` SLAM modes, the system looks up transforms between the specified frames:
 
@@ -352,14 +371,14 @@ When using `external` or `hybrid` SLAM modes, the system looks up transforms bet
 
 The transform between these frames provides the camera pose used for mapping.
 
-## Image Topics
+### Image Topics
 
 The system accepts various image formats:
 - Standard RGB8 encoding
 - Bayer RGGB8 encoding (automatically converted to RGB8)
 - For depth images: 32FC1 (in meters, converted to millimeters) or 16UC1 format
 
-## Mapping Process Control
+### Mapping Process Control
 
 The system will automatically shut down the ROS node when:
 - No callbacks are received for the duration specified in `timeout_duration`
@@ -367,30 +386,33 @@ The system will automatically shut down the ROS node when:
 
 This behavior ensures proper termination and output saving without manual intervention.
 
+## Common Issues
 
-## Common Issues:
-- If you get "ImportError: Cannot load backend 'Qt5Agg' which requires the 'qt' interactive framework, as 'headless' is currently running" during eval then make sure the display is forwarded. Run "xhost +local:root"
-- If you get any crashes a first thing to look for are mistakes in the configuration files. If they are misconfigured DiskChunGS will not validate them and exhibit weird behavior or crashing. 
-- If you run out of memory, reduce the number of `Chunking.max_chunks`. For large scenes you should also use the `Mapper.keyframe_selection_strategy` 1.
-- The `rsl_rgbd.sh` script does not play rosbags automatically, this has to be done by the user. You will also have to publish uncompressed topics.
-- In case of weird errors in the dependencies try running `./clean.sh` and building fresh.
-- In case of ros commands not working, run `source /opt/ros/noetic/setup.bash`
-- After evaluation you may encounter a segmentation fault in the python wrapper. This is a known issue but doesn't affect anything right now.
+- If you get "ImportError: Cannot load backend 'Qt5Agg' which requires the 'qt' interactive framework, as 'headless' is currently running" during eval then make sure the display is forwarded. Run `xhost +local:root`
+- If you get any crashes, first look for mistakes in the configuration files. If they are misconfigured, DiskChunGS will not validate them and exhibit weird behavior or crashing.
+- If you run out of memory, reduce the number of `Chunking.max_chunks`. For large scenes, you should also use the `Mapper.keyframe_selection_strategy` 1.
+- The `rsl_rgbd.sh` script does not play rosbags automatically; this has to be done by the user. You will also have to publish uncompressed topics.
+- In case of weird errors in the dependencies, try running `./clean.sh` and building fresh.
+- In case of ROS commands not working, run `source /opt/ros/noetic/setup.bash`
+- After evaluation, you may encounter a segmentation fault in the python wrapper. This is a known issue but doesn't affect anything right now.
 
-## Other Info:
-- There exist hypertuning scripts `hypertune_kitty.py` and `hypertune_rsl.py`. These are pretty much thrown together and you will have the change the paths/parameters inside of these scripts. 
+## Other Info
+
+- There exist hypertuning scripts `hypertune_kitty.py` and `hypertune_rsl.py`. These are pretty much thrown together and you will have to change the paths/parameters inside these scripts.
 - `rosbag_extractor.py` can be used to generate TUM style datasets from rosbags. It will play the bag but you will have to press space after running the script. It can also work with multiple bags if you add all their paths as arguments.
 - `img2vid.py` can be used to create a video from images
 
 ## Acknowledgement
+
 This work incorporates many open-source codes. Thanks for their great work!
 - [CaRtGS](https://github.com/DapengFeng/cartgs)
 - [Photo-SLAM](https://github.com/HuajianUP/Photo-SLAM)
 - [Taming 3DGS](https://github.com/humansensinglab/taming-3dgs)
 - [Frustum Culling](https://bruop.github.io/frustum_culling/)
 
-# Citation
+## Citation
+
 If you find this work useful in your research, consider citing it:
 ```
-
+[Citation will be added here]
 ```
