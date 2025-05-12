@@ -11,6 +11,10 @@ from argparse import ArgumentParser
 from scipy.spatial.transform import Rotation
 from PIL import Image
 import cv2
+# import atexit
+
+# Register the cleanup function to be called at exit
+# atexit.register(gs_render.cleanup)
 
 
 from torchmetrics.image.psnr import PeakSignalNoiseRatio
@@ -358,15 +362,17 @@ if __name__ == "__main__":
         t_metrics = time.time() - t0
 
         t0 = time.time()
-        gt_image = cv2.cvtColor(gt_image, cv2.COLOR_BGR2RGB)
         if "_0" in args.result_path:
+            # Convert floating point (0.0-1.0) to uint8 (0-255)
+            gt_image_uint8 = np.uint8(gt_image * 255)
+            gt_image_bgr = cv2.cvtColor(gt_image_uint8, cv2.COLOR_RGB2BGR)
             cv2.imwrite(
                 os.path.join(
                     args.result_path,
                     "gt",
                     gt_color_paths[gt_indx].split("/")[-1],
                 ),
-                gt_image,
+                gt_image_bgr,  # Use uint8 version for saving
             )
         predict_image_np = render_image.detach().cpu().numpy()
         predict_image_img = np.uint8(predict_image_np * 255)
@@ -391,9 +397,12 @@ if __name__ == "__main__":
         #     f"Metrics: {t_metrics*1000:.1f}ms, Save: {t_save*1000:.1f}ms, " 
         #     f"Total: {t_total*1000:.1f}ms")
         
-    print("Calling cleanup to properly release resources...")
-    gs_render.cleanup()
-    print("Cleanup finished.")
+    # print("Calling cleanup to properly release resources...")
+    # try: 
+    #     gs_render.cleanup()
+    # except Exception as e:
+    #     print(f"Error during cleanup: {e}")
+    # print("Cleanup finished.")
 
     psnr_list = np.array(psnr_list)
     ssim_list = np.array(ssim_list)
