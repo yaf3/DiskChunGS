@@ -623,7 +623,6 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       settings_file["GaussianViewer.image_scale_main"].operator float();
 
   chunk_size_ = settings_file["Chunking.chunk_size"].operator float();
-  overlap_margin_ = settings_file["Chunking.overlap_margin"].operator float();
   max_chunks_in_memory_ = settings_file["Chunking.max_chunks"].operator int();
 }
 
@@ -750,7 +749,7 @@ void GaussianMapper::run() {
           pkf->setupStereoData(stereo_baseline_length_, device_type_,
                                stereo_cv_sgm_, min_depth_, max_depth_);
         } else {
-          std::cout << "Stereo data not available" << std::endl;
+          // std::cout << "Stereo data not available" << std::endl;
         }
 
         if (sensor_type_ == RGBD && !pkf->img_auxiliary_undist_.empty()) {
@@ -764,7 +763,7 @@ void GaussianMapper::run() {
             // Do nothing right now
           }
         } else {
-          std::cout << "RGBD data not available" << std::endl;
+          // std::cout << "RGBD data not available" << std::endl;
         }
       }
 
@@ -1923,7 +1922,7 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
     pkf->setupStereoData(stereo_baseline_length_, device_type_, stereo_cv_sgm_,
                          min_depth_, max_depth_);
   } else {
-    std::cout << "Stereo data not available" << std::endl;
+    // std::cout << "Stereo data not available" << std::endl;
   }
 
   if (sensor_type_ == RGBD && !pkf->img_auxiliary_undist_.empty()) {
@@ -1936,7 +1935,7 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
       // Do nothing right now
     }
   } else {
-    std::cout << "RGBD data not available" << std::endl;
+    // std::cout << "RGBD data not available" << std::endl;
   }
 }
 
@@ -3453,9 +3452,9 @@ GaussianMapper::selectRandomModelSubset(
 
 void GaussianMapper::initializeChunkManagement() {
   // Create the chunk manager with direct model parameters
-  chunk_manager_ = std::make_shared<ChunkManager>(
-      model_params_, opt_params_, chunk_save_dir_, chunk_size_, overlap_margin_,
-      max_chunks_in_memory_);
+  chunk_manager_ = std::make_shared<ChunkManager>(model_params_, opt_params_,
+                                                  chunk_save_dir_, chunk_size_,
+                                                  max_chunks_in_memory_);
 }
 
 void GaussianMapper::addPoints(
@@ -4701,7 +4700,7 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
             "[GaussianMapper] RGBD mode only supported on CUDA for now");
       }
     } else {
-      std::cout << "RGBD data not available" << std::endl;
+      // std::cout << "RGBD data not available" << std::endl;
     }
 
     keyframe_queue_->notifyNewKeyframeAdded(new_kf);

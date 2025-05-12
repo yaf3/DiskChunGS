@@ -92,7 +92,6 @@ class ChunkManager {
                const GaussianOptimizationParams& opt_params,
                std::filesystem::path chunk_save_dir,
                float chunk_size = 50.0f,
-               float overlap_margin = 0.0f,
                int max_chunks = 50,
                int num_io_threads = 32);
 
@@ -274,7 +273,6 @@ class ChunkManager {
   // Settings
   std::filesystem::path chunk_save_dir_;
   float chunk_size_;
-  float overlap_margin_;
   int max_chunks_in_memory_;
   std::chrono::milliseconds min_retention_time_{
       0};  // Minimum time to keep a chunk after loading

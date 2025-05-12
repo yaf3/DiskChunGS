@@ -343,7 +343,6 @@ class GaussianMapper {
   std::shared_ptr<ORB_SLAM3::System> pSLAM_;
 
   float chunk_size_ = 50.0;
-  float overlap_margin_ = 0.0;
   int max_chunks_in_memory_ = 50;
   std::filesystem::path chunk_save_dir_;
 

@@ -96,28 +96,24 @@ bool test_AABB_against_frustum_eigen(const Eigen::Matrix4f& MVP,
 
 // Get chunk coordinate from 3D position
 ChunkCoord ChunkManager::getChunkCoord(const Eigen::Vector3f& position) {
-  float effective_size = chunk_size_ - overlap_margin_;  // Account for overlap
   return ChunkCoord{
-      static_cast<int64_t>(std::floor(position.x() / effective_size)),
-      static_cast<int64_t>(std::floor(position.y() / effective_size)),
-      static_cast<int64_t>(std::floor(position.z() / effective_size))};
+      static_cast<int64_t>(std::floor(position.x() / chunk_size_)),
+      static_cast<int64_t>(std::floor(position.y() / chunk_size_)),
+      static_cast<int64_t>(std::floor(position.z() / chunk_size_))};
 }
 
 // Get chunk center
 Eigen::Vector3f ChunkManager::getChunkCenter(const ChunkCoord& coord) {
-  float effective_size = chunk_size_ - overlap_margin_;
-  return Eigen::Vector3f((coord.x + 0.5f) * effective_size,
-                         (coord.y + 0.5f) * effective_size,
-                         (coord.z + 0.5f) * effective_size);
+  return Eigen::Vector3f((coord.x + 0.5f) * chunk_size_,
+                         (coord.y + 0.5f) * chunk_size_,
+                         (coord.z + 0.5f) * chunk_size_);
 }
 
 // Calculate AABB for a chunk
 AABB ChunkManager::getChunkAABB(const ChunkCoord& coord) {
-  float effective_size = chunk_size_ - overlap_margin_;
-
   // Calculate minimum corner of the chunk
-  Eigen::Vector3f min_corner(coord.x * effective_size, coord.y * effective_size,
-                             coord.z * effective_size);
+  Eigen::Vector3f min_corner(coord.x * chunk_size_, coord.y * chunk_size_,
+                             coord.z * chunk_size_);
 
   // Calculate maximum corner of the chunk (including overlap margin)
   Eigen::Vector3f max_corner =
@@ -158,14 +154,12 @@ ChunkManager::ChunkManager(const GaussianModelParams& model_params,
                            const GaussianOptimizationParams& opt_params,
                            std::filesystem::path chunk_save_dir,
                            float chunk_size,
-                           float overlap_margin,
                            int max_chunks,
                            int num_io_threads)
     : model_params_(model_params),
       opt_params_(opt_params),
       chunk_save_dir_(chunk_save_dir),
       chunk_size_(chunk_size),
-      overlap_margin_(overlap_margin),
       max_chunks_in_memory_(max_chunks),
       should_terminate_(false) {
   // Create save directory if it doesn't exist
