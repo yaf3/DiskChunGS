@@ -336,10 +336,26 @@ void GaussianKeyframe::setupStereoData(
     cv::cuda::threshold(depth_gpu, max_depth_mask, max_depth, 1.0,
                         cv::THRESH_BINARY_INV);
 
+    // 2. Create a mask to exclude the top portion of the image (sky region)
+    cv::Mat cpu_height_mask(disparity_gpu.size(), CV_8UC1, cv::Scalar(0));
+    // Only keep the bottom 60% of the image (adjust this value based on your
+    // scenes)
+    int valid_start_y =
+        static_cast<int>(cpu_height_mask.rows * 0.4);  // Skip top 40%
+    cv::rectangle(cpu_height_mask, cv::Point(0, valid_start_y),
+                  cv::Point(cpu_height_mask.cols, cpu_height_mask.rows),
+                  cv::Scalar(255), -1);
+
+    // Upload to GPU
+    cv::cuda::GpuMat height_mask;
+    height_mask.upload(cpu_height_mask);
+    height_mask.convertTo(height_mask, CV_32F, 1.0 / 255.0);
+
     // Combine all masks
     cv::cuda::GpuMat combined_mask;
     cv::cuda::multiply(valid_mask, min_depth_mask, combined_mask);
     cv::cuda::multiply(combined_mask, max_depth_mask, combined_mask);
+    cv::cuda::multiply(combined_mask, height_mask, combined_mask);
 
     // Apply final mask to depth map
     cv::cuda::multiply(depth_gpu, combined_mask, depth_gpu);
