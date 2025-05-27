@@ -107,6 +107,23 @@ define_macros = [
     ('EIGEN_NO_DEBUG', 1),    # Disable Eigen asserts for performance
 ]
 
+# Build all rpath entries
+rpath_dirs = [
+    os.path.join(project_root, 'lib'),
+    os.path.join(opencv_path, 'lib'),
+    os.path.join(libtorch_path, 'lib'),
+    os.path.join(orb_slam_path, 'lib'),
+]
+
+# Create rpath link args
+extra_link_args = []
+for rpath_dir in rpath_dirs:
+    if os.path.exists(rpath_dir):
+        extra_link_args.append(f'-Wl,-rpath,{rpath_dir}')
+        print(f"Adding rpath: {rpath_dir}")
+    else:
+        print(f"Warning: rpath directory does not exist: {rpath_dir}")
+
 # Define the extension
 extension = CUDAExtension(
     name="gs_render",  # Name of the extension module
@@ -123,8 +140,7 @@ extension = CUDAExtension(
         'cxx': ['-std=c++17', '-fopenmp', '-Wno-deprecated-declarations'],
         'nvcc': ['-std=c++17', '-Xcompiler', '-fopenmp', '-DTORCH_USE_CUDA_DSA', '-arch=sm_86']
     },
-    # Add runtime path to find shared libraries
-    extra_link_args=['-Wl,-rpath,' + os.path.join(project_root, 'lib')]
+    extra_link_args=extra_link_args
 )
 
 setup(
