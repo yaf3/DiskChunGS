@@ -51,9 +51,6 @@ debug/
 # libtorch
 libtorch*
 
-# docs
-docs/
-
 #data
 data
 
