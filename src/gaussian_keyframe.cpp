@@ -199,26 +199,57 @@ int GaussianKeyframe::getCurrentGausPyramidLevel() {
 
 // Initialize appearance parameters with defaults
 void GaussianKeyframe::initAppearanceParams(torch::DeviceType device_type,
-                                            float appearance_lr) {
+                                            float exposure_lr_init,
+                                            float exposure_lr_final,
+                                            float lr_delay_mult,
+                                            int lr_delay_steps,
+                                            int max_iterations) {
   if (!has_appearance_params_) {
-    // Initialize parameters
-    appearance_scale_ = torch::ones(
-        {3}, torch::TensorOptions().dtype(torch::kFloat32).device(device_type));
-    appearance_bias_ = torch::zeros(
-        {3}, torch::TensorOptions().dtype(torch::kFloat32).device(device_type));
-    appearance_scale_.requires_grad_();
-    appearance_bias_.requires_grad_();
+    // Initialize as 3x4 identity matrix [I|0]
+    appearance_transform_ = torch::zeros(
+        {3, 4},
+        torch::TensorOptions().dtype(torch::kFloat32).device(device_type));
 
-    // Create optimizer immediately
+    // Set identity for 3x3 part
+    appearance_transform_.slice(1, 0, 3) = torch::eye(
+        3, torch::TensorOptions().dtype(torch::kFloat32).device(device_type));
+
+    appearance_transform_.requires_grad_(true);
+
+    // Create optimizer with initial learning rate
     torch::optim::AdamOptions adam_options;
-    adam_options.set_lr(appearance_lr);
-    std::vector<torch::Tensor> appearance_params = {appearance_scale_,
-                                                    appearance_bias_};
+    adam_options.set_lr(exposure_lr_init);
+    std::vector<torch::Tensor> appearance_params = {appearance_transform_};
     appearance_optimizer_ =
         std::make_shared<torch::optim::Adam>(appearance_params, adam_options);
 
+    // Create learning rate scheduler
+    exposure_scheduler_ = std::make_unique<ExponentialLRScheduler>(
+        exposure_lr_init, exposure_lr_final, lr_delay_mult, lr_delay_steps,
+        max_iterations);
+
     has_appearance_params_ = true;
   }
+}
+
+void GaussianKeyframe::stepAppearanceOptimizer() {
+  if (!has_appearance_params_) return;
+
+  // Use local iteration counter for this keyframe
+  float current_lr = exposure_scheduler_->getLR(local_iterations_);
+  // std::cout << "Keyframe " << fid_ << ": Iter: " << local_iterations_
+  //           << " | LR: " << current_lr << std::endl;
+
+  // Update LR and step
+  for (auto& param_group : appearance_optimizer_->param_groups()) {
+    static_cast<torch::optim::AdamOptions&>(param_group.options())
+        .lr(current_lr);
+  }
+
+  appearance_optimizer_->step();
+  appearance_optimizer_->zero_grad();
+
+  local_iterations_++;  // Increment per-keyframe counter
 }
 
 // Apply appearance transform to rendered colors
@@ -228,12 +259,26 @@ torch::Tensor GaussianKeyframe::applyAppearanceTransform(
     return colors;
   }
 
-  // Reshape for broadcasting
-  auto scale = appearance_scale_.view({3, 1, 1});
-  auto bias = appearance_bias_.view({3, 1, 1});
+  // Permute from [C, H, W] to [H, W, C]
+  auto colors_hwc = colors.permute({1, 2, 0});
+  auto original_shape = colors_hwc.sizes();  // [H, W, C]
 
-  // Apply affine transform: color * scale + bias
-  return colors * scale + bias;
+  // Flatten to [H*W, C] for matrix multiplication
+  auto colors_flat = colors_hwc.view({-1, 3});  // [H*W, 3]
+
+  // Extract 3x3 transform and bias from 3x4 matrix
+  auto transform_3x3 = appearance_transform_.slice(1, 0, 3);    // [3, 3]
+  auto bias = appearance_transform_.slice(1, 3, 4).squeeze(1);  // [3]
+
+  // Apply transform: (H*W, 3) @ (3, 3) -> (H*W, 3)
+  auto transformed =
+      torch::mm(colors_flat, transform_3x3.t()) + bias.unsqueeze(0);
+
+  // Reshape back to [H, W, C] then permute to [C, H, W]
+  auto result = transformed.view(original_shape).permute({2, 0, 1});
+
+  // Clamp to [0, 1] like the Python version
+  return result.clamp(0.0f, 1.0f);
 }
 
 void GaussianKeyframe::setupStereoData(

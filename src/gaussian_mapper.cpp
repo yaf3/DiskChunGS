@@ -1266,26 +1266,51 @@ void GaussianMapper::trainForOneIteration() {
   timer_backwards.stop();
 
   if (viewpoint_cam->has_appearance_params_) {
-    // Update appearance parameters - optimizer already exists
-    viewpoint_cam->appearance_optimizer_->step();
-    viewpoint_cam->appearance_optimizer_->zero_grad();
+    viewpoint_cam->stepAppearanceOptimizer();  // Uses local counter
+  }
 
-    // if (getIteration() % 100 == 0) {
-    //   auto scale = viewpoint_cam->appearance_scale_.detach().cpu();
-    //   auto bias = viewpoint_cam->appearance_bias_.detach().cpu();
+  if (viewpoint_cam->has_appearance_params_) {
+    if (getIteration() % 100 == 0) {
+      auto transform = viewpoint_cam->appearance_transform_.detach().cpu();
 
-    //   std::cout << "Keyframe " << viewpoint_cam->fid_ << " appearance at
-    //   iter
-    //   "
-    //             << getIteration() << " scale=[" << scale[0].item<float>()
-    //             << ", " << scale[1].item<float>() << ", "
-    //             << scale[2].item<float>() << "]"
-    //             << " bias=[" << bias[0].item<float>() << ", "
-    //             << bias[1].item<float>() << ", " << bias[2].item<float>()
-    //             <<
-    //             "]"
-    //             << std::endl;
-    // }
+      // Extract the 3x3 scaling/rotation part and bias part
+      auto scale_rot = transform.slice(1, 0, 3);        // First 3 columns (3x3)
+      auto bias = transform.slice(1, 3, 4).squeeze(1);  // Last column (3x1)
+
+      std::cout << "Keyframe " << viewpoint_cam->fid_ << " appearance at iter "
+                << getIteration() << std::endl;
+
+      // Print the full 3x4 matrix for complete visibility
+      std::cout << "  Transform matrix (3x4):" << std::endl;
+      for (int i = 0; i < 3; i++) {
+        std::cout << "    [";
+        for (int j = 0; j < 4; j++) {
+          std::cout << std::setprecision(4) << std::fixed
+                    << transform[i][j].item<float>();
+          if (j < 3) std::cout << ", ";
+        }
+        std::cout << "]" << std::endl;
+      }
+
+      // Also show diagonal values (main scaling factors) and bias for quick
+      // reference
+      std::cout << "  Diagonal scaling: [" << std::setprecision(4) << std::fixed
+                << scale_rot[0][0].item<float>() << ", "
+                << scale_rot[1][1].item<float>() << ", "
+                << scale_rot[2][2].item<float>() << "]" << std::endl;
+      std::cout << "  Bias: [" << bias[0].item<float>() << ", "
+                << bias[1].item<float>() << ", " << bias[2].item<float>() << "]"
+                << std::endl;
+
+      // Compute and display the magnitude of change from identity
+      auto identity_3x4 = torch::zeros_like(transform);
+      identity_3x4.slice(1, 0, 3) = torch::eye(3);
+      auto deviation = torch::norm(transform - identity_3x4).item<float>();
+      std::cout << "  Deviation from identity: " << std::setprecision(6)
+                << deviation << std::endl;
+
+      std::cout << std::endl;
+    }
   }
 
   auto timer_cuda_sync = ProfilingUtils::Timer("cuda_sync");
@@ -1891,8 +1916,17 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
 
   if (isdoingDepthDensify()) increasePcdByDepthReconstruction(pkf);
 
-  if (appearance_embedding_) pkf->initAppearanceParams(device_type_);
-
+  if (appearance_embedding_) {
+    pkf->initAppearanceParams(
+        device_type_,
+        1e-3f,  // exposure_lr_init (initial LR)
+        1e-4f,  // exposure_lr_final (final LR)
+        1e-3f,  // lr_delay_mult (delay multiplier - starts at 0.1% of normal
+                // LR)
+        10,     // lr_delay_steps (10 delay steps for warm-up)
+        100     // your total training iterations
+    );
+  }
   // Prepare multi resolution images for training
   if (device_type_ == torch::kCUDA) {
     cv::cuda::GpuMat img_gpu;
