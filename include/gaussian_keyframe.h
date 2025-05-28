@@ -41,6 +41,50 @@
 #include "tensor_utils.h"
 #include "types.h"
 
+class ExponentialLRScheduler {
+ private:
+  float lr_init_;
+  float lr_final_;
+  float lr_delay_mult_;
+  int lr_delay_steps_;
+  int max_steps_;
+
+ public:
+  ExponentialLRScheduler(float lr_init,
+                         float lr_final,
+                         float lr_delay_mult = 1.0f,
+                         int lr_delay_steps = 0,
+                         int max_steps = 1000000)
+      : lr_init_(lr_init),
+        lr_final_(lr_final),
+        lr_delay_mult_(lr_delay_mult),
+        lr_delay_steps_(lr_delay_steps),
+        max_steps_(max_steps) {}
+
+  float getLR(int step) {
+    if (lr_init_ == 0.0f) return 0.0f;
+    if (step < 0 || (lr_init_ == 0.0f && lr_final_ == 0.0f)) return 0.0f;
+
+    // Calculate delay rate (reverse cosine decay)
+    float delay_rate;
+    if (lr_delay_steps_ > 0) {
+      float delay_progress =
+          std::min(1.0f, float(step) / float(lr_delay_steps_));
+      delay_rate = lr_delay_mult_ + (1.0f - lr_delay_mult_) *
+                                        std::sin(0.5f * M_PI * delay_progress);
+    } else {
+      delay_rate = 1.0f;
+    }
+
+    // Log-linear interpolation (true exponential decay)
+    float t = std::min(1.0f, float(step) / float(max_steps_));
+    float log_lerp =
+        std::exp(std::log(lr_init_) * (1.0f - t) + std::log(lr_final_) * t);
+
+    return delay_rate * log_lerp;
+  }
+};
+
 class GaussianKeyframe {
  public:
   GaussianKeyframe() {}
@@ -83,7 +127,14 @@ class GaussianKeyframe {
   int getCurrentGausPyramidLevel();
 
   void initAppearanceParams(torch::DeviceType device_type,
-                            float appearance_lr = 0.01);
+                            float exposure_lr_init = 0.001f,
+                            float exposure_lr_final = 0.0001f,
+                            float lr_delay_mult = 0.01f,
+                            int lr_delay_steps = 0,
+                            int max_iterations = 30000);
+
+  void stepAppearanceOptimizer();
+
   torch::Tensor applyAppearanceTransform(torch::Tensor& colors);
 
   void setupStereoData(float baseline,
@@ -160,8 +211,9 @@ class GaussianKeyframe {
   bool done_inactive_geo_densify_ = false;
 
   // Appearance embedding parameters (affine transform)
-  torch::Tensor appearance_scale_;  // 3-channel RGB scale
-  torch::Tensor appearance_bias_;   // 3-channel RGB bias
+  torch::Tensor appearance_transform_;  // 3x4 matrix
   bool has_appearance_params_ = false;
   std::shared_ptr<torch::optim::Adam> appearance_optimizer_;
+  std::unique_ptr<ExponentialLRScheduler> exposure_scheduler_;
+  int local_iterations_ = 0;  // Per-keyframe counter
 };
