@@ -2954,6 +2954,11 @@ void GaussianMapper::keyframesToJson(std::filesystem::path result_dir) {
     json_kf["fy"] = graphics_utils::fov2focal(pkf->FoVy_, pkf->image_height_);
     json_kf["fx"] = graphics_utils::fov2focal(pkf->FoVx_, pkf->image_width_);
 
+    if (pkf->intr_.size() >= 4) {
+      json_kf["cx"] = pkf->intr_[2];  // cx is at index 2
+      json_kf["cy"] = pkf->intr_[3];  // cy is at index 3
+    }
+
     auto& keyframe_cam = scene_->getCamera(pkf->camera_id_);
 
     if (!keyframe_cam.dist_coeff_.empty() &&

@@ -28,11 +28,9 @@
 #include "viewer/imgui_viewer.h"
 
 int main(int argc, char** argv) {
-  if (argc != 3) {
+  if (argc != 2) {
     std::cerr << std::endl
-              << "Usage: " << argv[0]
-              << " path_to_gaussian_mapping_settings" /*1*/
-              << " path_to_result_path"               /*2*/
+              << "Usage: " << argv[0] << " path_to_result_path" /*1*/
               << std::endl;
     return 1;
   }
@@ -48,8 +46,9 @@ int main(int argc, char** argv) {
   }
 
   // Create GaussianMapper
-  std::filesystem::path gaussian_cfg_path(argv[1]);
-  std::filesystem::path result_path(argv[2]);
+  std::filesystem::path result_path(argv[1]);
+  std::filesystem::path gaussian_cfg_path =
+      result_path / "gaussian_mapper_cfg.yaml";
   std::shared_ptr<GaussianMapper> pGausMapper =
       std::make_shared<GaussianMapper>(nullptr, gaussian_cfg_path, result_path,
                                        0, device_type);
