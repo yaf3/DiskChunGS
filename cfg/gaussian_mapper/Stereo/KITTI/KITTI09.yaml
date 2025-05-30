@@ -19,9 +19,9 @@ Mapper.new_keyframe_times_of_use: 8
 Mapper.local_BA_increased_times_of_use: 0
 Mapper.loop_closure_increased_times_of_use_: 2
 Mapper.cull_keyframes: 0  # 0:false, 1 or other integer:true
-Mapper.large_rotation_threshold: 20.0
-Mapper.large_translation_threshold: 0.5
-Mapper.stable_num_iter_existence: 1
+Mapper.large_rotation_threshold: 1.0
+Mapper.large_translation_threshold: 0.1
+Mapper.stable_num_iter_existence: 1000
 GausPyramid.do: 0  # 0:false, 1 or other integer:true
 GausPyramid.num_sub_levels: 1
 GausPyramid.sub_level_times_of_use: 10000
@@ -33,7 +33,7 @@ Record.record_rendered_image: 0 # 0:false, 1 or other integer:true
 Record.record_ground_truth_image: 0 # 0:false, 1 or other integer:true
 Record.record_loss_image: 0 # 0:false, 1 or other integer:true
 Record.training_report_interval: 0 # 0:never, 1:always, others:periodically
-Record.record_loop_ply: 0 # 0:false, 1 or other integer:trues
+Record.record_loop_ply: 1 # 0:false, 1 or other integer:trues
 Record.render_fly_through: 0 # 0:false, 1 or other integer:true
 Record.render_fly_through_speed: 5.0 # 0:false, 1 or other integer:true
 Optimization.max_num_iterations: -1
@@ -53,7 +53,7 @@ GaussianViewer.camera_watch_dist: 0.000001
 Camera.z_near: 0.1
 Camera.z_far: 80.0
 Model.sh_degree: 1
-Mapper.depth_densify_subsample_ratio: 0.5
+Mapper.depth_densify_subsample_ratio: 0.1
 Optimization.position_lr_init: 0.008554520659002026
 Optimization.position_lr_final: 1.3219180615062561e-06
 Optimization.position_lr_delay_mult: 0.04024837614639988

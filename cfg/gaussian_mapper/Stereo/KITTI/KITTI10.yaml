@@ -21,7 +21,7 @@ Mapper.loop_closure_increased_times_of_use_: 2
 Mapper.cull_keyframes: 0  # 0:false, 1 or other integer:true
 Mapper.large_rotation_threshold: 20.0
 Mapper.large_translation_threshold: 0.5
-Mapper.stable_num_iter_existence: 1
+Mapper.stable_num_iter_existence: 1000
 GausPyramid.do: 0  # 0:false, 1 or other integer:true
 GausPyramid.num_sub_levels: 1
 GausPyramid.sub_level_times_of_use: 10000
@@ -69,4 +69,4 @@ Optimization.densification_interval: 492
 Optimization.densify_min_opacity: 0.02296925309912248
 Optimization.densify_grad_threshold: 0.009955219591470619
 Optimization.opacity_reg: 0.006553494728247427
-Optimization.appearance_embedding: 0
+Optimization.appearance_embedding: 1
