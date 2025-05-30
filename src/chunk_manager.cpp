@@ -1199,7 +1199,7 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::loadVisibleChunks(
   }
 
   // Wait for critical chunks to load (with timeout)
-  const auto timeout = std::chrono::milliseconds(500);
+  const auto timeout = std::chrono::milliseconds(2000);
   for (size_t i = 0; i < load_futures.size(); ++i) {
     if (load_futures[i].wait_for(timeout) == std::future_status::ready) {
       if (load_futures[i].get()) {

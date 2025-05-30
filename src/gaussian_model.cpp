@@ -293,14 +293,14 @@ void GaussianModel::scaledTransformVisiblePointsOfKeyframe(
     const float scale) {
   torch::NoGradGuard no_grad;
 
-  std::cout << "[DEBUG-STPV] Starting with flag tensor size: "
-            << point_not_transformed_flags.size(0)
-            << ", xyz size: " << this->xyz_.size(0) << std::endl;
+  // std::cout << "[DEBUG-STPV] Starting with flag tensor size: "
+  //           << point_not_transformed_flags.size(0)
+  //           << ", xyz size: " << this->xyz_.size(0) << std::endl;
 
   torch::Tensor points = this->getXYZ();
   torch::Tensor rots = this->getRotationActivation();
 
-  std::cout << "[DEBUG-STPV] Got points and rotations" << std::endl;
+  // std::cout << "[DEBUG-STPV] Got points and rotations" << std::endl;
   // torch::Tensor scales = this->scaling_;// * scale;
 
   torch::Tensor point_unstable_flags =
@@ -317,8 +317,8 @@ void GaussianModel::scaledTransformVisiblePointsOfKeyframe(
       diff_pose, kf_world_view_transform, kf_full_proj_transform,
       num_transformed, scale);
 
-  std::cout << "[DEBUG-STPV] Transform complete, transformed "
-            << num_transformed << " points" << std::endl;
+  // std::cout << "[DEBUG-STPV] Transform complete, transformed "
+  //           << num_transformed << " points" << std::endl;
 
   // torch::Tensor point_cloud_copy = points.clone();
   // torch::Tensor dist2 = torch::clamp_min(distCUDA2(point_cloud_copy),
@@ -338,14 +338,16 @@ void GaussianModel::scaledTransformVisiblePointsOfKeyframe(
 
   if (num_transformed > 0) {
     try {
-      std::cout << "[DEBUG-STPV] About to replace xyz tensor" << std::endl;
+      // std::cout << "[DEBUG-STPV] About to replace xyz tensor" << std::endl;
       torch::Tensor optimizable_xyz = this->replaceTensorToOptimizer(points, 0);
-      std::cout << "[DEBUG-STPV] Successfully replaced xyz tensor" << std::endl;
+      // std::cout << "[DEBUG-STPV] Successfully replaced xyz tensor" <<
+      // std::endl;
 
-      std::cout << "[DEBUG-STPV] About to replace rotation tensor" << std::endl;
+      // std::cout << "[DEBUG-STPV] About to replace rotation tensor" <<
+      // std::endl;
       torch::Tensor optimizable_rots = this->replaceTensorToOptimizer(rots, 5);
-      std::cout << "[DEBUG-STPV] Successfully replaced rotation tensor"
-                << std::endl;
+      // std::cout << "[DEBUG-STPV] Successfully replaced rotation tensor"
+      //           << std::endl;
 
       this->xyz_ = optimizable_xyz;
       this->rotation_ = optimizable_rots;
@@ -353,7 +355,7 @@ void GaussianModel::scaledTransformVisiblePointsOfKeyframe(
       this->Tensor_vec_xyz_ = {this->xyz_};
       this->Tensor_vec_rotation_ = {this->rotation_};
 
-      std::cout << "[DEBUG-STPV] Updated tensors in-place" << std::endl;
+      // std::cout << "[DEBUG-STPV] Updated tensors in-place" << std::endl;
     } catch (const std::exception& e) {
       std::cerr << "ERROR during optimizer tensor replacement: " << e.what()
                 << std::endl;

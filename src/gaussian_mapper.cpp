@@ -1611,9 +1611,11 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
   std::cout << "[DEBUG] Processing " << associated_kfs.size() << " keyframes"
             << std::endl;
 
-  if (record_loop_ply_)
-    savePly(result_dir_ /
-            (std::to_string(getIteration()) + "_0_before_loop_correction"));
+  if (record_loop_ply_) {
+    saveScene(result_dir_ /
+              (std::to_string(getIteration()) + "_0_before_loop_correction") /
+              "data");
+  }
 
   int num_transformed = 0;
 
@@ -1639,6 +1641,16 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
         std::unique_lock<std::mutex> lock_render(mutex_render_);
         std::cout << "[Gaussian Mapper]Large loop correction detected for kf "
                   << kfid << std::endl;
+
+        while (chunk_manager_->getActiveChunks().size() >
+               max_chunks_in_memory_) {
+          std::cout << "[Gaussian Mapper]Too many chunks in memory: "
+                    << chunk_manager_->getActiveChunks().size()
+                    << ", waiting for chunks to be released" << std::endl;
+          chunk_manager_->triggerLruCheck();
+
+          std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
 
         // Get chunks visible from this keyframe
         std::vector<std::shared_ptr<Chunk>> visible_chunks =
@@ -1687,9 +1699,9 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
             // If chunk size has changed (new points added), resize the
             // flags tensor
             if (chunk_point_flags.size(0) != gaussians->xyz_.size(0)) {
-              std::cout << "[DEBUG] Resizing flags tensor from "
-                        << chunk_point_flags.size(0) << " to "
-                        << gaussians->xyz_.size(0) << std::endl;
+              // std::cout << "[DEBUG] Resizing flags tensor from "
+              //           << chunk_point_flags.size(0) << " to "
+              //           << gaussians->xyz_.size(0) << std::endl;
               int64_t num_new_points =
                   gaussians->xyz_.size(0) - chunk_point_flags.size(0);
               if (num_new_points > 0) {
@@ -1703,20 +1715,26 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
             }
           }
 
-          std::cout << "[DEBUG] Before transform - xyz: "
-                    << gaussians->xyz_.sizes()
-                    << ", flags: " << chunk_point_flags.sizes() << std::endl;
+          // std::cout << "[DEBUG] Before transform - xyz: "
+          //           << gaussians->xyz_.sizes()
+          //           << ", flags: " << chunk_point_flags.sizes() << std::endl;
 
           int chunk_transformed = 0;
-          std::cout << "Calling scaledTransformVisiblePointsOfKeyframe"
-                    << std::endl;
+          // std::cout << "Calling scaledTransformVisiblePointsOfKeyframe"
+          //           << std::endl;
           assert(chunk_manager_->getChunkState(chunk_coord) ==
                      ChunkState::OPTIMIZING &&
                  "Chunk should be in optimizing state");
+
+          std::cout << "[DEBUG] Chunk flags - true count: "
+                    << chunk_point_flags.sum().item<int>() << " out of "
+                    << chunk_point_flags.size(0) << std::endl;
           gaussians->scaledTransformVisiblePointsOfKeyframe(
               chunk_point_flags, diff_pose_tensor, pkf->world_view_transform_,
               pkf->full_proj_transform_, pkf->creation_iter_,
               stableNumIterExistence(), chunk_transformed, loop_kf_scale);
+
+          chunk_transformed_flags[chunk_coord] = chunk_point_flags;
 
           std::cout << "[DEBUG] Transformed " << chunk_transformed
                     << " points successfully" << std::endl;
@@ -1739,6 +1757,12 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
       std::cout << "Actually new keyframe in LC" << std::endl;
       handleNewKeyframe(kf);
     }
+  }
+
+  if (record_loop_ply_) {
+    saveScene(result_dir_ /
+              (std::to_string(getIteration()) + "_1_after_loop_correction") /
+              "data");
   }
 
   std::cout << "All points transformed, now time to add new points"
@@ -1784,8 +1808,8 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
 
   // Gaussians will be all over the place, transfer them to their
   // respective chunks
-  std::cout << "Transferring gaussians across chunks" << std::endl;
-  chunk_manager_->transferGaussiansAcrossChunks(scene_->cameras_extent_);
+  // std::cout << "Transferring gaussians across chunks" << std::endl;
+  // chunk_manager_->transferGaussiansAcrossChunks(scene_->cameras_extent_);
 
   chunk_manager_->releaseAllChunksFromOptimization();
 
