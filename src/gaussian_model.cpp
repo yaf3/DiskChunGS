@@ -107,7 +107,10 @@ void GaussianModel::setShDegree(const int sh) {
 
 void GaussianModel::createFromPcd(const torch::Tensor& fused_point_cloud,
                                   const torch::Tensor& color,
+                                  const torch::Tensor& new_scales,
                                   const float spatial_lr_scale) {
+  assert(spatial_lr_scale > 0.0f &&
+         "Spatial learning rate scale must be positive");
   this->spatial_lr_scale_ = spatial_lr_scale;
   int num_points = static_cast<int>(fused_point_cloud.sizes()[0]);
 
@@ -126,11 +129,18 @@ void GaussianModel::createFromPcd(const torch::Tensor& fused_point_cloud,
   // fused_point_cloud.size(0) << std::endl;
 
   torch::Tensor point_cloud_copy = fused_point_cloud.clone();
-  torch::Tensor dist2 =
-      torch::clamp_min(distCUDA2(point_cloud_copy), 0.0000001);
-  torch::Tensor scales = torch::log(torch::sqrt(dist2) * 0.1);
-  auto scales_ndimension = scales.ndimension();
-  scales = scales.unsqueeze(scales_ndimension).repeat({1, 3});
+
+  torch::Tensor scales;
+  if (new_scales.defined() && new_scales.size(0) > 0) {
+    // Use provided scales, convert to log space and repeat for 3 dimensions
+    scales = torch::log(new_scales.unsqueeze(1).repeat({1, 3}));
+  } else {
+    torch::Tensor dist2 =
+        torch::clamp_min(distCUDA2(point_cloud_copy), 0.0000001);
+    scales = torch::log(torch::sqrt(dist2) * 0.1);
+    auto scales_ndimension = scales.ndimension();
+    scales = scales.unsqueeze(scales_ndimension).repeat({1, 3});
+  }
   torch::Tensor rots =
       torch::zeros({fused_point_cloud.size(0), 4},
                    torch::TensorOptions().device(device_type_));
@@ -173,6 +183,7 @@ void GaussianModel::createFromPcd(const torch::Tensor& fused_point_cloud,
 
 void GaussianModel::increasePcd(const torch::Tensor& new_point_cloud,
                                 const torch::Tensor& new_colors,
+                                const torch::Tensor& new_scales,
                                 const int iteration) {
   // auto time1 = std::chrono::steady_clock::now();
   auto num_new_points = new_point_cloud.size(0);
@@ -192,11 +203,17 @@ void GaussianModel::increasePcd(const torch::Tensor& new_point_cloud,
   // std::cout << "[Gaussian Model]Number of points increase : "
   //           << num_new_points << std::endl;
 
-  torch::Tensor dist2 =
-      torch::clamp_min(distCUDA2(new_point_cloud.clone()), 0.0000001);
-  torch::Tensor scales = torch::log(torch::sqrt(dist2) * 0.1);
-  auto scales_ndimension = scales.ndimension();
-  scales = scales.unsqueeze(scales_ndimension).repeat({1, 3});
+  torch::Tensor scales;
+  if (new_scales.defined() && new_scales.size(0) > 0) {
+    // Use provided scales, convert to log space and repeat for 3 dimensions
+    scales = torch::log(new_scales.unsqueeze(1).repeat({1, 3}));
+  } else {
+    torch::Tensor dist2 =
+        torch::clamp_min(distCUDA2(new_point_cloud.clone()), 0.0000001);
+    scales = torch::log(torch::sqrt(dist2) * 0.1);
+    auto scales_ndimension = scales.ndimension();
+    scales = scales.unsqueeze(scales_ndimension).repeat({1, 3});
+  }
   torch::Tensor rots =
       torch::zeros({new_point_cloud.size(0), 4},
                    torch::TensorOptions().device(device_type_));
@@ -401,8 +418,11 @@ void GaussianModel::trainingSetup(
   optimizer_->param_groups()[5].options().set_lr(training_args.rotation_lr_);
 
   // get_expon_lr_func
+  assert(spatial_lr_scale_ > 0);
   lr_init_ = training_args.position_lr_init_ * this->spatial_lr_scale_;
   lr_final_ = training_args.position_lr_final_ * this->spatial_lr_scale_;
+  assert(lr_init_ > 0);
+  assert(lr_final_ > 0);
   lr_delay_mult_ = training_args.position_lr_delay_mult_;
   max_steps_ = training_args.position_lr_max_steps_;
 }
@@ -754,6 +774,23 @@ void GaussianModel::densifyAndPrune(float max_grad,
   this->densifyAndClone(grads, max_grad, extent);
   this->densifyAndSplit(grads, max_grad, extent);
 
+  auto prune_mask = (this->getOpacityActivation() < min_opacity).squeeze();
+  if (max_screen_size) {
+    auto big_points_vs = this->max_radii2D_ > max_screen_size;
+    auto big_points_ws =
+        std::get<0>(this->getScalingActivation().max(/*dim=*/1)) >
+        0.1f * extent;
+    prune_mask = torch::logical_or(torch::logical_or(prune_mask, big_points_vs),
+                                   big_points_ws);
+  }
+  this->prunePoints(prune_mask);
+
+  c10::cuda::CUDACachingAllocator::emptyCache();  // torch.cuda.empty_cache()
+}
+
+void GaussianModel::prune(float min_opacity,
+                          float extent,
+                          int max_screen_size) {
   auto prune_mask = (this->getOpacityActivation() < min_opacity).squeeze();
   if (max_screen_size) {
     auto big_points_vs = this->max_radii2D_ > max_screen_size;

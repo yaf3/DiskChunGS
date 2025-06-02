@@ -1444,6 +1444,7 @@ ChunkManager::groupPointsByChunk(const torch::Tensor& positions) {
 void ChunkManager::addPointsToChunks(
     const torch::Tensor& points,
     const torch::Tensor& colors,
+    const torch::Tensor& scales,
     std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> keyframes,
     float cameras_extent) {
   auto start_time = std::chrono::steady_clock::now();
@@ -1462,6 +1463,9 @@ void ChunkManager::addPointsToChunks(
   // Convert to CUDA for processing - only once
   torch::Tensor points_cuda = points.to(torch::kCUDA);
   torch::Tensor colors_cuda = colors.to(torch::kCUDA);
+  torch::Tensor scales_cuda;
+  if (scales.defined() && scales.size(0) > 0)
+    scales_cuda = scales.to(torch::kCUDA);
 
   // Group points by chunk
   auto [unique_chunks, inverse_indices, points_per_chunk] =
@@ -1483,6 +1487,10 @@ void ChunkManager::addPointsToChunks(
     // Extract points for this chunk
     torch::Tensor chunk_points = points_cuda.index({chunk_mask});
     torch::Tensor chunk_colors = colors_cuda.index({chunk_mask});
+
+    torch::Tensor chunk_scales;
+    if (scales.defined() && scales.size(0) > 0)
+      chunk_scales = scales_cuda.index({chunk_mask});
 
     // std::cout << "Adding " << chunk_points.sizes()[0]
     //           << " points to chunk: " << coord.x << "," << coord.y << ","
@@ -1530,8 +1538,14 @@ void ChunkManager::addPointsToChunks(
         // std::endl;
 
         // Add points to existing chunk
-        chunk->getGaussians()->increasePcd(chunk_points, chunk_colors,
-                                           getCurrentIteration());
+        if (chunk_scales.defined() && chunk_scales.size(0) > 0) {
+          chunk->getGaussians()->increasePcd(
+              chunk_points, chunk_colors, chunk_scales, getCurrentIteration());
+        } else {
+          chunk->getGaussians()->increasePcd(chunk_points, chunk_colors,
+                                             torch::Tensor(),
+                                             getCurrentIteration());
+        }
       } else {
         std::cout << "Can't add points chunk is in state: "
                   << static_cast<int>(state) << std::endl;
@@ -1567,8 +1581,13 @@ void ChunkManager::addPointsToChunks(
       incrementStat(stats_.existing_chunks);
 
       // Initialize the Gaussian model
-      chunk->getGaussians()->createFromPcd(chunk_points, chunk_colors,
-                                           cameras_extent);
+      if (chunk_scales.defined() && chunk_scales.size(0) > 0) {
+        chunk->getGaussians()->createFromPcd(chunk_points, chunk_colors,
+                                             chunk_scales, cameras_extent);
+      } else {
+        chunk->getGaussians()->createFromPcd(chunk_points, chunk_colors,
+                                             torch::Tensor(), cameras_extent);
+      }
       chunk->getGaussians()->trainingSetup(opt_params_);
     }
 
@@ -1585,7 +1604,8 @@ void ChunkManager::addPointsToChunks(
   auto end_time = std::chrono::steady_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_time - start_time);
-  // std::cout << "addPointsToChunks completed in " << duration.count() << "ms"
+  // std::cout << "addPointsToChunks completed in " << duration.count() <<
+  // "ms"
   //           << std::endl;
 }
 

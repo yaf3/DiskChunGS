@@ -137,6 +137,7 @@ class GaussianMapper {
   void addPoints(
       const torch::Tensor &points,
       const torch::Tensor &colors,
+      const torch::Tensor &scales,
       std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> keyframes);
 
   std::tuple<torch::Tensor, torch::Tensor> filterPointsByDepth(
@@ -289,6 +290,15 @@ class GaussianMapper {
 
   void saveTotalGaussians(std::string name_suffix);
 
+  torch::Tensor log_kernel_;
+  float log_sigma_ = 3.0f;  // Sigma for LoG operator
+
+  torch::Tensor computeLoGProbability(const torch::Tensor &image);
+  std::tuple<torch::Tensor, torch::Tensor> sampleGaussianPrimitives(
+      const torch::Tensor &rgb_image,
+      const torch::Tensor &depth_image,
+      std::shared_ptr<GaussianKeyframe> pkf);
+
  private:
   // Updated function declarations:
   std::shared_ptr<GaussianKeyframe> selectLocalityAwareKeyframe();
@@ -416,6 +426,7 @@ class GaussianMapper {
   int max_depth_cached_ = 1;
   torch::Tensor depth_cache_points_;
   torch::Tensor depth_cache_colors_;
+  torch::Tensor depth_cache_scales_;
   std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>
       depth_cache_keyframes_;
 

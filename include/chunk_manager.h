@@ -177,6 +177,7 @@ class ChunkManager {
   void addPointsToChunks(
       const torch::Tensor& points,
       const torch::Tensor& colors,
+      const torch::Tensor& scales,
       std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> keyframes,
       float cameras_extent);
 

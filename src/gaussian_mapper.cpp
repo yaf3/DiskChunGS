@@ -106,6 +106,26 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
       &kfs_loss_);
   // keyframe_queue_->setChunkManager(chunk_manager_);
 
+  // Initialize Laplacian of Gaussian kernel
+  int kernel_size = 2 * int(3 * log_sigma_) + 1;
+  torch::Tensor x =
+      torch::arange(-kernel_size / 2, kernel_size / 2 + 1,
+                    torch::TensorOptions().dtype(torch::kFloat32));
+  torch::Tensor y = x.unsqueeze(0).t();
+  x = x.unsqueeze(0);
+
+  torch::Tensor gaussian =
+      torch::exp(-(x * x + y * y) / (2 * log_sigma_ * log_sigma_));
+  gaussian = gaussian / gaussian.sum();
+
+  // Laplacian of Gaussian
+  torch::Tensor log_kernel =
+      -(x * x + y * y - 2 * log_sigma_ * log_sigma_) /
+      (log_sigma_ * log_sigma_ * log_sigma_ * log_sigma_) * gaussian;
+  log_kernel = log_kernel - log_kernel.mean();
+
+  log_kernel_ = log_kernel.unsqueeze(0).unsqueeze(0).to(device_type_);
+
   // Mode
   if (!pSLAM) {
     // NO SLAM
@@ -317,6 +337,26 @@ GaussianMapper::GaussianMapper(const SystemSensorType sensor_type,
       scene_, 40, keyframe_similarity_threshold_, opt_params_.auto_distribute_,
       &kfs_loss_);
   // keyframe_queue_->setChunkManager(chunk_manager_);
+
+  // Initialize Laplacian of Gaussian kernel
+  int kernel_size = 2 * int(3 * log_sigma_) + 1;
+  torch::Tensor x =
+      torch::arange(-kernel_size / 2, kernel_size / 2 + 1,
+                    torch::TensorOptions().dtype(torch::kFloat32));
+  torch::Tensor y = x.unsqueeze(0).t();
+  x = x.unsqueeze(0);
+
+  torch::Tensor gaussian =
+      torch::exp(-(x * x + y * y) / (2 * log_sigma_ * log_sigma_));
+  gaussian = gaussian / gaussian.sum();
+
+  // Laplacian of Gaussian
+  torch::Tensor log_kernel =
+      -(x * x + y * y - 2 * log_sigma_ * log_sigma_) /
+      (log_sigma_ * log_sigma_ * log_sigma_ * log_sigma_) * gaussian;
+  log_kernel = log_kernel - log_kernel.mean();
+
+  log_kernel_ = log_kernel.unsqueeze(0).unsqueeze(0).to(device_type_);
 
   ORB_SLAM3::System::eSensor system_mode;
   if (sensor_type == STEREO) {
@@ -772,7 +812,7 @@ void GaussianMapper::run() {
         std::unique_lock<std::mutex> lock_render(mutex_render_);
         scene_->cameras_extent_ = std::get<1>(scene_->getNerfppNorm());
         std::cout << "Adding initial points\n";
-        addPoints(initialSparsePoints, initialSparseColors,
+        addPoints(initialSparsePoints, initialSparseColors, torch::Tensor(),
                   scene_->keyframes());
       }
 
@@ -935,7 +975,7 @@ void GaussianMapper::trainColmap() {
       ++pcd_it;
     }
     std::cout << "Adding initial points\n";
-    addPoints(fused_point_cloud, color, scene_->keyframes());
+    addPoints(fused_point_cloud, color, torch::Tensor(), scene_->keyframes());
     this->initial_mapped_ = true;
   }
 
@@ -1045,8 +1085,9 @@ void GaussianMapper::trainForOneIteration() {
 
   writeKeyframeUsedTimes(result_dir_ / "used_times");
 
-  if (isdoingInactiveGeoDensify() && !viewpoint_cam->done_inactive_geo_densify_)
-    increasePcdByKeyframeInactiveGeoDensify(viewpoint_cam);
+  // if (isdoingInactiveGeoDensify() &&
+  // !viewpoint_cam->done_inactive_geo_densify_)
+  //   increasePcdByKeyframeInactiveGeoDensify(viewpoint_cam);
 
   int training_level = num_gaus_pyramid_sub_levels_;
   int image_height, image_width;
@@ -1347,18 +1388,14 @@ void GaussianMapper::trainForOneIteration() {
             torch::max(gaussians->max_radii2D_.index({visibility_filter}),
                        radii.index({visibility_filter})));
 
-        gaussians->addDensificationStats(screenspace_points_vec[model_idx],
-                                         visibility_filter);
-
         if ((local_iter > opt_params_.densify_from_iter_) &&
             (local_iter % densifyInterval() == 0)) {
           int size_threshold = (local_iter < prune_big_point_after_iter_ ||
                                 prune_big_point_after_iter_ == -1)
                                    ? 0
                                    : 20;
-          gaussians->densifyAndPrune(densifyGradThreshold(),
-                                     densify_min_opacity_,
-                                     scene_->cameras_extent_, size_threshold);
+          gaussians->prune(densify_min_opacity_, scene_->cameras_extent_,
+                           size_threshold);
         }
 
         if (opacityResetInterval() &&
@@ -1591,7 +1628,8 @@ void GaussianMapper::processLocalMappingBABatch(
     // Process all points at once
     torch::NoGradGuard no_grad;
     std::unique_lock<std::mutex> lock_render(mutex_render_);
-    addPoints(points_tensor, colors_tensor, associated_keyframe_map);
+    addPoints(points_tensor, colors_tensor, torch::Tensor(),
+              associated_keyframe_map);
   }
   // timer_addPoints.stop();
 }
@@ -1801,7 +1839,8 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
 
     std::cout << "Adding points to chunks" << std::endl;
     chunk_manager_->addPointsToChunks(points_tensor, colors_tensor,
-                                      loop_keyframes, scene_->cameras_extent_);
+                                      torch::Tensor(), loop_keyframes,
+                                      scene_->cameras_extent_);
   }
 
   chunk_manager_->releaseAllChunksFromOptimization();
@@ -1936,9 +1975,8 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   pkf->img_auxiliary_undist_ = imgAux_undistorted;
   pkf->kps_pixel_ = std::move(std::get<6>(kf));
   pkf->kps_point_local_ = std::move(std::get<7>(kf));
-  if (isdoingInactiveGeoDensify()) increasePcdByKeyframeInactiveGeoDensify(pkf);
-
-  if (isdoingDepthDensify()) increasePcdByDepthReconstruction(pkf);
+  // if (isdoingInactiveGeoDensify())
+  // increasePcdByKeyframeInactiveGeoDensify(pkf);
 
   if (appearance_embedding_) {
     pkf->initAppearanceParams(
@@ -1995,6 +2033,8 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   } else {
     // std::cout << "RGBD data not available" << std::endl;
   }
+
+  if (isdoingDepthDensify()) increasePcdByDepthReconstruction(pkf);
 }
 
 void GaussianMapper::generateKfidRandomShuffle() {
@@ -2339,7 +2379,8 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
     depth_cached_ = 0;
     // Add new points to the model
     std::unique_lock<std::mutex> lock_render(mutex_render_);
-    addPoints(depth_cache_points_, depth_cache_colors_, depth_cache_keyframes_);
+    addPoints(depth_cache_points_, depth_cache_colors_, torch::Tensor(),
+              depth_cache_keyframes_);
     depth_cache_keyframes_.clear();
     // visualizePointCloud(depth_cache_points_, depth_cache_colors_,
     //                     result_dir_ / (std::to_string(getIteration()) +
@@ -2369,152 +2410,59 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       throw std::runtime_error("Can't densify with mono");
     } break;
     case STEREO: {
-      // Get original image dimensions
-      int orig_height = pkf->img_undist_.rows;
-      int orig_width = pkf->img_undist_.cols;
+      // Ensure stereo data is set up
+      if (!pkf->is_stereo_ || !pkf->depth_image_.defined()) {
+        std::cerr << "Stereo depth not available for keyframe " << pkf->fid_
+                  << std::endl;
+        return;
+      }
 
-      // Compute downsampling factor (adjust these values based on your memory
-      // constraints) For example, scale = 4 means we use 1/16th of the pixels
-      const int scale = 1;
-      int new_height = orig_height / scale;
-      int new_width = orig_width / scale;
-
-      // Resize images before stereo matching
+      // Get RGB images
       cv::cuda::GpuMat rgb_left_gpu, rgb_right_gpu;
-      cv::cuda::GpuMat rgb_left_small, rgb_right_small;
-
-      // Upload and resize left image
       rgb_left_gpu.upload(pkf->img_undist_);
-      cv::cuda::resize(rgb_left_gpu, rgb_left_small,
-                       cv::Size(new_width, new_height));
-
-      // Upload and resize right image
       rgb_right_gpu.upload(pkf->img_auxiliary_undist_);
-      cv::cuda::resize(rgb_right_gpu, rgb_right_small,
-                       cv::Size(new_width, new_height));
 
-      // Convert to grayscale for disparity computation
-      cv::cuda::GpuMat gray_left_gpu, gray_right_gpu;
-      cv::cuda::cvtColor(rgb_left_small, gray_left_gpu, cv::COLOR_RGB2GRAY);
-      cv::cuda::cvtColor(rgb_right_small, gray_right_gpu, cv::COLOR_RGB2GRAY);
+      torch::Tensor rgb_left =
+          tensor_utils::cvGpuMat2TorchTensor_Float32(rgb_left_gpu);
+      torch::Tensor rgb_right =
+          tensor_utils::cvGpuMat2TorchTensor_Float32(rgb_right_gpu);
 
-      // Convert to uint8 format required by stereo matching
-      gray_left_gpu.convertTo(gray_left_gpu, CV_8UC1, 255.0);
-      gray_right_gpu.convertTo(gray_right_gpu, CV_8UC1, 255.0);
+      // Get the precomputed stereo depth
+      torch::Tensor stereo_depth = pkf->depth_image_;
 
-      // Scale stereo parameters for the downsampled images
-      cv::Mat Q_scaled = stereo_Q_.clone();
-      Q_scaled.at<float>(0, 0) /= scale;  // fx
-      Q_scaled.at<float>(1, 1) /= scale;  // fy
-      Q_scaled.at<float>(0, 3) /= scale;  // cx
-      Q_scaled.at<float>(1, 3) /= scale;  // cy
+      // Create a mask for valid depths (non-zero depths)
+      torch::Tensor valid_depth_mask = stereo_depth > 0.0f;
 
-      // Compute disparity
-      cv::cuda::GpuMat disparity_gpu;
-      stereo_cv_sgm_->compute(gray_left_gpu, gray_right_gpu, disparity_gpu);
-      disparity_gpu.convertTo(disparity_gpu, CV_32F, 1.0 / 16.0);
+      // Optional: Densify sparse depth using simple inpainting
+      // torch::Tensor dense_depth =
+      //     densifyStereoDepth(stereo_depth, valid_depth_mask);
 
-      // Reproject to 3D using scaled Q matrix
-      cv::cuda::GpuMat points3D_gpu;
-      cv::cuda::reprojectImageTo3D(disparity_gpu, points3D_gpu, Q_scaled, 3);
+      torch::Tensor dense_depth = stereo_depth;
 
-      // Convert to torch tensors
-      torch::Tensor disparity =
-          tensor_utils::cvGpuMat2TorchTensor_Float32(disparity_gpu);
-      disparity = disparity.flatten(0, 1).contiguous();
+      std::cout << dense_depth.sizes() << std::endl;
+      std::cout << rgb_left.sizes() << std::endl;
 
-      // Save colorized depth map from the disparity before processing
-      // Convert the flattened disparity tensor back to 2D for visualization
-      // std::string depth_vis_path =
-      //     "/workspaces/large_scale_gaussian_slam/debug/depth_visualization_"
-      //     + std::to_string(pkf->fid_) + ".png";
-      // saveColorizedDepthMap(disparity.reshape({new_height, new_width})
-      //                           .flatten(),  // Reshape to 2D then flatten to
-      //                                        // match function expectation
-      //                       new_height, new_width, depth_vis_path,
-      //                       min_depth_, max_depth_);
+      // Use probability-based sampling on the left image
+      auto [sample_mask, sampled_scales] =
+          sampleGaussianPrimitives(rgb_left, dense_depth, pkf);
 
-      torch::Tensor points3D =
-          tensor_utils::cvGpuMat2TorchTensor_Float32(points3D_gpu);
-      points3D = points3D.permute({1, 2, 0}).flatten(0, 1).contiguous();
+      // Combine with valid depth mask
+      sample_mask =
+          sample_mask & (dense_depth > min_depth_) & (dense_depth < max_depth_);
 
-      torch::Tensor colors =
-          tensor_utils::cvGpuMat2TorchTensor_Float32(rgb_left_small);
-      colors = colors.permute({1, 2, 0}).flatten(0, 1).contiguous();
+      // Flatten for indexing
+      sample_mask = sample_mask.flatten();
+      dense_depth = dense_depth.flatten();
+      rgb_left = rgb_left.permute({1, 2, 0}).flatten(0, 1);
 
-      // Filter points
-      torch::Tensor valid_points = torch::logical_and(
-          disparity > static_cast<float>(stereo_cv_sgm_->getMinDisparity()),
-          disparity < static_cast<float>(stereo_cv_sgm_->getNumDisparities()));
+      // Get sampled points
+      torch::Tensor sampled_colors = rgb_left.index({sample_mask});
 
-      // Create a mask to exclude the top portion of the image (sky region)
-      cv::Mat cpu_height_mask(gray_left_gpu.size(), CV_8UC1, cv::Scalar(0));
-      // Only keep the bottom 60% of the image (adjust this value based on your
-      // scenes)
-      int valid_start_y =
-          static_cast<int>(cpu_height_mask.rows * 0.4);  // Skip top 40%
-      cv::rectangle(cpu_height_mask, cv::Point(0, valid_start_y),
-                    cv::Point(cpu_height_mask.cols, cpu_height_mask.rows),
-                    cv::Scalar(255), -1);
-
-      // Upload to GPU
-      cv::cuda::GpuMat height_mask;
-      height_mask.upload(cpu_height_mask);
-
-      // Convert to tensor
-      torch::Tensor height_mask_tensor =
-          tensor_utils::cvGpuMat2TorchTensor_Float32(height_mask).flatten();
-      valid_points =
-          torch::logical_and(valid_points, height_mask_tensor > 0.5f);
-
-      // Depth range filtering (adjust these thresholds as needed)
-      valid_points = torch::logical_and(
-          valid_points,
-          points3D.index({torch::indexing::Slice(), 2}) > min_depth_);
-      valid_points = torch::logical_and(
-          valid_points,
-          points3D.index({torch::indexing::Slice(), 2}) < max_depth_);
-
-      torch::Tensor depth_values =
-          points3D.index({torch::indexing::Slice(), 2});
-      torch::Tensor inverse_depth =
-          1.0f / (depth_values +
-                  1e-6f);  // Add small epsilon to avoid division by zero
-      torch::Tensor depth_confidence =
-          torch::clamp(inverse_depth / (1.0f / min_depth_), 0.0f, 1.0f);
-
-      // More aggressive filtering of distant points (which are more likely to
-      // be floaters)
-      torch::Tensor random_mask =
-          torch::rand_like(depth_confidence) < depth_confidence;
-      valid_points = torch::logical_and(valid_points, random_mask);
-
-      // Further random subsampling if needed
-      // Keep only 25% of the valid points randomly
-      random_mask = torch::rand_like(valid_points.to(torch::kFloat)) <
-                    depth_densify_subsample_ratio_;
-      valid_points = torch::logical_and(valid_points, random_mask);
-
-      // Keep only valid points
-      points3D = points3D.index({valid_points});
-      colors = colors.index({valid_points});
-
-      // visualizePointCloud(points3D, colors,
-      //                     result_dir_ / (std::to_string(getIteration()) +
-      //                                    "_stereo_densify.ply"));
-
-      // Create a visualization of the depth map
-      // std::string depth_vis_path = result_dir_.string() +
-      //                              "/depth_visualization_" +
-      //                              std::to_string(pkf->fid_) + "_" +
-      //                              std::to_string(getIteration()) + ".png";
-
-      // visualizeDepthReconstruction(
-      //     pkf, points3D,
-      //     torch::ones(
-      //         {points3D.size(0)},
-      //         torch::TensorOptions().dtype(torch::kBool).device(device_type_)),
-      //     depth_vis_path);
+      // Reproject to 3D using stereo geometry
+      Camera& camera = scene_->cameras_.at(pkf->camera_id_);
+      torch::Tensor points3D = reprojectDepthPinhole(
+          dense_depth, sample_mask, pkf->intr_, pkf->image_width_);
+      points3D = points3D.index({sample_mask});
 
       // Transform to world coordinates
       torch::Tensor Twc_tensor =
@@ -2522,121 +2470,85 @@ void GaussianMapper::increasePcdByDepthReconstruction(
               .transpose(0, 1);
       transformPoints(points3D, Twc_tensor);
 
+      std::cout << "Sampled points: " << points3D.sizes() << std::endl;
+      std::cout << "Sampled colors: " << sampled_colors.sizes() << std::endl;
+      std::cout << "Sampled scales: " << sampled_scales.sizes() << std::endl;
+      std::cout << "Sampled mask: " << sample_mask.sizes() << std::endl;
+
       // Cache the points
       if (depth_cached_ == 0) {
         depth_cache_points_ = points3D;
-        depth_cache_colors_ = colors;
+        depth_cache_colors_ = sampled_colors;
+        depth_cache_scales_ = sampled_scales;
       } else {
-        depth_cache_points_ =
-            torch::cat({depth_cache_points_, points3D}, /*dim=*/0);
+        depth_cache_points_ = torch::cat({depth_cache_points_, points3D}, 0);
         depth_cache_colors_ =
-            torch::cat({depth_cache_colors_, colors}, /*dim=*/0);
+            torch::cat({depth_cache_colors_, sampled_colors}, 0);
+        depth_cache_scales_ =
+            torch::cat({depth_cache_scales_, sampled_scales}, 0);
       }
 
       ++depth_cached_;
       depth_cache_keyframes_[pkf->fid_] = pkf;
 
-      // Add to gaussian model when cache is full
+      // Flush cache if full
       if (depth_cached_ >= max_depth_cached_ && initial_mapped_) {
-        // std::cout << "Depth cache is full, adding points to the model"
-        //           << std::endl;
         depth_cached_ = 0;
         std::unique_lock<std::mutex> lock_render(mutex_render_);
-        addPoints(depth_cache_points_, depth_cache_colors_,
+        addPoints(depth_cache_points_, depth_cache_colors_, depth_cache_scales_,
                   depth_cache_keyframes_);
         depth_cache_keyframes_.clear();
+        depth_cache_scales_ = torch::empty(0);
       }
 
     } break;
     case RGBD: {
       // Get original image dimensions
-      int height = pkf->img_undist_.rows;
-      int width = pkf->img_undist_.cols;
-
       cv::cuda::GpuMat img_rgb_gpu, img_depth_gpu;
-
-      // Upload images
       img_rgb_gpu.upload(pkf->img_undist_);
       img_depth_gpu.upload(pkf->img_auxiliary_undist_);
 
-      // Convert to torch tensors
       torch::Tensor rgb =
           tensor_utils::cvGpuMat2TorchTensor_Float32(img_rgb_gpu);
-      rgb = rgb.permute({1, 2, 0}).flatten(0, 1).contiguous();
-
       torch::Tensor depth =
           tensor_utils::cvGpuMat2TorchTensor_Float32(img_depth_gpu);
 
-      // saveColorizedDepthMap(
-      //     depth, depth.size(0), depth.size(1),
-      //     "/workspaces/large_scale_gaussian_slam/debug_depth_colorized.png",
-      //     0.0f, 100.0f);
-      depth = depth.flatten(0, 1).contiguous();
+      // Use new sampling method
+      auto [sample_mask, sampled_scales] =
+          sampleGaussianPrimitives(rgb, depth, pkf);
 
-      // Create validity mask
-      torch::Tensor point_valid_flags = torch::full(
-          {depth.size(0)}, true,
-          torch::TensorOptions().dtype(torch::kBool).device(device_type_));
+      // Flatten for indexing
+      sample_mask = sample_mask.flatten();
+      depth = depth.flatten();
+      rgb = rgb.permute({1, 2, 0}).flatten(0, 1);
 
-      // Filter by depth range
-      point_valid_flags = torch::logical_and(
-          point_valid_flags, torch::where(depth > min_depth_, true, false));
-      point_valid_flags = torch::logical_and(
-          point_valid_flags, torch::where(depth < max_depth_, true, false));
+      // Get sampled points
+      torch::Tensor sampled_depth = depth.index({sample_mask});
+      torch::Tensor sampled_colors = rgb.index({sample_mask});
 
-      // Optional subsampling for managing density
-      if (depth_densify_subsample_ratio_ < 1.0f) {
-        torch::Tensor random_mask =
-            torch::rand_like(point_valid_flags.to(torch::kFloat)) <
-            depth_densify_subsample_ratio_;
-        point_valid_flags = torch::logical_and(point_valid_flags, random_mask);
-      }
-
-      torch::Tensor colors_valid = rgb.index({point_valid_flags});
-
-      // Reproject to get 3D points
-      torch::Tensor points3D_valid;
+      // Reproject to 3D
       Camera& camera = scene_->cameras_.at(pkf->camera_id_);
+      torch::Tensor points3D = reprojectDepthPinhole(
+          depth, sample_mask, pkf->intr_, pkf->image_width_);
+      points3D = points3D.index({sample_mask});
 
-      switch (camera.model_id_) {
-        case Camera::PINHOLE: {
-          points3D_valid = reprojectDepthPinhole(depth, point_valid_flags,
-                                                 pkf->intr_, width);
-        } break;
-        case Camera::FISHEYE: {
-          // TODO: support fisheye camera?
-          throw std::runtime_error(
-              "[Gaussian Mapper]Fisheye cameras are not supported "
-              "currently!");
-        } break;
-        default: {
-          throw std::runtime_error("[Gaussian Mapper]Invalid camera model!");
-        } break;
-      }
-
-      // Extract only valid points
-      points3D_valid = points3D_valid.index({point_valid_flags});
-
-      // Transform points to world coordinate
+      // Transform to world coordinates
       torch::Tensor Twc_tensor =
           tensor_utils::EigenMatrix2TorchTensor(Twc.matrix(), device_type_)
               .transpose(0, 1);
-      // std::cout << Twc_tensor << std::endl;
-      transformPoints(points3D_valid, Twc_tensor);
+      transformPoints(points3D, Twc_tensor);
 
-      // visualizePointCloud(
-      //     points3D_valid, colors_valid,
-      //     "/workspaces/large_scale_gaussian_slam/debug_pcd.ply");
-
-      // Add new points to the cache
+      // Add to cache with scales
       if (depth_cached_ == 0) {
-        depth_cache_points_ = points3D_valid;
-        depth_cache_colors_ = colors_valid;
+        depth_cache_points_ = points3D;
+        depth_cache_colors_ = sampled_colors;
+        depth_cache_scales_ = sampled_scales;  // Add this member variable
       } else {
-        depth_cache_points_ =
-            torch::cat({depth_cache_points_, points3D_valid}, /*dim=*/0);
+        depth_cache_points_ = torch::cat({depth_cache_points_, points3D}, 0);
         depth_cache_colors_ =
-            torch::cat({depth_cache_colors_, colors_valid}, /*dim=*/0);
+            torch::cat({depth_cache_colors_, sampled_colors}, 0);
+        depth_cache_scales_ =
+            torch::cat({depth_cache_scales_, sampled_scales}, 0);
       }
 
       ++depth_cached_;
@@ -2648,10 +2560,11 @@ void GaussianMapper::increasePcdByDepthReconstruction(
         //           << std::endl;
         depth_cached_ = 0;
         std::unique_lock<std::mutex> lock_render(mutex_render_);
-        addPoints(depth_cache_points_, depth_cache_colors_,
+        addPoints(depth_cache_points_, depth_cache_colors_, depth_cache_scales_,
                   depth_cache_keyframes_);
         depth_cache_keyframes_.clear();
       }
+
     } break;
     default: {
       throw std::runtime_error("[Gaussian Mapper]Unsupported sensor type!");
@@ -3523,6 +3436,7 @@ void GaussianMapper::initializeChunkManagement() {
 void GaussianMapper::addPoints(
     const torch::Tensor& points,
     const torch::Tensor& colors,
+    const torch::Tensor& scales,
     std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> keyframes) {
   // std::cout << "addPoints called in GaussianMapper" << std::endl;
   // Make sure chunk manager has current iteration
@@ -3535,7 +3449,7 @@ void GaussianMapper::addPoints(
   // std::endl;
 
   // Delegate to chunk manager
-  chunk_manager_->addPointsToChunks(points, colors, keyframes,
+  chunk_manager_->addPointsToChunks(points, colors, scales, keyframes,
                                     scene_->cameras_extent_);
 }
 
@@ -4439,7 +4353,8 @@ void GaussianMapper::initializeMapFromExternal() {
     scene_->cameras_extent_ = std::get<1>(scene_->getNerfppNorm());
     std::cout << "Scene extent: " << scene_->cameras_extent_ << std::endl;
     std::cout << "Adding initial points\n";
-    addPoints(depth_cache_points_, depth_cache_colors_, scene_->keyframes());
+    addPoints(depth_cache_points_, depth_cache_colors_, depth_cache_scales_,
+              scene_->keyframes());
     // visualizePointCloud(depth_cache_points_, depth_cache_colors_,
     //                     "/workspaces/large_scale_gaussian_slam/debug_pcd.ply");
 
@@ -4690,10 +4605,6 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
     // Generate point cloud after releasing the lock
     // std::cout << "[ProcessFrame] Generating point cloud..." << std::endl;
 
-    assert(isdoingDepthDensify() &&
-           "Depth densification needs to be enabled for external mode!");
-    increasePcdByDepthReconstruction(new_kf);
-
     // Prepare multi resolution images for training
     if (device_type_ == torch::kCUDA) {
       cv::cuda::GpuMat img_gpu;
@@ -4765,6 +4676,10 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
     } else {
       // std::cout << "RGBD data not available" << std::endl;
     }
+
+    assert(isdoingDepthDensify() &&
+           "Depth densification needs to be enabled for external mode!");
+    increasePcdByDepthReconstruction(new_kf);
 
     keyframe_queue_->notifyNewKeyframeAdded(new_kf);
 
@@ -4937,4 +4852,102 @@ void GaussianMapper::visualizeDepthReconstruction(
       depth_only);
 
   std::cout << "Saved depth visualization to " << save_path << std::endl;
+}
+
+torch::Tensor GaussianMapper::computeLoGProbability(
+    const torch::Tensor& image) {
+  // Convert to grayscale if needed
+  std::cout << image.sizes() << std::endl;
+  torch::Tensor weights = torch::tensor({0.299, 0.587, 0.114}, image.options());
+  torch::Tensor gray = torch::sum(image * weights.view({3, 1, 1}), 0, true);
+
+  // Apply LoG filter
+  torch::Tensor log_response = torch::nn::functional::conv2d(
+      gray.unsqueeze(0), log_kernel_,
+      torch::nn::functional::Conv2dFuncOptions().padding(log_kernel_.size(2) /
+                                                         2));
+
+  // Take absolute value and normalize
+  log_response = log_response.squeeze(0).abs();
+  torch::Tensor max_val = log_response.max();
+  if (max_val.item<float>() > 0) {
+    log_response = log_response / max_val;
+  }
+
+  return log_response.clamp(0, 1);
+}
+
+std::tuple<torch::Tensor, torch::Tensor>
+GaussianMapper::sampleGaussianPrimitives(
+    const torch::Tensor& rgb_image,
+    const torch::Tensor& depth_image,
+    std::shared_ptr<GaussianKeyframe> pkf) {
+  torch::NoGradGuard no_grad;
+
+  // Step 1: Compute initial probability based on image gradients
+  torch::Tensor prob_L = computeLoGProbability(rgb_image);
+
+  // Step 2: Render current view and compute penalty
+  torch::Tensor prob_penalty;
+  if (initial_mapped_) {
+    // Render from current viewpoint
+    std::unique_lock<std::mutex> lock_render(mutex_render_);
+    std::vector<std::shared_ptr<Chunk>> visible_chunks =
+        chunk_manager_->loadVisibleChunks(pkf, true);
+    std::vector<std::shared_ptr<GaussianModel>> models;
+    models.reserve(visible_chunks.size());
+    for (const auto& chunk : visible_chunks) {
+      // std::cout << chunk->getCoord().x << " " << chunk->getCoord().y << " "
+      //           << chunk->getCoord().z << std::endl;
+      if (chunk && chunk->getGaussians()) {
+        models.push_back(chunk->getGaussians());
+      } else {
+        throw std::runtime_error("Chunk/Gaussians are null");
+      }
+    }
+    auto render_pkg = GaussianRenderer::render(
+        models, pkf, pkf->image_height_, pkf->image_width_, pipe_params_,
+        background_, override_color_, 1.0f, false, pkf->FoVx_, pkf->FoVy_,
+        pkf->world_view_transform_, pkf->full_proj_transform_,
+        pkf->camera_center_);
+
+    torch::Tensor rendered_image = std::get<1>(render_pkg);
+
+    // Compute LoG on rendered image
+    prob_penalty = computeLoGProbability(rendered_image);
+  } else {
+    prob_penalty = torch::zeros_like(prob_L);
+  }
+
+  // Step 3: Final probability (Eq. 3 from paper)
+  torch::Tensor prob_s = (prob_L - prob_penalty).clamp_min(0);
+
+  // Step 4: Sample points based on probability
+  torch::Tensor random_mask = torch::rand_like(prob_s) < prob_s;
+
+  // // Optional: Subsample to control density
+  // if (depth_densify_subsample_ratio_ < 1.0f) {
+  //   torch::Tensor subsample_mask =
+  //       torch::rand_like(random_mask.to(torch::kFloat)) <
+  //       depth_densify_subsample_ratio_;
+  //   random_mask = random_mask & subsample_mask;
+  // }
+
+  // Get valid depth points
+  torch::Tensor valid_depth =
+      (depth_image > min_depth_) & (depth_image < max_depth_);
+  torch::Tensor final_mask = random_mask & valid_depth;
+
+  // Step 5: Compute expected scales based on probability (Eq. 4 from paper)
+  // s' = 1 / (2 * sqrt(P_L(x,y)))
+  torch::Tensor expected_scale_2d = 1.0f / (2.0f * torch::sqrt(prob_L + 1e-6f));
+
+  // Convert to 3D scale: s = z * s' / f
+  float focal = pkf->intr_[0];  // Assuming fx
+  torch::Tensor scale_3d = depth_image * expected_scale_2d / focal;
+
+  // Extract sampled scales
+  torch::Tensor sampled_scales = scale_3d.index({final_mask});
+
+  return std::make_tuple(final_mask, sampled_scales);
 }

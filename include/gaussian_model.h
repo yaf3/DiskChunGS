@@ -85,10 +85,12 @@ class GaussianModel {
 
   void createFromPcd(const torch::Tensor& fused_point_cloud,
                      const torch::Tensor& color,
+                     const torch::Tensor& new_scales,
                      const float spatial_lr_scale);
 
   void increasePcd(const torch::Tensor& new_point_cloud,
                    const torch::Tensor& new_colors,
+                   const torch::Tensor& new_scales,
                    const int iteration);
 
   void applyScaledTransformation(
@@ -120,6 +122,8 @@ class GaussianModel {
   torch::Tensor replaceTensorToOptimizer(torch::Tensor& t, int tensor_idx);
 
   void prunePoints(torch::Tensor& mask);
+
+  void prune(float min_opacity, float extent, int max_screen_size);
 
   void densificationPostfix(torch::Tensor& new_xyz,
                             torch::Tensor& new_features_dc,
