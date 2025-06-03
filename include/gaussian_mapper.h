@@ -299,6 +299,10 @@ class GaussianMapper {
       const torch::Tensor &depth_image,
       std::shared_ptr<GaussianKeyframe> pkf);
 
+  torch::Tensor densify_depth_morphological(const torch::Tensor &depth_map,
+                                            float invalid_threshold = 0.0f,
+                                            int dilation_size = 3);
+
  private:
   // Updated function declarations:
   std::shared_ptr<GaussianKeyframe> selectLocalityAwareKeyframe();

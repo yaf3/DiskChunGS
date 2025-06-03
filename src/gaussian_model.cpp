@@ -133,7 +133,7 @@ void GaussianModel::createFromPcd(const torch::Tensor& fused_point_cloud,
   torch::Tensor scales;
   if (new_scales.defined() && new_scales.size(0) > 0) {
     // Use provided scales, convert to log space and repeat for 3 dimensions
-    scales = torch::log(new_scales.unsqueeze(1).repeat({1, 3}));
+    scales = new_scales;
   } else {
     torch::Tensor dist2 =
         torch::clamp_min(distCUDA2(point_cloud_copy), 0.0000001);
@@ -205,8 +205,7 @@ void GaussianModel::increasePcd(const torch::Tensor& new_point_cloud,
 
   torch::Tensor scales;
   if (new_scales.defined() && new_scales.size(0) > 0) {
-    // Use provided scales, convert to log space and repeat for 3 dimensions
-    scales = torch::log(new_scales.unsqueeze(1).repeat({1, 3}));
+    scales = new_scales;
   } else {
     torch::Tensor dist2 =
         torch::clamp_min(distCUDA2(new_point_cloud.clone()), 0.0000001);

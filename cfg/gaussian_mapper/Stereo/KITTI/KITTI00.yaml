@@ -11,7 +11,7 @@ Mapper.min_depth_: 2.0
 Mapper.max_depth_: 40.0
 Mapper.inactive_geo_densify: 1  # 0:false, 1 or other integer:true
 Mapper.depth_densify: 1  # 0:false, 1 or other integer:true
-Mapper.depth_cache: 10
+Mapper.depth_cache: 0
 Mapper.keyframe_similarity_threshold: 30.0
 Mapper.keyframe_selection_strategy: 1 # 0:all, 1:recent k
 Mapper.min_num_initial_map_kfs: 10
