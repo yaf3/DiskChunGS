@@ -52,6 +52,22 @@ find_package(glfw3 REQUIRED)
 find_package(realsense2)
 find_package(OpenMP REQUIRED)
 
+# Find ONNX Runtime
+find_library(ONNXRUNTIME_LIB 
+    NAMES onnxruntime
+    PATHS /usr/local/lib /usr/lib
+    REQUIRED
+)
+
+find_path(ONNXRUNTIME_INCLUDE_DIR 
+    NAMES onnxruntime_cxx_api.h
+    PATHS /usr/local/include /usr/include
+    REQUIRED
+)
+
+message(STATUS "Found ONNX Runtime headers: ${ONNXRUNTIME_INCLUDE_DIR}")
+message(STATUS "Found ONNX Runtime library: ${ONNXRUNTIME_LIB}")
+
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS} -pthread ${OpenMP_CXX_FLAGS}")
 
 set(ORB_SLAM3_SOURCE_DIR "${PROJECT_SOURCE_DIR}/slam_deps/ORB-SLAM3")
@@ -175,6 +191,8 @@ add_library(
     include/keyframe_selection.h
     include/nanoflann.hpp
     include/debugging_utils.h
+    include/foundation_stereo.h
+    include/FastACVNet.h
     src/gaussian_keyframe.cpp
     src/gaussian_model.cpp
     src/gaussian_parameters.cpp
@@ -186,6 +204,7 @@ add_library(
     src/render_flythrough.cpp
     src/keyframe_selection.cpp
     src/debugging_utils.cpp
+    src/FastACVNet.cpp
 )
 target_link_libraries(
     gaussian_mapper
@@ -197,6 +216,7 @@ target_link_libraries(
     simple_knn
     cuda_rasterizer
     OpenMP::OpenMP_CXX
+    ${ONNXRUNTIME_LIB}
 )
 
 ##################################################################################
@@ -296,6 +316,30 @@ target_link_libraries(kitti_rgbd
     gaussian_viewer    
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
+
+# Foundation Stereo Test
+# add_executable(test_foundation_stereo examples/test_foundation_stereo.cpp)
+# target_link_libraries(test_foundation_stereo
+#     ${ONNXRUNTIME_LIB}
+#     gaussian_viewer    
+#     gaussian_mapper
+#     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
+
+# ACVNET Stereo Test
+add_executable(test_acvnet examples/test_acvnet.cpp)
+target_link_libraries(test_acvnet
+    ${ONNXRUNTIME_LIB}
+    gaussian_viewer    
+    gaussian_mapper
+    ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
+
+# ACVNET Stereo Test
+# add_executable(inspect_onnx examples/inspect_onnx.cpp)
+# target_link_libraries(inspect_onnx
+#     ${ONNXRUNTIME_LIB}
+#     gaussian_viewer    
+#     gaussian_mapper
+#     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
 
 ##################################################################################
 ##  Build the mapping examples to ${PROJECT_SOURCE_DIR}/bin

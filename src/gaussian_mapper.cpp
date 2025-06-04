@@ -146,6 +146,11 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
           this->stereo_min_disparity_, this->stereo_num_disparity_);
       this->stereo_Q_ = pSLAM->getSettings()->Q().clone();
       stereo_Q_.convertTo(stereo_Q_, CV_32FC3, 1.0);
+
+      cv::Size model_resolution(1280, 384);
+      std::string model_path = "./models/fast_acvnet_plus_onnx_gridsample/fast_acvnet_plus_kitti_2015_opset16_" + 
+      std::to_string(model_resolution.height) + "x" + std::to_string(model_resolution.width) + ".onnx";
+      this->depth_estimator_ = std::make_shared<FastACVNet>(model_path);
     } break;
     case ORB_SLAM3::System::RGBD:
     case ORB_SLAM3::System::IMU_RGBD: {
@@ -787,7 +792,7 @@ void GaussianMapper::run() {
 
         if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
           pkf->setupStereoData(stereo_baseline_length_, device_type_,
-                               stereo_cv_sgm_, min_depth_, max_depth_);
+            depth_estimator_, min_depth_, max_depth_);
         } else {
           // std::cout << "Stereo data not available" << std::endl;
         }
@@ -1204,6 +1209,17 @@ void GaussianMapper::trainForOneIteration() {
     auto rendered_depth = std::get<0>(render_pkg);
     auto Ll1_depth = loss_utils::l1_depth_loss(rendered_depth, gt_depth);
     loss += lambda_depth * Ll1_depth;
+
+    if (getIteration() % 100 == 0) {
+      std::string render_filename = "./debug_stereo/rendered_depth_" + std::to_string(viewpoint_cam->fid_) + ".png";
+      colorize_and_save_depth(rendered_depth.detach().cpu(),
+      render_filename,
+                                min_depth_, max_depth_);
+      std::string gt_filename = "./debug_stereo/gt_depth_" + std::to_string(viewpoint_cam->fid_) + ".png";
+      colorize_and_save_depth(gt_depth.detach().cpu(),
+      gt_filename,
+                                min_depth_, max_depth_);
+    }
   }
 
   // std::cout << "Ll1: " << Ll1.item<float>() << std::endl;
@@ -1283,22 +1299,22 @@ void GaussianMapper::trainForOneIteration() {
     }
   }
 
-  // float iso_reg_weight = 1.0f;  // Adjust as needed
-  // for (const auto& gaussians : models) {
-  //   // Get scaling
-  //   torch::Tensor scaling = gaussians->getScalingActivation();
+  float iso_reg_weight = 0.1f;  // Adjust as needed
+  for (const auto& gaussians : models) {
+    // Get scaling
+    torch::Tensor scaling = gaussians->getScalingActivation();
 
-  //   // Calculate mean scaling for each Gaussian
-  //   torch::Tensor mean_scale = scaling.mean(1, /*keepdim=*/true);
+    // Calculate mean scaling for each Gaussian
+    torch::Tensor mean_scale = scaling.mean(1, /*keepdim=*/true);
 
-  //   // Calculate L1 distance from each scaling component to the mean
-  //   // This penalizes primitives with high aspect ratio as in Eq. (9)
-  //   torch::Tensor iso_penalty = (scaling - mean_scale).abs().sum(1).mean();
+    // Calculate L1 distance from each scaling component to the mean
+    // This penalizes primitives with high aspect ratio as in Eq. (9)
+    torch::Tensor iso_penalty = (scaling - mean_scale).abs().sum(1).mean();
 
-  //   // Add weighted regularization term to loss
-  //   loss += iso_reg_weight * iso_penalty;
-  //   std::cout << "iso_penalty: " << iso_penalty.item<float>() << std::endl;
-  // }
+    // Add weighted regularization term to loss
+    loss += iso_reg_weight * iso_penalty;
+    // std::cout << "iso_penalty: " << iso_penalty.item<float>() << std::endl;
+  }
 
   timer_loss_calculation.stop();
 
@@ -2015,7 +2031,7 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   }
 
   if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
-    pkf->setupStereoData(stereo_baseline_length_, device_type_, stereo_cv_sgm_,
+    pkf->setupStereoData(stereo_baseline_length_, device_type_, depth_estimator_,
                          min_depth_, max_depth_);
   } else {
     // std::cout << "Stereo data not available" << std::endl;
@@ -2431,9 +2447,19 @@ void GaussianMapper::increasePcdByDepthReconstruction(
 
       // Get the precomputed stereo depth
       torch::Tensor stereo_depth = pkf->depth_image_;
+      torch::Tensor depth = stereo_depth;
+
+      std::filesystem::create_directories("./debug_stereo");
+      colorize_and_save_depth(stereo_depth.detach().cpu(),
+                              "./debug_stereo/depth_stereo.png",
+                              min_depth_, max_depth_);
 
       // Optional: Densify sparse depth using simple inpainting
-      torch::Tensor depth = densify_depth_morphological(stereo_depth, 0.0f, 5);
+      // torch::Tensor depth = densify_depth_morphological(stereo_depth, 0.0f, 5);
+
+      // colorize_and_save_depth(depth.detach().cpu(),
+      //                         "./debug_stereo/depth_stereo_densified.png",
+      //                         min_depth_, max_depth_);
 
       // Step 1: Compute initial probability based on image gradients
       torch::Tensor prob_L = computeLoGProbability(rgb);
@@ -4765,7 +4791,7 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
 
     if (sensor_type_ == STEREO && !depth_or_right_image.empty()) {
       new_kf->setupStereoData(stereo_baseline_length_, device_type_,
-                              stereo_cv_sgm_, min_depth_, max_depth_);
+        depth_estimator_, min_depth_, max_depth_);
     }
 
     if (sensor_type_ == RGBD && !new_kf->img_auxiliary_undist_.empty()) {

@@ -57,3 +57,4 @@ data
 gs_render.egg-info
 dist
 cfg/gaussian_mapper/Stereo/KITTI/runs
+models

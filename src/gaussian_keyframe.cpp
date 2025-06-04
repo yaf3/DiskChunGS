@@ -284,9 +284,10 @@ torch::Tensor GaussianKeyframe::applyAppearanceTransform(
 void GaussianKeyframe::setupStereoData(
     float baseline,
     torch::DeviceType device_type,
-    cv::Ptr<cv::cuda::StereoSGM> stereo_cv_sgm,
+    std::shared_ptr<FastACVNet> depth_estimator,
     float min_depth,
-    float max_depth) {
+    float max_depth
+  ) {
   if (img_auxiliary_undist_.empty()) {
     return;  // No stereo image available
   }
@@ -336,77 +337,60 @@ void GaussianKeyframe::setupStereoData(
     this->right_original_image_ =
         tensor_utils::cvGpuMat2TorchTensor_Float32(right_gpu);
 
-    // Create disparity and compute depth image
-    cv::cuda::GpuMat gray_left_gpu, gray_right_gpu;
-    cv::cuda::GpuMat left_gpu;
-    left_gpu.upload(this->img_undist_);
 
-    // Convert to grayscale for disparity computation
-    cv::cuda::cvtColor(left_gpu, gray_left_gpu, cv::COLOR_RGB2GRAY);
-    cv::cuda::cvtColor(right_gpu, gray_right_gpu, cv::COLOR_RGB2GRAY);
+    // FIX: Convert float32 [0,1] images to uint8 [0,255] images
+    cv::Mat left_img_uint8, right_img_uint8;
+    this->img_undist_.convertTo(left_img_uint8, CV_8UC3, 255.0);
+    this->img_auxiliary_undist_.convertTo(right_img_uint8, CV_8UC3, 255.0);
 
-    // Convert to uint8 required by stereo algorithm
-    gray_left_gpu.convertTo(gray_left_gpu, CV_8UC1, 255.0);
-    gray_right_gpu.convertTo(gray_right_gpu, CV_8UC1, 255.0);
 
-    // Compute disparity
-    cv::cuda::GpuMat disparity_gpu;
-    // Assuming stereo_cv_sgm_ is accessible through external function
-    stereo_cv_sgm->compute(gray_left_gpu, gray_right_gpu, disparity_gpu);
-    disparity_gpu.convertTo(disparity_gpu, CV_32F, 1.0 / 16.0);
+    // Verify conversion worked
+    // std::cout << "Converted left image - Type: " << left_img_uint8.type() 
+    //           << " Size: " << left_img_uint8.size() << std::endl;
+    // double min_val, max_val;
+    // cv::minMaxLoc(left_img_uint8, &min_val, &max_val);
+    // std::cout << "Converted left image range: " << min_val << " to " << max_val << std::endl;
 
-    // Convert disparity to depth
-    float focal_length = this->intr_[0];  // fx
-    float bf = baseline * focal_length;  // baseline * focal_length (stereo_bf_)
+    // Now estimate depth with properly formatted images
+    cv::Mat depth = depth_estimator->estimate_metric_depth(
+        left_img_uint8, right_img_uint8, this->intr_[0], baseline);
 
-    // Create a valid disparity mask (disparity > 0.1)
-    cv::cuda::GpuMat valid_mask;
-    cv::cuda::threshold(disparity_gpu, valid_mask, 0.1, 1.0, cv::THRESH_BINARY);
-    valid_mask.convertTo(valid_mask, CV_32F);
-
-    // Create constant bf matrix
-    cv::cuda::GpuMat bf_mat(disparity_gpu.size(), CV_32FC1, cv::Scalar(bf));
-
-    // Compute depth = bf / disparity for valid disparities
-    cv::cuda::GpuMat depth_gpu(disparity_gpu.size(), CV_32FC1);
-    cv::cuda::divide(bf_mat, disparity_gpu, depth_gpu);
-
-    // Apply valid mask to eliminate invalid disparities
-    cv::cuda::multiply(depth_gpu, valid_mask, depth_gpu);
-
-    // Create min/max depth masks and apply them
-    cv::cuda::GpuMat min_depth_mask, max_depth_mask;
-    cv::cuda::threshold(depth_gpu, min_depth_mask, min_depth, 1.0,
+    cv::Mat min_depth_mask, max_depth_mask;
+    cv::threshold(depth, min_depth_mask, min_depth, 1.0,
                         cv::THRESH_BINARY);
-    cv::cuda::threshold(depth_gpu, max_depth_mask, max_depth, 1.0,
+    cv::threshold(depth, max_depth_mask, max_depth, 1.0,
                         cv::THRESH_BINARY_INV);
 
-    // 2. Create a mask to exclude the top portion of the image (sky region)
-    cv::Mat cpu_height_mask(disparity_gpu.size(), CV_8UC1, cv::Scalar(0));
-    // Only keep the bottom 60% of the image (adjust this value based on your
-    // scenes)
-    int valid_start_y =
-        static_cast<int>(cpu_height_mask.rows * 0.4);  // Skip top 40%
-    cv::rectangle(cpu_height_mask, cv::Point(0, valid_start_y),
-                  cv::Point(cpu_height_mask.cols, cpu_height_mask.rows),
-                  cv::Scalar(255), -1);
-
-    // Upload to GPU
-    cv::cuda::GpuMat height_mask;
-    height_mask.upload(cpu_height_mask);
-    height_mask.convertTo(height_mask, CV_32F, 1.0 / 255.0);
-
-    // Combine all masks
-    cv::cuda::GpuMat combined_mask;
-    cv::cuda::multiply(valid_mask, min_depth_mask, combined_mask);
-    cv::cuda::multiply(combined_mask, max_depth_mask, combined_mask);
-    cv::cuda::multiply(combined_mask, height_mask, combined_mask);
+    cv::Mat combined_mask;
+    cv::multiply(max_depth_mask, min_depth_mask, combined_mask);
 
     // Apply final mask to depth map
-    cv::cuda::multiply(depth_gpu, combined_mask, depth_gpu);
+    cv::cuda::multiply(depth, combined_mask, depth);
+    // Get some depth statistics
+    // if (!original_depth.empty()) {
+    //   double min_depth, max_depth;
+    //   cv::minMaxLoc(depth, &min_depth, &max_depth);
+    //   cv::Scalar mean_depth = cv::mean(depth);
+    //   std::cout << "Depth range: " << min_depth << " - " << max_depth << " meters" << std::endl;
+    //   std::cout << "Mean depth: " << mean_depth[0] << " meters" << std::endl;
+    // }
 
+    // float max_dist = 80;
+    // cv::Mat norm_depth_map = 255.0 * (1.0 - depth / max_dist);
+
+    // // Clamp values
+    // cv::threshold(norm_depth_map, norm_depth_map, 0, 0, cv::THRESH_TOZERO);
+    // cv::threshold(norm_depth_map, norm_depth_map, 255, 0, cv::THRESH_TOZERO_INV);
+                
+    // cv::Mat depth_8u;
+    // norm_depth_map.convertTo(depth_8u, CV_8U);
+    
+    // cv::Mat colored_depth;
+    // cv::applyColorMap(depth_8u, colored_depth, cv::COLORMAP_JET);
+
+    // cv::imwrite("kitti_depth_map_pipeline.png", colored_depth);
     // Store depth image as tensor
-    this->depth_image_ = tensor_utils::cvGpuMat2TorchTensor_Float32(depth_gpu);
+    this->depth_image_ = tensor_utils::cvMat2TorchTensor_Float32(depth, torch::kCUDA);
 
     // Also handle multi-resolution if needed
     if (!gaus_pyramid_original_image_.empty()) {

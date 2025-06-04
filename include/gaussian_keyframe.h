@@ -40,6 +40,7 @@
 #include "point2d.h"
 #include "tensor_utils.h"
 #include "types.h"
+#include "FastACVNet.h"
 
 class ExponentialLRScheduler {
  private:
@@ -139,7 +140,7 @@ class GaussianKeyframe {
 
   void setupStereoData(float baseline,
                        torch::DeviceType device_type,
-                       cv::Ptr<cv::cuda::StereoSGM> stereo_cv_sgm,
+                       std::shared_ptr<FastACVNet> depth_estimator,
                        float min_depth,
                        float max_depth);
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>

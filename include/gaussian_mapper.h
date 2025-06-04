@@ -55,6 +55,7 @@
 #include "operate_points.h"
 #include "stereo_vision.h"
 #include "tensor_utils.h"
+#include "FastACVNet.h"
 
 class ChunkManager;      // Forward declaration
 class KeyframeSelector;  // Forward declaration
@@ -421,6 +422,7 @@ class GaussianMapper {
 
   cv::Mat stereo_Q_;
   cv::Ptr<cv::cuda::StereoSGM> stereo_cv_sgm_;
+  std::shared_ptr<FastACVNet> depth_estimator_;
   float min_depth_ = 0.0f;
   float max_depth_ = 100.0f;
 

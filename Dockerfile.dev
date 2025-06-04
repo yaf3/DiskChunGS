@@ -17,10 +17,17 @@ RUN apt-get update && apt-get install -y \
     clang-format \
     && rm -rf /var/lib/apt/lists/*
 
+RUN wget https://github.com/microsoft/onnxruntime/releases/download/v1.18.1/onnxruntime-linux-x64-gpu-1.18.1.tgz && \
+    tar -xzf onnxruntime-linux-x64-gpu-1.18.1.tgz && \
+    rm onnxruntime-linux-x64-gpu-1.18.1.tgz && \
+    sudo cp -r onnxruntime-linux-x64-gpu-1.18.1/* /usr/local/ && \
+    rm -rf onnxruntime-linux-x64-gpu-1.18.1 && \
+    sudo ldconfig
+
 # Update library paths
 WORKDIR /workspace
 RUN echo "export LD_LIBRARY_PATH=/workspace/repo/slam_deps/ORB-SLAM3/lib:\$LD_LIBRARY_PATH" >> /root/.bashrc
-RUN echo "source /root/catkin_ws/devel/setup.bash" >> /root/.bashrc
+# RUN echo "source /root/catkin_ws/devel/setup.bash" >> /root/.bashrc
 
 # Create a welcome message with instructions
 RUN echo '#!/bin/bash' > /workspace/welcome.sh && \
