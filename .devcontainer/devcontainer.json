@@ -1,5 +1,5 @@
 {
-    "name": "LSGS Development",
+    "name": "DiskChunGS Development",
     "dockerComposeFile": "../docker-compose.yml",
     "service": "dev",
     "workspaceFolder": "/workspace",
@@ -19,7 +19,7 @@
             }
         }
     },
-    "postCreateCommand": "apt-get update && apt-get install -y gdb && pip install clang-format",
+    "postCreateCommand": "curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | apt-key add - && apt-get update && apt-get install -y gdb && pip install clang-format",
     "remoteUser": "root",
     "overrideCommand": false
 }
