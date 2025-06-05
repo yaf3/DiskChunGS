@@ -286,8 +286,7 @@ void GaussianKeyframe::setupStereoData(
     torch::DeviceType device_type,
     std::shared_ptr<FastACVNet> depth_estimator,
     float min_depth,
-    float max_depth
-  ) {
+    float max_depth) {
   if (img_auxiliary_undist_.empty()) {
     return;  // No stereo image available
   }
@@ -337,61 +336,6 @@ void GaussianKeyframe::setupStereoData(
     this->right_original_image_ =
         tensor_utils::cvGpuMat2TorchTensor_Float32(right_gpu);
 
-
-    // FIX: Convert float32 [0,1] images to uint8 [0,255] images
-    cv::Mat left_img_uint8, right_img_uint8;
-    this->img_undist_.convertTo(left_img_uint8, CV_8UC3, 255.0);
-    this->img_auxiliary_undist_.convertTo(right_img_uint8, CV_8UC3, 255.0);
-
-
-    // Verify conversion worked
-    // std::cout << "Converted left image - Type: " << left_img_uint8.type() 
-    //           << " Size: " << left_img_uint8.size() << std::endl;
-    // double min_val, max_val;
-    // cv::minMaxLoc(left_img_uint8, &min_val, &max_val);
-    // std::cout << "Converted left image range: " << min_val << " to " << max_val << std::endl;
-
-    // Now estimate depth with properly formatted images
-    cv::Mat depth = depth_estimator->estimate_metric_depth(
-        left_img_uint8, right_img_uint8, this->intr_[0], baseline);
-
-    cv::Mat min_depth_mask, max_depth_mask;
-    cv::threshold(depth, min_depth_mask, min_depth, 1.0,
-                        cv::THRESH_BINARY);
-    cv::threshold(depth, max_depth_mask, max_depth, 1.0,
-                        cv::THRESH_BINARY_INV);
-
-    cv::Mat combined_mask;
-    cv::multiply(max_depth_mask, min_depth_mask, combined_mask);
-
-    // Apply final mask to depth map
-    cv::cuda::multiply(depth, combined_mask, depth);
-    // Get some depth statistics
-    // if (!original_depth.empty()) {
-    //   double min_depth, max_depth;
-    //   cv::minMaxLoc(depth, &min_depth, &max_depth);
-    //   cv::Scalar mean_depth = cv::mean(depth);
-    //   std::cout << "Depth range: " << min_depth << " - " << max_depth << " meters" << std::endl;
-    //   std::cout << "Mean depth: " << mean_depth[0] << " meters" << std::endl;
-    // }
-
-    // float max_dist = 80;
-    // cv::Mat norm_depth_map = 255.0 * (1.0 - depth / max_dist);
-
-    // // Clamp values
-    // cv::threshold(norm_depth_map, norm_depth_map, 0, 0, cv::THRESH_TOZERO);
-    // cv::threshold(norm_depth_map, norm_depth_map, 255, 0, cv::THRESH_TOZERO_INV);
-                
-    // cv::Mat depth_8u;
-    // norm_depth_map.convertTo(depth_8u, CV_8U);
-    
-    // cv::Mat colored_depth;
-    // cv::applyColorMap(depth_8u, colored_depth, cv::COLORMAP_JET);
-
-    // cv::imwrite("kitti_depth_map_pipeline.png", colored_depth);
-    // Store depth image as tensor
-    this->depth_image_ = tensor_utils::cvMat2TorchTensor_Float32(depth, torch::kCUDA);
-
     // Also handle multi-resolution if needed
     if (!gaus_pyramid_original_image_.empty()) {
       gaus_pyramid_right_original_image_.resize(num_gaus_pyramid_sub_levels_);
@@ -417,6 +361,91 @@ void GaussianKeyframe::setupStereoData(
                    cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]));
         gaus_pyramid_right_original_image_[l] =
             tensor_utils::cvMat2TorchTensor_Float32(img_resized, device_type);
+      }
+    }
+  }
+
+  // FIX: Convert float32 [0,1] images to uint8 [0,255] images
+  cv::Mat left_img_uint8, right_img_uint8;
+  this->img_undist_.convertTo(left_img_uint8, CV_8UC3, 255.0);
+  this->img_auxiliary_undist_.convertTo(right_img_uint8, CV_8UC3, 255.0);
+
+  // Verify conversion worked
+  // std::cout << "Converted left image - Type: " << left_img_uint8.type()
+  //           << " Size: " << left_img_uint8.size() << std::endl;
+  // double min_val, max_val;
+  // cv::minMaxLoc(left_img_uint8, &min_val, &max_val);
+  // std::cout << "Converted left image range: " << min_val << " to " << max_val
+  // << std::endl;
+
+  // Now estimate depth with properly formatted images
+  cv::Mat depth = depth_estimator->estimate_metric_depth(
+      left_img_uint8, right_img_uint8, this->intr_[0], baseline);
+
+  cv::Mat min_depth_mask, max_depth_mask;
+  cv::threshold(depth, min_depth_mask, min_depth, 1.0, cv::THRESH_BINARY);
+  cv::threshold(depth, max_depth_mask, max_depth, 1.0, cv::THRESH_BINARY_INV);
+
+  cv::Mat combined_mask;
+  cv::multiply(max_depth_mask, min_depth_mask, combined_mask);
+
+  // Apply final mask to depth map
+  cv::cuda::multiply(depth, combined_mask, depth);
+  // Get some depth statistics
+  // if (!original_depth.empty()) {
+  //   double min_depth, max_depth;
+  //   cv::minMaxLoc(depth, &min_depth, &max_depth);
+  //   cv::Scalar mean_depth = cv::mean(depth);
+  //   std::cout << "Depth range: " << min_depth << " - " << max_depth << "
+  //   meters" << std::endl; std::cout << "Mean depth: " << mean_depth[0] << "
+  //   meters" << std::endl;
+  // }
+
+  // float max_dist = 80;
+  // cv::Mat norm_depth_map = 255.0 * (1.0 - depth / max_dist);
+
+  // // Clamp values
+  // cv::threshold(norm_depth_map, norm_depth_map, 0, 0, cv::THRESH_TOZERO);
+  // cv::threshold(norm_depth_map, norm_depth_map, 255, 0,
+  // cv::THRESH_TOZERO_INV);
+
+  // cv::Mat depth_8u;
+  // norm_depth_map.convertTo(depth_8u, CV_8U);
+
+  // cv::Mat colored_depth;
+  // cv::applyColorMap(depth_8u, colored_depth, cv::COLORMAP_JET);
+
+  // cv::imwrite("kitti_depth_map_pipeline.png", colored_depth);
+  // Store depth image as tensor
+  this->depth_image_ =
+      tensor_utils::cvMat2TorchTensor_Float32(depth, torch::kCUDA);
+
+  // Create multi-resolution depth images for pyramid training
+  if (!gaus_pyramid_original_image_.empty()) {
+    gaus_pyramid_depth_image_.resize(num_gaus_pyramid_sub_levels_);
+
+    if (device_type == torch::kCUDA) {
+      cv::cuda::GpuMat depth_gpu;
+      depth_gpu.upload(depth);
+
+      for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
+        cv::cuda::GpuMat depth_resized;
+        // Use INTER_NEAREST for depth to avoid interpolation artifacts
+        cv::cuda::resize(
+            depth_gpu, depth_resized,
+            cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]), 0, 0,
+            cv::INTER_NEAREST);
+        gaus_pyramid_depth_image_[l] =
+            tensor_utils::cvGpuMat2TorchTensor_Float32(depth_resized);
+      }
+    } else {
+      for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
+        cv::Mat depth_resized;
+        cv::resize(depth, depth_resized,
+                   cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]), 0,
+                   0, cv::INTER_NEAREST);
+        gaus_pyramid_depth_image_[l] =
+            tensor_utils::cvMat2TorchTensor_Float32(depth_resized, device_type);
       }
     }
   }

@@ -148,8 +148,11 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
       stereo_Q_.convertTo(stereo_Q_, CV_32FC3, 1.0);
 
       cv::Size model_resolution(1280, 384);
-      std::string model_path = "./models/fast_acvnet_plus_onnx_gridsample/fast_acvnet_plus_kitti_2015_opset16_" + 
-      std::to_string(model_resolution.height) + "x" + std::to_string(model_resolution.width) + ".onnx";
+      std::string model_path =
+          "./models/fast_acvnet_plus_onnx_gridsample/"
+          "fast_acvnet_plus_kitti_2015_opset16_" +
+          std::to_string(model_resolution.height) + "x" +
+          std::to_string(model_resolution.width) + ".onnx";
       this->depth_estimator_ = std::make_shared<FastACVNet>(model_path);
     } break;
     case ORB_SLAM3::System::RGBD:
@@ -792,23 +795,50 @@ void GaussianMapper::run() {
 
         if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
           pkf->setupStereoData(stereo_baseline_length_, device_type_,
-            depth_estimator_, min_depth_, max_depth_);
-        } else {
-          // std::cout << "Stereo data not available" << std::endl;
-        }
-
-        if (sensor_type_ == RGBD && !pkf->img_auxiliary_undist_.empty()) {
-          // Preprocess and store right image tensor
+                               depth_estimator_, min_depth_, max_depth_);
+        } else if (sensor_type_ == RGBD &&
+                   !pkf->img_auxiliary_undist_.empty()) {
+          // Preprocess and store depth image tensor
           if (device_type_ == torch::kCUDA) {
             cv::cuda::GpuMat depth_gpu;
             depth_gpu.upload(pkf->img_auxiliary_undist_);
             pkf->depth_image_ =
                 tensor_utils::cvGpuMat2TorchTensor_Float32(depth_gpu);
+
+            // Create depth pyramid for initial keyframes
+            if (do_gaus_pyramid_training_) {
+              pkf->gaus_pyramid_depth_image_.resize(
+                  num_gaus_pyramid_sub_levels_);
+              for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
+                cv::cuda::GpuMat depth_resized;
+                cv::cuda::resize(depth_gpu, depth_resized,
+                                 cv::Size(pkf->gaus_pyramid_width_[l],
+                                          pkf->gaus_pyramid_height_[l]),
+                                 0, 0, cv::INTER_NEAREST);
+                pkf->gaus_pyramid_depth_image_[l] =
+                    tensor_utils::cvGpuMat2TorchTensor_Float32(depth_resized);
+              }
+            }
           } else {
-            // Do nothing right now
+            // CPU version
+            pkf->depth_image_ = tensor_utils::cvMat2TorchTensor_Float32(
+                pkf->img_auxiliary_undist_, device_type_);
+
+            if (do_gaus_pyramid_training_) {
+              pkf->gaus_pyramid_depth_image_.resize(
+                  num_gaus_pyramid_sub_levels_);
+              for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
+                cv::Mat depth_resized;
+                cv::resize(pkf->img_auxiliary_undist_, depth_resized,
+                           cv::Size(pkf->gaus_pyramid_width_[l],
+                                    pkf->gaus_pyramid_height_[l]),
+                           0, 0, cv::INTER_NEAREST);
+                pkf->gaus_pyramid_depth_image_[l] =
+                    tensor_utils::cvMat2TorchTensor_Float32(depth_resized,
+                                                            device_type_);
+              }
+            }
           }
-        } else {
-          // std::cout << "RGBD data not available" << std::endl;
         }
       }
 
@@ -1097,13 +1127,22 @@ void GaussianMapper::trainForOneIteration() {
   int training_level = num_gaus_pyramid_sub_levels_;
   int image_height, image_width;
   torch::Tensor gt_image, mask;
+  torch::Tensor gt_depth;
+
   if (isdoingGausPyramidTraining())
     training_level = viewpoint_cam->getCurrentGausPyramidLevel();
+
   if (training_level == num_gaus_pyramid_sub_levels_) {
     image_height = viewpoint_cam->image_height_;
     image_width = viewpoint_cam->image_width_;
     gt_image = viewpoint_cam->original_image_.cuda();
     mask = undistort_mask_[viewpoint_cam->camera_id_];
+
+    // NEW: Use full resolution depth if available
+    if (viewpoint_cam->depth_image_.defined()) {
+      gt_depth = viewpoint_cam->depth_image_.cuda();
+    }
+
   } else {
     image_height = viewpoint_cam->gaus_pyramid_height_[training_level];
     image_width = viewpoint_cam->gaus_pyramid_width_[training_level];
@@ -1111,6 +1150,16 @@ void GaussianMapper::trainForOneIteration() {
         viewpoint_cam->gaus_pyramid_original_image_[training_level].cuda();
     mask = scene_->cameras_.at(viewpoint_cam->camera_id_)
                .gaus_pyramid_undistort_mask_[training_level];
+
+    // Use pyramid level depth if available
+    if (!viewpoint_cam->gaus_pyramid_depth_image_.empty() &&
+        training_level < viewpoint_cam->gaus_pyramid_depth_image_.size()) {
+      gt_depth =
+          viewpoint_cam->gaus_pyramid_depth_image_[training_level].cuda();
+    } else if (viewpoint_cam->depth_image_.defined()) {
+      // Fallback to full resolution depth if pyramid not available
+      // gt_depth = viewpoint_cam->depth_image_.cuda();
+    }
   }
 
   auto timer_waitForMutex = ProfilingUtils::Timer("waitForMutex");
@@ -1140,7 +1189,8 @@ void GaussianMapper::trainForOneIteration() {
 
   auto timer_misc_updates = ProfilingUtils::Timer("ITER/LR/SH Updates");
 
-  // std::cout << "[Optimization] Num visible chunks: " << visible_chunks.size()
+  // std::cout << "[Optimization] Num visible chunks: " <<
+  // visible_chunks.size()
   //           << std::endl;
 
   // Extract models from chunks
@@ -1204,22 +1254,23 @@ void GaussianMapper::trainForOneIteration() {
   float lambda_depth = lambdaDepth();
   auto loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - Lssim);
 
-  if (viewpoint_cam->depth_image_.defined()) {
-    torch::Tensor gt_depth = viewpoint_cam->depth_image_.cuda();
+  if (gt_depth.defined()) {
     auto rendered_depth = std::get<0>(render_pkg);
     auto Ll1_depth = loss_utils::l1_depth_loss(rendered_depth, gt_depth);
     loss += lambda_depth * Ll1_depth;
 
-    if (getIteration() % 100 == 0) {
-      std::string render_filename = "./debug_stereo/rendered_depth_" + std::to_string(viewpoint_cam->fid_) + ".png";
-      colorize_and_save_depth(rendered_depth.detach().cpu(),
-      render_filename,
-                                min_depth_, max_depth_);
-      std::string gt_filename = "./debug_stereo/gt_depth_" + std::to_string(viewpoint_cam->fid_) + ".png";
-      colorize_and_save_depth(gt_depth.detach().cpu(),
-      gt_filename,
-                                min_depth_, max_depth_);
-    }
+    // if (getIteration() % 100 == 0) {
+    //   std::string render_filename = "./debug_stereo/rendered_depth_" +
+    //   std::to_string(viewpoint_cam->fid_) + ".png";
+    //   colorize_and_save_depth(rendered_depth.detach().cpu(),
+    //   render_filename,
+    //                             min_depth_, max_depth_);
+    //   std::string gt_filename = "./debug_stereo/gt_depth_" +
+    //   std::to_string(viewpoint_cam->fid_) + ".png";
+    //   colorize_and_save_depth(gt_depth.detach().cpu(),
+    //   gt_filename,
+    //                             min_depth_, max_depth_);
+    // }
   }
 
   // std::cout << "Ll1: " << Ll1.item<float>() << std::endl;
@@ -1299,22 +1350,23 @@ void GaussianMapper::trainForOneIteration() {
     }
   }
 
-  float iso_reg_weight = 0.1f;  // Adjust as needed
-  for (const auto& gaussians : models) {
-    // Get scaling
-    torch::Tensor scaling = gaussians->getScalingActivation();
+  // float iso_reg_weight = 0.1f;  // Adjust as needed
+  // for (const auto& gaussians : models) {
+  //   // Get scaling
+  //   torch::Tensor scaling = gaussians->getScalingActivation();
 
-    // Calculate mean scaling for each Gaussian
-    torch::Tensor mean_scale = scaling.mean(1, /*keepdim=*/true);
+  //   // Calculate mean scaling for each Gaussian
+  //   torch::Tensor mean_scale = scaling.mean(1, /*keepdim=*/true);
 
-    // Calculate L1 distance from each scaling component to the mean
-    // This penalizes primitives with high aspect ratio as in Eq. (9)
-    torch::Tensor iso_penalty = (scaling - mean_scale).abs().sum(1).mean();
+  //   // Calculate L1 distance from each scaling component to the mean
+  //   // This penalizes primitives with high aspect ratio as in Eq. (9)
+  //   torch::Tensor iso_penalty = (scaling - mean_scale).abs().sum(1).mean();
 
-    // Add weighted regularization term to loss
-    loss += iso_reg_weight * iso_penalty;
-    // std::cout << "iso_penalty: " << iso_penalty.item<float>() << std::endl;
-  }
+  //   // Add weighted regularization term to loss
+  //   loss += iso_reg_weight * iso_penalty;
+  //   // std::cout << "iso_penalty: " << iso_penalty.item<float>() <<
+  //   std::endl;
+  // }
 
   timer_loss_calculation.stop();
 
@@ -1462,9 +1514,9 @@ void GaussianMapper::trainForOneIteration() {
   }
   timer_optimizer_step.stop();
 
-  // auto timer_evictUnusedChunks = ProfilingUtils::Timer("evictUnusedChunks");
-  // Periodically cull gaussians outside of borders & evict unused chunks
-  // if (getIteration() % 200 == 0) {
+  // auto timer_evictUnusedChunks =
+  // ProfilingUtils::Timer("evictUnusedChunks"); Periodically cull gaussians
+  // outside of borders & evict unused chunks if (getIteration() % 200 == 0) {
   // chunk_manager_->transferGaussiansAcrossChunks(scene_->cameras_extent_);
   // chunk_manager_->cullGaussiansOutsideChunkBorders();
   // chunk_manager_->evictUnusedChunks();
@@ -1771,7 +1823,8 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
 
           // std::cout << "[DEBUG] Before transform - xyz: "
           //           << gaussians->xyz_.sizes()
-          //           << ", flags: " << chunk_point_flags.sizes() << std::endl;
+          //           << ", flags: " << chunk_point_flags.sizes() <<
+          //           std::endl;
 
           int chunk_transformed = 0;
           // std::cout << "Calling scaledTransformVisiblePointsOfKeyframe"
@@ -2031,23 +2084,47 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   }
 
   if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
-    pkf->setupStereoData(stereo_baseline_length_, device_type_, depth_estimator_,
-                         min_depth_, max_depth_);
-  } else {
-    // std::cout << "Stereo data not available" << std::endl;
-  }
-
-  if (sensor_type_ == RGBD && !pkf->img_auxiliary_undist_.empty()) {
-    // Preprocess and store right image tensor
+    pkf->setupStereoData(stereo_baseline_length_, device_type_,
+                         depth_estimator_, min_depth_, max_depth_);
+  } else if (sensor_type_ == RGBD && !pkf->img_auxiliary_undist_.empty()) {
+    // Preprocess and store depth image tensor
     if (device_type_ == torch::kCUDA) {
       cv::cuda::GpuMat depth_gpu;
       depth_gpu.upload(pkf->img_auxiliary_undist_);
       pkf->depth_image_ = tensor_utils::cvGpuMat2TorchTensor_Float32(depth_gpu);
+
+      // NEW: Create multi-resolution depth images for RGBD
+      if (do_gaus_pyramid_training_) {
+        pkf->gaus_pyramid_depth_image_.resize(num_gaus_pyramid_sub_levels_);
+        for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
+          cv::cuda::GpuMat depth_resized;
+          cv::cuda::resize(depth_gpu, depth_resized,
+                           cv::Size(pkf->gaus_pyramid_width_[l],
+                                    pkf->gaus_pyramid_height_[l]),
+                           0, 0, cv::INTER_NEAREST);
+          pkf->gaus_pyramid_depth_image_[l] =
+              tensor_utils::cvGpuMat2TorchTensor_Float32(depth_resized);
+        }
+      }
     } else {
-      // Do nothing right now
+      // CPU version for RGBD
+      pkf->depth_image_ = tensor_utils::cvMat2TorchTensor_Float32(
+          pkf->img_auxiliary_undist_, device_type_);
+
+      if (do_gaus_pyramid_training_) {
+        pkf->gaus_pyramid_depth_image_.resize(num_gaus_pyramid_sub_levels_);
+        for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
+          cv::Mat depth_resized;
+          cv::resize(pkf->img_auxiliary_undist_, depth_resized,
+                     cv::Size(pkf->gaus_pyramid_width_[l],
+                              pkf->gaus_pyramid_height_[l]),
+                     0, 0, cv::INTER_NEAREST);
+          pkf->gaus_pyramid_depth_image_[l] =
+              tensor_utils::cvMat2TorchTensor_Float32(depth_resized,
+                                                      device_type_);
+        }
+      }
     }
-  } else {
-    // std::cout << "RGBD data not available" << std::endl;
   }
 
   if (isdoingDepthDensify()) increasePcdByDepthReconstruction(pkf);
@@ -2449,13 +2526,14 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       torch::Tensor stereo_depth = pkf->depth_image_;
       torch::Tensor depth = stereo_depth;
 
-      std::filesystem::create_directories("./debug_stereo");
-      colorize_and_save_depth(stereo_depth.detach().cpu(),
-                              "./debug_stereo/depth_stereo.png",
-                              min_depth_, max_depth_);
+      // std::filesystem::create_directories("./debug_stereo");
+      // colorize_and_save_depth(stereo_depth.detach().cpu(),
+      //                         "./debug_stereo/depth_stereo.png",
+      //                         min_depth_, max_depth_);
 
       // Optional: Densify sparse depth using simple inpainting
-      // torch::Tensor depth = densify_depth_morphological(stereo_depth, 0.0f, 5);
+      // torch::Tensor depth = densify_depth_morphological(stereo_depth, 0.0f,
+      // 5);
 
       // colorize_and_save_depth(depth.detach().cpu(),
       //                         "./debug_stereo/depth_stereo_densified.png",
@@ -4672,7 +4750,8 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
 
     try {
       // std::cout << "[ProcessFrame] Starting tensor conversion..." <<
-      // std::endl; std::cout << "[ProcessFrame] Device type: " << device_type_
+      // std::endl; std::cout << "[ProcessFrame] Device type: " <<
+      // device_type_
       // << std::endl;
 
       new_kf->original_image_ = tensor_utils::cvMat2TorchTensor_Float32(
@@ -4687,8 +4766,9 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
       //   if (cpu_tensor.dim() == 3 && cpu_tensor.size(0) == 3) {
       //     cpu_tensor = cpu_tensor.permute({1, 2, 0}).contiguous();
       //   }
-      //   cv::Mat tensor_img(cpu_tensor.size(0), cpu_tensor.size(1), CV_32FC3);
-      //   std::memcpy(tensor_img.data, cpu_tensor.data_ptr<float>(),
+      //   cv::Mat tensor_img(cpu_tensor.size(0), cpu_tensor.size(1),
+      //   CV_32FC3); std::memcpy(tensor_img.data,
+      //   cpu_tensor.data_ptr<float>(),
       //               sizeof(float) * tensor_img.rows * tensor_img.cols * 3);
 
       //   tensor_img.convertTo(tensor_img, CV_8UC3, 255.0);
@@ -4791,7 +4871,7 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
 
     if (sensor_type_ == STEREO && !depth_or_right_image.empty()) {
       new_kf->setupStereoData(stereo_baseline_length_, device_type_,
-        depth_estimator_, min_depth_, max_depth_);
+                              depth_estimator_, min_depth_, max_depth_);
     }
 
     if (sensor_type_ == RGBD && !new_kf->img_auxiliary_undist_.empty()) {
@@ -4825,7 +4905,8 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
         // std::cout << "GT Depth statistics: min "
         //           << new_kf->depth_image_.min().item<float>() << " max "
         //           << new_kf->depth_image_.max().item<float>() << " mean"
-        //           << new_kf->depth_image_.mean().item<float>() << " median "
+        //           << new_kf->depth_image_.mean().item<float>() << " median
+        //           "
         //           << new_kf->depth_image_.median().item<float>() <<
         //           std::endl;
       } else {

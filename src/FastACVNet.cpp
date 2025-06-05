@@ -173,7 +173,8 @@ std::vector<float> FastACVNet::prepare_input_optimized(const cv::Mat& img) {
     cv::Mat resized_img;
     cv::resize(img, resized_img, cv::Size(input_width_, input_height_), 0, 0, cv::INTER_LINEAR);
     
-    // Process all channels in parallel and convert BGR->RGB + normalize in single pass
+    // Process all channels in parallel and normalize in single pass
+    // Since input is already RGB, no color conversion needed
     const int channel_size = input_height_ * input_width_;
     float* data_ptr = input_data.data();
     
@@ -182,15 +183,15 @@ std::vector<float> FastACVNet::prepare_input_optimized(const cv::Mat& img) {
         
         for (int w = 0; w < input_width_; w++) {
             const int pixel_idx = h * input_width_ + w;
-            const int bgr_idx = w * 3;
+            const int rgb_idx = w * 3;
             
-            // Convert BGR to RGB and normalize in one step
-            // Channel 0 (R) = BGR[2]
-            data_ptr[pixel_idx] = ((float)row_ptr[bgr_idx + 2] * scale - mean[0]) * std_inv[0];
-            // Channel 1 (G) = BGR[1]  
-            data_ptr[channel_size + pixel_idx] = ((float)row_ptr[bgr_idx + 1] * scale - mean[1]) * std_inv[1];
-            // Channel 2 (B) = BGR[0]
-            data_ptr[2 * channel_size + pixel_idx] = ((float)row_ptr[bgr_idx] * scale - mean[2]) * std_inv[2];
+            // Direct RGB processing (no conversion needed)
+            // Channel 0 (R) = RGB[0]
+            data_ptr[pixel_idx] = ((float)row_ptr[rgb_idx] * scale - mean[0]) * std_inv[0];
+            // Channel 1 (G) = RGB[1]  
+            data_ptr[channel_size + pixel_idx] = ((float)row_ptr[rgb_idx + 1] * scale - mean[1]) * std_inv[1];
+            // Channel 2 (B) = RGB[2]
+            data_ptr[2 * channel_size + pixel_idx] = ((float)row_ptr[rgb_idx + 2] * scale - mean[2]) * std_inv[2];
         }
     }
     
@@ -273,13 +274,11 @@ cv::Mat FastACVNet::estimate_depth(const cv::Mat& left_img, const cv::Mat& right
 
 // Keep the old PyTorch-based method for backward compatibility
 torch::Tensor FastACVNet::prepare_input(const cv::Mat& img) {
-    // Convert BGR to RGB
-    cv::Mat rgb_img;
-    cv::cvtColor(img, rgb_img, cv::COLOR_BGR2RGB);
+    // No BGR to RGB conversion needed since input is already RGB
     
     // Resize
     cv::Mat resized_img;
-    cv::resize(rgb_img, resized_img, cv::Size(input_width_, input_height_), 0, 0, cv::INTER_AREA);
+    cv::resize(img, resized_img, cv::Size(input_width_, input_height_), 0, 0, cv::INTER_AREA);
     
     // Convert to float and normalize
     resized_img.convertTo(resized_img, CV_32F, 1.0 / 255.0);

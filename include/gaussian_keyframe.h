@@ -33,6 +33,7 @@
 #include <string>
 #include <vector>
 
+#include "FastACVNet.h"
 #include "ORB-SLAM3/Thirdparty/Sophus/sophus/se3.hpp"
 #include "camera.h"
 #include "general_utils.h"
@@ -40,7 +41,6 @@
 #include "point2d.h"
 #include "tensor_utils.h"
 #include "types.h"
-#include "FastACVNet.h"
 
 class ExponentialLRScheduler {
  private:
@@ -169,6 +169,7 @@ class GaussianKeyframe {
   std::vector<torch::Tensor>
       gaus_pyramid_original_image_;  ///< gaus_pyramid image
   std::vector<torch::Tensor> gaus_pyramid_right_original_image_;
+  std::vector<torch::Tensor> gaus_pyramid_depth_image_;
   // Tensor gt_alpha_mask_;
 
   std::vector<float> intr_;  ///< intrinsics
