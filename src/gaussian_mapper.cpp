@@ -107,24 +107,7 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   // keyframe_queue_->setChunkManager(chunk_manager_);
 
   // Initialize Laplacian of Gaussian kernel
-  int kernel_size = 2 * int(3 * log_sigma_) + 1;
-  torch::Tensor x =
-      torch::arange(-kernel_size / 2, kernel_size / 2 + 1,
-                    torch::TensorOptions().dtype(torch::kFloat32));
-  torch::Tensor y = x.unsqueeze(0).t();
-  x = x.unsqueeze(0);
-
-  torch::Tensor gaussian =
-      torch::exp(-(x * x + y * y) / (2 * log_sigma_ * log_sigma_));
-  gaussian = gaussian / gaussian.sum();
-
-  // Laplacian of Gaussian
-  torch::Tensor log_kernel =
-      -(x * x + y * y - 2 * log_sigma_ * log_sigma_) /
-      (log_sigma_ * log_sigma_ * log_sigma_ * log_sigma_) * gaussian;
-  log_kernel = log_kernel - log_kernel.mean();
-
-  log_kernel_ = log_kernel.unsqueeze(0).unsqueeze(0).to(device_type_);
+  initializeLaplacianOfGaussianKernel();
 
   // Mode
   if (!pSLAM) {
@@ -147,13 +130,7 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
       this->stereo_Q_ = pSLAM->getSettings()->Q().clone();
       stereo_Q_.convertTo(stereo_Q_, CV_32FC3, 1.0);
 
-      cv::Size model_resolution(1280, 384);
-      std::string model_path =
-          "./models/fast_acvnet_plus_onnx_gridsample/"
-          "fast_acvnet_plus_kitti_2015_opset16_" +
-          std::to_string(model_resolution.height) + "x" +
-          std::to_string(model_resolution.width) + ".onnx";
-      this->depth_estimator_ = std::make_shared<FastACVNet>(model_path);
+      initializeDepthEstimator();
     } break;
     case ORB_SLAM3::System::RGBD:
     case ORB_SLAM3::System::IMU_RGBD: {
@@ -347,28 +324,12 @@ GaussianMapper::GaussianMapper(const SystemSensorType sensor_type,
   // keyframe_queue_->setChunkManager(chunk_manager_);
 
   // Initialize Laplacian of Gaussian kernel
-  int kernel_size = 2 * int(3 * log_sigma_) + 1;
-  torch::Tensor x =
-      torch::arange(-kernel_size / 2, kernel_size / 2 + 1,
-                    torch::TensorOptions().dtype(torch::kFloat32));
-  torch::Tensor y = x.unsqueeze(0).t();
-  x = x.unsqueeze(0);
-
-  torch::Tensor gaussian =
-      torch::exp(-(x * x + y * y) / (2 * log_sigma_ * log_sigma_));
-  gaussian = gaussian / gaussian.sum();
-
-  // Laplacian of Gaussian
-  torch::Tensor log_kernel =
-      -(x * x + y * y - 2 * log_sigma_ * log_sigma_) /
-      (log_sigma_ * log_sigma_ * log_sigma_ * log_sigma_) * gaussian;
-  log_kernel = log_kernel - log_kernel.mean();
-
-  log_kernel_ = log_kernel.unsqueeze(0).unsqueeze(0).to(device_type_);
+  initializeLaplacianOfGaussianKernel();
 
   ORB_SLAM3::System::eSensor system_mode;
   if (sensor_type == STEREO) {
     system_mode = ORB_SLAM3::System::STEREO;
+    initializeDepthEstimator();
   } else if (sensor_type == RGBD) {
     system_mode = ORB_SLAM3::System::RGBD;
   } else {
@@ -4913,6 +4874,28 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
         throw std::runtime_error(
             "[GaussianMapper] RGBD mode only supported on CUDA for now");
       }
+
+      if (do_gaus_pyramid_training_) {
+        new_kf->gaus_pyramid_depth_image_.resize(num_gaus_pyramid_sub_levels_);
+
+        if (device_type_ == torch::kCUDA) {
+          cv::cuda::GpuMat depth_gpu;
+          depth_gpu.upload(depth_cleaned);
+
+          for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
+            cv::cuda::GpuMat depth_resized;
+            cv::cuda::resize(depth_gpu, depth_resized,
+                             cv::Size(new_kf->gaus_pyramid_width_[l],
+                                      new_kf->gaus_pyramid_height_[l]),
+                             0, 0, cv::INTER_NEAREST);
+            new_kf->gaus_pyramid_depth_image_[l] =
+                tensor_utils::cvGpuMat2TorchTensor_Float32(depth_resized);
+          }
+        } else {
+          throw std::runtime_error(
+              "[GaussianMapper] RGBD pyramid mode only supported on CUDA");
+        }
+      }
     } else {
       // std::cout << "RGBD data not available" << std::endl;
     }
@@ -5117,76 +5100,6 @@ torch::Tensor GaussianMapper::computeLoGProbability(
   return log_response.clamp(0, 1);
 }
 
-std::tuple<torch::Tensor, torch::Tensor>
-GaussianMapper::sampleGaussianPrimitives(
-    const torch::Tensor& rgb_image,
-    const torch::Tensor& depth_image,
-    std::shared_ptr<GaussianKeyframe> pkf) {
-  torch::NoGradGuard no_grad;
-
-  // Step 1: Compute initial probability based on image gradients
-  torch::Tensor prob_L = computeLoGProbability(rgb_image);
-
-  // Step 2: Render current view and compute penalty
-  torch::Tensor prob_penalty = torch::zeros_like(prob_L);
-  if (initial_mapped_) {
-    // Render from current viewpoint
-    std::unique_lock<std::mutex> lock_render(mutex_render_);
-
-    std::vector<std::shared_ptr<Chunk>> visible_chunks =
-        chunk_manager_->loadVisibleChunks(pkf, true);
-
-    if (!visible_chunks.empty()) {
-      std::vector<std::shared_ptr<GaussianModel>> models;
-      for (const auto& chunk : visible_chunks) {
-        if (chunk && chunk->getGaussians()) {
-          models.push_back(chunk->getGaussians());
-        }
-      }
-
-      if (!models.empty()) {
-        auto render_pkg = GaussianRenderer::render(
-            models, pkf, pkf->image_height_, pkf->image_width_, pipe_params_,
-            background_, override_color_, 1.0f, false, pkf->FoVx_, pkf->FoVy_,
-            pkf->world_view_transform_, pkf->full_proj_transform_,
-            pkf->camera_center_);
-
-        torch::Tensor rendered_image = std::get<1>(render_pkg);
-        prob_penalty = computeLoGProbability(rendered_image);
-      }
-    }
-
-    chunk_manager_->releaseChunksFromOptimization(visible_chunks);
-  }
-  // Step 3: Apply scaling factor and compute final probability (Eq. 3)
-  float init_proba_scaler = 0.1f;  // Add this as a parameter
-  prob_L *= init_proba_scaler;
-  prob_penalty *= init_proba_scaler;
-
-  torch::Tensor prob_s = torch::clamp(prob_L - prob_penalty, 0.0f, 1.0f);
-
-  // Step 4: Sample points based on probability
-  torch::Tensor random_mask = torch::rand_like(prob_s) < prob_s;
-
-  // Get valid depth points
-  torch::Tensor valid_depth =
-      (depth_image > min_depth_) & (depth_image < max_depth_);
-  torch::Tensor final_mask = random_mask & valid_depth;
-
-  // Step 5: Compute expected scales based on probability (Eq. 4 from paper)
-  // s' = 1 / (2 * sqrt(P_L(x,y)))
-  torch::Tensor expected_scale_2d = 1.0f / (2.0f * torch::sqrt(prob_L + 1e-6f));
-
-  // Convert to 3D scale: s = z * s' / f
-  float focal = pkf->intr_[0];  // Assuming fx
-  torch::Tensor scale_3d = depth_image * expected_scale_2d / focal;
-
-  // Extract sampled scales
-  torch::Tensor sampled_scales = scale_3d.index({final_mask});
-
-  return std::make_tuple(final_mask, sampled_scales);
-}
-
 // Alternative fast implementation using morphological operations
 torch::Tensor GaussianMapper::densify_depth_morphological(
     const torch::Tensor& depth_map,
@@ -5244,4 +5157,35 @@ torch::Tensor GaussianMapper::densify_depth_morphological(
                              torch::where(dilated_mask, interpolated, depth));
 
   return result;
+}
+
+void GaussianMapper::initializeLaplacianOfGaussianKernel() {
+  int kernel_size = 2 * int(3 * log_sigma_) + 1;
+  torch::Tensor x =
+      torch::arange(-kernel_size / 2, kernel_size / 2 + 1,
+                    torch::TensorOptions().dtype(torch::kFloat32));
+  torch::Tensor y = x.unsqueeze(0).t();
+  x = x.unsqueeze(0);
+
+  torch::Tensor gaussian =
+      torch::exp(-(x * x + y * y) / (2 * log_sigma_ * log_sigma_));
+  gaussian = gaussian / gaussian.sum();
+
+  // Laplacian of Gaussian
+  torch::Tensor log_kernel =
+      -(x * x + y * y - 2 * log_sigma_ * log_sigma_) /
+      (log_sigma_ * log_sigma_ * log_sigma_ * log_sigma_) * gaussian;
+  log_kernel = log_kernel - log_kernel.mean();
+
+  log_kernel_ = log_kernel.unsqueeze(0).unsqueeze(0).to(device_type_);
+}
+
+void GaussianMapper::initializeDepthEstimator() {
+  cv::Size model_resolution(1280, 384);
+  std::string model_path =
+      "./models/fast_acvnet_plus_onnx_gridsample/"
+      "fast_acvnet_plus_kitti_2015_opset16_" +
+      std::to_string(model_resolution.height) + "x" +
+      std::to_string(model_resolution.width) + ".onnx";
+  this->depth_estimator_ = std::make_shared<FastACVNet>(model_path);
 }
