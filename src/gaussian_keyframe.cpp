@@ -392,13 +392,13 @@ void GaussianKeyframe::setupStereoData(
   // Apply final mask to depth map
   cv::cuda::multiply(depth, combined_mask, depth);
   // Get some depth statistics
-  // if (!original_depth.empty()) {
+  // if (!depth.empty()) {
   //   double min_depth, max_depth;
   //   cv::minMaxLoc(depth, &min_depth, &max_depth);
   //   cv::Scalar mean_depth = cv::mean(depth);
-  //   std::cout << "Depth range: " << min_depth << " - " << max_depth << "
-  //   meters" << std::endl; std::cout << "Mean depth: " << mean_depth[0] << "
-  //   meters" << std::endl;
+  //   std::cout << "Depth range: " << min_depth << " - " << max_depth
+  //             << " meters " << std::endl;
+  //   std::cout << " Mean depth: " << mean_depth[0] << " meters " << std::endl;
   // }
 
   // float max_dist = 80;

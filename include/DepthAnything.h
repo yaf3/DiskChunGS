@@ -20,19 +20,19 @@
  * This class provides stereo depth estimation using the Fast ACVNet model
  * with ONNX Runtime for inference and OpenCV for image processing.
  */
-class FastACVNet {
+class DepthAnything {
  public:
   /**
    * @brief Constructor
    * @param model_path Path to the ONNX model file
    * @param max_dist Maximum distance for depth visualization
    */
-  FastACVNet(const std::string& model_path);
+  DepthAnything(const std::string& model_path);
 
   /**
    * @brief Destructor
    */
-  ~FastACVNet() = default;
+  ~DepthAnything() = default;
 
   /**
    * @brief Estimate depth from stereo images
@@ -40,7 +40,7 @@ class FastACVNet {
    * @param right_img Right stereo image
    * @return Disparity map
    */
-  cv::Mat estimate_depth(const cv::Mat& left_img, const cv::Mat& right_img);
+  cv::Mat estimate_depth(const cv::Mat& image);
 
   /**
    * @brief Estimate depth from stereo images and convert to metric depth
@@ -51,10 +51,7 @@ class FastACVNet {
    * @param baseline Stereo baseline distance in meters
    * @return Depth map in meters
    */
-  cv::Mat estimate_metric_depth(const cv::Mat& left_img,
-                                const cv::Mat& right_img,
-                                const float focal_length,
-                                const float baseline);
+  cv::Mat estimate_metric_depth(const cv::Mat& image);
 
  private:
   // ONNX Runtime components
@@ -99,13 +96,6 @@ class FastACVNet {
   void get_output_details();
 
   /**
-   * @brief Prepare input image for inference (PyTorch version - legacy)
-   * @param img Input image
-   * @return Preprocessed tensor
-   */
-  torch::Tensor prepare_input(const cv::Mat& img);
-
-  /**
    * @brief Prepare input image for inference (Optimized version)
    * @param img Input image
    * @return Preprocessed data as vector
@@ -113,20 +103,11 @@ class FastACVNet {
   std::vector<float> prepare_input_optimized(const cv::Mat& img);
 
   /**
-   * @brief Run inference on input tensors (PyTorch version - legacy)
-   * @param left_input Left image tensor
-   * @param right_input Right image tensor
-   * @return Disparity map
-   */
-  cv::Mat inference(const torch::Tensor& left_input,
-                    const torch::Tensor& right_input);
-
-  /**
    * @brief Run inference on input data (Optimized version)
    * @param left_input Left image data
    * @param right_input Right image data
    * @return Disparity map
    */
-  cv::Mat inference_optimized(const std::vector<float>& left_input,
-                              const std::vector<float>& right_input);
+  cv::Mat inference_optimized(const std::vector<float>& input);
+  void debug_preprocessing(const std::vector<float>& input);
 };

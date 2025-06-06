@@ -44,6 +44,7 @@
 #include <tuple>
 #include <vector>
 
+#include "DepthAnything.h"
 #include "FastACVNet.h"
 #include "ORB-SLAM3/Thirdparty/Sophus/sophus/se3.hpp"
 #include "ORB-SLAM3/include/MapDrawer.h"
@@ -299,7 +300,8 @@ class GaussianMapper {
   torch::Tensor densify_depth_morphological(const torch::Tensor &depth_map,
                                             float invalid_threshold = 0.0f,
                                             int dilation_size = 3);
-  void initializeDepthEstimator();
+  void initializeMonocularDepthEstimator();
+  void initializeStereoDepthEstimator();
 
  private:
   // Updated function declarations:
@@ -419,7 +421,8 @@ class GaussianMapper {
 
   cv::Mat stereo_Q_;
   cv::Ptr<cv::cuda::StereoSGM> stereo_cv_sgm_;
-  std::shared_ptr<FastACVNet> depth_estimator_;
+  std::shared_ptr<FastACVNet> stereo_depth_estimator_;
+  std::shared_ptr<DepthAnything> monocular_depth_estimator_;
   float min_depth_ = 0.0f;
   float max_depth_ = 100.0f;
 

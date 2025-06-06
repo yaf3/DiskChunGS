@@ -193,6 +193,7 @@ add_library(
     include/debugging_utils.h
     include/foundation_stereo.h
     include/FastACVNet.h
+    include/DepthAnything.h
     src/gaussian_keyframe.cpp
     src/gaussian_model.cpp
     src/gaussian_parameters.cpp
@@ -205,6 +206,7 @@ add_library(
     src/keyframe_selection.cpp
     src/debugging_utils.cpp
     src/FastACVNet.cpp
+    src/DepthAnything.cpp
 )
 target_link_libraries(
     gaussian_mapper

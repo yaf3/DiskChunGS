@@ -120,6 +120,7 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
     case ORB_SLAM3::System::MONOCULAR:
     case ORB_SLAM3::System::IMU_MONOCULAR: {
       this->sensor_type_ = MONOCULAR;
+      initializeMonocularDepthEstimator();
     } break;
     case ORB_SLAM3::System::STEREO:
     case ORB_SLAM3::System::IMU_STEREO: {
@@ -130,7 +131,7 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
       this->stereo_Q_ = pSLAM->getSettings()->Q().clone();
       stereo_Q_.convertTo(stereo_Q_, CV_32FC3, 1.0);
 
-      initializeDepthEstimator();
+      initializeStereoDepthEstimator();
     } break;
     case ORB_SLAM3::System::RGBD:
     case ORB_SLAM3::System::IMU_RGBD: {
@@ -329,11 +330,12 @@ GaussianMapper::GaussianMapper(const SystemSensorType sensor_type,
   ORB_SLAM3::System::eSensor system_mode;
   if (sensor_type == STEREO) {
     system_mode = ORB_SLAM3::System::STEREO;
-    initializeDepthEstimator();
+    initializeStereoDepthEstimator();
   } else if (sensor_type == RGBD) {
     system_mode = ORB_SLAM3::System::RGBD;
   } else {
     system_mode = ORB_SLAM3::System::MONOCULAR;
+    initializeMonocularDepthEstimator();
   }
 
   // Check settings file
@@ -756,7 +758,7 @@ void GaussianMapper::run() {
 
         if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
           pkf->setupStereoData(stereo_baseline_length_, device_type_,
-                               depth_estimator_, min_depth_, max_depth_);
+                               stereo_depth_estimator_, min_depth_, max_depth_);
         } else if (sensor_type_ == RGBD &&
                    !pkf->img_auxiliary_undist_.empty()) {
           // Preprocess and store depth image tensor
@@ -2044,9 +2046,54 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
     }
   }
 
+  if (sensor_type_ == MONOCULAR) {
+    cv::Mat depth =
+        monocular_depth_estimator_->estimate_metric_depth(pkf->img_undist_);
+    std::cout << depth.size() << std::endl;
+
+    // cv::Mat min_depth_mask, max_depth_mask;
+    // cv::threshold(depth, min_depth_mask, min_depth_, 1.0, cv::THRESH_BINARY);
+    // cv::threshold(depth, max_depth_mask, max_depth_, 1.0,
+    //               cv::THRESH_BINARY_INV);
+
+    // cv::Mat combined_mask;
+    // cv::multiply(max_depth_mask, min_depth_mask, combined_mask);
+
+    // // Apply final mask to depth map
+    // cv::cuda::multiply(depth, combined_mask, depth);
+    // Get some depth statistics
+    double output_min_depth, output_max_depth;
+    if (!depth.empty()) {
+      cv::minMaxLoc(depth, &output_min_depth, &output_max_depth);
+      cv::Scalar mean_depth = cv::mean(depth);
+      std::cout << "Depth range: " << output_min_depth << " - "
+                << output_max_depth << " meters " << std::endl;
+      std::cout << " Mean depth: " << mean_depth[0] << " meters " << std::endl;
+    }
+
+    float max_dist = output_max_depth;
+    cv::Mat norm_depth_map = 255.0 * (1.0 - depth / max_dist);
+
+    // Clamp values
+    cv::threshold(norm_depth_map, norm_depth_map, 0, 0, cv::THRESH_TOZERO);
+    cv::threshold(norm_depth_map, norm_depth_map, 255, 0,
+                  cv::THRESH_TOZERO_INV);
+
+    cv::Mat depth_8u;
+    norm_depth_map.convertTo(depth_8u, CV_8U);
+
+    cv::Mat colored_depth;
+    cv::applyColorMap(depth_8u, colored_depth, cv::COLORMAP_JET);
+
+    cv::imwrite("mono_depth_output.png", colored_depth);
+
+    pkf->depth_image_ =
+        tensor_utils::cvMat2TorchTensor_Float32(depth, torch::kCUDA);
+  }
+
   if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
     pkf->setupStereoData(stereo_baseline_length_, device_type_,
-                         depth_estimator_, min_depth_, max_depth_);
+                         stereo_depth_estimator_, min_depth_, max_depth_);
   } else if (sensor_type_ == RGBD && !pkf->img_auxiliary_undist_.empty()) {
     // Preprocess and store depth image tensor
     if (device_type_ == torch::kCUDA) {
@@ -2461,7 +2508,8 @@ void GaussianMapper::increasePcdByDepthReconstruction(
 
   switch (this->sensor_type_) {
     case MONOCULAR: {
-      throw std::runtime_error("Can't densify with mono");
+      // throw std::runtime_error("Can't densify with mono");
+      return;
     } break;
     case STEREO: {
       // Ensure stereo data is set up
@@ -4832,7 +4880,7 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
 
     if (sensor_type_ == STEREO && !depth_or_right_image.empty()) {
       new_kf->setupStereoData(stereo_baseline_length_, device_type_,
-                              depth_estimator_, min_depth_, max_depth_);
+                              stereo_depth_estimator_, min_depth_, max_depth_);
     }
 
     if (sensor_type_ == RGBD && !new_kf->img_auxiliary_undist_.empty()) {
@@ -5180,12 +5228,19 @@ void GaussianMapper::initializeLaplacianOfGaussianKernel() {
   log_kernel_ = log_kernel.unsqueeze(0).unsqueeze(0).to(device_type_);
 }
 
-void GaussianMapper::initializeDepthEstimator() {
+void GaussianMapper::initializeStereoDepthEstimator() {
   cv::Size model_resolution(1280, 384);
   std::string model_path =
       "./models/fast_acvnet_plus_onnx_gridsample/"
       "fast_acvnet_plus_kitti_2015_opset16_" +
       std::to_string(model_resolution.height) + "x" +
       std::to_string(model_resolution.width) + ".onnx";
-  this->depth_estimator_ = std::make_shared<FastACVNet>(model_path);
+  this->stereo_depth_estimator_ = std::make_shared<FastACVNet>(model_path);
+}
+
+void GaussianMapper::initializeMonocularDepthEstimator() {
+  std::string model_path =
+      "./models/depth_anything/depth_anything_v2_vitl.onnx";
+  this->monocular_depth_estimator_ =
+      std::make_shared<DepthAnything>(model_path);
 }
