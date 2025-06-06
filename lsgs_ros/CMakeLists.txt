@@ -50,7 +50,7 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_eigen
 )
 
-# Same configurations as your original project
+# Same configurations as original project
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CUDA_STANDARD 17)
@@ -67,12 +67,28 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS} -pthread")
 find_package(CUDA REQUIRED)
 find_package(Eigen3 REQUIRED)
 
+# Find ONNX Runtime
+find_library(ONNXRUNTIME_LIB 
+    NAMES onnxruntime
+    PATHS /usr/local/lib /usr/lib
+    REQUIRED
+)
+
+find_path(ONNXRUNTIME_INCLUDE_DIR 
+    NAMES onnxruntime_cxx_api.h
+    PATHS /usr/local/include /usr/include
+    REQUIRED
+)
+
+message(STATUS "Found ONNX Runtime headers: ${ONNXRUNTIME_INCLUDE_DIR}")
+message(STATUS "Found ONNX Runtime library: ${ONNXRUNTIME_LIB}")
+
 find_package(jsoncpp REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(glm REQUIRED)
 find_package(glfw3 REQUIRED)
 
-# Set the path to your project root and ORB_SLAM3
+# Set the path to project root and ORB_SLAM3
 set(GAUSSIAN_SLAM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set(ORB_SLAM3_SOURCE_DIR "${GAUSSIAN_SLAM_DIR}/slam_deps/ORB-SLAM3")
 
@@ -101,7 +117,7 @@ include_directories(BEFORE
     ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
 )
 
-# Add the ROS wrapper library
+# ROS wrapper library
 add_library(${PROJECT_NAME}
   src/lsgs_wrapper.cpp
 )
@@ -117,11 +133,12 @@ target_link_libraries(${PROJECT_NAME}
   Eigen3::Eigen
 )
 
-# Add the ROS node executable
+# ROS node executable
 add_executable(${PROJECT_NAME}_node src/lsgs_node.cpp)
 target_link_libraries(${PROJECT_NAME}_node
   ${PROJECT_NAME}
   ${catkin_LIBRARIES}
+  ${ONNXRUNTIME_LIB}
 )
 
 catkin_install_python(PROGRAMS

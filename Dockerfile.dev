@@ -27,7 +27,7 @@ RUN wget https://github.com/microsoft/onnxruntime/releases/download/v1.18.1/onnx
 # Update library paths
 WORKDIR /workspace
 RUN echo "export LD_LIBRARY_PATH=/workspace/repo/slam_deps/ORB-SLAM3/lib:\$LD_LIBRARY_PATH" >> /root/.bashrc
-# RUN echo "source /root/catkin_ws/devel/setup.bash" >> /root/.bashrc
+RUN echo "source /opt/ros/noetic/setup.bash" >> /root/.bashrc
 
 # Create a welcome message with instructions
 RUN echo '#!/bin/bash' > /workspace/welcome.sh && \

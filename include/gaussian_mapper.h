@@ -44,6 +44,7 @@
 #include <tuple>
 #include <vector>
 
+#include "FastACVNet.h"
 #include "ORB-SLAM3/Thirdparty/Sophus/sophus/se3.hpp"
 #include "ORB-SLAM3/include/MapDrawer.h"
 #include "ORB-SLAM3/include/System.h"
@@ -55,7 +56,6 @@
 #include "operate_points.h"
 #include "stereo_vision.h"
 #include "tensor_utils.h"
-#include "FastACVNet.h"
 
 class ChunkManager;      // Forward declaration
 class KeyframeSelector;  // Forward declaration
@@ -295,14 +295,11 @@ class GaussianMapper {
   float log_sigma_ = 3.0f;  // Sigma for LoG operator
 
   torch::Tensor computeLoGProbability(const torch::Tensor &image);
-  std::tuple<torch::Tensor, torch::Tensor> sampleGaussianPrimitives(
-      const torch::Tensor &rgb_image,
-      const torch::Tensor &depth_image,
-      std::shared_ptr<GaussianKeyframe> pkf);
-
+  void initializeLaplacianOfGaussianKernel();
   torch::Tensor densify_depth_morphological(const torch::Tensor &depth_map,
                                             float invalid_threshold = 0.0f,
                                             int dilation_size = 3);
+  void initializeDepthEstimator();
 
  private:
   // Updated function declarations:
