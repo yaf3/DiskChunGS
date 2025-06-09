@@ -1218,9 +1218,21 @@ void GaussianMapper::trainForOneIteration() {
   auto loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - Lssim);
 
   if (gt_depth.defined()) {
-    auto rendered_depth = std::get<0>(render_pkg);
-    auto Ll1_depth = loss_utils::l1_depth_loss(rendered_depth, gt_depth);
-    loss += lambda_depth * Ll1_depth;
+    torch::Tensor rendered_depth, depth_loss;
+    rendered_depth = std::get<0>(render_pkg);
+
+    if (sensor_type_ == STEREO || sensor_type_ == RGBD) {
+      depth_loss = loss_utils::l1_depth_loss(rendered_depth, gt_depth);
+    } else if (sensor_type_ == MONOCULAR) {
+      depth_loss =
+          loss_utils::scale_invariant_depth_loss(rendered_depth, gt_depth);
+    } else {
+      throw std::runtime_error(
+          "[GaussianMapper] Invalid sensor type for depth "
+          "loss calculation");
+    }
+
+    loss += lambda_depth * depth_loss;
 
     // if (getIteration() % 100 == 0) {
     //   std::string render_filename = "./debug_stereo/rendered_depth_" +
@@ -2047,48 +2059,48 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   }
 
   if (sensor_type_ == MONOCULAR) {
-    cv::Mat depth =
-        monocular_depth_estimator_->estimate_metric_depth(pkf->img_undist_);
-    std::cout << depth.size() << std::endl;
+    // Estimate depth for monocular keyframe
+    auto [relative_depth, depth_confidence] =
+        monocular_depth_estimator_->estimate_depth(pkf->img_undist_);
+    std::cout << "Relative depth size: " << relative_depth.sizes() << std::endl;
 
-    // cv::Mat min_depth_mask, max_depth_mask;
-    // cv::threshold(depth, min_depth_mask, min_depth_, 1.0, cv::THRESH_BINARY);
-    // cv::threshold(depth, max_depth_mask, max_depth_, 1.0,
-    //               cv::THRESH_BINARY_INV);
+    // Extract keypoint pixels and depths
+    auto [valid_pixel_coords, valid_depths] =
+        extractValidKeypointsForDepthAlignment(pkf);
 
-    // cv::Mat combined_mask;
-    // cv::multiply(max_depth_mask, min_depth_mask, combined_mask);
-
-    // // Apply final mask to depth map
-    // cv::cuda::multiply(depth, combined_mask, depth);
-    // Get some depth statistics
-    double output_min_depth, output_max_depth;
-    if (!depth.empty()) {
-      cv::minMaxLoc(depth, &output_min_depth, &output_max_depth);
-      cv::Scalar mean_depth = cv::mean(depth);
-      std::cout << "Depth range: " << output_min_depth << " - "
-                << output_max_depth << " meters " << std::endl;
-      std::cout << " Mean depth: " << mean_depth[0] << " meters " << std::endl;
+    if (valid_depths.size() < 5) {
+      std::cout << "Not enough valid depths for monocular depth alignment: "
+                << valid_depths.size() << std::endl;
+      return;
     }
 
-    float max_dist = output_max_depth;
-    cv::Mat norm_depth_map = 255.0 * (1.0 - depth / max_dist);
+    // Align depth to keypoints
+    torch::Tensor aligned_depth =
+        monocular_depth_estimator_->align_depth_to_metric(
+            relative_depth, valid_pixel_coords, valid_depths, pkf->image_width_,
+            pkf->image_height_);
 
-    // Clamp values
-    cv::threshold(norm_depth_map, norm_depth_map, 0, 0, cv::THRESH_TOZERO);
-    cv::threshold(norm_depth_map, norm_depth_map, 255, 0,
-                  cv::THRESH_TOZERO_INV);
+    pkf->depth_image_ = aligned_depth;
+    std::cout << "Aligned depth min value: "
+              << aligned_depth.min().item<float>()
+              << ", max value: " << aligned_depth.max().item<float>()
+              << std::endl;
+    std::string render_filename = "aligned_depth.png";
+    colorize_and_save_depth(aligned_depth.detach().cpu(), render_filename,
+                            aligned_depth.min().item<float>(),
+                            aligned_depth.max().item<float>());
 
-    cv::Mat depth_8u;
-    norm_depth_map.convertTo(depth_8u, CV_8U);
+    // Convert tensors to cv::Mat for processing
+    torch::Tensor rgb_image =
+        tensor_utils::cvMat2TorchTensor_Float32(pkf->img_undist_, device_type_);
 
-    cv::Mat colored_depth;
-    cv::applyColorMap(depth_8u, colored_depth, cv::COLORMAP_JET);
+    // Get camera pose (world-to-camera)
+    Sophus::SE3f Tcw = pkf->getPosef();
 
-    cv::imwrite("mono_depth_output.png", colored_depth);
-
-    pkf->depth_image_ =
-        tensor_utils::cvMat2TorchTensor_Float32(depth, torch::kCUDA);
+    // Project to point cloud
+    std::string pcd_path = "depth_pcd_kf.ply";
+    projectRgbDepthToPointCloud(rgb_image, aligned_depth, pkf->intr_,
+                                min_depth_, max_depth_, Tcw, pcd_path, 2);
   }
 
   if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
@@ -2134,6 +2146,18 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
       }
     }
   }
+
+  // Convert tensors to cv::Mat for processing
+  torch::Tensor rgb_image =
+      tensor_utils::cvMat2TorchTensor_Float32(pkf->img_undist_, device_type_);
+
+  // Get camera pose (world-to-camera)
+  Sophus::SE3f Tcw = pkf->getPosef();
+
+  // Project to point cloud
+  // std::string pcd_path = "depth_pcd_kf.ply";
+  // projectRgbDepthToPointCloud(rgb_image, pkf->depth_image_, pkf->intr_,
+  //                             min_depth_, max_depth_, Tcw, pcd_path, 2);
 
   if (isdoingDepthDensify()) increasePcdByDepthReconstruction(pkf);
 }
@@ -2507,33 +2531,23 @@ void GaussianMapper::increasePcdByDepthReconstruction(
   Sophus::SE3f Twc = pkf->getPosef().inverse();
 
   switch (this->sensor_type_) {
-    case MONOCULAR: {
-      // throw std::runtime_error("Can't densify with mono");
-      return;
-    } break;
+    case MONOCULAR:
     case STEREO: {
-      // Ensure stereo data is set up
-      if (!pkf->is_stereo_ || !pkf->depth_image_.defined()) {
-        std::cerr << "Stereo depth not available for keyframe " << pkf->fid_
+      // Ensure depth data is set up
+      if (!pkf->depth_image_.defined()) {
+        std::cerr << "Depth not available for keyframe " << pkf->fid_
                   << std::endl;
         return;
       }
 
-      // Get RGB images
-      cv::cuda::GpuMat rgb_left_gpu, rgb_right_gpu;
-      rgb_left_gpu.upload(pkf->img_undist_);
-      rgb_right_gpu.upload(pkf->img_auxiliary_undist_);
+      // Get RGB image
+      cv::cuda::GpuMat rgb_gpu;
+      rgb_gpu.upload(pkf->img_undist_);
 
-      torch::Tensor rgb_left =
-          tensor_utils::cvGpuMat2TorchTensor_Float32(rgb_left_gpu);
-      torch::Tensor rgb_right =
-          tensor_utils::cvGpuMat2TorchTensor_Float32(rgb_right_gpu);
+      torch::Tensor rgb = tensor_utils::cvGpuMat2TorchTensor_Float32(rgb_gpu);
 
-      torch::Tensor rgb = rgb_left;
-
-      // Get the precomputed stereo depth
-      torch::Tensor stereo_depth = pkf->depth_image_;
-      torch::Tensor depth = stereo_depth;
+      // Get the precomputed depth
+      torch::Tensor depth = pkf->depth_image_;
 
       // std::filesystem::create_directories("./debug_stereo");
       // colorize_and_save_depth(stereo_depth.detach().cpu(),
@@ -5243,4 +5257,142 @@ void GaussianMapper::initializeMonocularDepthEstimator() {
       "./models/depth_anything/depth_anything_v2_vitl.onnx";
   this->monocular_depth_estimator_ =
       std::make_shared<DepthAnything>(model_path);
+}
+
+/**
+ * Extract valid keypoints with 3D coordinates for depth alignment
+ * Similar to how the Python code filters keypoints with has_pt3d
+ */
+std::tuple<std::vector<float>, std::vector<float>>
+GaussianMapper::extractValidKeypointsForDepthAlignment(
+    std::shared_ptr<GaussianKeyframe> pkf) const {
+  std::vector<float> valid_pixel_coords;
+  std::vector<float> valid_depths;
+
+  assert(pkf->kps_pixel_.size() % 2 == 0);
+  assert(pkf->kps_point_local_.size() % 3 == 0);
+
+  int num_keypoints = pkf->kps_pixel_.size() / 2;
+
+  for (int i = 0; i < num_keypoints; i++) {
+    float u = pkf->kps_pixel_[2 * i];      // u coordinate
+    float v = pkf->kps_pixel_[2 * i + 1];  // v coordinate
+
+    // Get 3D point in local camera frame
+    float x = pkf->kps_point_local_[3 * i];
+    float y = pkf->kps_point_local_[3 * i + 1];
+    float z = pkf->kps_point_local_[3 * i + 2];
+
+    // Check if keypoint has valid 3D coordinates
+    // Following the pattern from the Python code where has_pt3d checks for
+    // valid points
+    bool has_valid_3d =
+        (z > 0.1f && z < 100.0f) &&           // reasonable depth range
+        (u >= 0 && u < pkf->image_width_) &&  // within image bounds
+        (v >= 0 && v < pkf->image_height_) && std::isfinite(x) &&
+        std::isfinite(y) && std::isfinite(z);
+
+    if (has_valid_3d) {
+      valid_pixel_coords.push_back(u);
+      valid_pixel_coords.push_back(v);
+      valid_depths.push_back(z);  // depth in camera coordinate system
+    }
+  }
+
+  std::cout << "Found " << valid_depths.size() << " valid keypoints out of "
+            << num_keypoints << " total keypoints" << std::endl;
+
+  return std::make_tuple(valid_pixel_coords, valid_depths);
+}
+
+void GaussianMapper::projectRgbDepthToPointCloud(
+    torch::Tensor& rgb_tensor,
+    torch::Tensor& depth_tensor,
+    std::vector<float>& camera_intrinsics,
+    float min_depth,
+    float max_depth,
+    Sophus::SE3f& pose,
+    std::string& output_path,
+    int subsample_factor) {
+  int height = rgb_tensor.size(1);
+  int width = rgb_tensor.size(2);
+
+  std::cout << "Projecting " << width << "x" << height
+            << " image to point cloud..." << std::endl;
+
+  // Create validity mask for depth
+  // torch::Tensor valid_depth =
+  //     (depth_tensor >= min_depth) & (depth_tensor <= max_depth);
+  torch::Tensor valid_depth = torch::ones_like(depth_tensor, torch::kBool);
+
+  // Optional: Add subsampling for performance
+  if (subsample_factor > 1) {
+    torch::Tensor subsample_mask = torch::zeros_like(valid_depth);
+    for (int v = 0; v < height; v += subsample_factor) {
+      for (int u = 0; u < width; u += subsample_factor) {
+        if (v < height && u < width) {
+          subsample_mask[v][u] = true;
+        }
+      }
+    }
+    valid_depth = valid_depth & subsample_mask;
+  }
+
+  // Flatten for processing (following your existing pattern)
+  torch::Tensor sample_mask = valid_depth.flatten();
+  torch::Tensor depth_flat = depth_tensor.flatten();
+  torch::Tensor rgb_flat =
+      rgb_tensor.permute({1, 2, 0}).flatten(0, 1);  // HWC -> (H*W)C
+
+  // Get valid data
+  torch::Tensor sampled_colors = rgb_flat.index({sample_mask});
+  torch::Tensor sampled_depths = depth_flat.index({sample_mask});
+
+  std::cout << "Valid points after filtering: " << sampled_depths.size(0)
+            << std::endl;
+
+  if (sampled_depths.size(0) == 0) {
+    std::cerr << "No valid depth points found!" << std::endl;
+    return;
+  }
+
+  // Reproject to 3D using your existing function
+  torch::Tensor points3D =
+      reprojectDepthPinhole(depth_flat, sample_mask, camera_intrinsics, width);
+  points3D = points3D.index({sample_mask});
+
+  // Transform to world coordinates if pose is provided
+  if (!pose.matrix().isIdentity()) {
+    Sophus::SE3f Twc = pose.inverse();  // Convert camera-to-world
+    torch::Tensor Twc_tensor =
+        tensor_utils::EigenMatrix2TorchTensor(Twc.matrix(), device_type_)
+            .transpose(0, 1);
+    transformPoints(points3D, Twc_tensor);
+  }
+
+  // Visualize using your existing function
+  visualizePointCloud(points3D, sampled_colors, output_path);
+
+  // Print some statistics
+  auto points_cpu = points3D.cpu();
+  auto points_accessor = points_cpu.accessor<float, 2>();
+
+  float min_x = points_accessor[0][0], max_x = points_accessor[0][0];
+  float min_y = points_accessor[0][1], max_y = points_accessor[0][1];
+  float min_z = points_accessor[0][2], max_z = points_accessor[0][2];
+
+  int num_points = points_cpu.size(0);
+  for (int i = 0; i < num_points; i++) {
+    min_x = std::min(min_x, points_accessor[i][0]);
+    max_x = std::max(max_x, points_accessor[i][0]);
+    min_y = std::min(min_y, points_accessor[i][1]);
+    max_y = std::max(max_y, points_accessor[i][1]);
+    min_z = std::min(min_z, points_accessor[i][2]);
+    max_z = std::max(max_z, points_accessor[i][2]);
+  }
+
+  std::cout << "Point cloud bounds:" << std::endl;
+  std::cout << "  X: [" << min_x << ", " << max_x << "]" << std::endl;
+  std::cout << "  Y: [" << min_y << ", " << max_y << "]" << std::endl;
+  std::cout << "  Z: [" << min_z << ", " << max_z << "]" << std::endl;
 }

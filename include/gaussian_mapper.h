@@ -302,6 +302,9 @@ class GaussianMapper {
                                             int dilation_size = 3);
   void initializeMonocularDepthEstimator();
   void initializeStereoDepthEstimator();
+  std::tuple<std::vector<float>, std::vector<float>>
+  extractValidKeypointsForDepthAlignment(
+      std::shared_ptr<GaussianKeyframe> pkf) const;
 
  private:
   // Updated function declarations:
@@ -502,6 +505,14 @@ class GaussianMapper {
                                     const torch::Tensor &points3D,
                                     const torch::Tensor &valid_points,
                                     const std::string &save_path);
+  void projectRgbDepthToPointCloud(torch::Tensor &rgb_tensor,
+                                   torch::Tensor &depth_tensor,
+                                   std::vector<float> &camera_intrinsics,
+                                   float min_depth,
+                                   float max_depth,
+                                   Sophus::SE3f &pose,
+                                   std::string &output_path,
+                                   int subsample_factor);
 
   volatile bool isExternalDataStopped() {
     return external_data_stopped_.load(std::memory_order_acquire);

@@ -68,6 +68,15 @@ void DepthAnything::initialize_model(const std::string& model_path) {
     throw std::runtime_error("Failed to initialize model: " +
                              std::string(e.what()));
   }
+
+  // Initialize Sobel kernels (following Python implementation exactly)
+  sobel_x_ = torch::tensor(
+      {{{{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}}}},
+      torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
+
+  sobel_y_ = torch::tensor(
+      {{{{-1, -2, -1}, {0, 0, 0}, {1, 2, 1}}}},
+      torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
 }
 
 void DepthAnything::get_input_details() {
@@ -253,7 +262,8 @@ cv::Mat DepthAnything::inference_optimized(const std::vector<float>& input) {
 }
 
 // Add this to your estimate_depth function
-cv::Mat DepthAnything::estimate_depth(const cv::Mat& image) {
+std::tuple<torch::Tensor, torch::Tensor> DepthAnything::estimate_depth(
+    const cv::Mat& image) {
   img_height_ = image.rows;
   img_width_ = image.cols;
 
@@ -287,24 +297,187 @@ cv::Mat DepthAnything::estimate_depth(const cv::Mat& image) {
   std::cout << "Preprocessing: " << prep_time.count()
             << "ms, Inference: " << inf_time.count() << "ms" << std::endl;
 
-  return raw_depth;
+  cv::Mat depth_map;
+  cv::resize(raw_depth, depth_map, cv::Size(img_width_, img_height_), 0, 0,
+             cv::INTER_LINEAR);
+
+  torch::Tensor depth_tensor =
+      tensor_utils::cvMat2TorchTensor_Float32(depth_map, torch::kCUDA);
+
+  torch::Tensor confidence = compute_depth_confidence(depth_tensor);
+
+  return std::make_tuple(depth_tensor, confidence);
+}
+
+torch::Tensor DepthAnything::compute_depth_confidence(
+    const torch::Tensor& depth_tensor) {
+  // Ensure depth is properly shaped [1, 1, H, W] for conv2d
+  torch::Tensor depth = depth_tensor;
+  if (depth.dim() == 2) {
+    depth = depth.unsqueeze(0).unsqueeze(0);
+  } else if (depth.dim() == 3) {
+    depth = depth.unsqueeze(0);
+  }
+
+  // Normalize depth using get_t_s (following Python exactly)
+  auto [t, s] = get_t_s(depth);
+  depth = (depth - t) / s;
+
+  // Compute gradients using Sobel filters
+  torch::Tensor grad_x = torch::nn::functional::conv2d(
+      depth, sobel_x_, torch::nn::functional::Conv2dFuncOptions().padding(1));
+
+  torch::Tensor grad_y = torch::nn::functional::conv2d(
+      depth, sobel_y_, torch::nn::functional::Conv2dFuncOptions().padding(1));
+
+  // Compute edge magnitude and confidence
+  torch::Tensor edges = torch::cat({grad_x, grad_y}, 0);
+  torch::Tensor edges_sq_norm = (edges.pow(2)).sum(0, true);
+
+  float var = 0.2f;
+  torch::Tensor confidence = torch::exp(-edges_sq_norm / var);
+
+  return confidence.squeeze();  // Return as [H, W]
 }
 
 /**
- * @brief Estimate depth from stereo images and convert to metric depth
- * @param left_img Left stereo image
- * @param right_img Right stereo image
- * @param focal_length Camera focal length in pixels (for original image
- * resolution)
- * @param baseline Stereo baseline distance in meters
- * @return Depth map in meters
+ * Get median and median absolute deviation for depth normalization
+ * Following the Python implementation: get_t_s(d)
  */
-cv::Mat DepthAnything::estimate_metric_depth(const cv::Mat& image) {
-  cv::Mat depth_output = estimate_depth(image);
-  cv::Mat depth_map;
-  cv::resize(depth_output, depth_map, cv::Size(img_width_, img_height_), 0, 0,
-             cv::INTER_LINEAR);
-  return depth_map;
+std::tuple<torch::Tensor, torch::Tensor> DepthAnything::get_t_s(
+    const torch::Tensor& depth) const {
+  torch::Tensor t = depth.median();
+  torch::Tensor s = (depth - t).abs().median();
+  return std::make_tuple(t, s);
+}
+
+/**
+ * Align samples by finding scale and offset
+ * Following the Python implementation: align_samples(tri_idepth, mono_idepth)
+ */
+std::tuple<torch::Tensor, float, float> DepthAnything::align_samples(
+    const torch::Tensor& tri_idepth,
+    const torch::Tensor& mono_idepth) const {
+  auto [t_tri_tensor, s_tri_tensor] = get_t_s(tri_idepth);
+  auto [t_mono_tensor, s_mono_tensor] = get_t_s(mono_idepth);
+
+  float t_tri = t_tri_tensor.item<float>();
+  float s_tri = s_tri_tensor.item<float>();
+  float t_mono = t_mono_tensor.item<float>();
+  float s_mono = s_mono_tensor.item<float>();
+
+  float scale = s_tri / s_mono;
+  float offset = t_tri - t_mono * scale;
+
+  torch::Tensor aligned = mono_idepth * scale + offset;
+
+  return std::make_tuple(aligned, scale, offset);
+}
+
+/**
+ * Sample depth values at given pixel coordinates
+ */
+torch::Tensor DepthAnything::sample_depth_at_pixels(
+    const torch::Tensor& depth_map,
+    const torch::Tensor& pixel_coords,
+    int width,
+    int height) const {
+  // Convert pixel coordinates to normalized coordinates [-1, 1]
+  torch::Tensor normalized_coords = pixel_coords.clone().to(torch::kFloat32);
+  normalized_coords.select(1, 0) =
+      (normalized_coords.select(1, 0) / (width - 1)) * 2.0 - 1.0;
+  normalized_coords.select(1, 1) =
+      (normalized_coords.select(1, 1) / (height - 1)) * 2.0 - 1.0;
+
+  // Reshape for grid_sample: [1, 1, N, 2]
+  torch::Tensor grid = normalized_coords.view({1, 1, -1, 2});
+
+  // Add batch and channel dimensions: [1, 1, H, W]
+  torch::Tensor depth_4d = depth_map.unsqueeze(0).unsqueeze(0);
+
+  // Sample using bilinear interpolation
+  torch::Tensor sampled = torch::nn::functional::grid_sample(
+      depth_4d, grid,
+      torch::nn::functional::GridSampleFuncOptions()
+          .mode(torch::kBilinear)
+          .align_corners(true));
+
+  return sampled.view({-1});
+}
+
+/**
+ * Align mono depth map with triangulated depth from keypoints
+ * Following the Python implementation exactly
+ * Takes your existing depth output and makes it metric
+ */
+torch::Tensor DepthAnything::align_depth_to_metric(
+    const torch::Tensor& relative_depth_map,
+    const std::vector<float>& keypoint_pixels,
+    const std::vector<float>& keypoint_depths,
+    int width,
+    int height) const {
+  if (keypoint_pixels.empty() || keypoint_depths.empty() ||
+      keypoint_pixels.size() != keypoint_depths.size() * 2) {
+    std::cerr << "Warning: No valid keypoints for depth alignment" << std::endl;
+    return relative_depth_map;
+  }
+
+  int num_keypoints = keypoint_depths.size();
+
+  // Convert keypoint data to tensors
+  torch::Tensor pixel_coords =
+      torch::from_blob(const_cast<float*>(keypoint_pixels.data()),
+                       {num_keypoints, 2},
+                       torch::TensorOptions().dtype(torch::kFloat32))
+          .to(relative_depth_map.device());
+
+  torch::Tensor tri_depths =
+      torch::from_blob(const_cast<float*>(keypoint_depths.data()),
+                       {num_keypoints},
+                       torch::TensorOptions().dtype(torch::kFloat32))
+          .to(relative_depth_map.device());
+
+  // Convert to inverse depths
+  torch::Tensor tri_idepth = 1.0f / tri_depths;
+  torch::Tensor mono_idepth_map = 1.0f / relative_depth_map.clamp_min(1e-6f);
+  torch::Tensor mono_idepth_sampled =
+      sample_depth_at_pixels(mono_idepth_map, pixel_coords, width, height);
+
+  // First alignment
+  auto [mono_idepth_aligned, scale, offset] =
+      align_samples(tri_idepth, mono_idepth_sampled);
+
+  // Robust filtering
+  torch::Tensor err = (mono_idepth_aligned - tri_idepth).abs();
+  torch::Tensor err_median = err.median();
+  torch::Tensor valid_mask = err < (5.0f * err_median);
+
+  int num_valid = valid_mask.sum().item<int>();
+  if (num_valid < 3) {
+    std::cerr << "Warning: Too few valid keypoints (" << num_valid << ")"
+              << std::endl;
+    valid_mask = torch::ones_like(valid_mask);
+  }
+
+  // Re-align with filtered data
+  torch::Tensor tri_idepth_filtered = tri_idepth.masked_select(valid_mask);
+  torch::Tensor mono_idepth_filtered =
+      mono_idepth_sampled.masked_select(valid_mask);
+
+  auto [mono_idepth_final, final_scale, final_offset] =
+      align_samples(tri_idepth_filtered, mono_idepth_filtered);
+
+  // Apply to entire map
+  torch::Tensor mono_idepth_map_aligned =
+      mono_idepth_map * final_scale + final_offset;
+  torch::Tensor metric_depth_map =
+      1.0f / mono_idepth_map_aligned.clamp_min(1e-6f);
+
+  std::cout << "Depth alignment: scale=" << final_scale
+            << ", offset=" << final_offset << ", valid=" << num_valid << "/"
+            << num_keypoints << std::endl;
+
+  return metric_depth_map;
 }
 
 void DepthAnything::debug_preprocessing(const std::vector<float>& input) {

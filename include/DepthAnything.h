@@ -14,6 +14,8 @@
 #include <tuple>
 #include <vector>
 
+#include "tensor_utils.h"
+
 /**
  * @brief Fast ACVNet depth estimation class using ONNX Runtime
  *
@@ -40,7 +42,7 @@ class DepthAnything {
    * @param right_img Right stereo image
    * @return Disparity map
    */
-  cv::Mat estimate_depth(const cv::Mat& image);
+  std::tuple<torch::Tensor, torch::Tensor> estimate_depth(const cv::Mat& image);
 
   /**
    * @brief Estimate depth from stereo images and convert to metric depth
@@ -51,7 +53,13 @@ class DepthAnything {
    * @param baseline Stereo baseline distance in meters
    * @return Depth map in meters
    */
-  cv::Mat estimate_metric_depth(const cv::Mat& image);
+  cv::Mat estimate_relative_depth(const cv::Mat& image);
+
+  torch::Tensor align_depth_to_metric(const torch::Tensor& relative_depth_map,
+                                      const std::vector<float>& keypoint_pixels,
+                                      const std::vector<float>& keypoint_depths,
+                                      int width,
+                                      int height) const;
 
  private:
   // ONNX Runtime components
@@ -78,6 +86,9 @@ class DepthAnything {
 
   // Configuration
   float max_dist_;
+
+  torch::Tensor sobel_x_;
+  torch::Tensor sobel_y_;
 
   /**
    * @brief Initialize ONNX model
@@ -109,5 +120,20 @@ class DepthAnything {
    * @return Disparity map
    */
   cv::Mat inference_optimized(const std::vector<float>& input);
+
   void debug_preprocessing(const std::vector<float>& input);
+
+  torch::Tensor compute_depth_confidence(const torch::Tensor& depth_tensor);
+
+  std::tuple<torch::Tensor, torch::Tensor> get_t_s(
+      const torch::Tensor& depth) const;
+
+  std::tuple<torch::Tensor, float, float> align_samples(
+      const torch::Tensor& tri_idepth,
+      const torch::Tensor& mono_idepth) const;
+
+  torch::Tensor sample_depth_at_pixels(const torch::Tensor& depth_map,
+                                       const torch::Tensor& pixel_coords,
+                                       int width,
+                                       int height) const;
 };

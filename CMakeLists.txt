@@ -191,7 +191,6 @@ add_library(
     include/keyframe_selection.h
     include/nanoflann.hpp
     include/debugging_utils.h
-    include/foundation_stereo.h
     include/FastACVNet.h
     include/DepthAnything.h
     src/gaussian_keyframe.cpp
@@ -318,14 +317,6 @@ target_link_libraries(kitti_rgbd
     gaussian_viewer    
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
-
-# Foundation Stereo Test
-# add_executable(test_foundation_stereo examples/test_foundation_stereo.cpp)
-# target_link_libraries(test_foundation_stereo
-#     ${ONNXRUNTIME_LIB}
-#     gaussian_viewer    
-#     gaussian_mapper
-#     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
 
 # ACVNET Stereo Test
 add_executable(test_acvnet examples/test_acvnet.cpp)
