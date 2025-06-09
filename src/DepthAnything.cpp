@@ -6,7 +6,7 @@
 #include <fstream>
 #include <iostream>
 
-// DepthAnything implementation
+// DepthAnything implementation - Modified for Metric3D
 DepthAnything::DepthAnything(const std::string& model_path)
     : env_(ORT_LOGGING_LEVEL_WARNING, "DepthAnything") {
   initialize_model(model_path);
@@ -58,8 +58,6 @@ void DepthAnything::initialize_model(const std::string& model_path) {
     get_input_details();
     get_output_details();
 
-    // Note: memory_info_ will be created as needed in inference methods
-
     std::cout << "Model initialization completed" << std::endl;
 
   } catch (const Ort::Exception& e) {
@@ -106,17 +104,10 @@ void DepthAnything::get_input_details() {
       if (j < input_shape.size() - 1) std::cout << ", ";
     }
     std::cout << "]" << std::endl;
-
-    if (i == 0) {  // Use first input as primary
-      input_shape_ = input_shape;
-      if (input_shape.size() >= 4) {
-        input_height_ = input_shape[2];
-        input_width_ = input_shape[3];
-        std::cout << "Model expects input: " << input_width_ << "x"
-                  << input_height_ << std::endl;
-      }
-    }
   }
+
+  input_height_ = 616;
+  input_width_ = 1064;  // Hardcoded for Metric3D model
 
   // Convert to char pointers
   for (const auto& name : input_names_) {
@@ -160,8 +151,12 @@ void DepthAnything::get_output_details() {
   }
 }
 
-// Optimized preprocessing without PyTorch
-std::vector<float> DepthAnything::prepare_input_optimized(const cv::Mat& img) {
+// Modified preprocessing for Metric3D model
+std::vector<float> DepthAnything::prepare_input_metric3d(
+    const cv::Mat& img,
+    cv::Size& original_size,
+    std::vector<int>& pad_info) {
+  // Store original size
   // Resize image to target dimensions
   cv::Mat resized_img;
   cv::resize(img, resized_img, cv::Size(input_width_, input_height_), 0, 0,
@@ -261,21 +256,27 @@ cv::Mat DepthAnything::inference_optimized(const std::vector<float>& input) {
   }
 }
 
-// Add this to your estimate_depth function
+// Modified estimate_depth function for Metric3D
 std::tuple<torch::Tensor, torch::Tensor> DepthAnything::estimate_depth(
-    const cv::Mat& image) {
+    const cv::Mat& image,
+    float focal_length) {
   img_height_ = image.rows;
   img_width_ = image.cols;
 
   std::cout << "Input image type: " << image.type() << std::endl;
+  std::cout << "Input image size: " << img_width_ << "x" << img_height_
+            << std::endl;
+
+  // Prepare input with Metric3D preprocessing
+  cv::Size original_size;
+  std::vector<int> pad_info;
 
   auto start_prep = std::chrono::high_resolution_clock::now();
-  std::vector<float> input = prepare_input_optimized(image);
+  std::vector<float> input =
+      prepare_input_metric3d(image, original_size, pad_info);
   auto end_prep = std::chrono::high_resolution_clock::now();
 
-  // Add debug validation
-  debug_preprocessing(input);
-
+  // Run inference
   auto start_inf = std::chrono::high_resolution_clock::now();
   cv::Mat raw_depth = inference_optimized(input);
   auto end_inf = std::chrono::high_resolution_clock::now();
@@ -297,31 +298,27 @@ std::tuple<torch::Tensor, torch::Tensor> DepthAnything::estimate_depth(
   std::cout << "Preprocessing: " << prep_time.count()
             << "ms, Inference: " << inf_time.count() << "ms" << std::endl;
 
-  cv::Mat depth_map;
-  cv::resize(raw_depth, depth_map, cv::Size(img_width_, img_height_), 0, 0,
+  // Convert to torch tensor for unpadding
+  cv::Mat resized_depth;
+  cv::resize(raw_depth, resized_depth, cv::Size(img_width_, img_height_), 0, 0,
              cv::INTER_LINEAR);
 
-  torch::Tensor depth_tensor =
-      tensor_utils::cvMat2TorchTensor_Float32(depth_map, torch::kCUDA);
+  // Apply de-canonical transform for metric depth
+  // Hardcoded intrinsics as requested - you should replace with actual values
+  float canonical_to_real_scale = focal_length / 1000.0;
+  cv::Mat metric_depth = resized_depth * canonical_to_real_scale;
 
-  torch::Tensor confidence = compute_depth_confidence(depth_tensor);
+  torch::Tensor depth =
+      tensor_utils::cvMat2TorchTensor_Float32(metric_depth, torch::kCUDA);
 
-  return std::make_tuple(depth_tensor, confidence);
-}
+  // auto [t, s] = get_t_s(depth);
+  // depth = (depth - t) / s;
 
-torch::Tensor DepthAnything::compute_depth_confidence(
-    const torch::Tensor& depth_tensor) {
-  // Ensure depth is properly shaped [1, 1, H, W] for conv2d
-  torch::Tensor depth = depth_tensor;
   if (depth.dim() == 2) {
     depth = depth.unsqueeze(0).unsqueeze(0);
   } else if (depth.dim() == 3) {
     depth = depth.unsqueeze(0);
   }
-
-  // Normalize depth using get_t_s (following Python exactly)
-  auto [t, s] = get_t_s(depth);
-  depth = (depth - t) / s;
 
   // Compute gradients using Sobel filters
   torch::Tensor grad_x = torch::nn::functional::conv2d(
@@ -337,7 +334,7 @@ torch::Tensor DepthAnything::compute_depth_confidence(
   float var = 0.2f;
   torch::Tensor confidence = torch::exp(-edges_sq_norm / var);
 
-  return confidence.squeeze();  // Return as [H, W]
+  return std::make_tuple(depth, confidence);
 }
 
 /**
@@ -366,6 +363,15 @@ std::tuple<torch::Tensor, float, float> DepthAnything::align_samples(
   float t_mono = t_mono_tensor.item<float>();
   float s_mono = s_mono_tensor.item<float>();
 
+  // Add debug prints
+  std::cout << "DEBUG align_samples:" << std::endl;
+  std::cout << "  tri_idepth range: " << tri_idepth.min().item<float>() << " - "
+            << tri_idepth.max().item<float>() << std::endl;
+  std::cout << "  mono_idepth range: " << mono_idepth.min().item<float>()
+            << " - " << mono_idepth.max().item<float>() << std::endl;
+  std::cout << "  t_tri=" << t_tri << ", s_tri=" << s_tri << std::endl;
+  std::cout << "  t_mono=" << t_mono << ", s_mono=" << s_mono << std::endl;
+
   float scale = s_tri / s_mono;
   float offset = t_tri - t_mono * scale;
 
@@ -392,12 +398,12 @@ torch::Tensor DepthAnything::sample_depth_at_pixels(
   // Reshape for grid_sample: [1, 1, N, 2]
   torch::Tensor grid = normalized_coords.view({1, 1, -1, 2});
 
-  // Add batch and channel dimensions: [1, 1, H, W]
-  torch::Tensor depth_4d = depth_map.unsqueeze(0).unsqueeze(0);
+  std::cout << "Grid shape: " << grid.sizes() << std::endl;
+  std::cout << "Depth shape: " << depth_map.sizes() << std::endl;
 
   // Sample using bilinear interpolation
   torch::Tensor sampled = torch::nn::functional::grid_sample(
-      depth_4d, grid,
+      depth_map, grid,
       torch::nn::functional::GridSampleFuncOptions()
           .mode(torch::kBilinear)
           .align_corners(true));
@@ -416,6 +422,7 @@ torch::Tensor DepthAnything::align_depth_to_metric(
     const std::vector<float>& keypoint_depths,
     int width,
     int height) const {
+  auto start_align = std::chrono::high_resolution_clock::now();
   if (keypoint_pixels.empty() || keypoint_depths.empty() ||
       keypoint_pixels.size() != keypoint_depths.size() * 2) {
     std::cerr << "Warning: No valid keypoints for depth alignment" << std::endl;
@@ -431,51 +438,52 @@ torch::Tensor DepthAnything::align_depth_to_metric(
                        torch::TensorOptions().dtype(torch::kFloat32))
           .to(relative_depth_map.device());
 
-  torch::Tensor tri_depths =
+  torch::Tensor metric_depths =
       torch::from_blob(const_cast<float*>(keypoint_depths.data()),
                        {num_keypoints},
                        torch::TensorOptions().dtype(torch::kFloat32))
           .to(relative_depth_map.device());
 
-  // Convert to inverse depths
-  torch::Tensor tri_idepth = 1.0f / tri_depths;
-  torch::Tensor mono_idepth_map = 1.0f / relative_depth_map.clamp_min(1e-6f);
-  torch::Tensor mono_idepth_sampled =
-      sample_depth_at_pixels(mono_idepth_map, pixel_coords, width, height);
+  // Sample relative depths at keypoint locations
+  torch::Tensor relative_depths_sampled =
+      sample_depth_at_pixels(relative_depth_map, pixel_coords, width, height);
 
-  // First alignment
-  auto [mono_idepth_aligned, scale, offset] =
-      align_samples(tri_idepth, mono_idepth_sampled);
+  std::cout << "Sampled relative depths range: "
+            << relative_depths_sampled.min().item<float>() << " - "
+            << relative_depths_sampled.max().item<float>() << std::endl;
+  std::cout << "Metric depths range: " << metric_depths.min().item<float>()
+            << " - " << metric_depths.max().item<float>() << std::endl;
 
-  // Robust filtering
-  torch::Tensor err = (mono_idepth_aligned - tri_idepth).abs();
-  torch::Tensor err_median = err.median();
-  torch::Tensor valid_mask = err < (5.0f * err_median);
+  // Simple least squares: solve for [scale, offset] in metric = scale *
+  // relative + offset Set up system: [relative_depths, ones] * [scale; offset]
+  // = metric_depths
+  torch::Tensor A = torch::stack(
+      {relative_depths_sampled, torch::ones_like(relative_depths_sampled)}, 1);
+  torch::Tensor b = metric_depths;
 
-  int num_valid = valid_mask.sum().item<int>();
-  if (num_valid < 3) {
-    std::cerr << "Warning: Too few valid keypoints (" << num_valid << ")"
-              << std::endl;
-    valid_mask = torch::ones_like(valid_mask);
-  }
+  // Solve using pseudo-inverse: x = (A^T A)^{-1} A^T b
+  torch::Tensor AtA = torch::matmul(A.t(), A);
+  torch::Tensor Atb = torch::matmul(A.t(), b);
+  torch::Tensor solution = torch::linalg_solve(AtA, Atb);
 
-  // Re-align with filtered data
-  torch::Tensor tri_idepth_filtered = tri_idepth.masked_select(valid_mask);
-  torch::Tensor mono_idepth_filtered =
-      mono_idepth_sampled.masked_select(valid_mask);
+  float scale = solution[0].item<float>();
+  float offset = solution[1].item<float>();
 
-  auto [mono_idepth_final, final_scale, final_offset] =
-      align_samples(tri_idepth_filtered, mono_idepth_filtered);
+  auto end_align = std::chrono::high_resolution_clock::now();
 
-  // Apply to entire map
-  torch::Tensor mono_idepth_map_aligned =
-      mono_idepth_map * final_scale + final_offset;
-  torch::Tensor metric_depth_map =
-      1.0f / mono_idepth_map_aligned.clamp_min(1e-6f);
+  auto align_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+      end_align - start_align);
+  std::cout << "Alignment: " << align_time.count() << "ms" << std::endl;
 
-  std::cout << "Depth alignment: scale=" << final_scale
-            << ", offset=" << final_offset << ", valid=" << num_valid << "/"
-            << num_keypoints << std::endl;
+  std::cout << "Simple alignment: scale=" << scale << ", offset=" << offset
+            << " (using " << num_keypoints << " keypoints)" << std::endl;
+
+  // Apply transformation to entire depth map
+  torch::Tensor metric_depth_map = relative_depth_map * scale + offset;
+
+  std::cout << "Final metric depth range: "
+            << metric_depth_map.min().item<float>() << " - "
+            << metric_depth_map.max().item<float>() << std::endl;
 
   return metric_depth_map;
 }

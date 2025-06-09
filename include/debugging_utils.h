@@ -30,4 +30,4 @@ bool colorize_and_save_depth(const torch::Tensor &depth_tensor,
                              const std::string &output_path,
                              float min_depth = -1.0f,
                              float max_depth = -1.0f,
-                             int colormap = cv::COLORMAP_JET);
+                             int colormap = cv::COLORMAP_MAGMA);

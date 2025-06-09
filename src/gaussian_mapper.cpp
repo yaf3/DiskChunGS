@@ -1220,18 +1220,7 @@ void GaussianMapper::trainForOneIteration() {
   if (gt_depth.defined()) {
     torch::Tensor rendered_depth, depth_loss;
     rendered_depth = std::get<0>(render_pkg);
-
-    if (sensor_type_ == STEREO || sensor_type_ == RGBD) {
-      depth_loss = loss_utils::l1_depth_loss(rendered_depth, gt_depth);
-    } else if (sensor_type_ == MONOCULAR) {
-      depth_loss =
-          loss_utils::scale_invariant_depth_loss(rendered_depth, gt_depth);
-    } else {
-      throw std::runtime_error(
-          "[GaussianMapper] Invalid sensor type for depth "
-          "loss calculation");
-    }
-
+    depth_loss = loss_utils::l1_depth_loss(rendered_depth, gt_depth);
     loss += lambda_depth * depth_loss;
 
     // if (getIteration() % 100 == 0) {
@@ -2061,8 +2050,12 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   if (sensor_type_ == MONOCULAR) {
     // Estimate depth for monocular keyframe
     auto [relative_depth, depth_confidence] =
-        monocular_depth_estimator_->estimate_depth(pkf->img_undist_);
+        monocular_depth_estimator_->estimate_depth(pkf->img_undist_,
+                                                   pkf->intr_[0]);
     std::cout << "Relative depth size: " << relative_depth.sizes() << std::endl;
+
+    // std::string keypoint_pcd_path = "slam_keypoints.ply";
+    // projectKeypointsToPointCloud(pkf, keypoint_pcd_path);
 
     // Extract keypoint pixels and depths
     auto [valid_pixel_coords, valid_depths] =
@@ -2080,27 +2073,45 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
             relative_depth, valid_pixel_coords, valid_depths, pkf->image_width_,
             pkf->image_height_);
 
+    aligned_depth = aligned_depth.squeeze(0).squeeze(0);
+
     pkf->depth_image_ = aligned_depth;
+
+    // torch::Tensor aligned_depth = relative_depth.squeeze(0).squeeze(0);
+    // pkf->depth_image_ = aligned_depth;
     std::cout << "Aligned depth min value: "
               << aligned_depth.min().item<float>()
               << ", max value: " << aligned_depth.max().item<float>()
               << std::endl;
-    std::string render_filename = "aligned_depth.png";
-    colorize_and_save_depth(aligned_depth.detach().cpu(), render_filename,
-                            aligned_depth.min().item<float>(),
-                            aligned_depth.max().item<float>());
 
-    // Convert tensors to cv::Mat for processing
-    torch::Tensor rgb_image =
-        tensor_utils::cvMat2TorchTensor_Float32(pkf->img_undist_, device_type_);
+    // // Convert tensors to cv::Mat for processing
+    // torch::Tensor rgb_image =
+    //     tensor_utils::cvMat2TorchTensor_Float32(pkf->img_undist_,
+    //     device_type_);
 
-    // Get camera pose (world-to-camera)
-    Sophus::SE3f Tcw = pkf->getPosef();
+    // // Get camera pose (world-to-camera)
+    // Sophus::SE3f Tcw = pkf->getPosef();
 
-    // Project to point cloud
-    std::string pcd_path = "depth_pcd_kf.ply";
-    projectRgbDepthToPointCloud(rgb_image, aligned_depth, pkf->intr_,
-                                min_depth_, max_depth_, Tcw, pcd_path, 2);
+    // std::string render_filename = "aligned_depth.png";
+    // colorize_and_save_depth(aligned_depth.detach().cpu(), render_filename,
+    //                         aligned_depth.min().item<float>(),
+    //                         aligned_depth.max().item<float>());
+
+    // // Project to point cloud
+    // std::string pcd_path = "depth_pcd.ply";
+    // projectRgbDepthToPointCloud(rgb_image, aligned_depth, pkf->intr_,
+    //                             min_depth_, max_depth_, Tcw, pcd_path, 2);
+
+    // torch::Tensor manual_depth =
+    //     relative_depth.squeeze(0).squeeze(0) * 0.41558 - 1.29237;
+
+    // std::cout << "Manual depths range: " << manual_depth.min().item<float>()
+    //           << " - " << manual_depth.max().item<float>() << std::endl;
+
+    // pcd_path = "depth_pcd_C.ply";
+    // projectRgbDepthToPointCloud(rgb_image, manual_depth, pkf->intr_,
+    // min_depth_,
+    //                             max_depth_, Tcw, pcd_path, 2);
   }
 
   if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
@@ -2601,8 +2612,34 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       prob_penalty *= init_proba_scaler;
       torch::Tensor prob_s = torch::clamp(prob_L - prob_penalty, 0.0f, 1.0f);
 
+      // // Debug: Save probability visualizations
+      // std::filesystem::create_directories("./debug_prob");
+      // auto save_tensor = [](const torch::Tensor& t, const std::string& name)
+      // {
+      //   torch::Tensor cpu_t = t.detach().cpu().to(torch::kFloat);
+      //   if (cpu_t.dim() == 4)
+      //     cpu_t = cpu_t[0][0];
+      //   else if (cpu_t.dim() == 3 && cpu_t.size(0) == 1)
+      //     cpu_t = cpu_t[0];
+      //   cpu_t = torch::clamp(cpu_t, 0.0f, 1.0f);
+
+      //   int h = cpu_t.size(0), w = cpu_t.size(1);
+      //   cv::Mat mat(h, w, CV_32F, cpu_t.data_ptr<float>());
+      //   cv::Mat img_8bit, colored;
+      //   mat.convertTo(img_8bit, CV_8U, 255.0);
+      //   cv::applyColorMap(img_8bit, colored, cv::COLORMAP_JET);
+      //   cv::imwrite("./debug_prob/" + name + ".png", colored);
+      // };
+
+      // save_tensor(prob_L, "prob_L");
+      // save_tensor(prob_penalty, "prob_penalty");
+      // save_tensor(prob_s, "prob_s");
+
       // Step 4: Sample points based on probability and depth validity
       torch::Tensor random_mask = torch::rand_like(prob_s) < prob_s;
+      std::cout << "Depth min value: " << depth.min().item<float>()
+                << ", max value: " << depth.max().item<float>() << std::endl;
+      // torch::Tensor valid_depth = torch::ones_like(depth, torch::kBool);
       torch::Tensor valid_depth = (depth >= min_depth_) & (depth <= max_depth_);
       torch::Tensor sample_mask = random_mask & valid_depth;
 
@@ -2650,6 +2687,10 @@ void GaussianMapper::increasePcdByDepthReconstruction(
 
       scales = torch::log(torch::clamp(scales, 1e-6f, 1e6f));
       torch::Tensor sampled_scales = scales.unsqueeze(1).repeat({1, 3});
+
+      std::cout << "Sampled points: " << points3D.sizes()
+                << ", colors: " << sampled_colors.sizes()
+                << ", scales: " << sampled_scales.sizes() << std::endl;
 
       // Add to cache with scales
       if (depth_cached_ == 0) {
@@ -5253,8 +5294,7 @@ void GaussianMapper::initializeStereoDepthEstimator() {
 }
 
 void GaussianMapper::initializeMonocularDepthEstimator() {
-  std::string model_path =
-      "./models/depth_anything/depth_anything_v2_vitl.onnx";
+  std::string model_path = "./models/metric3dv2/metric3d-vit-small.onnx";
   this->monocular_depth_estimator_ =
       std::make_shared<DepthAnything>(model_path);
 }
@@ -5319,6 +5359,9 @@ void GaussianMapper::projectRgbDepthToPointCloud(
 
   std::cout << "Projecting " << width << "x" << height
             << " image to point cloud..." << std::endl;
+
+  std::cout << "RGB tensor size: " << rgb_tensor.sizes() << std::endl;
+  std::cout << "Depth tensor size: " << depth_tensor.sizes() << std::endl;
 
   // Create validity mask for depth
   // torch::Tensor valid_depth =
@@ -5395,4 +5438,88 @@ void GaussianMapper::projectRgbDepthToPointCloud(
   std::cout << "  X: [" << min_x << ", " << max_x << "]" << std::endl;
   std::cout << "  Y: [" << min_y << ", " << max_y << "]" << std::endl;
   std::cout << "  Z: [" << min_z << ", " << max_z << "]" << std::endl;
+}
+
+void GaussianMapper::projectKeypointsToPointCloud(
+    std::shared_ptr<GaussianKeyframe> pkf,
+    const std::string& output_path) {
+  std::vector<float> valid_points_3d;  // Will store [x1,y1,z1, x2,y2,z2, ...]
+  std::vector<float> valid_colors;     // Will store [r1,g1,b1, r2,g2,b2, ...]
+
+  int num_keypoints = pkf->kps_pixel_.size() / 2;
+
+  for (int i = 0; i < num_keypoints; i++) {
+    float u = pkf->kps_pixel_[2 * i];
+    float v = pkf->kps_pixel_[2 * i + 1];
+    float x = pkf->kps_point_local_[3 * i];
+    float y = pkf->kps_point_local_[3 * i + 1];
+    float z = pkf->kps_point_local_[3 * i + 2];
+
+    bool has_valid_3d =
+        (z > 0.1f && z < 100.0f) && (u >= 0 && u < pkf->image_width_) &&
+        (v >= 0 && v < pkf->image_height_) && std::isfinite(x) &&
+        std::isfinite(y) && std::isfinite(z);
+
+    if (has_valid_3d) {
+      // Add 3D point
+      valid_points_3d.push_back(x);
+      valid_points_3d.push_back(y);
+      valid_points_3d.push_back(z);
+
+      // Add red color
+      valid_colors.push_back(1.0f);  // R
+      valid_colors.push_back(0.0f);  // G
+      valid_colors.push_back(0.0f);  // B
+    }
+  }
+
+  if (valid_points_3d.empty()) {
+    std::cerr << "No valid keypoints found!" << std::endl;
+    return;
+  }
+
+  int num_valid = valid_points_3d.size() / 3;
+  std::cout << "Found " << num_valid << " valid keypoints out of "
+            << num_keypoints << " total" << std::endl;
+
+  // Create tensors from vectors
+  torch::Tensor points3D =
+      torch::from_blob(valid_points_3d.data(), {num_valid, 3},
+                       torch::TensorOptions().dtype(torch::kFloat32))
+          .to(device_type_)
+          .clone();  // Clone to own the memory
+
+  torch::Tensor colors =
+      torch::from_blob(valid_colors.data(), {num_valid, 3},
+                       torch::TensorOptions().dtype(torch::kFloat32))
+          .to(device_type_)
+          .clone();  // Clone to own the memory
+
+  // Transform to world coordinates if needed
+  Sophus::SE3f pose = pkf->getPosef();
+  if (!pose.matrix().isIdentity()) {
+    Sophus::SE3f Twc = pose.inverse();
+    torch::Tensor Twc_tensor =
+        tensor_utils::EigenMatrix2TorchTensor(Twc.matrix(), device_type_)
+            .transpose(0, 1);
+    transformPoints(points3D, Twc_tensor);
+  }
+
+  // Use your existing visualization function
+  visualizePointCloud(points3D, colors, output_path);
+
+  // Print statistics
+  // std::cout << "Keypoint cloud statistics:" << std::endl;
+  // auto points_cpu = points3D.cpu();
+  // auto mins = points_cpu.min(0).values;
+  // auto maxs = points_cpu.max(0).values;
+  // std::cout << " X: [" << mins[0].item<float>() << ", " <<
+  // maxs[0].item<float>()
+  //           << "]" << std::endl;
+  // std::cout << " Y: [" << mins[1].item<float>() << ", " <<
+  // maxs[1].item<float>()
+  //           << "]" << std::endl;
+  // std::cout << " Z: [" << mins[2].item<float>() << ", " <<
+  // maxs[2].item<float>()
+  //           << "]" << std::endl;
 }

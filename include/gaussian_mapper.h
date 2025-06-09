@@ -513,6 +513,8 @@ class GaussianMapper {
                                    Sophus::SE3f &pose,
                                    std::string &output_path,
                                    int subsample_factor);
+  void projectKeypointsToPointCloud(std::shared_ptr<GaussianKeyframe> pkf,
+                                    const std::string &output_path);
 
   volatile bool isExternalDataStopped() {
     return external_data_stopped_.load(std::memory_order_acquire);

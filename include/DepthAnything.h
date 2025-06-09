@@ -42,7 +42,8 @@ class DepthAnything {
    * @param right_img Right stereo image
    * @return Disparity map
    */
-  std::tuple<torch::Tensor, torch::Tensor> estimate_depth(const cv::Mat& image);
+  std::tuple<torch::Tensor, torch::Tensor> estimate_depth(const cv::Mat& image,
+                                                          float focal_length);
 
   /**
    * @brief Estimate depth from stereo images and convert to metric depth
@@ -60,6 +61,20 @@ class DepthAnything {
                                       const std::vector<float>& keypoint_depths,
                                       int width,
                                       int height) const;
+
+  torch::Tensor align_depth_to_metric_direct(
+      const torch::Tensor& relative_depth_map,
+      const std::vector<float>& keypoint_pixels,
+      const std::vector<float>& keypoint_depths,
+      int width,
+      int height) const;
+
+  torch::Tensor align_depth_least_squares(
+      const torch::Tensor& relative_depth_map,
+      const std::vector<float>& keypoint_pixels,
+      const std::vector<float>& keypoint_depths,
+      int width,
+      int height) const;
 
  private:
   // ONNX Runtime components
@@ -90,6 +105,8 @@ class DepthAnything {
   torch::Tensor sobel_x_;
   torch::Tensor sobel_y_;
 
+  float resize_scale_;
+
   /**
    * @brief Initialize ONNX model
    * @param model_path Path to ONNX model file
@@ -111,7 +128,9 @@ class DepthAnything {
    * @param img Input image
    * @return Preprocessed data as vector
    */
-  std::vector<float> prepare_input_optimized(const cv::Mat& img);
+  std::vector<float> prepare_input_metric3d(const cv::Mat& img,
+                                            cv::Size& original_size,
+                                            std::vector<int>& pad_info);
 
   /**
    * @brief Run inference on input data (Optimized version)
@@ -122,8 +141,6 @@ class DepthAnything {
   cv::Mat inference_optimized(const std::vector<float>& input);
 
   void debug_preprocessing(const std::vector<float>& input);
-
-  torch::Tensor compute_depth_confidence(const torch::Tensor& depth_tensor);
 
   std::tuple<torch::Tensor, torch::Tensor> get_t_s(
       const torch::Tensor& depth) const;
