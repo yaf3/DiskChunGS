@@ -25,8 +25,8 @@ Camera.fps: 10
 Camera.RGB: 1
 
 # Camera resolution
-Camera.width: 1241
-Camera.height: 376
+Camera.width: 1226
+Camera.height: 370
 
 #--------------------------------------------------------------------------------------------
 # ORB Parameters
