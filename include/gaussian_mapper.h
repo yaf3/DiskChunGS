@@ -44,8 +44,6 @@
 #include <tuple>
 #include <vector>
 
-#include "DepthAnything.h"
-#include "FastACVNet.h"
 #include "ORB-SLAM3/Thirdparty/Sophus/sophus/se3.hpp"
 #include "ORB-SLAM3/include/MapDrawer.h"
 #include "ORB-SLAM3/include/System.h"
@@ -54,7 +52,9 @@
 #include "gaussian_keyframe.h"
 #include "gaussian_scene.h"
 #include "keyframe_selection.h"
+#include "mono_depth.h"
 #include "operate_points.h"
+#include "stereo_depth.h"
 #include "stereo_vision.h"
 #include "tensor_utils.h"
 
@@ -424,8 +424,8 @@ class GaussianMapper {
 
   cv::Mat stereo_Q_;
   cv::Ptr<cv::cuda::StereoSGM> stereo_cv_sgm_;
-  std::shared_ptr<FastACVNet> stereo_depth_estimator_;
-  std::shared_ptr<DepthAnything> monocular_depth_estimator_;
+  std::shared_ptr<StereoDepth> stereo_depth_estimator_;
+  std::shared_ptr<MonoDepth> monocular_depth_estimator_;
   float min_depth_ = 0.0f;
   float max_depth_ = 100.0f;
 

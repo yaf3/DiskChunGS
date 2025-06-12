@@ -1,4 +1,4 @@
-#include <include/DepthAnything.h>
+#include <include/mono_depth.h>
 
 #include <algorithm>
 #include <chrono>
@@ -6,13 +6,13 @@
 #include <fstream>
 #include <iostream>
 
-// DepthAnything implementation - Modified for Metric3D
-DepthAnything::DepthAnything(const std::string& model_path)
-    : env_(ORT_LOGGING_LEVEL_WARNING, "DepthAnything") {
+// MonoDepth implementation - Modified for Metric3D
+MonoDepth::MonoDepth(const std::string& model_path)
+    : env_(ORT_LOGGING_LEVEL_WARNING, "MonoDepth") {
   initialize_model(model_path);
 }
 
-void DepthAnything::initialize_model(const std::string& model_path) {
+void MonoDepth::initialize_model(const std::string& model_path) {
   // Check if model file exists
   std::ifstream file(model_path);
   if (!file.good()) {
@@ -77,7 +77,7 @@ void DepthAnything::initialize_model(const std::string& model_path) {
       torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
 }
 
-void DepthAnything::get_input_details() {
+void MonoDepth::get_input_details() {
   Ort::AllocatorWithDefaultOptions allocator;
   size_t num_input_nodes = session_->GetInputCount();
 
@@ -115,7 +115,7 @@ void DepthAnything::get_input_details() {
   }
 }
 
-void DepthAnything::get_output_details() {
+void MonoDepth::get_output_details() {
   Ort::AllocatorWithDefaultOptions allocator;
   size_t num_output_nodes = session_->GetOutputCount();
 
@@ -152,7 +152,7 @@ void DepthAnything::get_output_details() {
 }
 
 // Modified preprocessing for Metric3D model
-std::vector<float> DepthAnything::prepare_input_metric3d(
+std::vector<float> MonoDepth::prepare_input_metric3d(
     const cv::Mat& img,
     cv::Size& original_size,
     std::vector<int>& pad_info) {
@@ -191,7 +191,7 @@ std::vector<float> DepthAnything::prepare_input_metric3d(
   return input_data;
 }
 
-cv::Mat DepthAnything::inference_optimized(const std::vector<float>& input) {
+cv::Mat MonoDepth::inference_optimized(const std::vector<float>& input) {
   // Create input shape
   std::vector<int64_t> input_shape = {1, 3, input_height_, input_width_};
 
@@ -257,7 +257,7 @@ cv::Mat DepthAnything::inference_optimized(const std::vector<float>& input) {
 }
 
 // Modified estimate_depth function for Metric3D
-std::tuple<torch::Tensor, torch::Tensor> DepthAnything::estimate_depth(
+std::tuple<torch::Tensor, torch::Tensor> MonoDepth::estimate_depth(
     const cv::Mat& image,
     float focal_length) {
   img_height_ = image.rows;
@@ -341,7 +341,7 @@ std::tuple<torch::Tensor, torch::Tensor> DepthAnything::estimate_depth(
  * Get median and median absolute deviation for depth normalization
  * Following the Python implementation: get_t_s(d)
  */
-std::tuple<torch::Tensor, torch::Tensor> DepthAnything::get_t_s(
+std::tuple<torch::Tensor, torch::Tensor> MonoDepth::get_t_s(
     const torch::Tensor& depth) const {
   torch::Tensor t = depth.median();
   torch::Tensor s = (depth - t).abs().median();
@@ -352,7 +352,7 @@ std::tuple<torch::Tensor, torch::Tensor> DepthAnything::get_t_s(
  * Align samples by finding scale and offset
  * Following the Python implementation: align_samples(tri_idepth, mono_idepth)
  */
-std::tuple<torch::Tensor, float, float> DepthAnything::align_samples(
+std::tuple<torch::Tensor, float, float> MonoDepth::align_samples(
     const torch::Tensor& tri_idepth,
     const torch::Tensor& mono_idepth) const {
   auto [t_tri_tensor, s_tri_tensor] = get_t_s(tri_idepth);
@@ -383,7 +383,7 @@ std::tuple<torch::Tensor, float, float> DepthAnything::align_samples(
 /**
  * Sample depth values at given pixel coordinates
  */
-torch::Tensor DepthAnything::sample_depth_at_pixels(
+torch::Tensor MonoDepth::sample_depth_at_pixels(
     const torch::Tensor& depth_map,
     const torch::Tensor& pixel_coords,
     int width,
@@ -416,7 +416,7 @@ torch::Tensor DepthAnything::sample_depth_at_pixels(
  * Following the Python implementation exactly
  * Takes your existing depth output and makes it metric
  */
-torch::Tensor DepthAnything::align_depth_to_metric(
+torch::Tensor MonoDepth::align_depth_to_metric(
     const torch::Tensor& relative_depth_map,
     const std::vector<float>& keypoint_pixels,
     const std::vector<float>& keypoint_depths,
@@ -488,7 +488,7 @@ torch::Tensor DepthAnything::align_depth_to_metric(
   return metric_depth_map;
 }
 
-void DepthAnything::debug_preprocessing(const std::vector<float>& input) {
+void MonoDepth::debug_preprocessing(const std::vector<float>& input) {
   std::cout << "=== Debug Preprocessing ===" << std::endl;
   std::cout << "Input tensor size: " << input.size() << std::endl;
   std::cout << "Expected size: " << (3 * input_height_ * input_width_)

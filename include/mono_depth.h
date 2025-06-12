@@ -22,19 +22,19 @@
  * This class provides stereo depth estimation using the Fast ACVNet model
  * with ONNX Runtime for inference and OpenCV for image processing.
  */
-class DepthAnything {
+class MonoDepth {
  public:
   /**
    * @brief Constructor
    * @param model_path Path to the ONNX model file
    * @param max_dist Maximum distance for depth visualization
    */
-  DepthAnything(const std::string& model_path);
+  MonoDepth(const std::string& model_path);
 
   /**
    * @brief Destructor
    */
-  ~DepthAnything() = default;
+  ~MonoDepth() = default;
 
   /**
    * @brief Estimate depth from stereo images

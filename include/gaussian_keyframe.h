@@ -33,12 +33,12 @@
 #include <string>
 #include <vector>
 
-#include "FastACVNet.h"
 #include "ORB-SLAM3/Thirdparty/Sophus/sophus/se3.hpp"
 #include "camera.h"
 #include "general_utils.h"
 #include "graphics_utils.h"
 #include "point2d.h"
+#include "stereo_depth.h"
 #include "tensor_utils.h"
 #include "types.h"
 
@@ -140,7 +140,7 @@ class GaussianKeyframe {
 
   void setupStereoData(float baseline,
                        torch::DeviceType device_type,
-                       std::shared_ptr<FastACVNet> depth_estimator,
+                       std::shared_ptr<StereoDepth> depth_estimator,
                        float min_depth,
                        float max_depth);
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>

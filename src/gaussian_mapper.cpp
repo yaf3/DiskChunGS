@@ -1193,6 +1193,13 @@ void GaussianMapper::trainForOneIteration() {
 
   timer_misc_updates.stop();
 
+  // int num_gaussians = 0;
+  // for (const auto& model : models) {
+  //   num_gaussians += model->getXYZ().size(0);
+  // }
+  // std::cout << "[Optimization] Num visible chunks: " << visible_chunks.size()
+  //           << ", Num Gaussians: " << num_gaussians << std::endl;
+
   // Render
   auto timer_render = ProfilingUtils::Timer("render");
   auto render_pkg = GaussianRenderer::render(
@@ -1224,16 +1231,15 @@ void GaussianMapper::trainForOneIteration() {
     loss += lambda_depth * depth_loss;
 
     // if (getIteration() % 100 == 0) {
-    //   std::string render_filename = "./debug_stereo/rendered_depth_" +
-    //   std::to_string(viewpoint_cam->fid_) + ".png";
-    //   colorize_and_save_depth(rendered_depth.detach().cpu(),
-    //   render_filename,
-    //                             min_depth_, max_depth_);
-    //   std::string gt_filename = "./debug_stereo/gt_depth_" +
-    //   std::to_string(viewpoint_cam->fid_) + ".png";
-    //   colorize_and_save_depth(gt_depth.detach().cpu(),
-    //   gt_filename,
-    //                             min_depth_, max_depth_);
+    //   std::string render_filename = "./debug_mono/rendered_depth_" +
+    //                                 std::to_string(viewpoint_cam->fid_) +
+    //                                 ".png";
+    //   colorize_and_save_depth(rendered_depth.detach().cpu(), render_filename,
+    //   0,
+    //                           10);
+    //   std::string gt_filename = "./debug_mono/gt_depth_" +
+    //                             std::to_string(viewpoint_cam->fid_) + ".png";
+    //   colorize_and_save_depth(gt_depth.detach().cpu(), gt_filename, 0, 10);
     // }
   }
 
@@ -1469,9 +1475,9 @@ void GaussianMapper::trainForOneIteration() {
 
   auto timer_optimizer_step = ProfilingUtils::Timer("optimizer_step");
   // Optimizer step
-  for (const auto& gaussians : models) {
-    if (getIteration() < opt_params_.iterations_ ||
-        opt_params_.iterations_ == -1) {
+  if (getIteration() < opt_params_.iterations_ ||
+      opt_params_.iterations_ == -1) {
+    for (const auto& gaussians : models) {
       gaussians->optimizer_->step();
       gaussians->optimizer_->zero_grad(true);
     }
@@ -5290,13 +5296,14 @@ void GaussianMapper::initializeStereoDepthEstimator() {
       "fast_acvnet_plus_kitti_2015_opset16_" +
       std::to_string(model_resolution.height) + "x" +
       std::to_string(model_resolution.width) + ".onnx";
-  this->stereo_depth_estimator_ = std::make_shared<FastACVNet>(model_path);
+  this->stereo_depth_estimator_ = std::make_shared<StereoDepth>(model_path);
 }
 
 void GaussianMapper::initializeMonocularDepthEstimator() {
   std::string model_path = "./models/metric3dv2/metric3d-vit-small.onnx";
-  this->monocular_depth_estimator_ =
-      std::make_shared<DepthAnything>(model_path);
+  // std::string model_path =
+  //     "./models/depth_anything/depth_anything_v2_vitb_dynamic.onnx";
+  this->monocular_depth_estimator_ = std::make_shared<MonoDepth>(model_path);
 }
 
 /**

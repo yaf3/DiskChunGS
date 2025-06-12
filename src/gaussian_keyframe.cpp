@@ -284,7 +284,7 @@ torch::Tensor GaussianKeyframe::applyAppearanceTransform(
 void GaussianKeyframe::setupStereoData(
     float baseline,
     torch::DeviceType device_type,
-    std::shared_ptr<FastACVNet> depth_estimator,
+    std::shared_ptr<StereoDepth> depth_estimator,
     float min_depth,
     float max_depth) {
   if (img_auxiliary_undist_.empty()) {

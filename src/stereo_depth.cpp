@@ -1,4 +1,4 @@
-#include <include/FastACVNet.h>
+#include <include/stereo_depth.h>
 
 #include <algorithm>
 #include <chrono>
@@ -6,13 +6,13 @@
 #include <fstream>
 #include <iostream>
 
-// FastACVNet implementation
-FastACVNet::FastACVNet(const std::string& model_path)
-    : env_(ORT_LOGGING_LEVEL_WARNING, "FastACVNet") {
+// StereoDepth implementation
+StereoDepth::StereoDepth(const std::string& model_path)
+    : env_(ORT_LOGGING_LEVEL_WARNING, "StereoDepth") {
   initialize_model(model_path);
 }
 
-void FastACVNet::initialize_model(const std::string& model_path) {
+void StereoDepth::initialize_model(const std::string& model_path) {
   // Check if model file exists
   std::ifstream file(model_path);
   if (!file.good()) {
@@ -70,7 +70,7 @@ void FastACVNet::initialize_model(const std::string& model_path) {
   }
 }
 
-void FastACVNet::get_input_details() {
+void StereoDepth::get_input_details() {
   // Get input names
   Ort::AllocatorWithDefaultOptions allocator;
   size_t num_input_nodes = session_->GetInputCount();
@@ -134,7 +134,7 @@ void FastACVNet::get_input_details() {
   }
 }
 
-void FastACVNet::get_output_details() {
+void StereoDepth::get_output_details() {
   // Get output names
   Ort::AllocatorWithDefaultOptions allocator;
   size_t num_output_nodes = session_->GetOutputCount();
@@ -172,7 +172,7 @@ void FastACVNet::get_output_details() {
 }
 
 // Optimized preprocessing without PyTorch
-std::vector<float> FastACVNet::prepare_input_optimized(const cv::Mat& img) {
+std::vector<float> StereoDepth::prepare_input_optimized(const cv::Mat& img) {
   // Resize image to target dimensions
   cv::Mat resized_img;
   cv::resize(img, resized_img, cv::Size(input_width_, input_height_), 0, 0,
@@ -214,8 +214,9 @@ std::vector<float> FastACVNet::prepare_input_optimized(const cv::Mat& img) {
   return input_data;
 }
 
-cv::Mat FastACVNet::inference_optimized(const std::vector<float>& left_input,
-                                        const std::vector<float>& right_input) {
+cv::Mat StereoDepth::inference_optimized(
+    const std::vector<float>& left_input,
+    const std::vector<float>& right_input) {
   // Create input shape
   std::vector<int64_t> input_shape = {1, 3, input_height_, input_width_};
 
@@ -260,8 +261,8 @@ cv::Mat FastACVNet::inference_optimized(const std::vector<float>& left_input,
   }
 }
 
-cv::Mat FastACVNet::estimate_depth(const cv::Mat& left_img,
-                                   const cv::Mat& right_img) {
+cv::Mat StereoDepth::estimate_depth(const cv::Mat& left_img,
+                                    const cv::Mat& right_img) {
   img_height_ = left_img.rows;
   img_width_ = left_img.cols;
 
@@ -287,7 +288,7 @@ cv::Mat FastACVNet::estimate_depth(const cv::Mat& left_img,
 }
 
 // Keep the old PyTorch-based method for backward compatibility
-torch::Tensor FastACVNet::prepare_input(const cv::Mat& img) {
+torch::Tensor StereoDepth::prepare_input(const cv::Mat& img) {
   // No BGR to RGB conversion needed since input is already RGB
 
   // Resize
@@ -319,8 +320,8 @@ torch::Tensor FastACVNet::prepare_input(const cv::Mat& img) {
   return tensor.contiguous();
 }
 
-cv::Mat FastACVNet::inference(const torch::Tensor& left_input,
-                              const torch::Tensor& right_input) {
+cv::Mat StereoDepth::inference(const torch::Tensor& left_input,
+                               const torch::Tensor& right_input) {
   // Convert tensors to ONNX Runtime format
   std::vector<int64_t> input_shape = {1, 3, input_height_, input_width_};
 
@@ -374,10 +375,10 @@ cv::Mat FastACVNet::inference(const torch::Tensor& left_input,
  * @param baseline Stereo baseline distance in meters
  * @return Depth map in meters
  */
-cv::Mat FastACVNet::estimate_metric_depth(const cv::Mat& left_img,
-                                          const cv::Mat& right_img,
-                                          const float focal_length,
-                                          const float baseline) {
+cv::Mat StereoDepth::estimate_metric_depth(const cv::Mat& left_img,
+                                           const cv::Mat& right_img,
+                                           const float focal_length,
+                                           const float baseline) {
   // First get disparity
   cv::Mat disparity = estimate_depth(left_img, right_img);
 
