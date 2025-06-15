@@ -37,6 +37,7 @@
 #include "camera.h"
 #include "general_utils.h"
 #include "graphics_utils.h"
+#include "mono_depth.h"
 #include "point2d.h"
 #include "stereo_depth.h"
 #include "tensor_utils.h"
@@ -143,6 +144,14 @@ class GaussianKeyframe {
                        std::shared_ptr<StereoDepth> depth_estimator,
                        float min_depth,
                        float max_depth);
+
+  std::tuple<std::vector<float>, std::vector<float>>
+  extractValidKeypointsForDepthAlignment() const;
+
+  void setupMonoData(torch::DeviceType device_type,
+                     std::shared_ptr<MonoDepth> depth_estimator,
+                     float min_depth,
+                     float max_depth);
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
   getRightCameraTransforms() const;
 

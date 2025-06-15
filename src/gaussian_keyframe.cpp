@@ -451,6 +451,115 @@ void GaussianKeyframe::setupStereoData(
   }
 }
 
+/**
+ * Extract valid keypoints with 3D coordinates for depth alignment
+ * Similar to how the Python code filters keypoints with has_pt3d
+ */
+std::tuple<std::vector<float>, std::vector<float>>
+GaussianKeyframe::extractValidKeypointsForDepthAlignment() const {
+  std::vector<float> valid_pixel_coords;
+  std::vector<float> valid_depths;
+
+  assert(kps_pixel_.size() % 2 == 0);
+  assert(kps_point_local_.size() % 3 == 0);
+
+  int num_keypoints = kps_pixel_.size() / 2;
+
+  for (int i = 0; i < num_keypoints; i++) {
+    float u = kps_pixel_[2 * i];      // u coordinate
+    float v = kps_pixel_[2 * i + 1];  // v coordinate
+
+    // Get 3D point in local camera frame
+    float x = kps_point_local_[3 * i];
+    float y = kps_point_local_[3 * i + 1];
+    float z = kps_point_local_[3 * i + 2];
+
+    // Check if keypoint has valid 3D coordinates
+    // Following the pattern from the Python code where has_pt3d checks for
+    // valid points
+    bool has_valid_3d = (z > 0.1f && z < 100.0f) &&  // reasonable depth range
+                        (u >= 0 && u < image_width_) &&  // within image bounds
+                        (v >= 0 && v < image_height_) && std::isfinite(x) &&
+                        std::isfinite(y) && std::isfinite(z);
+
+    if (has_valid_3d) {
+      valid_pixel_coords.push_back(u);
+      valid_pixel_coords.push_back(v);
+      valid_depths.push_back(z);  // depth in camera coordinate system
+    }
+  }
+
+  std::cout << "Found " << valid_depths.size() << " valid keypoints out of "
+            << num_keypoints << " total keypoints" << std::endl;
+
+  return std::make_tuple(valid_pixel_coords, valid_depths);
+}
+
+void GaussianKeyframe::setupMonoData(torch::DeviceType device_type,
+                                     std::shared_ptr<MonoDepth> depth_estimator,
+                                     float min_depth,
+                                     float max_depth) {
+  auto [relative_depth, depth_confidence] =
+      depth_estimator->estimate_depth(img_undist_, intr_[0]);
+  std::cout << "Relative depth size: " << relative_depth.sizes() << std::endl;
+
+  // std::string keypoint_pcd_path = "slam_keypoints.ply";
+  // projectKeypointsToPointCloud(pkf, keypoint_pcd_path);
+
+  // Extract keypoint pixels and depths
+  auto [valid_pixel_coords, valid_depths] =
+      extractValidKeypointsForDepthAlignment();
+
+  if (valid_depths.size() < 5) {
+    std::cout << "Not enough valid depths for monocular depth alignment: "
+              << valid_depths.size() << std::endl;
+    return;
+  }
+
+  // Align depth to keypoints
+  torch::Tensor aligned_depth = depth_estimator->align_depth_to_metric(
+      relative_depth, valid_pixel_coords, valid_depths, image_width_,
+      image_height_);
+
+  depth_image_ = aligned_depth.squeeze(0).squeeze(0);
+
+  // torch::Tensor aligned_depth = relative_depth.squeeze(0).squeeze(0);
+  // pkf->depth_image_ = aligned_depth;
+  // std::cout << "Aligned depth min value: "
+  //           << aligned_depth.min().item<float>()
+  //           << ", max value: " << aligned_depth.max().item<float>()
+  //           << std::endl;
+
+  // // Convert tensors to cv::Mat for processing
+  // torch::Tensor rgb_image =
+  //     tensor_utils::cvMat2TorchTensor_Float32(pkf->img_undist_,
+  //     device_type_);
+
+  // // Get camera pose (world-to-camera)
+  // Sophus::SE3f Tcw = pkf->getPosef();
+
+  // std::string render_filename = "aligned_depth.png";
+  // colorize_and_save_depth(aligned_depth.detach().cpu(), render_filename,
+  //                         aligned_depth.min().item<float>(),
+  //                         aligned_depth.max().item<float>());
+
+  // // Project to point cloud
+  // std::string pcd_path = "depth_pcd.ply";
+  // projectRgbDepthToPointCloud(rgb_image, aligned_depth, pkf->intr_,
+  //                             min_depth_, max_depth_, Tcw, pcd_path, 2);
+
+  // torch::Tensor manual_depth =
+  //     relative_depth.squeeze(0).squeeze(0) * 0.41558 - 1.29237;
+
+  // std::cout << "Manual depths range: " << manual_depth.min().item<float>()
+  //           << " - " << manual_depth.max().item<float>() << std::endl;
+
+  // pcd_path = "depth_pcd_C.ply";
+  // projectRgbDepthToPointCloud(rgb_image, manual_depth, pkf->intr_,
+  // min_depth_,
+  //                             max_depth_, Tcw, pcd_path, 2);
+}
+
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
 GaussianKeyframe::getRightCameraTransforms() const {
   if (!is_stereo_) {

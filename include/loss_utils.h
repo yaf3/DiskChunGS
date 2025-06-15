@@ -41,6 +41,16 @@ inline torch::Tensor l1_depth_loss(torch::Tensor &network_output,
   return loss.mean();
 }
 
+inline torch::Tensor smooth_l1_depth_loss(torch::Tensor &network_output,
+                                          torch::Tensor &gt,
+                                          float beta = 1.0) {
+  torch::Tensor diff = torch::abs(network_output - gt);
+  torch::Tensor loss =
+      torch::where(diff < beta, 0.5 * diff * diff / beta, diff - 0.5 * beta);
+  loss = loss.masked_fill(gt == 0, 0);
+  return loss.mean();
+}
+
 inline torch::Tensor scale_invariant_depth_loss(torch::Tensor &network_output,
                                                 torch::Tensor &gt_relative) {
   // Create mask for valid depth values

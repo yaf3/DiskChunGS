@@ -32,7 +32,7 @@ namespace tensor_utils {
 
 inline void deleter(void* arg) {}
 
-inline torch::Tensor cvMat2TorchTensor_Float32(cv::Mat& mat,
+inline torch::Tensor cvMat2TorchTensor_Float32(const cv::Mat& mat,
                                                torch::DeviceType device_type) {
   // First make sure we have a continuous matrix
   cv::Mat continuous_mat;
@@ -120,6 +120,7 @@ inline cv::Mat torchTensor2CvMat_Float32(torch::Tensor& tensor) {
 
   switch (mat_tensor.ndimension()) {
     case 2: {
+      mat_tensor = mat_tensor.to(torch::kCPU);
       mat = cv::Mat(/*rows=*/mat_tensor.size(0),
                     /*cols=*/mat_tensor.size(1),
                     /*type=*/CV_32FC1,

@@ -330,12 +330,10 @@ GaussianMapper::GaussianMapper(const SystemSensorType sensor_type,
   ORB_SLAM3::System::eSensor system_mode;
   if (sensor_type == STEREO) {
     system_mode = ORB_SLAM3::System::STEREO;
-    initializeStereoDepthEstimator();
   } else if (sensor_type == RGBD) {
     system_mode = ORB_SLAM3::System::RGBD;
   } else {
     system_mode = ORB_SLAM3::System::MONOCULAR;
-    initializeMonocularDepthEstimator();
   }
 
   // Check settings file
@@ -466,6 +464,17 @@ GaussianMapper::GaussianMapper(const SystemSensorType sensor_type,
       viewer_camera_id_set_ = true;
     }
     this->scene_->addCamera(camera);
+  }
+
+  if (sensor_type == STEREO) {
+    system_mode = ORB_SLAM3::System::STEREO;
+    initializeStereoDepthEstimator();
+  } else if (sensor_type == RGBD) {
+    system_mode = ORB_SLAM3::System::RGBD;
+    initializeMonocularDepthEstimator();
+  } else {
+    system_mode = ORB_SLAM3::System::MONOCULAR;
+    initializeMonocularDepthEstimator();
   }
 }
 
@@ -756,7 +765,11 @@ void GaussianMapper::run() {
           }
         }
 
-        if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
+        if (sensor_type_ == MONOCULAR) {
+          pkf->setupMonoData(device_type_, monocular_depth_estimator_,
+                             min_depth_, max_depth_);
+        } else if (sensor_type_ == STEREO &&
+                   !pkf->img_auxiliary_undist_.empty()) {
           pkf->setupStereoData(stereo_baseline_length_, device_type_,
                                stereo_depth_estimator_, min_depth_, max_depth_);
         } else if (sensor_type_ == RGBD &&
@@ -1227,7 +1240,7 @@ void GaussianMapper::trainForOneIteration() {
   if (gt_depth.defined()) {
     torch::Tensor rendered_depth, depth_loss;
     rendered_depth = std::get<0>(render_pkg);
-    depth_loss = loss_utils::l1_depth_loss(rendered_depth, gt_depth);
+    depth_loss = loss_utils::smooth_l1_depth_loss(rendered_depth, gt_depth);
     loss += lambda_depth * depth_loss;
 
     // if (getIteration() % 100 == 0) {
@@ -1426,6 +1439,12 @@ void GaussianMapper::trainForOneIteration() {
             torch::max(gaussians->max_radii2D_.index({visibility_filter}),
                        radii.index({visibility_filter})));
 
+        // std::cout << "[Iteration " << getIteration() << "] Densifying model "
+        //           << model_idx << ", local_iter: " << local_iter
+        //           << ", max_radii2D: "
+        //           << gaussians->max_radii2D_.max().item<float>() <<
+        //           std::endl;
+
         if ((local_iter > opt_params_.densify_from_iter_) &&
             (local_iter % densifyInterval() == 0)) {
           int size_threshold = (local_iter < prune_big_point_after_iter_ ||
@@ -1433,7 +1452,7 @@ void GaussianMapper::trainForOneIteration() {
                                    ? 0
                                    : 20;
           gaussians->prune(densify_min_opacity_, scene_->cameras_extent_,
-                           size_threshold);
+                           1000.0);
         }
 
         if (opacityResetInterval() &&
@@ -2054,73 +2073,9 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   }
 
   if (sensor_type_ == MONOCULAR) {
-    // Estimate depth for monocular keyframe
-    auto [relative_depth, depth_confidence] =
-        monocular_depth_estimator_->estimate_depth(pkf->img_undist_,
-                                                   pkf->intr_[0]);
-    std::cout << "Relative depth size: " << relative_depth.sizes() << std::endl;
-
-    // std::string keypoint_pcd_path = "slam_keypoints.ply";
-    // projectKeypointsToPointCloud(pkf, keypoint_pcd_path);
-
-    // Extract keypoint pixels and depths
-    auto [valid_pixel_coords, valid_depths] =
-        extractValidKeypointsForDepthAlignment(pkf);
-
-    if (valid_depths.size() < 5) {
-      std::cout << "Not enough valid depths for monocular depth alignment: "
-                << valid_depths.size() << std::endl;
-      return;
-    }
-
-    // Align depth to keypoints
-    torch::Tensor aligned_depth =
-        monocular_depth_estimator_->align_depth_to_metric(
-            relative_depth, valid_pixel_coords, valid_depths, pkf->image_width_,
-            pkf->image_height_);
-
-    aligned_depth = aligned_depth.squeeze(0).squeeze(0);
-
-    pkf->depth_image_ = aligned_depth;
-
-    // torch::Tensor aligned_depth = relative_depth.squeeze(0).squeeze(0);
-    // pkf->depth_image_ = aligned_depth;
-    std::cout << "Aligned depth min value: "
-              << aligned_depth.min().item<float>()
-              << ", max value: " << aligned_depth.max().item<float>()
-              << std::endl;
-
-    // // Convert tensors to cv::Mat for processing
-    // torch::Tensor rgb_image =
-    //     tensor_utils::cvMat2TorchTensor_Float32(pkf->img_undist_,
-    //     device_type_);
-
-    // // Get camera pose (world-to-camera)
-    // Sophus::SE3f Tcw = pkf->getPosef();
-
-    // std::string render_filename = "aligned_depth.png";
-    // colorize_and_save_depth(aligned_depth.detach().cpu(), render_filename,
-    //                         aligned_depth.min().item<float>(),
-    //                         aligned_depth.max().item<float>());
-
-    // // Project to point cloud
-    // std::string pcd_path = "depth_pcd.ply";
-    // projectRgbDepthToPointCloud(rgb_image, aligned_depth, pkf->intr_,
-    //                             min_depth_, max_depth_, Tcw, pcd_path, 2);
-
-    // torch::Tensor manual_depth =
-    //     relative_depth.squeeze(0).squeeze(0) * 0.41558 - 1.29237;
-
-    // std::cout << "Manual depths range: " << manual_depth.min().item<float>()
-    //           << " - " << manual_depth.max().item<float>() << std::endl;
-
-    // pcd_path = "depth_pcd_C.ply";
-    // projectRgbDepthToPointCloud(rgb_image, manual_depth, pkf->intr_,
-    // min_depth_,
-    //                             max_depth_, Tcw, pcd_path, 2);
-  }
-
-  if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
+    pkf->setupMonoData(device_type_, monocular_depth_estimator_, min_depth_,
+                       max_depth_);
+  } else if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
     pkf->setupStereoData(stereo_baseline_length_, device_type_,
                          stereo_depth_estimator_, min_depth_, max_depth_);
   } else if (sensor_type_ == RGBD && !pkf->img_auxiliary_undist_.empty()) {
@@ -2694,9 +2649,9 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       scales = torch::log(torch::clamp(scales, 1e-6f, 1e6f));
       torch::Tensor sampled_scales = scales.unsqueeze(1).repeat({1, 3});
 
-      std::cout << "Sampled points: " << points3D.sizes()
-                << ", colors: " << sampled_colors.sizes()
-                << ", scales: " << sampled_scales.sizes() << std::endl;
+      // std::cout << "Sampled points: " << points3D.sizes()
+      //           << ", colors: " << sampled_colors.sizes()
+      //           << ", scales: " << sampled_scales.sizes() << std::endl;
 
       // Add to cache with scales
       if (depth_cached_ == 0) {
@@ -4939,7 +4894,10 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
       }
     }
 
-    if (sensor_type_ == STEREO && !depth_or_right_image.empty()) {
+    if (sensor_type_ == MONOCULAR) {
+      new_kf->setupMonoData(device_type_, monocular_depth_estimator_,
+                            min_depth_, max_depth_);
+    } else if (sensor_type_ == STEREO && !depth_or_right_image.empty()) {
       new_kf->setupStereoData(stereo_baseline_length_, device_type_,
                               stereo_depth_estimator_, min_depth_, max_depth_);
     }
@@ -4961,6 +4919,33 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
       double min_val, max_val;
       cv::minMaxLoc(depth_cleaned, &min_val, &max_val);
       cv::Scalar mean = cv::mean(depth_cleaned, valid_mask);
+
+      // float depth_threshold = 0.1f;  // Minimum valid depth (10cm)
+      // float blend_sigma = 5.0f;      // Blending smoothness
+
+      // auto [merged_depth, confidence] =
+      //     monocular_depth_estimator_->estimate_depth_with_reference(
+      //         rgb_image, depth_cleaned, new_kf->intr_[0], depth_threshold,
+      //         blend_sigma);
+
+      // cv::Mat final_depth =
+      //     tensor_utils::torchTensor2CvMat_Float32(merged_depth);
+
+      // // Get camera pose (world-to-camera)
+      // Sophus::SE3f Tcw = new_kf->getPosef();
+
+      // std::string render_filename =
+      // "/workspace/repo/rgbd_predicted_depth.png";
+      // colorize_and_save_depth(merged_depth.detach().cpu(), render_filename,
+      //                         merged_depth.min().item<float>(),
+      //                         merged_depth.max().item<float>());
+
+      // // Project to point cloud
+      // std::string pcd_path = "/workspace/repo/depth_pcd.ply";
+      // torch::Tensor rgb_torch =
+      //     tensor_utils::cvMat2TorchTensor_Float32(rgb_image, torch::kCUDA);
+      // projectRgbDepthToPointCloud(rgb_torch, merged_depth, new_kf->intr_,
+      //                             min_depth_, max_depth_, Tcw, pcd_path, 2);
 
       // std::cout << "Cleaned depth matrix - type: " << depth_cleaned.type()
       //           << ", min: " << min_val << ", max: " << max_val
@@ -5292,7 +5277,7 @@ void GaussianMapper::initializeLaplacianOfGaussianKernel() {
 void GaussianMapper::initializeStereoDepthEstimator() {
   cv::Size model_resolution(1280, 384);
   std::string model_path =
-      "./models/fast_acvnet_plus_onnx_gridsample/"
+      "/workspace/repo/models/fast_acvnet_plus_onnx_gridsample/"
       "fast_acvnet_plus_kitti_2015_opset16_" +
       std::to_string(model_resolution.height) + "x" +
       std::to_string(model_resolution.width) + ".onnx";
@@ -5300,56 +5285,11 @@ void GaussianMapper::initializeStereoDepthEstimator() {
 }
 
 void GaussianMapper::initializeMonocularDepthEstimator() {
-  std::string model_path = "./models/metric3dv2/metric3d-vit-small.onnx";
+  std::string model_path =
+      "/workspace/repo/models/metric3dv2/metric3d-vit-small.onnx";
   // std::string model_path =
-  //     "./models/depth_anything/depth_anything_v2_vitb_dynamic.onnx";
+  //     "/workspace/repo/models/depth_anything/depth_anything_v2_vitb_dynamic.onnx";
   this->monocular_depth_estimator_ = std::make_shared<MonoDepth>(model_path);
-}
-
-/**
- * Extract valid keypoints with 3D coordinates for depth alignment
- * Similar to how the Python code filters keypoints with has_pt3d
- */
-std::tuple<std::vector<float>, std::vector<float>>
-GaussianMapper::extractValidKeypointsForDepthAlignment(
-    std::shared_ptr<GaussianKeyframe> pkf) const {
-  std::vector<float> valid_pixel_coords;
-  std::vector<float> valid_depths;
-
-  assert(pkf->kps_pixel_.size() % 2 == 0);
-  assert(pkf->kps_point_local_.size() % 3 == 0);
-
-  int num_keypoints = pkf->kps_pixel_.size() / 2;
-
-  for (int i = 0; i < num_keypoints; i++) {
-    float u = pkf->kps_pixel_[2 * i];      // u coordinate
-    float v = pkf->kps_pixel_[2 * i + 1];  // v coordinate
-
-    // Get 3D point in local camera frame
-    float x = pkf->kps_point_local_[3 * i];
-    float y = pkf->kps_point_local_[3 * i + 1];
-    float z = pkf->kps_point_local_[3 * i + 2];
-
-    // Check if keypoint has valid 3D coordinates
-    // Following the pattern from the Python code where has_pt3d checks for
-    // valid points
-    bool has_valid_3d =
-        (z > 0.1f && z < 100.0f) &&           // reasonable depth range
-        (u >= 0 && u < pkf->image_width_) &&  // within image bounds
-        (v >= 0 && v < pkf->image_height_) && std::isfinite(x) &&
-        std::isfinite(y) && std::isfinite(z);
-
-    if (has_valid_3d) {
-      valid_pixel_coords.push_back(u);
-      valid_pixel_coords.push_back(v);
-      valid_depths.push_back(z);  // depth in camera coordinate system
-    }
-  }
-
-  std::cout << "Found " << valid_depths.size() << " valid keypoints out of "
-            << num_keypoints << " total keypoints" << std::endl;
-
-  return std::make_tuple(valid_pixel_coords, valid_depths);
 }
 
 void GaussianMapper::projectRgbDepthToPointCloud(
