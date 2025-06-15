@@ -334,6 +334,13 @@ target_link_libraries(test_acvnet
 #     gaussian_mapper
 #     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
 
+# Camera Mono
+add_executable(camera_mono examples/camera_mono.cpp)
+target_link_libraries(camera_mono
+    gaussian_viewer    
+    gaussian_mapper
+    ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
+
 ##################################################################################
 ##  Build the mapping examples to ${PROJECT_SOURCE_DIR}/bin
 ##################################################################################
