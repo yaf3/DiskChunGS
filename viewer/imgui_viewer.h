@@ -71,6 +71,9 @@ class ImGuiViewer {
   void mouseWheel();
   void mouseDrag();
   void keyboardEvent();
+  cv::Mat applyMagmaColormap(const cv::Mat& depth_image,
+                             float min_depth,
+                             float max_depth);
 
  protected:
   std::shared_ptr<ORB_SLAM3::System> pSLAM_;
@@ -127,6 +130,7 @@ class ImGuiViewer {
   bool show_sparse_mappoints_ = false;
   bool show_main_rendered_ = false;
   bool show_current_rendered_ = false;
+  bool show_depth_view_ = false;
 
   float position_lr_init_;
   float feature_lr_;

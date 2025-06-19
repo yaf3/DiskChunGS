@@ -86,8 +86,10 @@ torch::Tensor renderFromPose(torch::Tensor pose_tensor, int width, int height) {
     // "x"
     //           << height << std::endl;
     start_time = std::chrono::steady_clock::now();
-    cv::Mat rendered_image =
+    auto render_result =
         g_pGausMapper->renderFromPose(Tcw, width, height, true);
+    cv::Mat rendered_image =
+        std::get<0>(render_result);  // Get RGB image, ignore depth
     end_time = std::chrono::steady_clock::now();
     duration = std::chrono::duration_cast<std::chrono::milliseconds>(
         end_time - start_time);

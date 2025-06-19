@@ -36,43 +36,54 @@
 #include "viewer/imgui_viewer.h"
 
 void LoadImages(const std::filesystem::path &pathImageDir,
-                std::vector<std::string> &vstrImageFilenames,
-                const std::string &prefix);
+                const std::filesystem::path &pathDepthDir,
+                std::vector<std::string> &vstrImageFilenamesRGB,
+                std::vector<std::string> &vstrImageFilenamesD);
 void saveTrackingTime(std::vector<float> &vTimesTrack,
                       const std::string &strSavePath);
 void saveGpuPeakMemoryUsage(std::filesystem::path pathSave);
 
 int main(int argc, char **argv) {
-  if (argc != 6 && argc != 7) {
+  if (argc != 7 && argc != 8) {
     std::cerr << std::endl
               << "Usage: " << argv[0] << " path_to_vocabulary" /*1*/
               << " path_to_ORB_SLAM3_settings"                 /*2*/
               << " path_to_gaussian_mapping_settings"          /*3*/
-              << " path_to_sequence"                           /*4*/
-              << " path_to_trajectory_output_directory/"       /*5*/
-              << " (optional)no_viewer"                        /*6*/
+              << " path_to_images "                            /*4*/
+              << " path_to_depths "                            /*5*/
+              << " path_to_trajectory_output_directory/"       /*6*/
+              << " (optional)no_viewer"                        /*7*/
               << std::endl;
     return 1;
   }
   bool use_viewer = true;
-  if (argc == 7)
-    use_viewer = (std::string(argv[6]) == "no_viewer" ? false : true);
+  if (argc == 8)
+    use_viewer = (std::string(argv[7]) == "no_viewer" ? false : true);
 
-  std::string output_directory = std::string(argv[5]);
+  float target_fps = 1.0;
+
+  std::string output_directory = std::string(argv[6]);
   if (output_directory.back() != '/') output_directory += "/";
   std::filesystem::path output_dir(output_directory);
 
   // Retrieve paths to images
   std::vector<std::string> vstrImageFilenamesRGB;
+  std::vector<std::string> vstrImageFilenamesD;
   std::string strImageDir = std::string(argv[4]);
+  std::string strDepthDir = std::string(argv[5]);
   std::filesystem::path pathImageDir(strImageDir);
-  pathImageDir /= "images";
-  LoadImages(pathImageDir, vstrImageFilenamesRGB, std::string("frame"));
+  std::filesystem::path pathDepthDir(strDepthDir);
+  LoadImages(pathImageDir, pathDepthDir, vstrImageFilenamesRGB,
+             vstrImageFilenamesD);
 
   // Check consistency in the number of images
   int nImages = vstrImageFilenamesRGB.size();
   if (vstrImageFilenamesRGB.empty()) {
     std::cerr << std::endl << "No images found in provided path." << std::endl;
+    return 1;
+  } else if (vstrImageFilenamesD.size() != vstrImageFilenamesRGB.size()) {
+    std::cerr << std::endl
+              << "Different number of images for rgb and depth." << std::endl;
     return 1;
   }
 
@@ -90,7 +101,7 @@ int main(int argc, char **argv) {
   // process frames.
   std::shared_ptr<ORB_SLAM3::System> pSLAM =
       std::make_shared<ORB_SLAM3::System>(argv[1], argv[2],
-                                          ORB_SLAM3::System::MONOCULAR);
+                                          ORB_SLAM3::System::RGBD);
   float imageScale = pSLAM->GetImageScale();
 
   // Create GaussianMapper
@@ -112,39 +123,50 @@ int main(int argc, char **argv) {
   std::vector<float> vTimesTrack;
   vTimesTrack.resize(nImages);
 
+  double frame_interval = 1.0 / target_fps;  // Time between frames in seconds
+
   std::cout << std::endl << "-------" << std::endl;
   std::cout << "Start processing sequence ..." << std::endl;
   std::cout << "Images in the sequence: " << nImages << std::endl << std::endl;
+  std::cout << "Target FPS: " << target_fps << std::endl;
 
   // Main loop
-  cv::Mat im;
+  cv::Mat imRGB, imD;
   std::chrono::steady_clock::time_point start_point =
       std::chrono::steady_clock::now();
   for (int ni = 0; ni < nImages; ni++) {
     if (pSLAM->isShutDown()) break;
     // Read image and depthmap from file
-    im = cv::imread(vstrImageFilenamesRGB[ni], cv::IMREAD_UNCHANGED);
-    cv::cvtColor(im, im, CV_BGR2RGB);
+    imRGB = cv::imread(vstrImageFilenamesRGB[ni], cv::IMREAD_UNCHANGED);
+    cv::cvtColor(imRGB, imRGB, CV_BGR2RGB);
+    imD = cv::imread(vstrImageFilenamesD[ni], cv::IMREAD_UNCHANGED);
     double tframe = ni;
 
-    if (im.empty()) {
+    if (imRGB.empty()) {
       std::cerr << std::endl
                 << "Failed to load image at: " << vstrImageFilenamesRGB[ni]
                 << std::endl;
       return 1;
     }
+    if (imD.empty()) {
+      std::cerr << std::endl
+                << "Failed to load image at: " << vstrImageFilenamesD[ni]
+                << std::endl;
+      return 1;
+    }
 
     if (imageScale != 1.f) {
-      int width = im.cols * imageScale;
-      int height = im.rows * imageScale;
-      cv::resize(im, im, cv::Size(width, height));
+      int width = imRGB.cols * imageScale;
+      int height = imRGB.rows * imageScale;
+      cv::resize(imRGB, imRGB, cv::Size(width, height));
+      cv::resize(imD, imD, cv::Size(width, height));
     }
 
     std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
 
     // Pass the image to the SLAM system
-    pSLAM->TrackMonocular(im, tframe, std::vector<ORB_SLAM3::IMU::Point>(),
-                          vstrImageFilenamesRGB[ni]);
+    pSLAM->TrackRGBD(imRGB, imD, tframe, std::vector<ORB_SLAM3::IMU::Point>(),
+                     vstrImageFilenamesRGB[ni]);
 
     std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
 
@@ -152,6 +174,11 @@ int main(int argc, char **argv) {
         std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1)
             .count();
     vTimesTrack[ni] = ttrack;
+
+    // Wait to maintain target FPS
+    if (ttrack < frame_interval) {
+      usleep((frame_interval - ttrack) * 1e6);  // Convert to microseconds
+    }
   }
 
   // Stop all threads
@@ -172,8 +199,6 @@ int main(int argc, char **argv) {
   // Tracking time statistics
   saveTrackingTime(vTimesTrack, (output_dir / "TrackingTime.txt").string());
 
-  assert(pSLAM && "ORB_SLAM3 system already removed!");
-
   // Save camera trajectory
   pSLAM->SaveTrajectoryTUM((output_dir / "CameraTrajectory_TUM.txt").string());
   pSLAM->SaveKeyFrameTrajectoryTUM(
@@ -182,20 +207,27 @@ int main(int argc, char **argv) {
       (output_dir / "CameraTrajectory_EuRoC.txt").string());
   pSLAM->SaveKeyFrameTrajectoryEuRoC(
       (output_dir / "KeyFrameTrajectory_EuRoC.txt").string());
-  // pSLAM->SaveTrajectoryKITTI((output_dir /
-  // "CameraTrajectory_KITTI.txt").string());
+  pSLAM->SaveTrajectoryKITTI(
+      (output_dir / "CameraTrajectory_KITTI.txt").string());
 
   return 0;
 }
 
 void LoadImages(const std::filesystem::path &pathImageDir,
-                std::vector<std::string> &vstrImageFilenames,
-                const std::string &prefix) {
+                const std::filesystem::path &pathDepthDir,
+                std::vector<std::string> &vstrImageFilenamesRGB,
+                std::vector<std::string> &vstrImageFilenamesD) {
   for (const auto &imagePath :
        std::filesystem::directory_iterator(pathImageDir)) {
     std::string name = imagePath.path().filename().string();
-    vstrImageFilenames.push_back(imagePath.path().string());
-    std::sort(vstrImageFilenames.begin(), vstrImageFilenames.end());
+    vstrImageFilenamesRGB.push_back(imagePath.path().string());
+    std::sort(vstrImageFilenamesRGB.begin(), vstrImageFilenamesRGB.end());
+  }
+  for (const auto &depthPath :
+       std::filesystem::directory_iterator(pathDepthDir)) {
+    std::string name = depthPath.path().filename().string();
+    vstrImageFilenamesD.push_back(depthPath.path().string());
+    std::sort(vstrImageFilenamesD.begin(), vstrImageFilenamesD.end());
   }
 }
 

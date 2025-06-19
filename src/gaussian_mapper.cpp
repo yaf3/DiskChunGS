@@ -20,6 +20,7 @@
 
 #include "include/chunk_manager.h"
 #include "include/debugging_utils.h"
+#include "include/gaussian_rasterizer.h"
 #include "include/gaussian_renderer.h"
 #include "include/loss_utils.h"
 #include "include/profiling.h"
@@ -467,13 +468,10 @@ GaussianMapper::GaussianMapper(const SystemSensorType sensor_type,
   }
 
   if (sensor_type == STEREO) {
-    system_mode = ORB_SLAM3::System::STEREO;
     initializeStereoDepthEstimator();
   } else if (sensor_type == RGBD) {
-    system_mode = ORB_SLAM3::System::RGBD;
-    initializeMonocularDepthEstimator();
+    // initializeMonocularDepthEstimator();
   } else {
-    system_mode = ORB_SLAM3::System::MONOCULAR;
     initializeMonocularDepthEstimator();
   }
 }
@@ -635,6 +633,8 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       settings_file["Optimization.densify_min_opacity"].operator float();
   appearance_embedding_ =
       settings_file["Optimization.appearance_embedding"].operator int();
+  init_proba_scaler_ =
+      settings_file["Optimization.init_proba_scaler"].operator float();
 
   // Viewer Parameters
   rendered_image_viewer_scale_ =
@@ -816,6 +816,7 @@ void GaussianMapper::run() {
             }
           }
         }
+        if (isdoingDepthDensify()) increasePcdByDepthReconstruction(pkf);
       }
 
       // Prepare for training
@@ -1175,7 +1176,8 @@ void GaussianMapper::trainForOneIteration() {
   for (const auto& chunk : visible_chunks) {
     // std::cout << chunk->getCoord().x << " " << chunk->getCoord().y << " "
     //           << chunk->getCoord().z << std::endl;
-    if (chunk && chunk->getGaussians()) {
+    if (chunk && chunk->getGaussians() &&
+        chunk->getGaussians()->getXYZ().sizes()[0] > 0) {
       models.push_back(chunk->getGaussians());
     } else {
       throw std::runtime_error("Chunk/Gaussians are null");
@@ -1248,11 +1250,12 @@ void GaussianMapper::trainForOneIteration() {
     //                                 std::to_string(viewpoint_cam->fid_) +
     //                                 ".png";
     //   colorize_and_save_depth(rendered_depth.detach().cpu(), render_filename,
-    //   0,
-    //                           10);
+    //                           min_depth_, max_depth_);
     //   std::string gt_filename = "./debug_mono/gt_depth_" +
     //                             std::to_string(viewpoint_cam->fid_) + ".png";
-    //   colorize_and_save_depth(gt_depth.detach().cpu(), gt_filename, 0, 10);
+    //   colorize_and_save_depth(gt_depth.detach().cpu(), gt_filename,
+    //   min_depth_,
+    //                           max_depth_);
     // }
   }
 
@@ -1406,7 +1409,7 @@ void GaussianMapper::trainForOneIteration() {
   }
 
   auto timer_cuda_sync = ProfilingUtils::Timer("cuda_sync");
-  // torch::cuda::synchronize();
+  torch::cuda::synchronize();
   timer_cuda_sync.stop();
   auto timer_densification = ProfilingUtils::Timer("densification");
   {
@@ -1419,49 +1422,36 @@ void GaussianMapper::trainForOneIteration() {
       recordKeyframeRendered(rendered_image, gt_image, viewpoint_cam->fid_,
                              result_dir_, result_dir_, result_dir_);
 
+    auto start = std::chrono::high_resolution_clock::now();
     int num_models = models.size();
     for (int model_idx = 0; model_idx < num_models; model_idx++) {
       const auto& gaussians = models[model_idx];
-      // Get radii for this model
-      const auto& radii = radii_vec[model_idx];
-
-      // Calculate visibility filter for this specific model
-      auto visibility_filter = (radii > 0).nonzero().reshape({-1});
-
       int local_iter = gaussians->getLocalIteration();
 
-      // Densification
-      if (local_iter < opt_params_.densify_until_iter_ ||
-          opt_params_.densify_until_iter_ == -1) {
-        // Keep track of max radii in image-space for pruning
-        gaussians->max_radii2D_.index_put_(
-            {visibility_filter},
-            torch::max(gaussians->max_radii2D_.index({visibility_filter}),
-                       radii.index({visibility_filter})));
+      if (local_iter > opt_params_.densify_from_iter_ &&
+          local_iter % densifyInterval() == 0) {
+        gaussians->prune(densify_min_opacity_, scene_->cameras_extent_, 1000.0);
+        // // Get radii for this model
+        // const auto& radii = radii_vec[model_idx];
 
-        // std::cout << "[Iteration " << getIteration() << "] Densifying model "
-        //           << model_idx << ", local_iter: " << local_iter
-        //           << ", max_radii2D: "
-        //           << gaussians->max_radii2D_.max().item<float>() <<
-        //           std::endl;
-
-        if ((local_iter > opt_params_.densify_from_iter_) &&
-            (local_iter % densifyInterval() == 0)) {
-          int size_threshold = (local_iter < prune_big_point_after_iter_ ||
-                                prune_big_point_after_iter_ == -1)
-                                   ? 0
-                                   : 20;
-          gaussians->prune(densify_min_opacity_, scene_->cameras_extent_,
-                           1000.0);
-        }
-
-        if (opacityResetInterval() &&
-            (local_iter % opacityResetInterval() == 0 ||
-             (model_params_.white_background_ &&
-              local_iter == opt_params_.densify_from_iter_)))
-          gaussians->resetOpacity();
+        // // Calculate visibility filter for this specific model
+        // auto visibility_filter = (radii > 0).nonzero().reshape({-1});
+        // gaussians->max_radii2D_.index_put_(
+        //     {visibility_filter},
+        //     torch::max(gaussians->max_radii2D_.index({visibility_filter}),
+        //                radii.index({visibility_filter})));
+        // gaussians->densifyAndPrune(densifyGradThreshold(),
+        // densify_min_opacity_,
+        //                            scene_->cameras_extent_, 1000.0);
       }
     }
+
+    auto end = std::chrono::high_resolution_clock::now();
+    // std::cout << "Sequential time: "
+    //           << std::chrono::duration_cast<std::chrono::milliseconds>(end -
+    //                                                                    start)
+    //                  .count()
+    //           << "ms\n";
   }
 
   timer_densification.stop();
@@ -1496,8 +1486,59 @@ void GaussianMapper::trainForOneIteration() {
   // Optimizer step
   if (getIteration() < opt_params_.iterations_ ||
       opt_params_.iterations_ == -1) {
-    for (const auto& gaussians : models) {
-      gaussians->optimizer_->step();
+    for (int model_idx = 0; model_idx < models.size(); model_idx++) {
+      const auto& gaussians = models[model_idx];
+
+      // // Check if gaussians and optimizer are valid
+      // if (!gaussians) {
+      //   std::cerr << "Warning: Gaussians is null for model " << model_idx
+      //             << std::endl;
+      //   continue;
+      // }
+
+      // if (!gaussians->optimizer_) {
+      //   std::cerr << "Warning: Optimizer is null for model " << model_idx
+      //             << std::endl;
+      //   continue;
+      // }
+
+      // Get radii for this model to determine visibility
+      const auto& radii = radii_vec[model_idx];
+
+      // Calculate visibility filter - gaussians with radii > 0 are visible
+      auto visibility_filter = (radii > 0);
+
+      // // Debug the inputs before calling step
+      // std::cout << "Model " << model_idx << " debug info:" << std::endl;
+      // std::cout << "  - Gaussians XYZ size: " << gaussians->getXYZ().size(0)
+      //           << std::endl;
+      // std::cout << "  - Radii size: " << radii.size(0) << std::endl;
+      // std::cout << "  - Visibility filter size: " <<
+      // visibility_filter.size(0)
+      //           << std::endl;
+      // std::cout << "  - Visibility filter device: "
+      //           << visibility_filter.device() << std::endl;
+      // std::cout << "  - Visibility filter dtype: " <<
+      // visibility_filter.dtype()
+      //           << std::endl;
+
+      // // Check if sizes match
+      // if (radii.size(0) != gaussians->getXYZ().size(0)) {
+      //   std::cerr << "ERROR: Radii size doesn't match gaussians count!"
+      //             << std::endl;
+      //   continue;
+      // }
+
+      // if (visibility_filter.size(0) != gaussians->getXYZ().size(0)) {
+      //   std::cerr
+      //       << "ERROR: Visibility filter size doesn't match gaussians count!"
+      //       << std::endl;
+      //   continue;
+      // }
+
+      // Use the sparse optimizer with visibility information
+      gaussians->optimizer_->step(visibility_filter,
+                                  gaussians->getXYZ().size(0));
       gaussians->optimizer_->zero_grad(true);
     }
   }
@@ -2530,8 +2571,9 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       // torch::Tensor depth = densify_depth_morphological(stereo_depth, 0.0f,
       // 5);
 
+      // std::filesystem::create_directories("./debug_mono");
       // colorize_and_save_depth(depth.detach().cpu(),
-      //                         "./debug_stereo/depth_stereo_densified.png",
+      // "./debug_mono/depth.png",
       //                         min_depth_, max_depth_);
 
       // Step 1: Compute initial probability based on image gradients
@@ -2548,7 +2590,8 @@ void GaussianMapper::increasePcdByDepthReconstruction(
         if (!visible_chunks.empty()) {
           std::vector<std::shared_ptr<GaussianModel>> models;
           for (const auto& chunk : visible_chunks) {
-            if (chunk && chunk->getGaussians()) {
+            if (chunk && chunk->getGaussians() &&
+                chunk->getGaussians()->getXYZ().sizes()[0] > 0) {
               models.push_back(chunk->getGaussians());
             }
           }
@@ -2568,29 +2611,27 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       }
 
       // Step 3: Apply scaling factor and compute final probability
-      float init_proba_scaler = 2.0f;
-      prob_L *= init_proba_scaler;
-      prob_penalty *= init_proba_scaler;
+      prob_L *= init_proba_scaler_;
+      prob_penalty *= init_proba_scaler_;
       torch::Tensor prob_s = torch::clamp(prob_L - prob_penalty, 0.0f, 1.0f);
 
-      // // Debug: Save probability visualizations
-      // std::filesystem::create_directories("./debug_prob");
-      // auto save_tensor = [](const torch::Tensor& t, const std::string& name)
-      // {
-      //   torch::Tensor cpu_t = t.detach().cpu().to(torch::kFloat);
-      //   if (cpu_t.dim() == 4)
-      //     cpu_t = cpu_t[0][0];
-      //   else if (cpu_t.dim() == 3 && cpu_t.size(0) == 1)
-      //     cpu_t = cpu_t[0];
-      //   cpu_t = torch::clamp(cpu_t, 0.0f, 1.0f);
+      // Debug: Save probability visualizations
+      std::filesystem::create_directories("./debug_prob");
+      auto save_tensor = [](const torch::Tensor& t, const std::string& name) {
+        torch::Tensor cpu_t = t.detach().cpu().to(torch::kFloat);
+        if (cpu_t.dim() == 4)
+          cpu_t = cpu_t[0][0];
+        else if (cpu_t.dim() == 3 && cpu_t.size(0) == 1)
+          cpu_t = cpu_t[0];
+        cpu_t = torch::clamp(cpu_t, 0.0f, 1.0f);
 
-      //   int h = cpu_t.size(0), w = cpu_t.size(1);
-      //   cv::Mat mat(h, w, CV_32F, cpu_t.data_ptr<float>());
-      //   cv::Mat img_8bit, colored;
-      //   mat.convertTo(img_8bit, CV_8U, 255.0);
-      //   cv::applyColorMap(img_8bit, colored, cv::COLORMAP_JET);
-      //   cv::imwrite("./debug_prob/" + name + ".png", colored);
-      // };
+        int h = cpu_t.size(0), w = cpu_t.size(1);
+        cv::Mat mat(h, w, CV_32F, cpu_t.data_ptr<float>());
+        cv::Mat img_8bit, colored;
+        mat.convertTo(img_8bit, CV_8U, 255.0);
+        cv::applyColorMap(img_8bit, colored, cv::COLORMAP_JET);
+        cv::imwrite("./debug_prob/" + name + ".png", colored);
+      };
 
       // save_tensor(prob_L, "prob_L");
       // save_tensor(prob_penalty, "prob_penalty");
@@ -2649,9 +2690,9 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       scales = torch::log(torch::clamp(scales, 1e-6f, 1e6f));
       torch::Tensor sampled_scales = scales.unsqueeze(1).repeat({1, 3});
 
-      // std::cout << "Sampled points: " << points3D.sizes()
-      //           << ", colors: " << sampled_colors.sizes()
-      //           << ", scales: " << sampled_scales.sizes() << std::endl;
+      std::cout << "Sampled points: " << points3D.sizes()
+                << ", colors: " << sampled_colors.sizes()
+                << ", scales: " << sampled_scales.sizes() << std::endl;
 
       // Add to cache with scales
       if (depth_cached_ == 0) {
@@ -2682,6 +2723,18 @@ void GaussianMapper::increasePcdByDepthReconstruction(
     } break;
     case RGBD: {
       // Get original image dimensions
+
+      // Get some depth statistics
+      if (!pkf->img_auxiliary_undist_.empty()) {
+        double min_depth, max_depth;
+        cv::minMaxLoc(pkf->img_auxiliary_undist_, &min_depth, &max_depth);
+        cv::Scalar mean_depth = cv::mean(pkf->img_auxiliary_undist_);
+        std::cout << "Depth range: " << min_depth << " - " << max_depth
+                  << " meters " << std::endl;
+        std::cout << " Mean depth: " << mean_depth[0] << " meters "
+                  << std::endl;
+      }
+
       cv::cuda::GpuMat img_rgb_gpu, img_depth_gpu;
       img_rgb_gpu.upload(pkf->img_undist_);
       img_depth_gpu.upload(pkf->img_auxiliary_undist_);
@@ -2705,7 +2758,8 @@ void GaussianMapper::increasePcdByDepthReconstruction(
         if (!visible_chunks.empty()) {
           std::vector<std::shared_ptr<GaussianModel>> models;
           for (const auto& chunk : visible_chunks) {
-            if (chunk && chunk->getGaussians()) {
+            if (chunk && chunk->getGaussians() &&
+                chunk->getGaussians()->getXYZ().sizes()[0] > 0) {
               models.push_back(chunk->getGaussians());
             }
           }
@@ -2725,9 +2779,8 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       }
 
       // Step 3: Apply scaling factor and compute final probability
-      float init_proba_scaler = 2.0f;
-      prob_L *= init_proba_scaler;
-      prob_penalty *= init_proba_scaler;
+      prob_L *= init_proba_scaler_;
+      prob_penalty *= init_proba_scaler_;
       torch::Tensor prob_s = torch::clamp(prob_L - prob_penalty, 0.0f, 1.0f);
 
       // Debug: Save probability visualizations
@@ -2801,6 +2854,10 @@ void GaussianMapper::increasePcdByDepthReconstruction(
 
       scales = torch::log(torch::clamp(scales, 1e-6f, 1e6f));
       torch::Tensor sampled_scales = scales.unsqueeze(1).repeat({1, 3});
+
+      std::cout << "Sampled points: " << points3D.sizes()
+                << ", colors: " << sampled_colors.sizes()
+                << ", scales: " << sampled_scales.sizes() << std::endl;
 
       // Add to cache with scales
       if (depth_cached_ == 0) {
@@ -2882,12 +2939,16 @@ void GaussianMapper::recordKeyframeRendered(
   }
 }
 
-cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
-                                       const int width,
-                                       const int height,
-                                       const bool main_vision) {
-  if (!initial_mapped_ || getIteration() <= 0)
-    return cv::Mat(height, width, CV_32FC3, cv::Vec3f(0.0f, 0.0f, 0.0f));
+std::tuple<cv::Mat, cv::Mat> GaussianMapper::renderFromPose(
+    const Sophus::SE3f& Tcw,
+    const int width,
+    const int height,
+    const bool main_vision) {
+  if (!initial_mapped_ || getIteration() <= 0) {
+    cv::Mat empty_rgb(height, width, CV_32FC3, cv::Vec3f(0.0f, 0.0f, 0.0f));
+    cv::Mat empty_depth(height, width, CV_32FC1, cv::Scalar(0.0f));
+    return std::make_tuple(empty_rgb, empty_depth);
+  }
   std::shared_ptr<GaussianKeyframe> pkf = std::make_shared<GaussianKeyframe>();
   pkf->zfar_ = z_far_;
   pkf->znear_ = z_near_;
@@ -2928,7 +2989,8 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
     // std::cout << "[" << chunk->getCoord().x << " " << chunk->getCoord().y
     // << " "
     //           << chunk->getCoord().z << "], ";
-    if (chunk && chunk->getGaussians()) {
+    if (chunk && chunk->getGaussians() &&
+        chunk->getGaussians()->getXYZ().sizes()[0] > 0) {
       models.push_back(chunk->getGaussians());
     } else {
       throw "[renderFromPose] Chunk/Gaussian not valid";
@@ -2953,7 +3015,9 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
     std::cout << "[renderFromPose] No valid models to render" << std::endl;
     chunk_manager_->releaseChunksFromOptimization(visible_chunks);
     cv::Mat black_image = cv::Mat::zeros(height, width, CV_32FC3);
-    return black_image;  // Early return if no valid models
+    cv::Mat empty_depth = cv::Mat::zeros(height, width, CV_32FC1);
+    return std::make_tuple(black_image,
+                           empty_depth);  // Early return if no valid models
   }
 
   // Render
@@ -2962,9 +3026,28 @@ cv::Mat GaussianMapper::renderFromPose(const Sophus::SE3f& Tcw,
       1.0f, false, pkf->FoVx_, pkf->FoVy_, pkf->world_view_transform_,
       pkf->full_proj_transform_, pkf->camera_center_);
 
-  // Return rendered image
+  // Return rendered image and depth
   chunk_manager_->releaseChunksFromOptimization(visible_chunks);
-  return tensor_utils::torchTensor2CvMat_Float32(std::get<1>(render_pkg));
+  cv::Mat rendered_rgb =
+      tensor_utils::torchTensor2CvMat_Float32(std::get<1>(render_pkg));
+
+  torch::Tensor rendered_depth_tensor = std::get<0>(render_pkg);
+  // Convert tensor to OpenCV Mat
+  cv::Mat rendered_depth;
+  if (rendered_depth_tensor.dim() == 3) {
+    // If tensor is [H, W, 1] or [1, H, W], squeeze to [H, W]
+    rendered_depth_tensor = rendered_depth_tensor.squeeze();
+  }
+
+  // Ensure tensor is contiguous and on CPU
+  rendered_depth_tensor = rendered_depth_tensor.contiguous().cpu();
+
+  // Convert to OpenCV Mat
+  rendered_depth =
+      cv::Mat(rendered_depth_tensor.size(0), rendered_depth_tensor.size(1),
+              CV_32F, rendered_depth_tensor.data_ptr<float>())
+          .clone();
+  return std::make_tuple(rendered_rgb, rendered_depth);
 }
 
 void GaussianMapper::renderAndRecordKeyframe(
@@ -2987,7 +3070,8 @@ void GaussianMapper::renderAndRecordKeyframe(
   std::vector<std::shared_ptr<GaussianModel>> models;
   models.reserve(visible_chunks.size());
   for (const auto& chunk : visible_chunks) {
-    if (chunk && chunk->getGaussians()) {
+    if (chunk && chunk->getGaussians() &&
+        chunk->getGaussians()->getXYZ().sizes()[0] > 0) {
       models.push_back(chunk->getGaussians());
     }
   }
@@ -3828,7 +3912,8 @@ void GaussianMapper::renderFlyThroughVideo(const std::string& output_path,
     Sophus::SE3f Tcw = Twc.inverse().cast<float>();
 
     // Render frame
-    cv::Mat frame = renderFromPose(Tcw, width, height, true);
+    auto render_result = renderFromPose(Tcw, width, height, true);
+    cv::Mat frame = std::get<0>(render_result);  // Get RGB image, ignore depth
 
     // Convert if needed (assuming renderFromPose returns float image)
     cv::Mat output_frame;
@@ -4029,7 +4114,8 @@ void GaussianMapper::render3DExplorationVideo(const std::string& output_path,
     Sophus::SE3f Tcw = Twc.inverse().cast<float>();
 
     // Render frame
-    cv::Mat frame = renderFromPose(Tcw, width, height, true);
+    auto render_result = renderFromPose(Tcw, width, height, true);
+    cv::Mat frame = std::get<0>(render_result);  // Get RGB image, ignore depth
 
     // Convert if needed (assuming renderFromPose returns float image)
     cv::Mat output_frame;
@@ -4945,7 +5031,8 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
       // torch::Tensor rgb_torch =
       //     tensor_utils::cvMat2TorchTensor_Float32(rgb_image, torch::kCUDA);
       // projectRgbDepthToPointCloud(rgb_torch, merged_depth, new_kf->intr_,
-      //                             min_depth_, max_depth_, Tcw, pcd_path, 2);
+      //                             min_depth_, max_depth_, Tcw, pcd_path,
+      //                             2);
 
       // std::cout << "Cleaned depth matrix - type: " << depth_cleaned.type()
       //           << ", min: " << min_val << ", max: " << max_val
@@ -5286,7 +5373,7 @@ void GaussianMapper::initializeStereoDepthEstimator() {
 
 void GaussianMapper::initializeMonocularDepthEstimator() {
   std::string model_path =
-      "/workspace/repo/models/metric3dv2/metric3d-vit-small.onnx";
+      "/workspace/repo/models/metric3dv2/metric3d-vit-large.onnx";
   // std::string model_path =
   //     "/workspace/repo/models/depth_anything/depth_anything_v2_vitb_dynamic.onnx";
   this->monocular_depth_estimator_ = std::make_shared<MonoDepth>(model_path);

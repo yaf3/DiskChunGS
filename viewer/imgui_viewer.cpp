@@ -361,8 +361,13 @@ void ImGuiViewer::run() {
       //--------------Draw current gaussian mapper frame image--------------
       if (show_current_rendered_) {
         // Render gaussian mapper frame
-        cv::Mat rendered_img = pGausMapper_->renderFromPose(
+        auto render_result = pGausMapper_->renderFromPose(
             Tcw, rendered_image_width_, rendered_image_height_, false);
+        cv::Mat rendered_img =
+            show_depth_view_ ? applyMagmaColormap(std::get<1>(render_result),
+                                                  pGausMapper_->min_depth_,
+                                                  pGausMapper_->max_depth_)
+                             : std::get<0>(render_result);
         cv::Mat rendered_img_to_show =
             cv::Mat(rendered_image_height_, padded_sub_image_width_, CV_32FC3,
                     cv::Vec3f(0.0f, 0.0f, 0.0f));
@@ -379,7 +384,10 @@ void ImGuiViewer::run() {
             ImVec2(rendered_image_width_ + 12, rendered_img_to_show.rows + 40),
             ImGuiCond_Once);
         {
-          ImGui::Begin("Current Rendered Frame");
+          std::string window_title = show_depth_view_
+                                         ? "Current Rendered Depth"
+                                         : "Current Rendered Frame";
+          ImGui::Begin(window_title.c_str());
           ImGui::Image(
               (void*)(intptr_t)rendered_img_texture,
               ImVec2(rendered_img_to_show.cols, rendered_img_to_show.rows));
@@ -430,8 +438,13 @@ void ImGuiViewer::run() {
       //--------------Draw current gaussian mapper frame image--------------
       if (show_current_rendered_) {
         // Render gaussian mapper frame
-        cv::Mat rendered_img = pGausMapper_->renderFromPose(
+        auto render_result = pGausMapper_->renderFromPose(
             Tcw, rendered_image_width_, rendered_image_height_, false);
+        cv::Mat rendered_img =
+            show_depth_view_ ? applyMagmaColormap(std::get<1>(render_result),
+                                                  pGausMapper_->min_depth_,
+                                                  pGausMapper_->max_depth_)
+                             : std::get<0>(render_result);
         cv::Mat rendered_img_to_show =
             cv::Mat(rendered_image_height_, padded_sub_image_width_, CV_32FC3,
                     cv::Vec3f(0.0f, 0.0f, 0.0f));
@@ -448,7 +461,10 @@ void ImGuiViewer::run() {
             ImVec2(rendered_image_width_ + 12, rendered_img_to_show.rows + 40),
             ImGuiCond_Once);
         {
-          ImGui::Begin("Current Rendered Frame");
+          std::string window_title = show_depth_view_
+                                         ? "Current Rendered Depth"
+                                         : "Current Rendered Frame";
+          ImGui::Begin(window_title.c_str());
           ImGui::Image(
               (void*)(intptr_t)rendered_img_texture,
               ImVec2(rendered_img_to_show.cols, rendered_img_to_show.rows));
@@ -463,8 +479,13 @@ void ImGuiViewer::run() {
       auto drawlist = ImGui::GetBackgroundDrawList();
       if (tracking_vision_) {
         if (!show_current_rendered_) {
-          cv::Mat rendered_img = pGausMapper_->renderFromPose(
+          auto render_result = pGausMapper_->renderFromPose(
               Tcw, rendered_image_width_, rendered_image_height_, false);
+          cv::Mat rendered_img =
+              show_depth_view_ ? applyMagmaColormap(std::get<1>(render_result),
+                                                    pGausMapper_->min_depth_,
+                                                    pGausMapper_->max_depth_)
+                               : std::get<0>(render_result);
           cv::Mat rendered_img_to_show =
               cv::Mat(rendered_image_height_, padded_sub_image_width_, CV_32FC3,
                       cv::Vec3f(0.0f, 0.0f, 0.0f));
@@ -478,9 +499,15 @@ void ImGuiViewer::run() {
         drawlist->AddImage((void*)(intptr_t)rendered_img_texture, ImVec2(0, 0),
                            ImVec2(glfw_window_width_, glfw_window_height_));
       } else {
-        cv::Mat main_img =
+        auto main_render_result =
             pGausMapper_->renderFromPose(Tcw_main_, rendered_image_width_main_,
                                          rendered_image_height_main_, true);
+        cv::Mat main_img =
+            show_depth_view_
+                ? applyMagmaColormap(std::get<1>(main_render_result),
+                                     pGausMapper_->min_depth_,
+                                     pGausMapper_->max_depth_)
+                : std::get<0>(main_render_result);
         cv::Mat main_img_to_show =
             cv::Mat(rendered_image_height_main_, padded_main_image_width_,
                     CV_32FC3, cv::Vec3f(0.0f, 0.0f, 0.0f));
@@ -526,6 +553,9 @@ void ImGuiViewer::run() {
       }
       ImGui::Checkbox("Show main window rendered", &show_main_rendered_);
       ImGui::Checkbox("Show current window rendered", &show_current_rendered_);
+      if (show_current_rendered_ || show_main_rendered_) {
+        ImGui::Checkbox("Show depth view", &show_depth_view_);
+      }
 
       ImGui::Text("Viewer average FPS %.1f", io.Framerate);
       ImGui::End();
@@ -834,4 +864,48 @@ void ImGuiViewer::keyboardEvent() {
   Eigen::Matrix3f R = Twc_main_.rotationMatrix();
   Twc_main_.translation() += (R * translating);
   Twc_main_.setRotationMatrix(R * rotating);
+}
+
+cv::Mat ImGuiViewer::applyMagmaColormap(const cv::Mat& depth_image,
+                                        float min_depth,
+                                        float max_depth) {
+  // Normalize depth to 0-1 range using provided min/max values
+  cv::Mat normalized_depth;
+
+  // Handle case where min == max (flat depth)
+  if (std::abs(max_depth - min_depth) < 1e-6) {
+    normalized_depth = cv::Mat::ones(depth_image.size(), CV_32F) * 0.5f;
+  } else {
+    // Normalize to 0-1 range: (depth - min) / (max - min)
+    depth_image.convertTo(normalized_depth, CV_32F,
+                          1.0 / (max_depth - min_depth),
+                          -min_depth / (max_depth - min_depth));
+  }
+
+  // Apply magma colormap
+  cv::Mat magma_colored;
+  cv::Mat depth_8u;
+
+  // Clamp normalized values to [0,1] range (like your libtorch function handles
+  // edge cases)
+  cv::Mat clamped;
+  cv::max(normalized_depth, 0.0, clamped);
+  cv::min(clamped, 1.0, clamped);
+
+  clamped = 1 - clamped;
+
+  // Convert to 8-bit multiply by 255 then cast to uchar
+  clamped.convertTo(depth_8u, CV_8U, 255.0, 0.0);
+
+  // Apply the magma colormap
+  cv::applyColorMap(depth_8u, magma_colored, cv::COLORMAP_MAGMA);
+
+  // Convert BGR to RGB before converting back to float
+  cv::Mat magma_rgb;
+  cv::cvtColor(magma_colored, magma_rgb, cv::COLOR_BGR2RGB);
+
+  // Convert back to float for consistency with RGB rendering
+  cv::Mat result;
+  magma_rgb.convertTo(result, CV_32FC3, 1.0 / 255.0);
+  return result;
 }

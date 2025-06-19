@@ -143,6 +143,8 @@ bool colorize_and_save_depth(const torch::Tensor& depth_tensor,
       max_depth = depth.max().item<float>();
     }
 
+    normalized = torch::clamp(normalized, min_depth, max_depth);
+
     // Handle case where min == max (flat depth)
     if (std::abs(max_depth - min_depth) < 1e-6) {
       normalized.fill_(0.5f);
@@ -150,6 +152,9 @@ bool colorize_and_save_depth(const torch::Tensor& depth_tensor,
       // Normalize to 0-1 range
       normalized = (normalized - min_depth) / (max_depth - min_depth);
     }
+
+    // Invert so close objects are bright, far objects are dark
+    normalized = 1.0f - normalized;
 
     // Convert to OpenCV format (0-255 uint8)
     normalized = normalized * 255.0f;

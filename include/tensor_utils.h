@@ -116,24 +116,22 @@ inline torch::Tensor cvMat2TorchTensor_Float32(const cv::Mat& mat,
  */
 inline cv::Mat torchTensor2CvMat_Float32(torch::Tensor& tensor) {
   cv::Mat mat;
-  torch::Tensor mat_tensor = tensor.clone();
+
+  // Move to CPU and ensure contiguous memory layout first
+  torch::Tensor mat_tensor = tensor.to(torch::kCPU).contiguous();
 
   switch (mat_tensor.ndimension()) {
     case 2: {
-      mat_tensor = mat_tensor.to(torch::kCPU);
-      mat = cv::Mat(/*rows=*/mat_tensor.size(0),
-                    /*cols=*/mat_tensor.size(1),
-                    /*type=*/CV_32FC1,
-                    /*data=*/mat_tensor.data_ptr<float>());
+      mat = cv::Mat(mat_tensor.size(0), mat_tensor.size(1), CV_32FC1);
+      std::memcpy(mat.data, mat_tensor.data_ptr<float>(),
+                  mat_tensor.numel() * sizeof(float));
     } break;
 
     case 3: {
-      mat_tensor = mat_tensor.detach().permute({1, 2, 0}).contiguous();
-      mat_tensor = mat_tensor.to(torch::kCPU);
-      mat = cv::Mat(/*rows=*/mat_tensor.size(0),
-                    /*cols=*/mat_tensor.size(1),
-                    /*type=*/CV_32FC3,
-                    /*data=*/mat_tensor.data_ptr<float>());
+      mat_tensor = mat_tensor.permute({1, 2, 0}).contiguous();
+      mat = cv::Mat(mat_tensor.size(0), mat_tensor.size(1), CV_32FC3);
+      std::memcpy(mat.data, mat_tensor.data_ptr<float>(),
+                  mat_tensor.numel() * sizeof(float));
     } break;
 
     default:
@@ -142,7 +140,7 @@ inline cv::Mat torchTensor2CvMat_Float32(torch::Tensor& tensor) {
       break;
   }
 
-  return mat.clone();
+  return mat;
 }
 
 /**

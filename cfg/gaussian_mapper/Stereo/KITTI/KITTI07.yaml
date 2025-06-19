@@ -8,7 +8,7 @@ Stereo.min_disparity: 0
 Stereo.num_disparity: 128
 Stereo.do_stereo_loss: 0  # 0:false, 1 or other integer:true
 Mapper.min_depth_: 2.0
-Mapper.max_depth_: 40.0
+Mapper.max_depth_: 60.0
 Mapper.inactive_geo_densify: 1  # 0:false, 1 or other integer:true
 Mapper.depth_densify: 1  # 0:false, 1 or other integer:true
 Mapper.depth_cache: 0
@@ -57,16 +57,17 @@ Mapper.depth_densify_subsample_ratio: 0.1
 Optimization.position_lr_init: 0.008554520659002026
 Optimization.position_lr_final: 1.3219180615062561e-06
 Optimization.position_lr_delay_mult: 0.04024837614639988
-Optimization.position_lr_max_steps: 5120
-Optimization.feature_lr: 0.0027012600137240337
-Optimization.opacity_lr: 0.0016682466821832283
-Optimization.scaling_lr: 0.004120787920475482
-Optimization.rotation_lr: 0.001764913701313044
+Optimization.position_lr_max_steps: 5000
+Optimization.feature_lr: 0.0025
+Optimization.opacity_lr: 0.01
+Optimization.scaling_lr: 0.005
+Optimization.rotation_lr: 0.001
 Optimization.percent_dense: 0.018072950932851207
 Optimization.lambda_dssim: 0.37947338874974834
-Optimization.lambda_depth: 0.001
-Optimization.densification_interval: 492
+Optimization.lambda_depth: 0.1
+Optimization.densification_interval: 50
 Optimization.densify_min_opacity: 0.05
-Optimization.densify_grad_threshold: 0.009955219591470619
-Optimization.opacity_reg: 0.006553494728247427
+Optimization.densify_grad_threshold: 0.05 
+Optimization.opacity_reg: 0.001
 Optimization.appearance_embedding: 0
+Optimization.init_proba_scaler: 2.0

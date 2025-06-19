@@ -127,10 +127,10 @@ class GaussianMapper {
   bool isStopped();
   void signalStop(const bool going_to_stop = true);
 
-  cv::Mat renderFromPose(const Sophus::SE3f &Tcw,
-                         const int width,
-                         const int height,
-                         const bool main_vision = false);
+  std::tuple<cv::Mat, cv::Mat> renderFromPose(const Sophus::SE3f &Tcw,
+                                              const int width,
+                                              const int height,
+                                              const bool main_vision = false);
 
   int getIteration();
   void increaseIteration(const int inc = 1);
@@ -469,6 +469,7 @@ class GaussianMapper {
   int prune_big_point_after_iter_;
   float densify_min_opacity_ = 20;
   int appearance_embedding_ = 0;
+  float init_proba_scaler_ = 2.0;
 
   // Tools
   std::random_device rd_;

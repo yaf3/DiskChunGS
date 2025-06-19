@@ -112,6 +112,7 @@ void GaussianModel::createFromPcd(const torch::Tensor& fused_point_cloud,
   assert(spatial_lr_scale > 0.0f &&
          "Spatial learning rate scale must be positive");
   this->spatial_lr_scale_ = spatial_lr_scale;
+  // std::cout << "Spatial_lr_scale: " << spatial_lr_scale << std::endl;
   int num_points = static_cast<int>(fused_point_cloud.sizes()[0]);
 
   torch::Tensor fused_color = sh_utils::RGB2SH(color);
@@ -774,14 +775,31 @@ void GaussianModel::densifyAndPrune(float max_grad,
   this->densifyAndSplit(grads, max_grad, extent);
 
   auto prune_mask = (this->getOpacityActivation() < min_opacity).squeeze();
-  if (max_screen_size) {
-    auto big_points_vs = this->max_radii2D_ > max_screen_size;
-    auto big_points_ws =
-        std::get<0>(this->getScalingActivation().max(/*dim=*/1)) >
-        0.1f * extent;
-    prune_mask = torch::logical_or(torch::logical_or(prune_mask, big_points_vs),
-                                   big_points_ws);
-  }
+  // if (max_screen_size) {
+  //   auto big_points_vs = this->max_radii2D_ > max_screen_size;
+  //   auto big_points_ws =
+  //       std::get<0>(this->getScalingActivation().max(/*dim=*/1)) >
+  //       0.1f * extent;
+  //   prune_mask = torch::logical_or(torch::logical_or(prune_mask,
+  //   big_points_vs),
+  //                                  big_points_ws);
+  // }
+
+  auto big_points_ws =
+      std::get<0>(this->getScalingActivation().max(/*dim=*/1)) > 0.1f * extent;
+  // prune_mask = torch::logical_or(big_points_vs, big_points_vs);
+
+  auto scales = this->getScalingActivation();
+  auto max_scale = std::get<0>(scales.max(/*dim=*/1));
+  auto min_scale = std::get<0>(scales.min(/*dim=*/1));
+  auto scale_ratio =
+      max_scale /
+      (min_scale + 1e-6f);  // Add small epsilon to avoid division by zero
+
+  auto elongated_and_big =
+      torch::logical_and(big_points_ws, scale_ratio > 10.0f);
+
+  prune_mask = torch::logical_or(prune_mask, elongated_and_big);
   this->prunePoints(prune_mask);
 
   c10::cuda::CUDACachingAllocator::emptyCache();  // torch.cuda.empty_cache()
@@ -796,8 +814,24 @@ void GaussianModel::prune(float min_opacity,
     auto big_points_ws =
         std::get<0>(this->getScalingActivation().max(/*dim=*/1)) >
         0.1f * extent;
+    // prune_mask = torch::logical_or(big_points_vs, big_points_vs);
+
+    auto scales = this->getScalingActivation();
+    auto max_scale = std::get<0>(scales.max(/*dim=*/1));
+    auto min_scale = std::get<0>(scales.min(/*dim=*/1));
+    auto scale_ratio =
+        max_scale /
+        (min_scale + 1e-6f);  // Add small epsilon to avoid division by zero
+
+    // Prune if:
+    // 1. Big in viewspace (screen), OR
+    // 2. Big in worldspace AND elongated (scale ratio > threshold, e.g., 5.0)
+    auto elongated_and_big =
+        torch::logical_and(big_points_ws, scale_ratio > 10.0f);
+    // prune_mask = torch::logical_or(torch::logical_or(prune_mask, prune_mask),
+    //                                elongated_and_big);
     prune_mask = torch::logical_or(torch::logical_or(prune_mask, big_points_vs),
-                                   big_points_ws);
+                                   elongated_and_big);
   }
   this->prunePoints(prune_mask);
 

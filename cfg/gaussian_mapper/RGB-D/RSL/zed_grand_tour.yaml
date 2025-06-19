@@ -5,7 +5,7 @@
 #--------------------------------------------------------------------------------------------
 
 Model.sh_degree: 3 # maximum
-Model.resolution: -1.0
+Model.resolution: 1.0
 Model.white_background: 0  # 0:false, 1 or other integer:true
 Model.eval: 0  # 0:false, 1 or other integer:true
 
@@ -14,17 +14,17 @@ Model.eval: 0  # 0:false, 1 or other integer:true
 #--------------------------------------------------------------------------------------------
 
 Camera.z_near: 0.01
-Camera.z_far: 100.0
+Camera.z_far: 20.0
 Monocular.inactive_geo_densify_max_pixel_dist: 1.0 # (squared distance)
 Stereo.min_disparity: 8
 Stereo.num_disparity: 128
-Mapper.min_depth_: 0.3
-Mapper.max_depth_: 12.0
+Mapper.min_depth_: 0.1
+Mapper.max_depth_: 20
 
 Mapper.inactive_geo_densify: 1  # 0:false, 1 or other integer:true
-Mapper.depth_densify_subsample_ratio: 0.01
+Mapper.depth_densify_subsample_ratio: 1.0
 Mapper.depth_densify: 1  # 0:false, 1 or other integer:true
-Mapper.depth_cache: 10
+Mapper.depth_cache: 0
 Mapper.min_num_initial_map_kfs: 10
 Mapper.new_keyframe_times_of_use: 8
 Mapper.local_BA_increased_times_of_use: 0
@@ -54,8 +54,8 @@ Record.record_ground_truth_image: 0 # 0:false, 1 or other integer:true
 Record.record_loss_image: 0 # 0:false, 1 or other integer:true
 Record.training_report_interval: 0 # 0:never, 1:always, others:periodically
 Record.record_loop_ply: 0 # 0:false, 1 or other integer:true
-Record.render_fly_through: 1 # 0:false, 1 or other integer:true
-Record.render_fly_through_speed: 5.0
+Record.render_fly_through: 0 # 0:false, 1 or other integer:true
+Record.render_fly_through_speed: 5.0 # 0:false, 1 or other integer:true
 
 #--------------------------------------------------------------------------------------------
 # Optimization Parameters
@@ -75,29 +75,30 @@ Optimization.smooth_l1: 0  # 0:false, 1:true
 Optimization.opacity_reg: 0.001
 
 # Chunking
-Chunking.chunk_size: 20.0
-Chunking.max_chunks: 100
+Chunking.chunk_size: 10.0
+Chunking.max_chunks: 20
 
 # Densification
 Optimization.percent_dense: 0.001
 Optimization.lambda_dssim: 0.2
-Optimization.lambda_depth: 0.001
-Optimization.densification_interval: 500
+Optimization.lambda_depth: 0.1
+Optimization.densification_interval: 50
 Optimization.opacity_reset_interval: 0  # 0:never, 1:always, others:periodically
 Optimization.prune_big_point_after_iter: -1
-Optimization.densify_min_opacity: 0.02 #0.005
-Optimization.densify_from_iter: 500
+Optimization.densify_min_opacity: 0.05 #0.005
+Optimization.densify_from_iter: 100
 Optimization.densify_until_iter: -1
-Optimization.densify_grad_threshold: 0.001
+Optimization.densify_grad_threshold: 0.05
 Optimization.auto_distribute: 4  # 0:false, 1 or other integer:true
 Optimization.appearance_embedding: 0
+Optimization.init_proba_scaler: 0.3
 
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters
 #--------------------------------------------------------------------------------------------
 
-GaussianViewer.glfw_window_width: 1920
-GaussianViewer.glfw_window_height: 1080
+GaussianViewer.glfw_window_width: 1400
+GaussianViewer.glfw_window_height: 1050
 GaussianViewer.image_scale: 0.3
 GaussianViewer.image_scale_main: 1.0
 GaussianViewer.camera_watch_dist: 0.000001

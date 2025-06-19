@@ -318,6 +318,13 @@ target_link_libraries(kitti_rgbd
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
 
+# VKITTI RGBD
+add_executable(vkitti_rgbd examples/vkitti_rgbd.cpp)
+target_link_libraries(vkitti_rgbd
+    gaussian_viewer    
+    gaussian_mapper
+    ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
+
 # ACVNET Stereo Test
 add_executable(test_acvnet examples/test_acvnet.cpp)
 target_link_libraries(test_acvnet

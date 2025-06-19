@@ -85,6 +85,7 @@ Optimization.densify_until_iter: -1
 Optimization.densify_grad_threshold: 0.001
 Optimization.auto_distribute: 4  # 0:false, 1 or other integer:true
 Optimization.appearance_embedding: 0
+Optimization.init_proba_scaler: 2.0
 
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters

@@ -23,8 +23,8 @@ Mapper.max_depth_: 40.0
 
 Mapper.inactive_geo_densify: 1  # 0:false, 1 or other integer:true
 Mapper.depth_densify_subsample_ratio: 0.05
-Mapper.depth_densify: 0  # 0:false, 1 or other integer:true
-Mapper.depth_cache: 10
+Mapper.depth_densify: 1  # 0:false, 1 or other integer:true
+Mapper.depth_cache: 0
 Mapper.min_num_initial_map_kfs: 20
 Mapper.new_keyframe_times_of_use: 8
 Mapper.local_BA_increased_times_of_use: 0
@@ -78,6 +78,7 @@ Chunking.max_chunks: 100
 # Densification
 Optimization.percent_dense: 0.01
 Optimization.lambda_dssim: 0.2
+Optimization.lambda_depth: 0.1
 Optimization.densification_interval: 500
 Optimization.opacity_reset_interval: 0  # 0:never, 1:always, others:periodically
 Optimization.prune_big_point_after_iter: -1
@@ -87,6 +88,7 @@ Optimization.densify_until_iter: -1
 Optimization.densify_grad_threshold: 0.001
 Optimization.auto_distribute: 4  # 0:false, 1 or other integer:true
 Optimization.appearance_embedding: 0
+Optimization.init_proba_scaler: 2.0
 
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters

@@ -35,6 +35,7 @@
 
 #include "ORB-SLAM3/Thirdparty/Sophus/sophus/se3.hpp"
 #include "camera.h"
+#include "debugging_utils.h"
 #include "general_utils.h"
 #include "graphics_utils.h"
 #include "mono_depth.h"

@@ -489,8 +489,8 @@ GaussianKeyframe::extractValidKeypointsForDepthAlignment() const {
     }
   }
 
-  std::cout << "Found " << valid_depths.size() << " valid keypoints out of "
-            << num_keypoints << " total keypoints" << std::endl;
+  // std::cout << "Found " << valid_depths.size() << " valid keypoints out of "
+  //           << num_keypoints << " total keypoints" << std::endl;
 
   return std::make_tuple(valid_pixel_coords, valid_depths);
 }
@@ -501,7 +501,8 @@ void GaussianKeyframe::setupMonoData(torch::DeviceType device_type,
                                      float max_depth) {
   auto [relative_depth, depth_confidence] =
       depth_estimator->estimate_depth(img_undist_, intr_[0]);
-  std::cout << "Relative depth size: " << relative_depth.sizes() << std::endl;
+  // std::cout << "Relative depth size: " << relative_depth.sizes() <<
+  // std::endl;
 
   // std::string keypoint_pcd_path = "slam_keypoints.ply";
   // projectKeypointsToPointCloud(pkf, keypoint_pcd_path);
@@ -522,6 +523,14 @@ void GaussianKeyframe::setupMonoData(torch::DeviceType device_type,
       image_height_);
 
   depth_image_ = aligned_depth.squeeze(0).squeeze(0);
+
+  // std::filesystem::create_directories("./debug_mono");
+  // colorize_and_save_depth(relative_depth.detach().cpu(),
+  //                         "./debug_mono/depth_prealigned.png", min_depth,
+  //                         max_depth);
+  // colorize_and_save_depth(depth_image_.detach().cpu(),
+  //                         "./debug_mono/depth_aligned.png", min_depth,
+  //                         max_depth);
 
   // torch::Tensor aligned_depth = relative_depth.squeeze(0).squeeze(0);
   // pkf->depth_image_ = aligned_depth;

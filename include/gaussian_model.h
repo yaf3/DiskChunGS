@@ -29,6 +29,9 @@
 #include "ORB-SLAM3/Thirdparty/Sophus/sophus/se3.hpp"
 #include "gaussian_parameters.h"
 #include "general_utils.h"
+
+// Forward declaration to avoid circular dependency
+class SparseGaussianAdam;
 #include "operate_points.h"
 #include "point3d.h"
 #include "sh_utils.h"
@@ -206,7 +209,7 @@ class GaussianModel {
       Tensor_vec_feature_rest_, Tensor_vec_opacity_, Tensor_vec_scaling_,
       Tensor_vec_rotation_;
 
-  std::shared_ptr<torch::optim::Adam> optimizer_;
+  std::shared_ptr<SparseGaussianAdam> optimizer_;
   float percent_dense_;
   float spatial_lr_scale_;
 
