@@ -106,8 +106,8 @@ void MonoDepth::get_input_details() {
     std::cout << "]" << std::endl;
   }
 
-  input_height_ = 616;
-  input_width_ = 1064;  // Hardcoded for Metric3D model
+  input_height_ = 280;
+  input_width_ = 560;  // Hardcoded for Metric3D model
 
   // Convert to char pointers
   for (const auto& name : input_names_) {
@@ -295,8 +295,8 @@ std::tuple<torch::Tensor, torch::Tensor> MonoDepth::estimate_depth(
       end_prep - start_prep);
   auto inf_time = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_inf - start_inf);
-  // std::cout << "Preprocessing: " << prep_time.count()
-  //           << "ms, Inference: " << inf_time.count() << "ms" << std::endl;
+  std::cout << "Preprocessing: " << prep_time.count()
+            << "ms, Inference: " << inf_time.count() << "ms" << std::endl;
 
   // Convert to torch tensor for unpadding
   cv::Mat resized_depth;
