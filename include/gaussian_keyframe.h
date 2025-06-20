@@ -130,11 +130,7 @@ class GaussianKeyframe {
   int getCurrentGausPyramidLevel();
 
   void initAppearanceParams(torch::DeviceType device_type,
-                            float exposure_lr_init = 0.001f,
-                            float exposure_lr_final = 0.0001f,
-                            float lr_delay_mult = 0.01f,
-                            int lr_delay_steps = 0,
-                            int max_iterations = 30000);
+                            float exposure_lr = 5e-4);
 
   void stepAppearanceOptimizer();
 

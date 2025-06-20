@@ -198,12 +198,9 @@ int GaussianKeyframe::getCurrentGausPyramidLevel() {
 }
 
 // Initialize appearance parameters with defaults
-void GaussianKeyframe::initAppearanceParams(torch::DeviceType device_type,
-                                            float exposure_lr_init,
-                                            float exposure_lr_final,
-                                            float lr_delay_mult,
-                                            int lr_delay_steps,
-                                            int max_iterations) {
+void GaussianKeyframe::initAppearanceParams(
+    torch::DeviceType device_type,
+    float exposure_lr) {  // Simplified signature
   if (!has_appearance_params_) {
     // Initialize as 3x4 identity matrix [I|0]
     appearance_transform_ = torch::zeros(
@@ -216,40 +213,26 @@ void GaussianKeyframe::initAppearanceParams(torch::DeviceType device_type,
 
     appearance_transform_.requires_grad_(true);
 
-    // Create optimizer with initial learning rate
+    // Simple constant learning rate like Python
     torch::optim::AdamOptions adam_options;
-    adam_options.set_lr(exposure_lr_init);
+    adam_options.set_lr(exposure_lr);  // Use 5e-4 like Python
     std::vector<torch::Tensor> appearance_params = {appearance_transform_};
     appearance_optimizer_ =
         std::make_shared<torch::optim::Adam>(appearance_params, adam_options);
-
-    // Create learning rate scheduler
-    exposure_scheduler_ = std::make_unique<ExponentialLRScheduler>(
-        exposure_lr_init, exposure_lr_final, lr_delay_mult, lr_delay_steps,
-        max_iterations);
 
     has_appearance_params_ = true;
   }
 }
 
+// Simplified step function
 void GaussianKeyframe::stepAppearanceOptimizer() {
   if (!has_appearance_params_) return;
 
-  // Use local iteration counter for this keyframe
-  float current_lr = exposure_scheduler_->getLR(local_iterations_);
-  // std::cout << "Keyframe " << fid_ << ": Iter: " << local_iterations_
-  //           << " | LR: " << current_lr << std::endl;
-
-  // Update LR and step
-  for (auto& param_group : appearance_optimizer_->param_groups()) {
-    static_cast<torch::optim::AdamOptions&>(param_group.options())
-        .lr(current_lr);
-  }
-
+  // No learning rate changes - keep it constant like Python
   appearance_optimizer_->step();
   appearance_optimizer_->zero_grad();
 
-  local_iterations_++;  // Increment per-keyframe counter
+  local_iterations_++;  // Keep local tracking for debugging
 }
 
 // Apply appearance transform to rendered colors

@@ -1246,6 +1246,15 @@ void GaussianMapper::trainForOneIteration() {
     loss += lambda_depth * depth_loss;
 
     // if (getIteration() % 100 == 0) {
+    //   std::string rgb_render_filename = "./debug_mono/rendered_rgb_" +
+    //                                     std::to_string(viewpoint_cam->fid_) +
+    //                                     ".png";
+
+    //   cv::Mat output_image =
+    //       tensor_utils::torchTensor2CvMat_Float32(rendered_image);
+    //   output_image.convertTo(output_image, CV_8UC1, 255.0, 0.0);
+    //   cv::cvtColor(output_image, output_image, cv::COLOR_RGB2BGR);
+    //   cv::imwrite(rgb_render_filename, output_image);
     //   std::string render_filename = "./debug_mono/rendered_depth_" +
     //                                 std::to_string(viewpoint_cam->fid_) +
     //                                 ".png";
@@ -1422,36 +1431,52 @@ void GaussianMapper::trainForOneIteration() {
       recordKeyframeRendered(rendered_image, gt_image, viewpoint_cam->fid_,
                              result_dir_, result_dir_, result_dir_);
 
-    auto start = std::chrono::high_resolution_clock::now();
     int num_models = models.size();
     for (int model_idx = 0; model_idx < num_models; model_idx++) {
       const auto& gaussians = models[model_idx];
+      // Get radii for this model
+      const auto& radii = radii_vec[model_idx];
+
+      // Calculate visibility filter for this specific model
+      auto visibility_filter = (radii > 0).nonzero().reshape({-1});
+
       int local_iter = gaussians->getLocalIteration();
 
-      if (local_iter > opt_params_.densify_from_iter_ &&
-          local_iter % densifyInterval() == 0) {
-        gaussians->prune(densify_min_opacity_, scene_->cameras_extent_, 1000.0);
-        // // Get radii for this model
-        // const auto& radii = radii_vec[model_idx];
+      // Densification
+      if (local_iter < opt_params_.densify_until_iter_ ||
+          opt_params_.densify_until_iter_ == -1) {
+        // Keep track of max radii in image-space for pruning
+        gaussians->max_radii2D_.index_put_(
+            {visibility_filter},
+            torch::max(gaussians->max_radii2D_.index({visibility_filter}),
+                       radii.index({visibility_filter})));
 
-        // // Calculate visibility filter for this specific model
-        // auto visibility_filter = (radii > 0).nonzero().reshape({-1});
-        // gaussians->max_radii2D_.index_put_(
-        //     {visibility_filter},
-        //     torch::max(gaussians->max_radii2D_.index({visibility_filter}),
-        //                radii.index({visibility_filter})));
-        // gaussians->densifyAndPrune(densifyGradThreshold(),
-        // densify_min_opacity_,
-        //                            scene_->cameras_extent_, 1000.0);
+        // gaussians->addDensificationStats(screenspace_points_vec[model_idx],
+        //                                  visibility_filter);
+
+        if ((local_iter > opt_params_.densify_from_iter_) &&
+            (local_iter % densifyInterval() == 0)) {
+          // int size_threshold = (local_iter < prune_big_point_after_iter_ ||
+          //                       prune_big_point_after_iter_ == -1)
+          //                          ? 0
+          //                          : 20;
+          int size_threshold = viewpoint_cam->image_width_ / 2.0f;
+          // int size_threshold = 5000;
+          gaussians->prune(densify_min_opacity_, scene_->cameras_extent_,
+                           size_threshold);
+          // gaussians->densifyAndPrune(densifyGradThreshold(),
+          //                            densify_min_opacity_,
+          //                            scene_->cameras_extent_,
+          //                            size_threshold);
+        }
+
+        if (opacityResetInterval() &&
+            (local_iter % opacityResetInterval() == 0 ||
+             (model_params_.white_background_ &&
+              local_iter == opt_params_.densify_from_iter_)))
+          gaussians->resetOpacity();
       }
     }
-
-    auto end = std::chrono::high_resolution_clock::now();
-    // std::cout << "Sequential time: "
-    //           << std::chrono::duration_cast<std::chrono::milliseconds>(end -
-    //                                                                    start)
-    //                  .count()
-    //           << "ms\n";
   }
 
   timer_densification.stop();
@@ -2078,16 +2103,9 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   // increasePcdByKeyframeInactiveGeoDensify(pkf);
 
   if (appearance_embedding_) {
-    pkf->initAppearanceParams(
-        device_type_,
-        1e-3f,  // exposure_lr_init (initial LR)
-        1e-4f,  // exposure_lr_final (final LR)
-        1e-3f,  // lr_delay_mult (delay multiplier - starts at 0.1% of normal
-                // LR)
-        10,     // lr_delay_steps (10 delay steps for warm-up)
-        100     // your total training iterations
-    );
+    pkf->initAppearanceParams(device_type_, 5e-2f);  // Match Python LR
   }
+
   // Prepare multi resolution images for training
   if (device_type_ == torch::kCUDA) {
     cv::cuda::GpuMat img_gpu;
@@ -3303,13 +3321,12 @@ void GaussianMapper::writeKeyframeUsedTimes(std::filesystem::path result_dir,
 
   out_stream << "##[Gaussian Mapper]Iteration " << getIteration()
              << " keyframe id, used times, remaining times:\n";
-  // for (const auto& used_times_it : keyframe_queue_->getKfsUsedTimes()) {
-  //   out_stream
-  //       << used_times_it.first << " " << used_times_it.second << " "
-  //       <<
-  //       scene_->keyframes().at(used_times_it.first)->remaining_times_of_use_
-  //       << "\n";
-  // }
+  for (const auto& used_times_it : keyframe_queue_->getKfsUsedTimes()) {
+    out_stream
+        << used_times_it.first << " " << used_times_it.second << " "
+        << scene_->keyframes().at(used_times_it.first)->remaining_times_of_use_
+        << "\n";
+  }
   out_stream << "##=========================================" << std::endl;
 
   out_stream.close();

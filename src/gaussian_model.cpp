@@ -623,6 +623,7 @@ void GaussianModel::densificationPostfix(torch::Tensor& new_xyz,
                                          torch::Tensor& new_scaling,
                                          torch::Tensor& new_rotation,
                                          torch::Tensor& new_exist_since_iter) {
+  auto old_max_radii2D = this->max_radii2D_.clone();
   // cat_tensors_to_optimizer
   std::vector<torch::Tensor> optimizable_tensors(6);
   std::vector<torch::Tensor> tensors_dict = {new_xyz,           new_features_dc,
@@ -686,8 +687,10 @@ void GaussianModel::densificationPostfix(torch::Tensor& new_xyz,
       {this->getXYZ().size(0), 1}, torch::TensorOptions().device(device_type_));
   this->denom_ = torch::zeros({this->getXYZ().size(0), 1},
                               torch::TensorOptions().device(device_type_));
-  this->max_radii2D_ = torch::zeros(
-      {this->getXYZ().size(0)}, torch::TensorOptions().device(device_type_));
+  auto new_max_radii2D_extension = torch::zeros(
+      {new_xyz.size(0)}, torch::TensorOptions().device(device_type_));
+  this->max_radii2D_ =
+      torch::cat({old_max_radii2D, new_max_radii2D_extension}, /*dim=*/0);
 }
 
 void GaussianModel::densifyAndSplit(torch::Tensor& grads,
@@ -771,71 +774,79 @@ void GaussianModel::densifyAndPrune(float max_grad,
                                     int max_screen_size) {
   auto grads = this->xyz_gradient_accum_ / this->denom_;
   grads.index_put_({grads.isnan()}, 0.0f);
+
+  std::cout << "=== DENSIFY AND PRUNE DEBUG ===" << std::endl;
+  std::cout << "max_screen_size: " << max_screen_size << std::endl;
+  std::cout << "min_opacity: " << min_opacity << std::endl;
+
   this->densifyAndClone(grads, max_grad, extent);
   this->densifyAndSplit(grads, max_grad, extent);
 
   auto prune_mask = (this->getOpacityActivation() < min_opacity).squeeze();
-  // if (max_screen_size) {
-  //   auto big_points_vs = this->max_radii2D_ > max_screen_size;
-  //   auto big_points_ws =
-  //       std::get<0>(this->getScalingActivation().max(/*dim=*/1)) >
-  //       0.1f * extent;
-  //   prune_mask = torch::logical_or(torch::logical_or(prune_mask,
-  //   big_points_vs),
-  //                                  big_points_ws);
-  // }
+  auto opacity_prune_count = prune_mask.sum().item<int>();
+  std::cout << "Points to prune due to low opacity: " << opacity_prune_count
+            << std::endl;
 
-  auto big_points_ws =
-      std::get<0>(this->getScalingActivation().max(/*dim=*/1)) > 0.1f * extent;
-  // prune_mask = torch::logical_or(big_points_vs, big_points_vs);
+  if (max_screen_size) {
+    auto big_points_vs = this->max_radii2D_ > max_screen_size;
+    auto big_points_count = big_points_vs.sum().item<int>();
+    std::cout << "Points with radii > " << max_screen_size << ": "
+              << big_points_count << std::endl;
 
-  auto scales = this->getScalingActivation();
-  auto max_scale = std::get<0>(scales.max(/*dim=*/1));
-  auto min_scale = std::get<0>(scales.min(/*dim=*/1));
-  auto scale_ratio =
-      max_scale /
-      (min_scale + 1e-6f);  // Add small epsilon to avoid division by zero
+    // Debug: show some max_radii2D_ values
+    auto max_radii_stats =
+        torch::tensor({this->max_radii2D_.min().item<float>(),
+                       this->max_radii2D_.max().item<float>(),
+                       this->max_radii2D_.mean().item<float>()});
+    std::cout << "max_radii2D_ - min: " << max_radii_stats[0].item<float>()
+              << ", max: " << max_radii_stats[1].item<float>()
+              << ", mean: " << max_radii_stats[2].item<float>() << std::endl;
 
-  auto elongated_and_big =
-      torch::logical_and(big_points_ws, scale_ratio > 10.0f);
+    prune_mask = torch::logical_or(prune_mask, big_points_vs);
+  }
 
-  prune_mask = torch::logical_or(prune_mask, elongated_and_big);
+  auto total_prune_count = prune_mask.sum().item<int>();
+  auto total_points = prune_mask.size(0);
+  std::cout << "Total points to prune: " << total_prune_count << " out of "
+            << total_points << std::endl;
+
   this->prunePoints(prune_mask);
-
-  c10::cuda::CUDACachingAllocator::emptyCache();  // torch.cuda.empty_cache()
+  c10::cuda::CUDACachingAllocator::emptyCache();
 }
 
 void GaussianModel::prune(float min_opacity,
                           float extent,
                           int max_screen_size) {
   auto prune_mask = (this->getOpacityActivation() < min_opacity).squeeze();
+  // auto opacity_prune_count = prune_mask.sum().item<int>();
+  // std::cout << "Points to prune due to low opacity: " << opacity_prune_count
+  //           << std::endl;
+
   if (max_screen_size) {
     auto big_points_vs = this->max_radii2D_ > max_screen_size;
-    auto big_points_ws =
-        std::get<0>(this->getScalingActivation().max(/*dim=*/1)) >
-        0.1f * extent;
-    // prune_mask = torch::logical_or(big_points_vs, big_points_vs);
+    auto big_points_count = big_points_vs.sum().item<int>();
+    // std::cout << "Points with radii > " << max_screen_size << ": "
+    //           << big_points_count << std::endl;
 
-    auto scales = this->getScalingActivation();
-    auto max_scale = std::get<0>(scales.max(/*dim=*/1));
-    auto min_scale = std::get<0>(scales.min(/*dim=*/1));
-    auto scale_ratio =
-        max_scale /
-        (min_scale + 1e-6f);  // Add small epsilon to avoid division by zero
+    // Debug: show some max_radii2D_ values
+    // auto max_radii_stats =
+    //     torch::tensor({this->max_radii2D_.min().item<float>(),
+    //                    this->max_radii2D_.max().item<float>(),
+    //                    this->max_radii2D_.mean().item<float>()});
+    // std::cout << "max_radii2D_ - min: " << max_radii_stats[0].item<float>()
+    //           << ", max: " << max_radii_stats[1].item<float>()
+    //           << ", mean: " << max_radii_stats[2].item<float>() << std::endl;
 
-    // Prune if:
-    // 1. Big in viewspace (screen), OR
-    // 2. Big in worldspace AND elongated (scale ratio > threshold, e.g., 5.0)
-    auto elongated_and_big =
-        torch::logical_and(big_points_ws, scale_ratio > 10.0f);
-    // prune_mask = torch::logical_or(torch::logical_or(prune_mask, prune_mask),
-    //                                elongated_and_big);
-    prune_mask = torch::logical_or(torch::logical_or(prune_mask, big_points_vs),
-                                   elongated_and_big);
+    prune_mask = torch::logical_or(prune_mask, big_points_vs);
   }
-  this->prunePoints(prune_mask);
 
-  c10::cuda::CUDACachingAllocator::emptyCache();  // torch.cuda.empty_cache()
+  // auto total_prune_count = prune_mask.sum().item<int>();
+  // auto total_points = prune_mask.size(0);
+  // std::cout << "Total points to prune: " << total_prune_count << " out of "
+  //           << total_points << std::endl;
+
+  this->prunePoints(prune_mask);
+  c10::cuda::CUDACachingAllocator::emptyCache();
 }
 
 void GaussianModel::addDensificationStats(
