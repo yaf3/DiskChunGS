@@ -96,29 +96,28 @@ bool test_AABB_against_frustum_eigen(const Eigen::Matrix4f& MVP,
 
 // Get chunk coordinate from 3D position
 ChunkCoord ChunkManager::getChunkCoord(const Eigen::Vector3f& position) {
+  float half_chunk = chunk_size_ * 0.5f;
   return ChunkCoord{
-      static_cast<int64_t>(std::floor(position.x() / chunk_size_)),
-      static_cast<int64_t>(std::floor(position.y() / chunk_size_)),
-      static_cast<int64_t>(std::floor(position.z() / chunk_size_))};
+      static_cast<int64_t>(std::floor((position.x() + half_chunk) / chunk_size_)),
+      static_cast<int64_t>(std::floor((position.y() + half_chunk) / chunk_size_)),
+      static_cast<int64_t>(std::floor((position.z() + half_chunk) / chunk_size_))};
 }
 
 // Get chunk center
 Eigen::Vector3f ChunkManager::getChunkCenter(const ChunkCoord& coord) {
-  return Eigen::Vector3f((coord.x + 0.5f) * chunk_size_,
-                         (coord.y + 0.5f) * chunk_size_,
-                         (coord.z + 0.5f) * chunk_size_);
+  return Eigen::Vector3f(coord.x * chunk_size_,
+                         coord.y * chunk_size_,
+                         coord.z * chunk_size_);
 }
 
 // Calculate AABB for a chunk
 AABB ChunkManager::getChunkAABB(const ChunkCoord& coord) {
-  // Calculate minimum corner of the chunk
-  Eigen::Vector3f min_corner(coord.x * chunk_size_, coord.y * chunk_size_,
-                             coord.z * chunk_size_);
-
-  // Calculate maximum corner of the chunk (including overlap margin)
-  Eigen::Vector3f max_corner =
-      min_corner + Eigen::Vector3f::Constant(chunk_size_);
-
+  float half_chunk = chunk_size_ * 0.5f;
+  Eigen::Vector3f center(coord.x * chunk_size_, 
+                         coord.y * chunk_size_,
+                         coord.z * chunk_size_);
+  Eigen::Vector3f min_corner = center - Eigen::Vector3f::Constant(half_chunk);
+  Eigen::Vector3f max_corner = center + Eigen::Vector3f::Constant(half_chunk);
   return AABB(min_corner, max_corner);
 }
 
@@ -1379,7 +1378,9 @@ ChunkManager::groupPointsByChunk(const torch::Tensor& positions) {
   // std::cout << "Called groupPointsByChunk" << std::endl;
   // Called by addPoints
   // Convert positions to chunk coordinates
-  torch::Tensor chunk_coords = torch::floor(positions / chunk_size_);
+  float half_chunk = chunk_size_ * 0.5f;
+  torch::Tensor shifted_positions = positions + half_chunk;
+  torch::Tensor chunk_coords = torch::floor(shifted_positions / chunk_size_);
   // std::cout << "New ungrouped points " << positions.size(0) << std::endl;
 
   // Convert to int64 for bit operations
