@@ -9,16 +9,15 @@
  * For inquiries contact  george.drettakis@inria.fr
  */
 
-#pragma once
-
-#include <algorithm>
-#include <cstdio>
+#ifndef CUDA_RASTERIZER_AUXILIARY_H_INCLUDED
+#define CUDA_RASTERIZER_AUXILIARY_H_INCLUDED
 
 #include "config.h"
+#include "stdio.h"
 
 #define BLOCK_SIZE (BLOCK_X * BLOCK_Y)
 #define NUM_WARPS (BLOCK_SIZE / 32)
-
+#define DGR_FIX_AA
 // Spherical harmonics coefficients
 __device__ const float SH_C0 = 0.28209479177387814f;
 __device__ const float SH_C1 = 0.4886025119029199f;
@@ -161,8 +160,9 @@ __forceinline__ __device__ bool in_frustum(int idx,
   float3 p_proj = {p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w};
   p_view = transformPoint4x3(p_orig, viewmatrix);
 
-  if (p_view.z <= 0.2f) {  // || ((p_proj.x < -1.3 || p_proj.x > 1.3 || p_proj.y
-                           // < -1.3 || p_proj.y > 1.3)))
+  if (p_view.z <= 0.2f)  // || ((p_proj.x < -1.3 || p_proj.x > 1.3 || p_proj.y <
+                         // -1.3 || p_proj.y > 1.3)))
+  {
     if (prefiltered) {
       printf(
           "Point is filtered although prefiltered is set. This shouldn't "
@@ -184,3 +184,5 @@ __forceinline__ __device__ bool in_frustum(int idx,
       throw std::runtime_error(cudaGetErrorString(ret));                     \
     }                                                                        \
   }
+
+#endif

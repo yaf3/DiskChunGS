@@ -54,7 +54,8 @@ void assertTensorDims(const std::vector<torch::Tensor>& tensors,
 std::tuple<torch::Tensor,
            torch::Tensor,
            std::vector<torch::Tensor>,
-           std::vector<torch::Tensor>>
+           std::vector<torch::Tensor>,
+           torch::Tensor>
 GaussianRenderer::render(
     const std::vector<std::shared_ptr<GaussianModel>>& models,
     std::shared_ptr<GaussianKeyframe> viewpoint_camera,
@@ -70,6 +71,26 @@ GaussianRenderer::render(
     torch::Tensor& world_view_transform,
     torch::Tensor& full_proj_transform,
     torch::Tensor& camera_center) {
+  // torch::Tensor dummy_world_view_transform =
+  //     torch::eye(4, torch::TensorOptions()
+  //                       .dtype(torch::kFloat32)
+  //                       .device(torch::kCUDA)
+  //                       .requires_grad(false))
+  //         .contiguous();
+
+  // torch::Tensor dummy_full_proj_transform =
+  //     torch::eye(4, torch::TensorOptions()
+  //                       .dtype(torch::kFloat32)
+  //                       .device(torch::kCUDA)
+  //                       .requires_grad(false))
+  //         .contiguous();
+
+  // torch::Tensor dummy_camera_center =
+  //     torch::zeros({3}, torch::TensorOptions()
+  //                           .dtype(torch::kFloat32)
+  //                           .device(torch::kCUDA)
+  //                           .requires_grad(false))
+  //         .contiguous();
   /* Render the scene.
 
      Background tensor (bg_color) must be on GPU!
@@ -371,20 +392,36 @@ GaussianRenderer::render(
 
   GaussianRasterizationSettings raster_settings(
       image_height, image_width, tanfovx, tanfovy, bg_color, scaling_modifier,
-      world_view_transform, full_proj_transform, active_sh_degree,
-      camera_center, false, false);
+      full_proj_transform, active_sh_degree, camera_center, false, false);
+
+  // std::cout << image_height << " " << image_width << " " << tanfovx << " "
+  //           << tanfovy << bg_color << " " << scaling_modifier << " "
+  //           << full_proj_transform << " " << active_sh_degree << " "
+  //           << camera_center << std::endl;
 
   GaussianRasterizer rasterizer(raster_settings);
 
+  // std::cout << world_view_transform << std::endl;
+
   // Rasterize visible Gaussians to image, obtain their radii (on screen).
-  auto rasterizer_result =
-      rasterizer.forward(means3D, means2D, opacity, dc, shs, colors_precomp,
-                         scales, rotations, cov3D_precomp);
+  auto rasterizer_result = rasterizer.forward(
+      means3D, means2D, opacity, dc, shs, colors_precomp, scales, rotations,
+      cov3D_precomp, world_view_transform);
 
   // timer_raster.stop();
-  auto rendered_depth = std::get<0>(rasterizer_result);
-  auto rendered_image = std::get<1>(rasterizer_result);
-  auto radii = std::get<2>(rasterizer_result);
+  auto rendered_image = std::get<0>(rasterizer_result);
+
+  auto inverse_depth = std::get<1>(rasterizer_result);
+
+  // std::cout << "Inverse depth min: " << inverse_depth.min().item<float>()
+  //           << ", max: " << inverse_depth.max().item<float>() << std::endl;
+  torch::Tensor rendered_depth = 1.0f / torch::clamp_min(inverse_depth, 1e-6f);
+  // std::cout << "Rendered depth min: " << rendered_depth.min().item<float>()
+  //           << ", max: " << rendered_depth.max().item<float>() << std::endl;
+
+  auto mainGaussID = std::get<2>(rasterizer_result);
+
+  auto radii = std::get<3>(rasterizer_result);
 
   if (viewpoint_camera->has_appearance_params_) {
     rendered_image = viewpoint_camera->applyAppearanceTransform(rendered_image);
@@ -410,5 +447,5 @@ GaussianRenderer::render(
   // timer_render.stop();
   return std::make_tuple(rendered_depth, /*depth*/ rendered_image, /*render*/
                          screenspace_points_vec, /*viewspace_points*/
-                         radii_vec /*radii*/);
+                         radii_vec /*radii*/, mainGaussID);
 }

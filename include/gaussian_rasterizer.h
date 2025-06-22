@@ -31,7 +31,6 @@ struct GaussianRasterizationSettings {
                                 float tanfovy,
                                 torch::Tensor& bg,
                                 float scale_modifier,
-                                torch::Tensor& viewmatrix,
                                 torch::Tensor& projmatrix,
                                 int sh_degree,
                                 torch::Tensor& campos,
@@ -43,7 +42,6 @@ struct GaussianRasterizationSettings {
         tanfovy_(tanfovy),
         bg_(bg),
         scale_modifier_(scale_modifier),
-        viewmatrix_(viewmatrix),
         projmatrix_(projmatrix),
         sh_degree_(sh_degree),
         campos_(campos),
@@ -56,7 +54,6 @@ struct GaussianRasterizationSettings {
   float tanfovy_;
   torch::Tensor bg_;
   float scale_modifier_;
-  torch::Tensor viewmatrix_;
   torch::Tensor projmatrix_;
   int sh_degree_;
   torch::Tensor campos_;
@@ -78,6 +75,7 @@ class GaussianRasterizerFunction
       torch::Tensor scales,
       torch::Tensor rotations,
       torch::Tensor cov3Ds_precomp,
+      torch::Tensor viewmatrix,
       GaussianRasterizationSettings raster_settings);
 
   static torch::autograd::tensor_list backward(
@@ -96,10 +94,11 @@ inline torch::autograd::tensor_list rasterizeGaussians(
     torch::Tensor& scales,
     torch::Tensor& rotations,
     torch::Tensor& cov3Ds_precomp,
+    torch::Tensor& viewmatrix,
     GaussianRasterizationSettings& raster_settings) {
   return GaussianRasterizerFunction::apply(
       means3D, means2D, dc, sh, colors_precomp, opacities, scales, rotations,
-      cov3Ds_precomp, raster_settings);
+      cov3Ds_precomp, viewmatrix, raster_settings);
 }
 
 class GaussianRasterizer : public torch::nn::Module {
@@ -107,7 +106,11 @@ class GaussianRasterizer : public torch::nn::Module {
   explicit GaussianRasterizer(GaussianRasterizationSettings& raster_settings)
       : raster_settings_(raster_settings) {}
 
-  torch::Tensor markVisibleGaussians(torch::Tensor& positions);
+  torch::Tensor markVisibleGaussians(torch::Tensor& positions,
+                                     torch::Tensor& viewmatrix) {
+    auto raster_settings = this->raster_settings_;
+    return markVisible(positions, viewmatrix, raster_settings.projmatrix_);
+  }
 
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
   forward(torch::Tensor means3D,
@@ -118,7 +121,8 @@ class GaussianRasterizer : public torch::nn::Module {
           torch::Tensor colors_precomp,
           torch::Tensor scales,
           torch::Tensor rotations,
-          torch::Tensor cov3D_precomp);
+          torch::Tensor cov3D_precomp,
+          torch::Tensor viewmatrix);
 
  public:
   GaussianRasterizationSettings raster_settings_;
@@ -130,5 +134,5 @@ class SparseGaussianAdam : public torch::optim::Adam {
                               const torch::optim::AdamOptions& options)
       : torch::optim::Adam(parameters, options) {}
 
-  void step(torch::Tensor& visibility, const uint32_t N);
+  // void step(torch::Tensor& visibility, const uint32_t N);
 };

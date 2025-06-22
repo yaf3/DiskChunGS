@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, Inria
+ * Copyright (C) 2023 - 2025, Inria
  * GRAPHDECO research group, https://team.inria.fr/graphdeco
  * All rights reserved.
  *
@@ -16,7 +16,6 @@
 #include <iostream>
 #include <vector>
 
-#include "forward.h"
 #include "rasterizer.h"
 
 namespace CudaRasterizer {
@@ -35,12 +34,13 @@ static void obtain(char*& chunk,
 struct GeometryState {
   size_t scan_size;
   float* depths;
+  float* dists;
   char* scanning_space;
   bool* clamped;
   int* internal_radii;
   float2* means2D;
   float* cov3D;
-  float6* conic_opacity;
+  float4* conic_opacity;
   float* rgb;
   uint32_t* point_offsets;
   uint32_t* tiles_touched;
@@ -53,8 +53,8 @@ struct ImageState {
   uint32_t* bucket_offsets;
   size_t bucket_count_scan_size;
   char* bucket_count_scanning_space;
-  float* pixel_depths;
   float* pixel_colors;
+  float* pixel_invDepths;
   uint32_t* max_contrib;
 
   size_t scan_size;
@@ -84,9 +84,8 @@ struct BinningState {
 struct SampleState {
   uint32_t* bucket_to_tile;
   float* T;
-  float* ad;
   float* ar;
-
+  float* ard;
   static SampleState fromChunk(char*& chunk, size_t C);
 };
 

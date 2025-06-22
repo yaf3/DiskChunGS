@@ -1197,7 +1197,7 @@ void GaussianMapper::trainForOneIteration() {
     gaussians->oneUpShDegree();
 
     // Update learning rate based on the model's local iteration count
-    gaussians->updateLearningRate();
+    // gaussians->updateLearningRate();
 
     // Set feature, opacity, scaling, and rotation learning rates
     gaussians->setFeatureLearningRate(featureLearningRate());
@@ -1214,14 +1214,15 @@ void GaussianMapper::trainForOneIteration() {
   // }
   // std::cout << "[Optimization] Num visible chunks: " << visible_chunks.size()
   //           << ", Num Gaussians: " << num_gaussians << std::endl;
-
+  // torch::Tensor identity_view_matrix = torch::eye(
+  //     4, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
   // Render
   auto timer_render = ProfilingUtils::Timer("render");
   auto render_pkg = GaussianRenderer::render(
       models, viewpoint_cam, image_height, image_width, pipe_params_,
       background_, override_color_, 1.0f, false, viewpoint_cam->FoVx_,
       viewpoint_cam->FoVy_, viewpoint_cam->world_view_transform_,
-      viewpoint_cam->full_proj_transform_, viewpoint_cam->camera_center_);
+      viewpoint_cam->projection_matrix_, viewpoint_cam->camera_center_);
 
   timer_render.stop();
   auto rendered_image = std::get<1>(render_pkg);
@@ -1246,10 +1247,10 @@ void GaussianMapper::trainForOneIteration() {
     loss += lambda_depth * depth_loss;
 
     // if (getIteration() % 100 == 0) {
+    //   std::filesystem::create_directories("./debug_mono");
     //   std::string rgb_render_filename = "./debug_mono/rendered_rgb_" +
     //                                     std::to_string(viewpoint_cam->fid_) +
     //                                     ".png";
-
     //   cv::Mat output_image =
     //       tensor_utils::torchTensor2CvMat_Float32(rendered_image);
     //   output_image.convertTo(output_image, CV_8UC1, 255.0, 0.0);
@@ -1289,6 +1290,7 @@ void GaussianMapper::trainForOneIteration() {
     //           << std::endl;
 
     // Render using the right camera transformation
+    auto timer_render = ProfilingUtils::Timer("render");
     auto render_pkg_right = GaussianRenderer::render(
         models,
         viewpoint_cam,  // Still use the same keyframe object
@@ -1297,8 +1299,7 @@ void GaussianMapper::trainForOneIteration() {
         false,  // use_override_color
         viewpoint_cam->FoVx_, viewpoint_cam->FoVy_,
         viewpoint_cam->world_view_transform_right_,  // Pass right transforms
-        viewpoint_cam->full_proj_transform_right_,
-        viewpoint_cam->camera_center_right_);
+        viewpoint_cam->projection_matrix_, viewpoint_cam->camera_center_right_);
 
     auto rendered_depth_right = std::get<0>(render_pkg_right);
     auto rendered_image_right = std::get<1>(render_pkg_right);
@@ -1420,92 +1421,6 @@ void GaussianMapper::trainForOneIteration() {
   auto timer_cuda_sync = ProfilingUtils::Timer("cuda_sync");
   torch::cuda::synchronize();
   timer_cuda_sync.stop();
-  auto timer_densification = ProfilingUtils::Timer("densification");
-  {
-    torch::NoGradGuard no_grad;
-    kfs_loss_[viewpoint_cam->fid_] = loss.item().toFloat();
-    ema_loss_for_log_ = 0.4f * loss.item().toFloat() + 0.6 * ema_loss_for_log_;
-
-    if (keyframe_record_interval_ &&
-        getIteration() % keyframe_record_interval_ == 0)
-      recordKeyframeRendered(rendered_image, gt_image, viewpoint_cam->fid_,
-                             result_dir_, result_dir_, result_dir_);
-
-    int num_models = models.size();
-    for (int model_idx = 0; model_idx < num_models; model_idx++) {
-      const auto& gaussians = models[model_idx];
-      // Get radii for this model
-      const auto& radii = radii_vec[model_idx];
-
-      // Calculate visibility filter for this specific model
-      auto visibility_filter = (radii > 0).nonzero().reshape({-1});
-
-      int local_iter = gaussians->getLocalIteration();
-
-      // Densification
-      if (local_iter < opt_params_.densify_until_iter_ ||
-          opt_params_.densify_until_iter_ == -1) {
-        // Keep track of max radii in image-space for pruning
-        gaussians->max_radii2D_.index_put_(
-            {visibility_filter},
-            torch::max(gaussians->max_radii2D_.index({visibility_filter}),
-                       radii.index({visibility_filter})));
-
-        // gaussians->addDensificationStats(screenspace_points_vec[model_idx],
-        //                                  visibility_filter);
-
-        if ((local_iter > opt_params_.densify_from_iter_) &&
-            (local_iter % densifyInterval() == 0)) {
-          // int size_threshold = (local_iter < prune_big_point_after_iter_ ||
-          //                       prune_big_point_after_iter_ == -1)
-          //                          ? 0
-          //                          : 20;
-          int size_threshold = viewpoint_cam->image_width_ / 2.0f;
-          // int size_threshold = 5000;
-          gaussians->prune(densify_min_opacity_, scene_->cameras_extent_,
-                           size_threshold);
-          // gaussians->densifyAndPrune(densifyGradThreshold(),
-          //                            densify_min_opacity_,
-          //                            scene_->cameras_extent_,
-          //                            size_threshold);
-        }
-
-        if (opacityResetInterval() &&
-            (local_iter % opacityResetInterval() == 0 ||
-             (model_params_.white_background_ &&
-              local_iter == opt_params_.densify_from_iter_)))
-          gaussians->resetOpacity();
-      }
-    }
-  }
-
-  timer_densification.stop();
-
-  auto iter_end_timing = std::chrono::steady_clock::now();
-  auto iter_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-                       iter_end_timing - iter_start_timing)
-                       .count();
-
-  // Reporting and periodic saves
-  if (training_report_interval_ &&
-      (getIteration() % training_report_interval_ == 0)) {
-    std::cout << std::fixed << std::setprecision(8) << "Training iteration "
-              << getIteration() << "/" << opt_params_.iterations_
-              << ", time elapsed:" << iter_time / 1000.0 << "s"
-              << ", ema_loss:" << ema_loss_for_log_
-              << ", active_chunks:" << chunk_manager_->getStats().active_chunks
-              << std::endl;
-  }
-
-  if ((all_keyframes_record_interval_ &&
-       getIteration() % all_keyframes_record_interval_ == 0)) {
-    renderAndRecordAllKeyframes();
-    // savePly(result_dir_ / std::to_string(getIteration()) / "ply");
-    saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
-              "data");
-  }
-
-  if (loop_closure_iteration_) loop_closure_iteration_ = false;
 
   auto timer_optimizer_step = ProfilingUtils::Timer("optimizer_step");
   // Optimizer step
@@ -1562,17 +1477,104 @@ void GaussianMapper::trainForOneIteration() {
       // }
 
       // Use the sparse optimizer with visibility information
-      gaussians->optimizer_->step(visibility_filter,
-                                  gaussians->getXYZ().size(0));
+      // gaussians->optimizer_->step(visibility_filter,
+      //                             gaussians->getXYZ().size(0));
+      gaussians->optimizerStep(visibility_filter, gaussians->getXYZ().size(0));
       gaussians->optimizer_->zero_grad(true);
     }
   }
   timer_optimizer_step.stop();
 
+  auto timer_densification = ProfilingUtils::Timer("densification");
+  {
+    torch::NoGradGuard no_grad;
+    kfs_loss_[viewpoint_cam->fid_] = loss.item().toFloat();
+    ema_loss_for_log_ = 0.4f * loss.item().toFloat() + 0.6 * ema_loss_for_log_;
+
+    if (keyframe_record_interval_ &&
+        getIteration() % keyframe_record_interval_ == 0)
+      recordKeyframeRendered(rendered_image, gt_image, viewpoint_cam->fid_,
+                             result_dir_, result_dir_, result_dir_);
+
+    int num_models = models.size();
+    for (int model_idx = 0; model_idx < num_models; model_idx++) {
+      const auto& gaussians = models[model_idx];
+      // Get radii for this model
+      const auto& radii = radii_vec[model_idx];
+
+      // Calculate visibility filter for this specific model
+      auto visibility_filter = (radii > 0).nonzero().reshape({-1});
+
+      int local_iter = gaussians->getLocalIteration();
+
+      // Densification
+      if (local_iter < opt_params_.densify_until_iter_ ||
+          opt_params_.densify_until_iter_ == -1) {
+        // Keep track of max radii in image-space for pruning
+        gaussians->max_radii2D_.index_put_(
+            {visibility_filter},
+            torch::max(gaussians->max_radii2D_.index({visibility_filter}),
+                       radii.index({visibility_filter})));
+
+        // gaussians->addDensificationStats(screenspace_points_vec[model_idx],
+        //                                  visibility_filter);
+
+        if ((local_iter > opt_params_.densify_from_iter_) &&
+            (local_iter % densifyInterval() == 0)) {
+          // int size_threshold = (local_iter < prune_big_point_after_iter_ ||
+          //                       prune_big_point_after_iter_ == -1)
+          //                          ? 0
+          //                          : 20;
+          int size_threshold = viewpoint_cam->image_width_ / 2.0f;
+          // int size_threshold = 5000;
+          gaussians->prune(densify_min_opacity_, size_threshold);
+          // gaussians->densifyAndPrune(densifyGradThreshold(),
+          //                            densify_min_opacity_,
+          //                            scene_->cameras_extent_,
+          //                            size_threshold);
+        }
+
+        if (opacityResetInterval() &&
+            (local_iter % opacityResetInterval() == 0 ||
+             (model_params_.white_background_ &&
+              local_iter == opt_params_.densify_from_iter_)))
+          gaussians->resetOpacity();
+      }
+    }
+  }
+
+  timer_densification.stop();
+
+  auto iter_end_timing = std::chrono::steady_clock::now();
+  auto iter_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       iter_end_timing - iter_start_timing)
+                       .count();
+
+  // Reporting and periodic saves
+  if (training_report_interval_ &&
+      (getIteration() % training_report_interval_ == 0)) {
+    std::cout << std::fixed << std::setprecision(8) << "Training iteration "
+              << getIteration() << "/" << opt_params_.iterations_
+              << ", time elapsed:" << iter_time / 1000.0 << "s"
+              << ", ema_loss:" << ema_loss_for_log_
+              << ", active_chunks:" << chunk_manager_->getStats().active_chunks
+              << std::endl;
+  }
+
+  if ((all_keyframes_record_interval_ &&
+       getIteration() % all_keyframes_record_interval_ == 0)) {
+    renderAndRecordAllKeyframes();
+    // savePly(result_dir_ / std::to_string(getIteration()) / "ply");
+    saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
+              "data");
+  }
+
+  if (loop_closure_iteration_) loop_closure_iteration_ = false;
+
   // auto timer_evictUnusedChunks =
   // ProfilingUtils::Timer("evictUnusedChunks"); Periodically cull gaussians
   // outside of borders & evict unused chunks if (getIteration() % 200 == 0) {
-  // chunk_manager_->transferGaussiansAcrossChunks(scene_->cameras_extent_);
+  // chunk_manager_->transferGaussiansAcrossChunks();
   // chunk_manager_->cullGaussiansOutsideChunkBorders();
   // chunk_manager_->evictUnusedChunks();
   // }
@@ -1963,8 +1965,7 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
 
     std::cout << "Adding points to chunks" << std::endl;
     chunk_manager_->addPointsToChunks(points_tensor, colors_tensor,
-                                      torch::Tensor(), loop_keyframes,
-                                      scene_->cameras_extent_);
+                                      torch::Tensor(), loop_keyframes);
   }
 
   chunk_manager_->releaseAllChunksFromOptimization();
@@ -1972,7 +1973,7 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
   // Gaussians will be all over the place, transfer them to their
   // respective chunks
   // std::cout << "Transferring gaussians across chunks" << std::endl;
-  // chunk_manager_->transferGaussiansAcrossChunks(scene_->cameras_extent_);
+  // chunk_manager_->transferGaussiansAcrossChunks();
 
   chunk_manager_->releaseAllChunksFromOptimization();
 
@@ -2045,7 +2046,7 @@ void GaussianMapper::processScaleRefinement(ORB_SLAM3::MappingOperation& opr) {
 
   // Gaussians will be all over the place, transfer them to their
   // respective chunks
-  chunk_manager_->transferGaussiansAcrossChunks(scene_->cameras_extent_);
+  chunk_manager_->transferGaussiansAcrossChunks();
 }
 
 void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
@@ -2619,9 +2620,15 @@ void GaussianMapper::increasePcdByDepthReconstruction(
                 models, pkf, pkf->image_height_, pkf->image_width_,
                 pipe_params_, background_, override_color_, 1.0f, false,
                 pkf->FoVx_, pkf->FoVy_, pkf->world_view_transform_,
-                pkf->full_proj_transform_, pkf->camera_center_);
+                pkf->projection_matrix_, pkf->camera_center_);
 
             torch::Tensor rendered_image = std::get<1>(render_pkg);
+            std::string rgb_render_filename = "./debug_prob/rendered_rgb.png";
+            cv::Mat output_image =
+                tensor_utils::torchTensor2CvMat_Float32(rendered_image);
+            output_image.convertTo(output_image, CV_8UC1, 255.0, 0.0);
+            cv::cvtColor(output_image, output_image, cv::COLOR_RGB2BGR);
+            cv::imwrite(rgb_render_filename, output_image);
             prob_penalty = computeLoGProbability(rendered_image);
           }
         }
@@ -2651,14 +2658,14 @@ void GaussianMapper::increasePcdByDepthReconstruction(
         cv::imwrite("./debug_prob/" + name + ".png", colored);
       };
 
-      // save_tensor(prob_L, "prob_L");
-      // save_tensor(prob_penalty, "prob_penalty");
-      // save_tensor(prob_s, "prob_s");
+      save_tensor(prob_L, "prob_L");
+      save_tensor(prob_penalty, "prob_penalty");
+      save_tensor(prob_s, "prob_s");
 
       // Step 4: Sample points based on probability and depth validity
       torch::Tensor random_mask = torch::rand_like(prob_s) < prob_s;
-      std::cout << "Depth min value: " << depth.min().item<float>()
-                << ", max value: " << depth.max().item<float>() << std::endl;
+      // std::cout << "Depth min value: " << depth.min().item<float>()
+      //           << ", max value: " << depth.max().item<float>() << std::endl;
       // torch::Tensor valid_depth = torch::ones_like(depth, torch::kBool);
       torch::Tensor valid_depth = (depth >= min_depth_) & (depth <= max_depth_);
       torch::Tensor sample_mask = random_mask & valid_depth;
@@ -2787,7 +2794,7 @@ void GaussianMapper::increasePcdByDepthReconstruction(
                 models, pkf, pkf->image_height_, pkf->image_width_,
                 pipe_params_, background_, override_color_, 1.0f, false,
                 pkf->FoVx_, pkf->FoVy_, pkf->world_view_transform_,
-                pkf->full_proj_transform_, pkf->camera_center_);
+                pkf->projection_matrix_, pkf->camera_center_);
 
             torch::Tensor rendered_image = std::get<1>(render_pkg);
             prob_penalty = computeLoGProbability(rendered_image);
@@ -3042,7 +3049,7 @@ std::tuple<cv::Mat, cv::Mat> GaussianMapper::renderFromPose(
   auto render_pkg = GaussianRenderer::render(
       models, pkf, height, width, pipe_params_, background_, override_color_,
       1.0f, false, pkf->FoVx_, pkf->FoVy_, pkf->world_view_transform_,
-      pkf->full_proj_transform_, pkf->camera_center_);
+      pkf->projection_matrix_, pkf->camera_center_);
 
   // Return rendered image and depth
   chunk_manager_->releaseChunksFromOptimization(visible_chunks);
@@ -3103,8 +3110,7 @@ void GaussianMapper::renderAndRecordKeyframe(
   auto render_pkg = GaussianRenderer::render(
       models, pkf, pkf->image_height_, pkf->image_width_, pipe_params_,
       background_, override_color_, 1.0f, false, pkf->FoVx_, pkf->FoVy_,
-      pkf->world_view_transform_, pkf->full_proj_transform_,
-      pkf->camera_center_);
+      pkf->world_view_transform_, pkf->projection_matrix_, pkf->camera_center_);
 
   chunk_manager_->releaseChunksFromOptimization(visible_chunks);
   auto rendered_image = std::get<1>(render_pkg);
@@ -3812,8 +3818,7 @@ void GaussianMapper::addPoints(
   // std::endl;
 
   // Delegate to chunk manager
-  chunk_manager_->addPointsToChunks(points, colors, scales, keyframes,
-                                    scene_->cameras_extent_);
+  chunk_manager_->addPointsToChunks(points, colors, scales, keyframes);
 }
 
 /**
@@ -5278,7 +5283,7 @@ void GaussianMapper::visualizeDepthReconstruction(
 torch::Tensor GaussianMapper::computeLoGProbability(
     const torch::Tensor& image) {
   // Convert to grayscale if needed
-  std::cout << image.sizes() << std::endl;
+  // std::cout << image.sizes() << std::endl;
   torch::Tensor weights = torch::tensor({0.299, 0.587, 0.114}, image.options());
   torch::Tensor gray = torch::sum(image * weights.view({3, 1, 1}), 0, true);
 

@@ -88,8 +88,7 @@ class GaussianModel {
 
   void createFromPcd(const torch::Tensor& fused_point_cloud,
                      const torch::Tensor& color,
-                     const torch::Tensor& new_scales,
-                     const float spatial_lr_scale);
+                     const torch::Tensor& new_scales);
 
   void increasePcd(const torch::Tensor& new_point_cloud,
                    const torch::Tensor& new_colors,
@@ -114,8 +113,8 @@ class GaussianModel {
       const float scale = 1.0f);
 
   void trainingSetup(const GaussianOptimizationParams& training_args);
-  float updateLearningRate();
-  void setPositionLearningRate(float position_lr);
+  void updateLearningRates(const torch::Tensor& visibility);
+  void optimizerStep(torch::Tensor& visibility, const uint32_t N);
   void setFeatureLearningRate(float feature_lr);
   void setOpacityLearningRate(float opacity_lr);
   void setScalingLearningRate(float scaling_lr);
@@ -126,7 +125,7 @@ class GaussianModel {
 
   void prunePoints(torch::Tensor& mask);
 
-  void prune(float min_opacity, float extent, int max_screen_size);
+  void prune(float min_opacity, int max_screen_size);
 
   void densificationPostfix(torch::Tensor& new_xyz,
                             torch::Tensor& new_features_dc,
@@ -182,7 +181,6 @@ class GaussianModel {
       torch::Tensor& scaling,
       torch::Tensor& rotation,
       torch::Tensor& exist_since_iter,
-      const float spatial_lr_scale,
       const GaussianOptimizationParams& training_args);
 
  protected:
@@ -211,15 +209,15 @@ class GaussianModel {
 
   std::shared_ptr<SparseGaussianAdam> optimizer_;
   float percent_dense_;
-  float spatial_lr_scale_;
 
  protected:
   int local_iteration_;
-  float lr_init_;
-  float lr_final_;
-  int lr_delay_steps_;
-  float lr_delay_mult_;
-  int max_steps_;
+  float position_lr_init_;
+  float position_lr_decay_;
+  float position_lr_min_;
+
+  // Store per-primitive position learning rates
+  torch::Tensor position_lrs_;
 
   std::mutex mutex_settings_;
 };

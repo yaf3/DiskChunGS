@@ -31,7 +31,8 @@ class GaussianRenderer {
   static std::tuple<torch::Tensor,
                     torch::Tensor,
                     std::vector<torch::Tensor>,
-                    std::vector<torch::Tensor>>
+                    std::vector<torch::Tensor>,
+                    torch::Tensor>
   render(const std::vector<std::shared_ptr<GaussianModel>>& models,
          std::shared_ptr<GaussianKeyframe> viewpoint_camera,
          int image_height,

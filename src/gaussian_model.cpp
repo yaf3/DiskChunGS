@@ -20,10 +20,8 @@
 
 GaussianModel::GaussianModel(const int sh_degree)
     : active_sh_degree_(0),
-      spatial_lr_scale_(0.0),
-      lr_delay_steps_(0),
-      lr_delay_mult_(1.0),
-      max_steps_(1000000),
+      position_lr_init_(0.00005),
+      position_lr_decay_(1 - 2e-5),
       local_iteration_(0) {
   this->max_sh_degree_ = sh_degree;
 
@@ -38,10 +36,8 @@ GaussianModel::GaussianModel(const int sh_degree)
 
 GaussianModel::GaussianModel(const GaussianModelParams& model_params)
     : active_sh_degree_(0),
-      spatial_lr_scale_(0.0),
-      lr_delay_steps_(0),
-      lr_delay_mult_(1.0),
-      max_steps_(1000000),
+      position_lr_init_(0.00005),
+      position_lr_decay_(1 - 2e-5),
       local_iteration_(0) {
   this->max_sh_degree_ = model_params.sh_degree_;
 
@@ -107,12 +103,7 @@ void GaussianModel::setShDegree(const int sh) {
 
 void GaussianModel::createFromPcd(const torch::Tensor& fused_point_cloud,
                                   const torch::Tensor& color,
-                                  const torch::Tensor& new_scales,
-                                  const float spatial_lr_scale) {
-  assert(spatial_lr_scale > 0.0f &&
-         "Spatial learning rate scale must be positive");
-  this->spatial_lr_scale_ = spatial_lr_scale;
-  // std::cout << "Spatial_lr_scale: " << spatial_lr_scale << std::endl;
+                                  const torch::Tensor& new_scales) {
   int num_points = static_cast<int>(fused_point_cloud.sizes()[0]);
 
   torch::Tensor fused_color = sh_utils::RGB2SH(color);
@@ -392,15 +383,21 @@ void GaussianModel::trainingSetup(
                               torch::TensorOptions().device(device_type_));
 
   torch::optim::AdamOptions adam_options;
-  adam_options.set_lr(0.0);
+  adam_options.set_lr(0.0);  // We'll set individual LRs below
   adam_options.eps() = 1e-15;
 
-  // this->optimizer_.reset(new torch::optim::Adam(Tensor_vec_xyz_,
-  // adam_options));
   this->optimizer_.reset(new SparseGaussianAdam(Tensor_vec_xyz_, adam_options));
-  optimizer_->param_groups()[0].options().set_lr(
-      training_args.position_lr_init_ * this->spatial_lr_scale_);
 
+  // For per-primitive learning rates, create tensor-based LRs
+  int num_gaussians = this->getXYZ().size(0);
+
+  // Position learning rates (per-primitive for positions)
+  torch::Tensor position_lrs = torch::full(
+      {num_gaussians}, training_args.position_lr_init_,
+      torch::TensorOptions().dtype(torch::kFloat32).device(device_type_));
+  this->position_lrs_ = position_lrs;
+
+  // For other parameters, we can still use scalar learning rates
   optimizer_->add_param_group(Tensor_vec_feature_dc_);
   optimizer_->param_groups()[1].options().set_lr(training_args.feature_lr_);
 
@@ -417,31 +414,87 @@ void GaussianModel::trainingSetup(
   optimizer_->add_param_group(Tensor_vec_rotation_);
   optimizer_->param_groups()[5].options().set_lr(training_args.rotation_lr_);
 
-  // get_expon_lr_func
-  assert(spatial_lr_scale_ > 0);
-  lr_init_ = training_args.position_lr_init_ * this->spatial_lr_scale_;
-  lr_final_ = training_args.position_lr_final_ * this->spatial_lr_scale_;
-  assert(lr_init_ > 0);
-  assert(lr_final_ > 0);
-  lr_delay_mult_ = training_args.position_lr_delay_mult_;
-  max_steps_ = training_args.position_lr_max_steps_;
+  position_lr_init_ = training_args.position_lr_init_;
+  position_lr_decay_ = 1 - 2e-5;
+  position_lr_min_ = position_lr_init_ * 0.1f;
 }
 
-float GaussianModel::updateLearningRate() {
-  // def update_learning_rate(self, iteration):
-  //     ''' Learning rate scheduling per step '''
-  //     for param_group in self.optimizer.param_groups:
-  //         if param_group["name"] == "xyz":
-  //             lr = self.xyz_scheduler_args(iteration)
-  //             param_group['lr'] = lr
-  //             return lr
-  float lr = this->exponLrFunc(local_iteration_);
-  if (std::isnan(lr) || std::isinf(lr) || lr <= 0.0f || lr > 1.0f) {
-    std::cerr << "ERROR: Generated invalid learning rate: " << lr << std::endl;
-    throw std::runtime_error("Invalid learning rate generated");
+void GaussianModel::updateLearningRates(const torch::Tensor& visibility) {
+  // Check if visibility tensor size matches position_lrs_ size
+  // This can happen when pruning occurs between radii computation and optimizer
+  // step
+  if (visibility.size(0) != position_lrs_.size(0)) {
+    throw std::runtime_error(
+        "[WARNING] Visibility tensor size doesn't match position_lrs_ size");
   }
-  optimizer_->param_groups()[0].options().set_lr(lr);  // Tensor_vec_xyz_
-  return lr;
+
+  // std::cout << "[DEBUG-Optimizer] Pre-update position learning rates: "
+  //           << "max =" << position_lrs_.max().item<float>()
+  //           << ", min =" << position_lrs_.min().item<float>()
+  //           << ", mean =" << position_lrs_.mean().item<float>() << std::endl;
+
+  position_lrs_.index_put_(
+      {visibility}, position_lrs_.index({visibility}) * position_lr_decay_);
+  position_lrs_.clamp_min_(position_lr_min_);
+
+  // std::cout << "[DEBUG-Optimizer] Updated position learning rates: "
+  //           << "max =" << position_lrs_.max().item<float>()
+  //           << ", min =" << position_lrs_.min().item<float>()
+  //           << ", mean =" << position_lrs_.mean().item<float>() << std::endl;
+}
+
+void GaussianModel::optimizerStep(torch::Tensor& visibility, const uint32_t N) {
+  torch::NoGradGuard no_grad;
+
+  auto& param_groups = optimizer_->param_groups();
+
+  for (size_t group_idx = 0; group_idx < param_groups.size(); ++group_idx) {
+    auto& group = param_groups[group_idx];
+    auto& param = group.params()[0];
+
+    if (!param.grad().defined()) continue;
+
+    // Get optimizer state
+    auto& state = optimizer_->state();
+    auto key = param.unsafeGetTensorImpl();
+
+    if (state.find(key) == state.end()) {
+      auto new_state = std::make_unique<torch::optim::AdamParamState>();
+      new_state->step(0);
+      new_state->exp_avg(torch::zeros_like(param));
+      new_state->exp_avg_sq(torch::zeros_like(param));
+      state[key] = std::move(new_state);
+    }
+
+    auto& param_state = static_cast<torch::optim::AdamParamState&>(*state[key]);
+
+    // Learning rate handling per parameter type
+    torch::Tensor lr_tensor;
+    if (group_idx == 0) {
+      // GROUP 0: Positions - use per-primitive learning rates
+      lr_tensor = position_lrs_;
+    } else {
+      // ALL OTHER GROUPS: Use fixed scalar learning rates
+      float scalar_lr = group.options().get_lr();
+      lr_tensor = torch::tensor(scalar_lr,
+                                torch::TensorOptions().device(param.device()));
+    }
+
+    const uint32_t M = param.numel() / N;
+    auto options = static_cast<torch::optim::AdamOptions&>(group.options());
+    auto exp_avg = param_state.exp_avg();
+    auto exp_avg_sq = param_state.exp_avg_sq();
+    auto grad = param.grad();
+    auto eps = options.eps();
+
+    // Adam update
+    adamUpdate(param, grad, exp_avg, exp_avg_sq, visibility, lr_tensor,
+               std::get<0>(options.betas()), std::get<1>(options.betas()), eps,
+               N, M);
+  }
+
+  // Update learning rates AFTER Adam step
+  updateLearningRates(visibility);
 }
 
 // ==================================
@@ -452,10 +505,6 @@ float GaussianModel::updateLearningRate() {
 // param_groups[4] = scaling_
 // param_groups[5] = rotation_
 // ==================================
-void GaussianModel::setPositionLearningRate(float position_lr) {
-  optimizer_->param_groups()[0].options().set_lr(position_lr *
-                                                 this->spatial_lr_scale_);
-}
 void GaussianModel::setFeatureLearningRate(float feature_lr) {
   optimizer_->param_groups()[1].options().set_lr(feature_lr);
   optimizer_->param_groups()[2].options().set_lr(feature_lr / 20.0);
@@ -614,6 +663,7 @@ void GaussianModel::prunePoints(torch::Tensor& mask) {
 
   this->denom_ = this->denom_.index({valid_points_mask});
   this->max_radii2D_ = this->max_radii2D_.index({valid_points_mask});
+  this->position_lrs_ = this->position_lrs_.index({valid_points_mask});
 }
 
 void GaussianModel::densificationPostfix(torch::Tensor& new_xyz,
@@ -691,6 +741,12 @@ void GaussianModel::densificationPostfix(torch::Tensor& new_xyz,
       {new_xyz.size(0)}, torch::TensorOptions().device(device_type_));
   this->max_radii2D_ =
       torch::cat({old_max_radii2D, new_max_radii2D_extension}, /*dim=*/0);
+
+  int num_new_primitives = new_xyz.size(0);
+  torch::Tensor new_position_lrs =
+      torch::full({num_new_primitives}, position_lr_init_,
+                  torch::TensorOptions().device(device_type_));
+  position_lrs_ = torch::cat({position_lrs_, new_position_lrs}, 0);
 }
 
 void GaussianModel::densifyAndSplit(torch::Tensor& grads,
@@ -814,9 +870,7 @@ void GaussianModel::densifyAndPrune(float max_grad,
   c10::cuda::CUDACachingAllocator::emptyCache();
 }
 
-void GaussianModel::prune(float min_opacity,
-                          float extent,
-                          int max_screen_size) {
+void GaussianModel::prune(float min_opacity, int max_screen_size) {
   auto prune_mask = (this->getOpacityActivation() < min_opacity).squeeze();
   // auto opacity_prune_count = prune_mask.sum().item<int>();
   // std::cout << "Points to prune due to low opacity: " << opacity_prune_count
@@ -1130,45 +1184,6 @@ void GaussianModel::setPercentDense(const float percent_dense) {
   percent_dense_ = percent_dense;
 }
 
-/**
- * @brief get_expon_lr_func
- * @details Modified from Plenoxels
- *  Continuous learning rate decay function. Adapted from JaxNeRF
- *  The returned rate is lr_init when step=0 and lr_final when step=max_steps,
- * and is log-linearly interpolated elsewhere (equivalent to exponential decay).
- *  If lr_delay_steps>0 then the learning rate will be scaled by some smooth
- *  function of lr_delay_mult, such that the initial learning rate is
- *  lr_init*lr_delay_mult at the beginning of optimization but will be eased
- * back to the normal learning rate when steps>lr_delay_steps. :param conf:
- * config subtree 'lr' or similar :param max_steps: int, the number of steps
- * during optimization. :return HoF which takes step as input
- * @param iteration
- * @return float
- */
-float GaussianModel::exponLrFunc(int step) {
-  if (step < 0 || lr_init_ <= 0.0f || lr_final_ <= 0.0f) {
-    std::cerr << "ERROR: Invalid inputs to exponLrFunc. step=" << step
-              << ", lr_init_=" << lr_init_ << ", lr_final_=" << lr_final_
-              << std::endl;
-    throw std::runtime_error("Invalid inputs to learning rate function");
-  }
-  if (step < 0 || (lr_init_ == 0.0f && lr_final_ == 0.0f)) return 0.0f;
-
-  float delay_rate;
-  if (lr_delay_steps_ > 0)
-    delay_rate = lr_delay_mult_ +
-                 (1.0f - lr_delay_mult_) *
-                     std::sin(M_PI_2f32 * std::clamp(static_cast<float>(step) /
-                                                         lr_delay_steps_,
-                                                     0.0f, 1.0f));
-  else
-    delay_rate = 1.0f;
-  float t = std::clamp(static_cast<float>(step) / max_steps_, 0.0f, 1.0f);
-  float log_lerp =
-      std::exp(std::log(lr_init_) * (1 - t) + std::log(lr_final_) * t);
-  return delay_rate * log_lerp;
-}
-
 void GaussianModel::save_checkpoint(const std::string& path) {
   // Create directory if it doesn't exist
   std::filesystem::create_directories(std::filesystem::path(path));
@@ -1185,34 +1200,27 @@ void GaussianModel::save_checkpoint(const std::string& path) {
   model_archive.write("xyz_gradient_accum_", xyz_gradient_accum_);
   model_archive.write("denom_", denom_);
   model_archive.write("exist_since_iter_", exist_since_iter_);
+  model_archive.write("position_lrs_", position_lrs_);
   model_archive.save_to(path + "/model.pt");
 
   assert(active_sh_degree_ >= 0);
   assert(max_sh_degree_ <= 3);
-  assert(lr_delay_steps_ >= 0);
-  assert(max_steps_ > 0);
+  assert(position_lr_init_ >= 0);
+  assert(position_lr_decay_ > 0);
+  assert(position_lr_min_ >= 0);
   assert(local_iteration_ >= 0);
 
   assert(percent_dense_ > 0 && percent_dense_ < 1);
-  assert(spatial_lr_scale_ > 0);
-  assert(lr_init_ > 0);
-  assert(lr_final_ > 0);
-  assert(lr_delay_mult_ > 0);
 
   // Save configuration as before
   torch::serialize::OutputArchive config_archive;
   config_archive.write("active_sh_degree_", torch::tensor(active_sh_degree_));
   config_archive.write("max_sh_degree_", torch::tensor(max_sh_degree_));
-  config_archive.write("lr_delay_steps_", torch::tensor(lr_delay_steps_));
-  config_archive.write("max_steps_", torch::tensor(max_steps_));
+  config_archive.write("position_lr_init_", torch::tensor(position_lr_init_));
+  config_archive.write("position_lr_decay_", torch::tensor(position_lr_decay_));
+  config_archive.write("position_lr_min_", torch::tensor(position_lr_min_));
   config_archive.write("local_iteration_", torch::tensor(local_iteration_));
-
-  // Float values
   config_archive.write("percent_dense_", torch::tensor(percent_dense_));
-  config_archive.write("spatial_lr_scale_", torch::tensor(spatial_lr_scale_));
-  config_archive.write("lr_init_", torch::tensor(lr_init_));
-  config_archive.write("lr_final_", torch::tensor(lr_final_));
-  config_archive.write("lr_delay_mult_", torch::tensor(lr_delay_mult_));
 
   // Manual learning rate saving
   if (optimizer_) {
@@ -1342,6 +1350,7 @@ void GaussianModel::load_checkpoint_incremental(
     model_archive.read("xyz_gradient_accum_", xyz_gradient_accum_);
     model_archive.read("denom_", denom_);
     model_archive.read("exist_since_iter_", exist_since_iter_);
+    model_archive.read("position_lrs_", position_lrs_);
   } catch (const std::exception& e) {
     std::cerr << "Warning: Failed to load auxiliary tensors info: " << e.what()
               << std::endl;
@@ -1364,8 +1373,8 @@ void GaussianModel::load_checkpoint_incremental(
   // Temporary tensors to hold the loaded scalar values
   torch::Tensor active_sh_degree_tensor, max_sh_degree_tensor,
       lr_delay_steps_tensor, max_steps_tensor, local_iteration_tensor;
-  torch::Tensor percent_dense_tensor, spatial_lr_scale_tensor, lr_init_tensor,
-      lr_final_tensor, lr_delay_mult_tensor;
+  torch::Tensor percent_dense_tensor, position_lr_init_tensor,
+      position_lr_decay_tensor, position_lr_min_tensor;
 
   config_archive.read("active_sh_degree_", active_sh_degree_tensor);
   config_archive.read("max_sh_degree_", max_sh_degree_tensor);
@@ -1375,33 +1384,27 @@ void GaussianModel::load_checkpoint_incremental(
 
   // Load float values
   config_archive.read("percent_dense_", percent_dense_tensor);
-  config_archive.read("spatial_lr_scale_", spatial_lr_scale_tensor);
-  config_archive.read("lr_init_", lr_init_tensor);
-  config_archive.read("lr_final_", lr_final_tensor);
-  config_archive.read("lr_delay_mult_", lr_delay_mult_tensor);
+  config_archive.read("position_lr_init_", position_lr_init_tensor);
+  config_archive.read("position_lr_decay_", position_lr_decay_tensor);
+  config_archive.read("position_lr_min_", position_lr_min_tensor);
 
   // Convert tensors back to native types
   active_sh_degree_ = active_sh_degree_tensor.item<int>();
   assert(active_sh_degree_ >= 0);
   max_sh_degree_ = max_sh_degree_tensor.item<int>();
   assert(max_sh_degree_ <= 3);
-  lr_delay_steps_ = lr_delay_steps_tensor.item<int>();
-  assert(lr_delay_steps_ >= 0);
-  max_steps_ = max_steps_tensor.item<int>();
-  assert(max_steps_ > 0);
+
   local_iteration_ = local_iteration_tensor.item<int>();
   assert(local_iteration_ >= 0);
 
   percent_dense_ = percent_dense_tensor.item<float>();
   assert(percent_dense_ > 0 && percent_dense_ < 1);
-  spatial_lr_scale_ = spatial_lr_scale_tensor.item<float>();
-  assert(spatial_lr_scale_ > 0);
-  lr_init_ = lr_init_tensor.item<float>();
-  assert(lr_init_ > 0);
-  lr_final_ = lr_final_tensor.item<float>();
-  assert(lr_final_ > 0);
-  lr_delay_mult_ = lr_delay_mult_tensor.item<float>();
-  assert(lr_delay_mult_ > 0);
+  position_lr_init_ = position_lr_init_tensor.item<float>();
+  assert(position_lr_init_ > 0);
+  position_lr_decay_ = position_lr_decay_tensor.item<float>();
+  assert(position_lr_decay_ > 0);
+  position_lr_min_ = position_lr_min_tensor.item<float>();
+  assert(position_lr_min_ > 0);
 
   // std::cout << "lr_init_tensor " << lr_init_tensor << std::endl;
   // std::cout << "lr_init_ " << lr_init_ << std::endl;
@@ -1428,12 +1431,9 @@ void GaussianModel::load_checkpoint_incremental(
 
   // Define default learning rates
   std::vector<float> default_learning_rates = {
-      training_args.position_lr_init_ * spatial_lr_scale_,
-      training_args.feature_lr_,
-      training_args.feature_lr_ / 20.0f,
-      training_args.opacity_lr_,
-      training_args.scaling_lr_,
-      training_args.rotation_lr_};
+      training_args.position_lr_init_,   training_args.feature_lr_,
+      training_args.feature_lr_ / 20.0f, training_args.opacity_lr_,
+      training_args.scaling_lr_,         training_args.rotation_lr_};
 
   if (std::filesystem::exists(path + "/config.pt")) {
     try {
@@ -1803,11 +1803,7 @@ void GaussianModel::initializeFromExistingGaussians(
     torch::Tensor& scaling,
     torch::Tensor& rotation,
     torch::Tensor& exist_since_iter,
-    const float spatial_lr_scale,
     const GaussianOptimizationParams& training_args) {
-  // Set spatial lr scale
-  this->spatial_lr_scale_ = spatial_lr_scale;
-
   // Initialize tensors with explicit cloning to ensure independent storage
   this->xyz_ = points.detach().clone().requires_grad_();
   this->features_dc_ = features_dc.detach().clone().requires_grad_();
@@ -1836,9 +1832,16 @@ void GaussianModel::initializeFromExistingGaussians(
   adam_options.set_lr(0.0);
   adam_options.eps() = 1e-15;
 
+  int num_gaussians = this->getXYZ().size(0);
+
+  // Position learning rates (per-primitive for positions)
+  torch::Tensor position_lrs = torch::full(
+      {num_gaussians}, training_args.position_lr_init_,
+      torch::TensorOptions().dtype(torch::kFloat32).device(device_type_));
+
   this->optimizer_.reset(new SparseGaussianAdam(Tensor_vec_xyz_, adam_options));
   optimizer_->param_groups()[0].options().set_lr(
-      training_args.position_lr_init_ * this->spatial_lr_scale_);
+      training_args.position_lr_init_);
 
   optimizer_->add_param_group(Tensor_vec_feature_dc_);
   optimizer_->param_groups()[1].options().set_lr(training_args.feature_lr_);
@@ -1855,15 +1858,4 @@ void GaussianModel::initializeFromExistingGaussians(
 
   optimizer_->add_param_group(Tensor_vec_rotation_);
   optimizer_->param_groups()[5].options().set_lr(training_args.rotation_lr_);
-
-  // Setup learning rate parameters
-  lr_init_ = training_args.position_lr_init_ * this->spatial_lr_scale_;
-  lr_final_ = training_args.position_lr_final_ * this->spatial_lr_scale_;
-  lr_delay_mult_ = training_args.position_lr_delay_mult_;
-  max_steps_ = training_args.position_lr_max_steps_;
-
-  assert(lr_init_ > 0);
-  assert(lr_final_ > 0);
-  assert(lr_delay_mult_ > 0);
-  assert(max_steps_ > 0);
 }

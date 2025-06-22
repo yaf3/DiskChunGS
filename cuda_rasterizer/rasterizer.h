@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, Inria
+ * Copyright (C) 2023 - 2025, Inria
  * GRAPHDECO research group, https://team.inria.fr/graphdeco
  * All rights reserved.
  *
@@ -9,10 +9,10 @@
  * For inquiries contact  george.drettakis@inria.fr
  */
 
-#pragma once
+#ifndef CUDA_RASTERIZER_H_INCLUDED
+#define CUDA_RASTERIZER_H_INCLUDED
 
 #include <functional>
-#include <tuple>
 #include <vector>
 
 namespace CudaRasterizer {
@@ -50,10 +50,10 @@ class Rasterizer {
       const float tan_fovx,
       float tan_fovy,
       const bool prefiltered,
-      float* out_depth,  // added
       float* out_color,
+      float* invDepth,
+      int* mainGaussID,
       int* radii = nullptr,
-      bool* is_used = nullptr,
       bool debug = false);
 
   static void backward(const int P,
@@ -68,6 +68,7 @@ class Rasterizer {
                        const float* dc,
                        const float* shs,
                        const float* colors_precomp,
+                       const float* opacities,
                        const float* scales,
                        const float scale_modifier,
                        const float* rotations,
@@ -82,19 +83,23 @@ class Rasterizer {
                        char* binning_buffer,
                        char* image_buffer,
                        char* sample_buffer,
-                       const float* dL_dpix_depth,  // added
                        const float* dL_dpix,
+                       const float* dL_invdepths,
                        float* dL_dmean2D,
                        float* dL_dconic,
                        float* dL_dopacity,
-                       float* dL_ddepths,  // added
                        float* dL_dcolor,
+                       float* dL_dinvdepth,
                        float* dL_dmean3D,
                        float* dL_dcov3D,
                        float* dL_ddc,
                        float* dL_dsh,
                        float* dL_dscale,
                        float* dL_drot,
+                       float* dL_dRs,
+                       float* dL_dt,
                        bool debug);
 };
 };  // namespace CudaRasterizer
+
+#endif

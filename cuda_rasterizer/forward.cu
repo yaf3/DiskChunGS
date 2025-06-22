@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, Inria
+ * Copyright (C) 2023 - 2025, Inria
  * GRAPHDECO research group, https://team.inria.fr/graphdeco
  * All rights reserved.
  *
@@ -13,7 +13,6 @@
 #include <cooperative_groups/reduce.h>
 #include <cuda.h>
 
-#include <algorithm>
 #include <cub/cub.cuh>
 
 #include "auxiliary.h"
@@ -78,18 +77,18 @@ __device__ glm::vec3 computeColorFromSH(int idx,
 }
 
 // Forward version of 2D covariance matrix computation
-__device__ cov6 computeCov2D(const float3& mean,
-                             float focal_x,
-                             float focal_y,
-                             float tan_fovx,
-                             float tan_fovy,
-                             const float* cov3D,
-                             const float* viewmatrix) {
+__device__ float3 computeCov2D(const float3& mean,
+                               float focal_x,
+                               float focal_y,
+                               float tan_fovx,
+                               float tan_fovy,
+                               const float* cov3D,
+                               const float* viewmatrix) {
   // The following models the steps outlined by equations 29
   // and 31 in "EWA Splatting" (Zwicker et al., 2002).
   // Additionally considers aspect / scaling of viewport.
   // Transposes used to account for row-/column-major conventions.
-  float3 t = transformPoint4x3(mean, viewmatrix);
+  float3 t = transformPoint4x3(mean, viewmatrix);  // rot
 
   const float limx = 1.3f * tan_fovx;
   const float limy = 1.3f * tan_fovy;
@@ -100,7 +99,7 @@ __device__ cov6 computeCov2D(const float3& mean,
 
   glm::mat3 J =
       glm::mat3(focal_x / t.z, 0.0f, -(focal_x * t.x) / (t.z * t.z), 0.0f,
-                focal_y / t.z, -(focal_y * t.y) / (t.z * t.z), 0, 0, 1);
+                focal_y / t.z, -(focal_y * t.y) / (t.z * t.z), 0, 0, 0);
 
   glm::mat3 W = glm::mat3(viewmatrix[0], viewmatrix[4], viewmatrix[8],
                           viewmatrix[1], viewmatrix[5], viewmatrix[9],
@@ -111,18 +110,9 @@ __device__ cov6 computeCov2D(const float3& mean,
   glm::mat3 Vrk = glm::mat3(cov3D[0], cov3D[1], cov3D[2], cov3D[1], cov3D[3],
                             cov3D[4], cov3D[2], cov3D[4], cov3D[5]);
 
-  // in the paper, formulation is given as: J W SIGMA W^T J^T
-  // but here I should the graphihcs rule... :-(
-  // so I need to compute J^T W^T SIGMA^T W J
+  glm::mat3 cov = glm::transpose(T) * glm::transpose(Vrk) * T;
 
-  glm::mat3 cov = glm::transpose(T) * Vrk * T;
-
-  // Apply low-pass filter: every Gaussian should be at least
-  // one pixel wide/high. Discard 3rd row and column.
-  cov[0][0] += 0.3f;
-  cov[1][1] += 0.3f;
-  return {float(cov[0][0]), float(cov[0][1]), float(cov[0][2]),
-          float(cov[1][1]), float(cov[1][2]), float(cov[2][2])};
+  return {float(cov[0][0]), float(cov[0][1]), float(cov[1][1])};
 }
 
 // Forward method for converting scale and rotation properties of each
@@ -131,40 +121,32 @@ __device__ cov6 computeCov2D(const float3& mean,
 __device__ void computeCov3D(const glm::vec3 scale,
                              float mod,
                              const glm::vec4 rot,
-                             float* cov3D) {
+                             float* cov3D)  // quats mat3
+{
   // Create scaling matrix
   glm::mat3 S = glm::mat3(1.0f);
   S[0][0] = mod * scale.x;
   S[1][1] = mod * scale.y;
   S[2][2] = mod * scale.z;
-  // S[0][0] = 1e-9;
-  // S[1][1] = 1e-9;
-  // S[2][2] = 1e-1;
 
+  // **** // quats
   // Normalize quaternion to get valid rotation
   glm::vec4 q = rot;  // / glm::length(rot);
-  float x = q[0];
-  float y = q[1];
-  float z = q[2];
-  float w = q[3];
+  float r = q.x;
+  float x = q.y;
+  float y = q.z;
+  float z = q.w;
 
   // Compute rotation matrix from quaternion
-  glm::mat3 R = glm::mat3(1.f - 2.f * (y * y + z * z), 2.f * (x * y - w * z),
-                          2.f * (x * z + w * y), 2.f * (x * y + w * z),
-                          1.f - 2.f * (x * x + z * z), 2.f * (y * z - w * x),
-                          2.f * (x * z - w * y), 2.f * (y * z + w * x),
+  glm::mat3 R = glm::mat3(1.f - 2.f * (y * y + z * z), 2.f * (x * y - r * z),
+                          2.f * (x * z + r * y), 2.f * (x * y + r * z),
+                          1.f - 2.f * (x * x + z * z), 2.f * (y * z - r * x),
+                          2.f * (x * z - r * y), 2.f * (y * z + r * x),
                           1.f - 2.f * (x * x + y * y));
-  // R = glm::transpose(R);
+  // **** // quats
+  // glm::mat3 R = rot;
+  // **** // quats
 
-  // in general, cov should be U labmda V^T, U=R
-  // in graphics and glm, column-major order is used
-  // so rotation is represented as column-major order and cov should be:
-  // R_columnmajor^T SS R_columnmajor But our rotation is from 3D real-world
-  // pointcloud space that is, R is represented as row-major order, thus I need
-  // to follow the original definition of COV So cov should be R SS R^T as the
-  // original representation Fortunately, COV is symmetric, which is
-  // columnmajjor representation and rowmajor one are same!
-  //
   glm::mat3 M = S * R;
 
   // Compute 3D world covariance matrix Sigma
@@ -187,7 +169,7 @@ __global__ void preprocessCUDA(int P,
                                const float* orig_points,
                                const glm::vec3* scales,
                                const float scale_modifier,
-                               const glm::vec4* rotations,
+                               const glm::vec4* rotations,  // quats mat3
                                const float* opacities,
                                const float* dc,
                                const float* shs,
@@ -198,7 +180,7 @@ __global__ void preprocessCUDA(int P,
                                const float* projmatrix,
                                const glm::vec3* cam_pos,
                                const int W,
-                               const int H,
+                               int H,
                                const float tan_fovx,
                                float tan_fovy,
                                const float focal_x,
@@ -206,13 +188,13 @@ __global__ void preprocessCUDA(int P,
                                int* radii,
                                float2* points_xy_image,
                                float* depths,
+                               float* dists,
                                float* cov3Ds,
                                float* rgb,
-                               float6* conic_opacity,
+                               float4* conic_opacity,
                                const dim3 grid,
                                uint32_t* tiles_touched,
-                               bool prefiltered,
-                               bool* is_used) {
+                               bool prefiltered) {
   auto idx = cg::this_grid().thread_rank();
   if (idx >= P) return;
 
@@ -222,15 +204,13 @@ __global__ void preprocessCUDA(int P,
   tiles_touched[idx] = 0;
 
   // Perform near culling, quit if outside.
-  float3 p_view;
-  if (!in_frustum(idx, orig_points, viewmatrix, projmatrix, prefiltered,
-                  p_view))
-    return;
-
-  // Transform point by projecting
   float3 p_orig = {orig_points[3 * idx], orig_points[3 * idx + 1],
                    orig_points[3 * idx + 2]};
-  float4 p_hom = transformPoint4x4(p_orig, projmatrix);
+  float3 p_view = transformPoint4x3(p_orig, viewmatrix);
+  if (p_view.z < 1e-3f) return;
+
+  // Transform point by projecting
+  float4 p_hom = transformPoint4x4(p_view, projmatrix);
   float p_w = 1.0f / (p_hom.w + 0.0000001f);
   float3 p_proj = {p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w};
 
@@ -245,20 +225,32 @@ __global__ void preprocessCUDA(int P,
   }
 
   // Compute 2D screen-space covariance matrix
-  cov6 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D,
-                          viewmatrix);
+  float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D,
+                            viewmatrix);
+
+  constexpr float h_var = 0.3f;
+  const float det_cov = cov.x * cov.z - cov.y * cov.y;
+  cov.x += h_var;
+  cov.z += h_var;
+  const float det_cov_plus_h_cov = cov.x * cov.z - cov.y * cov.y;
+
+#ifdef DGR_FIX_AA
+  const float h_convolution_scaling = sqrt(max(
+      0.000025f, det_cov / det_cov_plus_h_cov));  // max for numerical stability
+#endif
 
   // Invert covariance (EWA algorithm)
-  float det = (cov.xx * cov.yy - cov.xy * cov.xy);
+  const float det = det_cov_plus_h_cov;
+
   if (det == 0.0f) return;
   float det_inv = 1.f / det;
-  float3 conic = {cov.yy * det_inv, -cov.xy * det_inv, cov.xx * det_inv};
+  float3 conic = {cov.z * det_inv, -cov.y * det_inv, cov.x * det_inv};
 
   // Compute extent in screen space (by finding eigenvalues of
   // 2D covariance matrix). Use extent to compute a bounding rectangle
   // of screen-space tiles that this Gaussian overlaps with. Quit if
   // rectangle covers 0 tiles.
-  float mid = 0.5f * (cov.xx + cov.yy);
+  float mid = 0.5f * (cov.x + cov.z);
   float lambda1 = mid + sqrt(max(0.1f, mid * mid - det));
   float lambda2 = mid - sqrt(max(0.1f, mid * mid - det));
   float my_radius = ceil(3.f * sqrt(max(lambda1, lambda2)));
@@ -279,13 +271,18 @@ __global__ void preprocessCUDA(int P,
 
   // Store some useful helper data for the next steps.
   depths[idx] = p_view.z;
+  dists[idx] = glm::length(*(glm::vec3*)(&p_view) - *cam_pos);
   radii[idx] = my_radius;
   points_xy_image[idx] = point_image;
+
   // Inverse 2D covariance and opacity neatly pack into one float4
-  conic_opacity[idx] = {conic.x,        conic.y, conic.z,
-                        opacities[idx], cov.zx,  cov.yz};
+#ifdef DGR_FIX_AA
+  conic_opacity[idx] = {conic.x, conic.y, conic.z,
+                        opacities[idx] * h_convolution_scaling};
+#else
+  conic_opacity[idx] = {conic.x, conic.y, conic.z, opacities[idx]};
+#endif
   tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
-  is_used[idx] = tiles_touched[idx] > 0;
 }
 
 // Main rasterization method. Collaboratively works on one tile per
@@ -298,20 +295,21 @@ __global__ void __launch_bounds__(BLOCK_X* BLOCK_Y)
                const uint32_t* __restrict__ per_tile_bucket_offset,
                uint32_t* __restrict__ bucket_to_tile,
                float* __restrict__ sampled_T,
-               float* __restrict__ sampled_ad,
                float* __restrict__ sampled_ar,
+               float* __restrict__ sampled_ard,
                int W,
                int H,
                const float2* __restrict__ points_xy_image,
-               const float* __restrict__ depths,
                const float* __restrict__ features,
-               const float6* __restrict__ conic_opacity,
+               const float4* __restrict__ conic_opacity,
                float* __restrict__ final_T,
                uint32_t* __restrict__ n_contrib,
                uint32_t* __restrict__ max_contrib,
                const float* __restrict__ bg_color,
-               float* __restrict__ out_depth,
-               float* __restrict__ out_color) {
+               float* __restrict__ out_color,
+               const float* __restrict__ depths,
+               float* __restrict__ invdepth,
+               int* __restrict__ mainGaussID) {
   // Identify current tile and associated min/max pixel range.
   auto block = cg::this_thread_block();
   uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
@@ -349,14 +347,18 @@ __global__ void __launch_bounds__(BLOCK_X* BLOCK_Y)
   // Allocate storage for batches of collectively fetched data.
   __shared__ int collected_id[BLOCK_SIZE];
   __shared__ float2 collected_xy[BLOCK_SIZE];
-  __shared__ float6 collected_conic_opacity[BLOCK_SIZE];
+  __shared__ float4 collected_conic_opacity[BLOCK_SIZE];
 
   // Initialize helper variables
   float T = 1.0f;
   uint32_t contributor = 0;
   uint32_t last_contributor = 0;
-  float D = 0;
   float C[CHANNELS] = {0};
+  float expected_invdepth = 0.0f;
+  float best_weight = 0.0f;
+  float second_best_weight = 0.0f;
+  int best_id = -1;
+  int second_best_id = -1;
 
   // Iterate over batches until all done or range is complete
   for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE) {
@@ -379,11 +381,12 @@ __global__ void __launch_bounds__(BLOCK_X* BLOCK_Y)
       // add incoming T value for every 32nd gaussian
       if (j % 32 == 0) {
         sampled_T[(bbm * BLOCK_SIZE) + block.thread_rank()] = T;
-        sampled_ad[(bbm * BLOCK_SIZE) + block.thread_rank()] = D;
         for (int ch = 0; ch < CHANNELS; ++ch) {
           sampled_ar[(bbm * BLOCK_SIZE * CHANNELS) + ch * BLOCK_SIZE +
                      block.thread_rank()] = C[ch];
         }
+        sampled_ard[(bbm * BLOCK_SIZE) + block.thread_rank()] =
+            expected_invdepth;
         ++bbm;
       }
 
@@ -394,7 +397,7 @@ __global__ void __launch_bounds__(BLOCK_X* BLOCK_Y)
       // Splatting" by Zwicker et al., 2001)
       float2 xy = collected_xy[j];
       float2 d = {xy.x - pixf.x, xy.y - pixf.y};
-      float6 con_o = collected_conic_opacity[j];
+      float4 con_o = collected_conic_opacity[j];
       float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) -
                     con_o.y * d.x * d.y;
       if (power > 0.0f) continue;
@@ -411,21 +414,23 @@ __global__ void __launch_bounds__(BLOCK_X* BLOCK_Y)
         continue;
       }
 
-      const float alpha_T = alpha * T;
-      float covzx = con_o.i;
-      float covyz = con_o.j;
-      float depth_conditioned = depths[collected_id[j]] -
-                                (covzx * con_o.x + covyz * con_o.y) * d.x -
-                                (covzx * con_o.y + covyz * con_o.z) * d.y;
-      // float depth_conditioned = depths[collected_id[j]];
-      D += depth_conditioned * alpha_T;
-
-      // accum_prob += alpha_T;
-      // if (j==0) D = depths[collected_id[j]];
+      float weight = alpha * T;
+      if (best_weight < weight) {
+        second_best_weight = best_weight;
+        second_best_id = best_id;
+        best_weight = weight;
+        best_id = collected_id[j];
+        // expected_invdepth = (1.f / depths[collected_id[j]]);
+      } else if (second_best_weight < weight) {
+        second_best_weight = weight;
+        second_best_id = collected_id[j];
+      }
 
       // Eq. (3) from 3D Gaussian splatting paper.
       for (int ch = 0; ch < CHANNELS; ch++)
-        C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha_T;
+        C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+
+      expected_invdepth += (1.f / depths[collected_id[j]]) * alpha * T;
 
       T = test_T;
 
@@ -438,22 +443,20 @@ __global__ void __launch_bounds__(BLOCK_X* BLOCK_Y)
   // All threads that treat valid pixel write out their final
   // rendering data to the frame and auxiliary buffers.
   if (inside) {
+    mainGaussID[pix_id] = best_id;
+    mainGaussID[H * W + pix_id] = second_best_id;
     final_T[pix_id] = T;
     n_contrib[pix_id] = last_contributor;
-    out_depth[pix_id] = (D + T * 15.f);  // / accum_prob;
     for (int ch = 0; ch < CHANNELS; ch++)
       out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
+    invdepth[pix_id] = expected_invdepth;
   }
 
   // max reduce the last contributor
-  typedef cub::BlockReduce<uint32_t, BLOCK_X, cub::BLOCK_REDUCE_WARP_REDUCTIONS,
-                           BLOCK_Y>
-      BlockReduce;
-
+  typedef cub::BlockReduce<uint32_t, BLOCK_SIZE> BlockReduce;
   __shared__ typename BlockReduce::TempStorage temp_storage;
   last_contributor =
       BlockReduce(temp_storage).Reduce(last_contributor, cub::Max());
-
   if (block.thread_rank() == 0) {
     max_contrib[tile_id] = last_contributor;
   }
@@ -466,24 +469,26 @@ void FORWARD::render(const dim3 grid,
                      const uint32_t* per_tile_bucket_offset,
                      uint32_t* bucket_to_tile,
                      float* sampled_T,
-                     float* sampled_ad,
                      float* sampled_ar,
+                     float* sampled_ard,
                      int W,
                      int H,
                      const float2* means2D,
-                     const float* depths,  // added
                      const float* colors,
-                     const float6* conic_opacity,
+                     const float4* conic_opacity,
                      float* final_T,
                      uint32_t* n_contrib,
                      uint32_t* max_contrib,
                      const float* bg_color,
-                     float* out_depth,  // added
-                     float* out_color) {
-  renderCUDA<NUM_CHAFFELS><<<grid, block>>>(
+                     float* out_color,
+                     float* depths,
+                     float* invDepth,
+                     int* mainGaussID) {
+  renderCUDA<NUM_CHANNELS_3DGS><<<grid, block>>>(
       ranges, point_list, per_tile_bucket_offset, bucket_to_tile, sampled_T,
-      sampled_ad, sampled_ar, W, H, means2D, depths, colors, conic_opacity,
-      final_T, n_contrib, max_contrib, bg_color, out_depth, out_color);
+      sampled_ar, sampled_ard, W, H, means2D, colors, conic_opacity, final_T,
+      n_contrib, max_contrib, bg_color, out_color, depths, invDepth,
+      mainGaussID);
 }
 
 void FORWARD::preprocess(int P,
@@ -492,7 +497,7 @@ void FORWARD::preprocess(int P,
                          const float* means3D,
                          const glm::vec3* scales,
                          const float scale_modifier,
-                         const glm::vec4* rotations,
+                         const glm::vec4* rotations,  // quats mat3
                          const float* opacities,
                          const float* dc,
                          const float* shs,
@@ -511,19 +516,16 @@ void FORWARD::preprocess(int P,
                          int* radii,
                          float2* means2D,
                          float* depths,
+                         float* dists,
                          float* cov3Ds,
                          float* rgb,
-                         float6* conic_opacity,
+                         float4* conic_opacity,
                          const dim3 grid,
                          uint32_t* tiles_touched,
-                         bool prefiltered,
-                         bool* is_used)  // added
-{
-  preprocessCUDA<NUM_CHAFFELS><<<(P + 255) / 256, 256>>>(
+                         bool prefiltered) {
+  preprocessCUDA<NUM_CHANNELS_3DGS><<<(P + 255) / 256, 256>>>(
       P, D, M, means3D, scales, scale_modifier, rotations, opacities, dc, shs,
       clamped, cov3D_precomp, colors_precomp, viewmatrix, projmatrix, cam_pos,
-      W, H, tan_fovx, tan_fovy, focal_x, focal_y, radii, means2D, depths,
-      cov3Ds, rgb, conic_opacity, grid, tiles_touched, prefiltered,
-      is_used  // added
-  );
+      W, H, tan_fovx, tan_fovy, focal_x, focal_y, radii, means2D, depths, dists,
+      cov3Ds, rgb, conic_opacity, grid, tiles_touched, prefiltered);
 }

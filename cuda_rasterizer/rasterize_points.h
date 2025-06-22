@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, Inria
+ * Copyright (C) 2023 - 2025, Inria
  * GRAPHDECO research group, https://team.inria.fr/graphdeco
  * All rights reserved.
  *
@@ -10,11 +10,11 @@
  */
 
 #pragma once
+#include <torch/torch.h>
 
-#include <cuda_runtime_api.h>
-
-#include <iostream>
-#include <vector>
+#include <cstdio>
+#include <string>
+#include <tuple>
 
 std::tuple<int,
            int,
@@ -55,11 +55,13 @@ std::tuple<torch::Tensor,
            torch::Tensor,
            torch::Tensor,
            torch::Tensor,
+           torch::Tensor,
            torch::Tensor>
 RasterizeGaussiansBackwardCUDA(const torch::Tensor& background,
                                const torch::Tensor& means3D,
                                const torch::Tensor& radii,
                                const torch::Tensor& colors,
+                               const torch::Tensor& opacities,
                                const torch::Tensor& scales,
                                const torch::Tensor& rotations,
                                const float scale_modifier,
@@ -68,10 +70,10 @@ RasterizeGaussiansBackwardCUDA(const torch::Tensor& background,
                                const torch::Tensor& projmatrix,
                                const float tan_fovx,
                                const float tan_fovy,
-                               const torch::Tensor& dL_dout_depth,  // added
                                const torch::Tensor& dL_dout_color,
                                const torch::Tensor& dc,
                                const torch::Tensor& sh,
+                               const torch::Tensor& dL_dout_invdepth,
                                const int degree,
                                const torch::Tensor& campos,
                                const torch::Tensor& geomBuffer,
@@ -91,25 +93,18 @@ void adamUpdate(torch::Tensor& param,
                 torch::Tensor& exp_avg,
                 torch::Tensor& exp_avg_sq,
                 torch::Tensor& visible,
-                const float lr,
+                torch::Tensor& lr,
                 const float b1,
                 const float b2,
                 const float eps,
                 const uint32_t N,
                 const uint32_t M);
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
-fusedssim(float C1,
-          float C2,
-          torch::Tensor& img1,
-          torch::Tensor& img2,
-          bool train);
-
-torch::Tensor fusedssim_backward(float C1,
-                                 float C2,
-                                 torch::Tensor& img1,
-                                 torch::Tensor& img2,
-                                 torch::Tensor& dL_dmap,
-                                 torch::Tensor& dm_dmu1,
-                                 torch::Tensor& dm_dsigma1_sq,
-                                 torch::Tensor& dm_dsigma12);
+void adamUpdateBasic(torch::Tensor& param,
+                     torch::Tensor& param_grad,
+                     torch::Tensor& exp_avg,
+                     torch::Tensor& exp_avg_sq,
+                     const float lr,
+                     const float b1,
+                     const float b2,
+                     const float eps);

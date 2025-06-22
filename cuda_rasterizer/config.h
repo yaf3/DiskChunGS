@@ -9,8 +9,13 @@
  * For inquiries contact  george.drettakis@inria.fr
  */
 
-#pragma once
+#ifndef CUDA_RASTERIZER_CONFIG_H_INCLUDED
+#define CUDA_RASTERIZER_CONFIG_H_INCLUDED
 
-#define NUM_CHAFFELS 3  // Default 3, RGB
+#define NUM_CHANNELS_3DGS 3  // Default 3, RGB
 #define BLOCK_X 16
 #define BLOCK_Y 16
+
+#define DGR_FIX_AA
+
+#endif

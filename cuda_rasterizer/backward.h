@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, Inria
+ * Copyright (C) 2023 - 2025, Inria
  * GRAPHDECO research group, https://team.inria.fr/graphdeco
  * All rights reserved.
  *
@@ -9,7 +9,8 @@
  * For inquiries contact  george.drettakis@inria.fr
  */
 
-#pragma once
+#ifndef CUDA_RASTERIZER_BACKWARD_H_INCLUDED
+#define CUDA_RASTERIZER_BACKWARD_H_INCLUDED
 
 #include <cuda.h>
 
@@ -17,8 +18,6 @@
 #include "device_launch_parameters.h"
 #define GLM_FORCE_CUDA
 #include <glm/glm.hpp>
-
-#include "forward.h"
 
 namespace BACKWARD {
 void render(const dim3 grid,
@@ -32,25 +31,25 @@ void render(const dim3 grid,
             const uint32_t* per_bucket_tile_offset,
             const uint32_t* bucket_to_tile,
             const float* sampled_T,
-            const float* sampled_ad,
             const float* sampled_ar,
+            const float* sampled_ard,
             const float* bg_color,
             const float2* means2D,
-            const float6* conic_opacity,
-            const float* depth,  // added
+            const float4* conic_opacity,
             const float* colors,
+            const float* depths,
             const float* final_Ts,
             const uint32_t* n_contrib,
             const uint32_t* max_contrib,
-            const float* pixel_depths,
             const float* pixel_colors,
-            const float* dL_dpixels_depth,  // added
+            const float* pixel_indepths,
             const float* dL_dpixels,
+            const float* dL_invdepths,
             float3* dL_dmean2D,
-            float6* dL_dconic2D,
+            float4* dL_dconic2D,
             float* dL_dopacity,
-            float* dL_ddepths,  // added
-            float* dL_dcolors);
+            float* dL_dcolors,
+            float* dL_dinvdepths);
 
 void preprocess(int P,
                 int D,
@@ -60,8 +59,9 @@ void preprocess(int P,
                 const float* dc,
                 const float* shs,
                 const bool* clamped,
+                const float* opacities,
                 const glm::vec3* scales,
-                const glm::vec4* rotations,
+                const glm::vec4* rotations,  // quats mat3
                 const float scale_modifier,
                 const float* cov3Ds,
                 const float* view,
@@ -72,13 +72,18 @@ void preprocess(int P,
                 float tan_fovy,
                 const glm::vec3* campos,
                 const float3* dL_dmean2D,
-                const float6* dL_dconics,
+                const float* dL_dconics,
+                const float* dL_dinvdepth,
+                float* dL_dopacity,
                 glm::vec3* dL_dmeans,
-                float* dL_ddepth,  // added
                 float* dL_dcolor,
                 float* dL_dcov3D,
                 float* dL_ddc,
                 float* dL_dsh,
                 glm::vec3* dL_dscale,
-                glm::vec4* dL_drot);
+                glm::vec4* dL_drot,
+                glm::mat3* dL_dRs,
+                glm::vec3* dL_dt);
 }  // namespace BACKWARD
+
+#endif

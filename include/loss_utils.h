@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "cuda_rasterizer/rasterize_points.h"
+#include "cuda_rasterizer/ssim.h"
 
 namespace loss_utils {
 
@@ -201,6 +202,15 @@ inline torch::Tensor ssim(torch::Tensor &img1,
   return _ssim(img1, img2, window, window_size, channel, size_average);
 }
 
+// Define allowed padding types
+enum class PaddingType { Same, Valid };
+
+inline PaddingType parse_padding(const std::string &padding) {
+  if (padding == "same") return PaddingType::Same;
+  if (padding == "valid") return PaddingType::Valid;
+  throw std::invalid_argument("Padding must be 'same' or 'valid'");
+}
+
 class FusedSSIMMap : public torch::autograd::Function<FusedSSIMMap> {
  public:
   static torch::autograd::tensor_list forward(
@@ -209,20 +219,34 @@ class FusedSSIMMap : public torch::autograd::Function<FusedSSIMMap> {
       const float C2,
       torch::Tensor &img1,
       torch::Tensor &img2,
+      const std::string &padding = "same",
       bool train = true) {
+    // Parse padding type
+    auto padding_type = parse_padding(padding);
+
     // The new function returns four tensors instead of one
     auto result = fusedssim(C1, C2, img1, img2, train);
     auto ssim_map = std::get<0>(result);
+
+    // Apply valid padding if specified
+    if (padding_type == PaddingType::Valid) {
+      // Extract center region (equivalent to [:, :, 5:-5, 5:-5])
+      auto sizes = ssim_map.sizes();
+      ssim_map = ssim_map.slice(2, 5, sizes[2] - 5).slice(3, 5, sizes[3] - 5);
+    }
 
     // Save gradients for backward pass
     auto dm_dmu1 = std::get<1>(result);
     auto dm_dsigma1_sq = std::get<2>(result);
     auto dm_dsigma12 = std::get<3>(result);
 
-    ctx->save_for_backward({img1, img2, dm_dmu1, dm_dsigma1_sq, dm_dsigma12});
+    // Save detached img1 (matching Python's img1.detach())
+    ctx->save_for_backward(
+        {img1.detach(), img2, dm_dmu1, dm_dsigma1_sq, dm_dsigma12});
 
     ctx->saved_data["C1"] = C1;
     ctx->saved_data["C2"] = C2;
+    ctx->saved_data["padding_type"] = static_cast<int>(padding_type);
     ctx->saved_data["train"] = train;
 
     return {ssim_map};
@@ -234,43 +258,76 @@ class FusedSSIMMap : public torch::autograd::Function<FusedSSIMMap> {
     auto saved = ctx->get_saved_variables();
     auto img1 = saved[0];
     auto img2 = saved[1];
-    auto C1 = static_cast<float>(ctx->saved_data["C1"].toDouble());
-    auto C2 = static_cast<float>(ctx->saved_data["C2"].toDouble());
-    auto train = ctx->saved_data["train"].toBool();
-
-    torch::Tensor grad;
     auto dm_dmu1 = saved[2];
     auto dm_dsigma1_sq = saved[3];
     auto dm_dsigma12 = saved[4];
 
-    grad = fusedssim_backward(C1, C2, img1, img2, grad_outputs[0], dm_dmu1,
-                              dm_dsigma1_sq, dm_dsigma12);
+    auto C1 = static_cast<float>(ctx->saved_data["C1"].toDouble());
+    auto C2 = static_cast<float>(ctx->saved_data["C2"].toDouble());
+    auto padding_type =
+        static_cast<PaddingType>(ctx->saved_data["padding_type"].toInt());
+    auto train = ctx->saved_data["train"].toBool();
 
-    // Return gradients for C1, C2, img1, img2, train
-    return {torch::Tensor(), torch::Tensor(), grad, torch::Tensor(),
-            torch::Tensor()};
+    auto dL_dmap = grad_outputs[0];
+
+    // Handle valid padding in backward pass
+    if (padding_type == PaddingType::Valid) {
+      // Create zeros_like tensor and fill center region
+      auto full_grad = torch::zeros_like(img1);
+      auto sizes = full_grad.sizes();
+      full_grad.slice(2, 5, sizes[2] - 5)
+          .slice(3, 5, sizes[3] - 5)
+          .copy_(dL_dmap);
+      dL_dmap = full_grad;
+    }
+
+    auto grad = fusedssim_backward(C1, C2, img1, img2, dL_dmap, dm_dmu1,
+                                   dm_dsigma1_sq, dm_dsigma12);
+
+    // Return gradients for C1, C2, img1, img2, padding, train
+    return {torch::Tensor(), torch::Tensor(), grad,
+            torch::Tensor(), torch::Tensor(), torch::Tensor()};
   }
 };
 
+inline torch::Tensor fused_ssim(const torch::Tensor &img1,
+                                const torch::Tensor &img2,
+                                const std::string &padding = "same",
+                                bool train = true) {
+  // Validate padding
+  auto padding_type = parse_padding(padding);
+
+  const float C1 = 0.01f * 0.01f;
+  const float C2 = 0.03f * 0.03f;
+
+  // Ensure tensors are contiguous (matching Python's img1.contiguous())
+  torch::Tensor img1_contiguous = img1.contiguous();
+  torch::Tensor img2_contiguous = img2.contiguous();
+
+  // The new implementation expects 4D tensors [B, C, H, W]
+  // Check if we need to add batch dimension
+  torch::Tensor img1_4d = img1_contiguous;
+  torch::Tensor img2_4d = img2_contiguous;
+
+  if (img1_contiguous.dim() == 3) {
+    img1_4d = img1_contiguous.unsqueeze(0);
+    img2_4d = img2_contiguous.unsqueeze(0);
+  }
+
+  auto ssim_map =
+      FusedSSIMMap::apply(C1, C2, img1_4d, img2_4d, padding, train)[0];
+
+  // Return mean of the map
+  return ssim_map.mean();
+}
+
+// Keep the old fast_ssim function for backward compatibility
 inline torch::Tensor fast_ssim(const torch::Tensor &img1,
                                const torch::Tensor &img2,
                                const float C1 = 0.01 * 0.01,
                                const float C2 = 0.03 * 0.03,
                                bool train = true) {
-  // The new implementation expects 4D tensors [B, C, H, W]
-  // Check if we need to add batch dimension
-  torch::Tensor img1_4d = img1;
-  torch::Tensor img2_4d = img2;
-
-  if (img1.dim() == 3) {
-    img1_4d = img1.unsqueeze(0);
-    img2_4d = img2.unsqueeze(0);
-  }
-
-  auto ssim_map = FusedSSIMMap::apply(C1, C2, img1_4d, img2_4d, train)[0];
-
-  // Take mean across all dimensions except batch
-  return ssim_map.mean({1, 2, 3});
+  return fused_ssim(img1, img2, "same", train);
 }
 
 }  // namespace loss_utils

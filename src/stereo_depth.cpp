@@ -281,8 +281,8 @@ cv::Mat StereoDepth::estimate_depth(const cv::Mat& left_img,
       end_prep - start_prep);
   auto inf_time = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_inf - start_inf);
-  std::cout << "Preprocessing: " << prep_time.count()
-            << "ms, Inference: " << inf_time.count() << "ms" << std::endl;
+  // std::cout << "Preprocessing: " << prep_time.count()
+  //           << "ms, Inference: " << inf_time.count() << "ms" << std::endl;
 
   return raw_disparity;
 }

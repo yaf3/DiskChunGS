@@ -97,24 +97,24 @@ bool test_AABB_against_frustum_eigen(const Eigen::Matrix4f& MVP,
 // Get chunk coordinate from 3D position
 ChunkCoord ChunkManager::getChunkCoord(const Eigen::Vector3f& position) {
   float half_chunk = chunk_size_ * 0.5f;
-  return ChunkCoord{
-      static_cast<int64_t>(std::floor((position.x() + half_chunk) / chunk_size_)),
-      static_cast<int64_t>(std::floor((position.y() + half_chunk) / chunk_size_)),
-      static_cast<int64_t>(std::floor((position.z() + half_chunk) / chunk_size_))};
+  return ChunkCoord{static_cast<int64_t>(
+                        std::floor((position.x() + half_chunk) / chunk_size_)),
+                    static_cast<int64_t>(
+                        std::floor((position.y() + half_chunk) / chunk_size_)),
+                    static_cast<int64_t>(
+                        std::floor((position.z() + half_chunk) / chunk_size_))};
 }
 
 // Get chunk center
 Eigen::Vector3f ChunkManager::getChunkCenter(const ChunkCoord& coord) {
-  return Eigen::Vector3f(coord.x * chunk_size_,
-                         coord.y * chunk_size_,
+  return Eigen::Vector3f(coord.x * chunk_size_, coord.y * chunk_size_,
                          coord.z * chunk_size_);
 }
 
 // Calculate AABB for a chunk
 AABB ChunkManager::getChunkAABB(const ChunkCoord& coord) {
   float half_chunk = chunk_size_ * 0.5f;
-  Eigen::Vector3f center(coord.x * chunk_size_, 
-                         coord.y * chunk_size_,
+  Eigen::Vector3f center(coord.x * chunk_size_, coord.y * chunk_size_,
                          coord.z * chunk_size_);
   Eigen::Vector3f min_corner = center - Eigen::Vector3f::Constant(half_chunk);
   Eigen::Vector3f max_corner = center + Eigen::Vector3f::Constant(half_chunk);
@@ -1446,8 +1446,7 @@ void ChunkManager::addPointsToChunks(
     const torch::Tensor& points,
     const torch::Tensor& colors,
     const torch::Tensor& scales,
-    std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> keyframes,
-    float cameras_extent) {
+    std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> keyframes) {
   auto start_time = std::chrono::steady_clock::now();
   torch::NoGradGuard no_grad;
   const int min_new_points_threshold = 10;
@@ -1584,10 +1583,10 @@ void ChunkManager::addPointsToChunks(
       // Initialize the Gaussian model
       if (chunk_scales.defined() && chunk_scales.size(0) > 0) {
         chunk->getGaussians()->createFromPcd(chunk_points, chunk_colors,
-                                             chunk_scales, cameras_extent);
+                                             chunk_scales);
       } else {
         chunk->getGaussians()->createFromPcd(chunk_points, chunk_colors,
-                                             torch::Tensor(), cameras_extent);
+                                             torch::Tensor());
       }
       chunk->getGaussians()->trainingSetup(opt_params_);
     }
@@ -1864,7 +1863,7 @@ std::vector<ChunkCoord> ChunkManager::getExistingChunkCoords() {
   return result;
 }
 
-void ChunkManager::transferGaussiansAcrossChunks(float spatial_lr_scale) {
+void ChunkManager::transferGaussiansAcrossChunks() {
   std::cout << "Called transferGaussiansAcrossChunks" << std::endl;
   torch::NoGradGuard no_grad;
 
@@ -2123,8 +2122,7 @@ void ChunkManager::transferGaussiansAcrossChunks(float spatial_lr_scale) {
         // Initialize directly with the existing gaussians
         dest_chunk->getGaussians()->initializeFromExistingGaussians(
             all_points, all_features_dc, all_features_rest, all_opacities,
-            all_scaling, all_rotation, all_exist_since, spatial_lr_scale,
-            opt_params_);
+            all_scaling, all_rotation, all_exist_since, opt_params_);
       }
     } catch (const std::exception& e) {
       std::cerr << "Error applying transfer data: " << e.what() << std::endl;

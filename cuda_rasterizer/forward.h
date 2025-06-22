@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, Inria
+ * Copyright (C) 2023 - 2025, Inria
  * GRAPHDECO research group, https://team.inria.fr/graphdeco
  * All rights reserved.
  *
@@ -9,7 +9,8 @@
  * For inquiries contact  george.drettakis@inria.fr
  */
 
-#pragma once
+#ifndef CUDA_RASTERIZER_FORWARD_H_INCLUDED
+#define CUDA_RASTERIZER_FORWARD_H_INCLUDED
 
 #include <cuda.h>
 
@@ -19,24 +20,6 @@
 #include <functional>
 #include <glm/glm.hpp>
 
-struct cov6 {
-  float xx;
-  float xy;
-  float zx;
-  float yy;
-  float yz;
-  float zz;
-};
-
-struct float6 {
-  float x;
-  float y;
-  float z;
-  float w;
-  float i;
-  float j;
-};
-
 namespace FORWARD {
 // Perform initial steps for each Gaussian prior to rasterization.
 void preprocess(int P,
@@ -45,7 +28,7 @@ void preprocess(int P,
                 const float* orig_points,
                 const glm::vec3* scales,
                 const float scale_modifier,
-                const glm::vec4* rotations,
+                const glm::vec4* rotations,  // quats mat3
                 const float* opacities,
                 const float* dc,
                 const float* shs,
@@ -63,14 +46,14 @@ void preprocess(int P,
                 float tan_fovy,
                 int* radii,
                 float2* points_xy_image,
-                float* depths,  // added
+                float* depths,
+                float* dists,
                 float* cov3Ds,
                 float* colors,
-                float6* conic_opacity,
+                float4* conic_opacity,
                 const dim3 grid,
                 uint32_t* tiles_touched,
-                bool prefiltered,
-                bool* is_used);  // added
+                bool prefiltered);
 
 // Main rasterization method.
 void render(const dim3 grid,
@@ -80,18 +63,21 @@ void render(const dim3 grid,
             const uint32_t* per_tile_bucket_offset,
             uint32_t* bucket_to_tile,
             float* sampled_T,
-            float* sampled_ad,
             float* sampled_ar,
+            float* sampled_ard,
             int W,
             int H,
             const float2* points_xy_image,
-            const float* depths,  // added
             const float* features,
-            const float6* conic_opacity,
+            const float4* conic_opacity,
             float* final_T,
             uint32_t* n_contrib,
             uint32_t* max_contrib,
             const float* bg_color,
-            float* out_depth,  // added
-            float* out_color);
+            float* out_color,
+            float* depths,
+            float* invDepth,
+            int* mainGaussID);
 }  // namespace FORWARD
+
+#endif
