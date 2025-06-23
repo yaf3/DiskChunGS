@@ -45,6 +45,5 @@ class GaussianRenderer {
          float FoVx,
          float FoVy,
          torch::Tensor& world_view_transform,
-         torch::Tensor& full_proj_transform,
-         torch::Tensor& camera_center);
+         torch::Tensor& projection_matrix);
 };

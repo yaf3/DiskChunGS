@@ -180,13 +180,6 @@ class ChunkManager {
       const torch::Tensor& scales,
       std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> keyframes);
 
-  // Moved filterPointsByDepth from GaussianMapper to ChunkManager
-  std::tuple<torch::Tensor, torch::Tensor> filterPointsByDepth(
-      const torch::Tensor& points,
-      const torch::Tensor& colors,
-      const std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>&
-          keyframes);
-
   // Get chunk at specific coordinate
   std::shared_ptr<Chunk> getChunkAt(const ChunkCoord& coord);
 

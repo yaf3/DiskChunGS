@@ -599,6 +599,9 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       settings_file["Optimization.scaling_lr"].operator float();
   opt_params_.rotation_lr_ =
       settings_file["Optimization.rotation_lr"].operator float();
+  opt_params_.pose_lr_ = settings_file["Optimization.pose_lr"].operator float();
+  opt_params_.exposure_lr_ =
+      settings_file["Optimization.exposure_lr"].operator float();
   opt_params_.smooth_l1_ =
       (settings_file["Optimization.smooth_l1"].operator int()) != 0;
   opt_params_.opacity_reg_ =
@@ -715,6 +718,8 @@ void GaussianMapper::run() {
           }
           new_kf->computeTransformTensors();
           scene_->addKeyframe(new_kf);
+          new_kf->initOptimizer(device_type_, opt_params_.pose_lr_,
+                                opt_params_.exposure_lr_);
           kfid_shuffled_ = false;
           keyframe_queue_->notifyNewKeyframeAdded(new_kf);
 
@@ -1213,12 +1218,14 @@ void GaussianMapper::trainForOneIteration() {
   // torch::Tensor identity_view_matrix = torch::eye(
   //     4, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
   // Render
+
+  torch::Tensor view_matrix = viewpoint_cam->getRT().transpose(0, 1);
+
   auto timer_render = ProfilingUtils::Timer("render");
   auto render_pkg = GaussianRenderer::render(
       models, viewpoint_cam, image_height, image_width, pipe_params_,
       background_, override_color_, 1.0f, false, viewpoint_cam->FoVx_,
-      viewpoint_cam->FoVy_, viewpoint_cam->world_view_transform_,
-      viewpoint_cam->projection_matrix_, viewpoint_cam->camera_center_);
+      viewpoint_cam->FoVy_, view_matrix, viewpoint_cam->projection_matrix_);
 
   timer_render.stop();
   auto rendered_image = std::get<1>(render_pkg);
@@ -1269,67 +1276,6 @@ void GaussianMapper::trainForOneIteration() {
   // std::cout << "Lssim: " << Lssim.item<float>() << std::endl;
   // std::cout << "Ll1_depth: " << Ll1_depth.item<float>() << std::endl;
 
-  if (do_stereo_loss_ && this->sensor_type_ == STEREO &&
-      viewpoint_cam->is_stereo_) {
-    // Get precomputed right image
-    torch::Tensor gt_image_right;
-    if (training_level == num_gaus_pyramid_sub_levels_) {
-      gt_image_right = viewpoint_cam->right_original_image_.cuda();
-    } else {
-      // Use the matching pyramid level for right image
-      gt_image_right =
-          viewpoint_cam->gaus_pyramid_right_original_image_[training_level]
-              .cuda();
-    }
-
-    // std::cout << "Image size: " << image_height << " " << image_width
-    //           << std::endl;
-
-    // Render using the right camera transformation
-    auto timer_render = ProfilingUtils::Timer("render");
-    auto render_pkg_right = GaussianRenderer::render(
-        models,
-        viewpoint_cam,  // Still use the same keyframe object
-        image_height, image_width, pipe_params_, background_, override_color_,
-        1.0f,   // scaling_modifier
-        false,  // use_override_color
-        viewpoint_cam->FoVx_, viewpoint_cam->FoVy_,
-        viewpoint_cam->world_view_transform_right_,  // Pass right transforms
-        viewpoint_cam->projection_matrix_, viewpoint_cam->camera_center_right_);
-
-    auto rendered_depth_right = std::get<0>(render_pkg_right);
-    auto rendered_image_right = std::get<1>(render_pkg_right);
-
-    // {
-    //   // Save PyTorch tensor image
-    //   torch::Tensor cpu_tensor = rendered_image_right.cpu().clone();
-    //   if (cpu_tensor.dim() == 3 && cpu_tensor.size(0) == 3) {
-    //     cpu_tensor = cpu_tensor.permute({1, 2, 0}).contiguous();
-    //   }
-    //   cv::Mat tensor_img(cpu_tensor.size(0), cpu_tensor.size(1), CV_32FC3);
-    //   std::memcpy(tensor_img.data, cpu_tensor.data_ptr<float>(),
-    //               sizeof(float) * tensor_img.rows * tensor_img.cols * 3);
-
-    //   tensor_img.convertTo(tensor_img, CV_8UC3, 255.0);
-    //   cv::cvtColor(tensor_img, tensor_img, cv::COLOR_RGB2BGR);
-    //   cv::imwrite("/workspaces/large_scale_gaussian_slam/debug_image_right.png",
-    //               tensor_img);
-    //   std::cout << "Saved tensor image to "
-    //                "/workspaces/large_scale_gaussian_slam/debug_image_right.png"
-    //             << std::endl;
-    // }
-
-    // Calculate loss for right frame
-    auto Ll1_right = l1_loss(rendered_image_right, gt_image_right, 1.0f);
-    auto Lssim_right =
-        loss_utils::fast_ssim(rendered_image_right, gt_image_right);
-    auto loss_right =
-        (1.0 - lambda_dssim) * Ll1_right + lambda_dssim * (1.0 - Lssim_right);
-
-    // Add right frame loss to total loss
-    loss += loss_right;
-  }
-
   if (opt_params_.opacity_reg_) {
     for (const auto& gaussians : models) {
       loss += opt_params_.opacity_reg_ *
@@ -1366,53 +1312,64 @@ void GaussianMapper::trainForOneIteration() {
   loss.backward();
   timer_backwards.stop();
 
-  if (viewpoint_cam->has_appearance_params_) {
-    viewpoint_cam->stepAppearanceOptimizer();  // Uses local counter
-  }
+  // Debug: Show pose optimization status
+  // if (getIteration() % 100 == 0) {
+  //   std::cout << "=== Training Iteration " << getIteration()
+  //             << " ===" << std::endl;
+  //   std::cout << "Keyframe ID: " << viewpoint_cam->fid_ << std::endl;
+  //   std::cout << "Loss before step: " << loss.item<float>() << std::endl;
+  // }
 
-  if (viewpoint_cam->has_appearance_params_) {
-    if (getIteration() % 100 == 0) {
-      auto transform = viewpoint_cam->appearance_transform_.detach().cpu();
+  auto timer_pose_exposure_step = ProfilingUtils::Timer("pose&exposure_step");
+  viewpoint_cam->step();
+  timer_pose_exposure_step.stop();
+  // if (true) {
+  //   if (getIteration() % 100 == 0) {
+  //     auto transform = viewpoint_cam->exposure_transform_.detach().cpu();
 
-      // Extract the 3x3 scaling/rotation part and bias part
-      auto scale_rot = transform.slice(1, 0, 3);        // First 3 columns (3x3)
-      auto bias = transform.slice(1, 3, 4).squeeze(1);  // Last column (3x1)
+  //     // Extract the 3x3 scaling/rotation part and bias part
+  //     auto scale_rot = transform.slice(1, 0, 3);        // First 3 columns
+  //     (3x3) auto bias = transform.slice(1, 3, 4).squeeze(1);  // Last column
+  //     (3x1)
 
-      std::cout << "Keyframe " << viewpoint_cam->fid_ << " appearance at iter "
-                << getIteration() << std::endl;
+  //     std::cout << "Keyframe " << viewpoint_cam->fid_ << " appearance at iter
+  //     "
+  //               << getIteration() << std::endl;
 
-      // Print the full 3x4 matrix for complete visibility
-      std::cout << "  Transform matrix (3x4):" << std::endl;
-      for (int i = 0; i < 3; i++) {
-        std::cout << "    [";
-        for (int j = 0; j < 4; j++) {
-          std::cout << std::setprecision(4) << std::fixed
-                    << transform[i][j].item<float>();
-          if (j < 3) std::cout << ", ";
-        }
-        std::cout << "]" << std::endl;
-      }
+  //     // Print the full 3x4 matrix for complete visibility
+  //     std::cout << "  Transform matrix (3x4):" << std::endl;
+  //     for (int i = 0; i < 3; i++) {
+  //       std::cout << "    [";
+  //       for (int j = 0; j < 4; j++) {
+  //         std::cout << std::setprecision(4) << std::fixed
+  //                   << transform[i][j].item<float>();
+  //         if (j < 3) std::cout << ", ";
+  //       }
+  //       std::cout << "]" << std::endl;
+  //     }
 
-      // Also show diagonal values (main scaling factors) and bias for quick
-      // reference
-      std::cout << "  Diagonal scaling: [" << std::setprecision(4) << std::fixed
-                << scale_rot[0][0].item<float>() << ", "
-                << scale_rot[1][1].item<float>() << ", "
-                << scale_rot[2][2].item<float>() << "]" << std::endl;
-      std::cout << "  Bias: [" << bias[0].item<float>() << ", "
-                << bias[1].item<float>() << ", " << bias[2].item<float>() << "]"
-                << std::endl;
+  //     // Also show diagonal values (main scaling factors) and bias for quick
+  //     // reference
+  //     std::cout << "  Diagonal scaling: [" << std::setprecision(4) <<
+  //     std::fixed
+  //               << scale_rot[0][0].item<float>() << ", "
+  //               << scale_rot[1][1].item<float>() << ", "
+  //               << scale_rot[2][2].item<float>() << "]" << std::endl;
+  //     std::cout << "  Bias: [" << bias[0].item<float>() << ", "
+  //               << bias[1].item<float>() << ", " << bias[2].item<float>() <<
+  //               "]"
+  //               << std::endl;
 
-      // Compute and display the magnitude of change from identity
-      auto identity_3x4 = torch::zeros_like(transform);
-      identity_3x4.slice(1, 0, 3) = torch::eye(3);
-      auto deviation = torch::norm(transform - identity_3x4).item<float>();
-      std::cout << "  Deviation from identity: " << std::setprecision(6)
-                << deviation << std::endl;
+  //     // Compute and display the magnitude of change from identity
+  //     auto identity_3x4 = torch::zeros_like(transform);
+  //     identity_3x4.slice(1, 0, 3) = torch::eye(3);
+  //     auto deviation = torch::norm(transform - identity_3x4).item<float>();
+  //     std::cout << "  Deviation from identity: " << std::setprecision(6)
+  //               << deviation << std::endl;
 
-      std::cout << std::endl;
-    }
-  }
+  //     std::cout << std::endl;
+  //   }
+  // }
 
   auto timer_cuda_sync = ProfilingUtils::Timer("cuda_sync");
   torch::cuda::synchronize();
@@ -2099,9 +2056,8 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   // if (isdoingInactiveGeoDensify())
   // increasePcdByKeyframeInactiveGeoDensify(pkf);
 
-  if (appearance_embedding_) {
-    pkf->initAppearanceParams(device_type_, 5e-2f);  // Match Python LR
-  }
+  pkf->initOptimizer(device_type_, opt_params_.pose_lr_,
+                     opt_params_.exposure_lr_);
 
   // Prepare multi resolution images for training
   if (device_type_ == torch::kCUDA) {
@@ -2612,11 +2568,11 @@ void GaussianMapper::increasePcdByDepthReconstruction(
           }
 
           if (!models.empty()) {
+            torch::Tensor view_matrix = pkf->getRT().transpose(0, 1);
             auto render_pkg = GaussianRenderer::render(
                 models, pkf, pkf->image_height_, pkf->image_width_,
                 pipe_params_, background_, override_color_, 1.0f, false,
-                pkf->FoVx_, pkf->FoVy_, pkf->world_view_transform_,
-                pkf->projection_matrix_, pkf->camera_center_);
+                pkf->FoVx_, pkf->FoVy_, view_matrix, pkf->projection_matrix_);
 
             torch::Tensor rendered_image = std::get<1>(render_pkg);
             std::string rgb_render_filename = "./debug_prob/rendered_rgb.png";
@@ -2786,11 +2742,11 @@ void GaussianMapper::increasePcdByDepthReconstruction(
           }
 
           if (!models.empty()) {
+            torch::Tensor view_matrix = pkf->getRT().transpose(0, 1);
             auto render_pkg = GaussianRenderer::render(
                 models, pkf, pkf->image_height_, pkf->image_width_,
                 pipe_params_, background_, override_color_, 1.0f, false,
-                pkf->FoVx_, pkf->FoVy_, pkf->world_view_transform_,
-                pkf->projection_matrix_, pkf->camera_center_);
+                pkf->FoVx_, pkf->FoVy_, view_matrix, pkf->projection_matrix_);
 
             torch::Tensor rendered_image = std::get<1>(render_pkg);
             prob_penalty = computeLoGProbability(rendered_image);
@@ -2965,6 +2921,7 @@ std::tuple<cv::Mat, cv::Mat> GaussianMapper::renderFromPose(
     const int width,
     const int height,
     const bool main_vision) {
+  torch::NoGradGuard no_grad;
   if (!initial_mapped_ || getIteration() <= 0) {
     cv::Mat empty_rgb(height, width, CV_32FC3, cv::Vec3f(0.0f, 0.0f, 0.0f));
     cv::Mat empty_depth(height, width, CV_32FC1, cv::Scalar(0.0f));
@@ -3042,10 +2999,11 @@ std::tuple<cv::Mat, cv::Mat> GaussianMapper::renderFromPose(
   }
 
   // Render
+  torch::Tensor view_matrix = pkf->getRT().transpose(0, 1);
   auto render_pkg = GaussianRenderer::render(
       models, pkf, height, width, pipe_params_, background_, override_color_,
-      1.0f, false, pkf->FoVx_, pkf->FoVy_, pkf->world_view_transform_,
-      pkf->projection_matrix_, pkf->camera_center_);
+      1.0f, false, pkf->FoVx_, pkf->FoVy_, view_matrix,
+      pkf->projection_matrix_);
 
   // Return rendered image and depth
   chunk_manager_->releaseChunksFromOptimization(visible_chunks);
@@ -3103,10 +3061,11 @@ void GaussianMapper::renderAndRecordKeyframe(
     return;  // Early return if no valid models
   }
 
+  torch::Tensor view_matrix = pkf->getRT().transpose(0, 1);
   auto render_pkg = GaussianRenderer::render(
       models, pkf, pkf->image_height_, pkf->image_width_, pipe_params_,
       background_, override_color_, 1.0f, false, pkf->FoVx_, pkf->FoVy_,
-      pkf->world_view_transform_, pkf->projection_matrix_, pkf->camera_center_);
+      view_matrix, pkf->projection_matrix_);
 
   chunk_manager_->releaseChunksFromOptimization(visible_chunks);
   auto rendered_image = std::get<1>(render_pkg);
@@ -3222,9 +3181,9 @@ void GaussianMapper::keyframesToJson(std::filesystem::path result_dir) {
     const auto pkf = kfit.second;
     Eigen::Matrix4f Rt;
     Rt.setZero();
-    Eigen::Matrix3f R = pkf->R_quaternion_.toRotationMatrix().cast<float>();
+    Eigen::Matrix3f R = pkf->getRotationMatrixf();
     Rt.topLeftCorner<3, 3>() = R;
-    Eigen::Vector3f t = pkf->t_.cast<float>();
+    Eigen::Vector3f t = pkf->getTranslationf();
     Rt.topRightCorner<3, 1>() = t;
     Rt(3, 3) = 1.0f;
 
@@ -3590,64 +3549,6 @@ void GaussianMapper::loadPly(std::filesystem::path ply_path,
   // Ready
   this->initial_mapped_ = true;
   increaseIteration();
-}
-
-std::tuple<torch::Tensor, torch::Tensor> GaussianMapper::filterPointsByDepth(
-    const torch::Tensor& points,
-    const torch::Tensor& colors,
-    const std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>& keyframes) {
-  const int num_points = points.size(0);
-  auto device = points.device();
-  auto options = torch::TensorOptions().device(device).dtype(points.dtype());
-
-  // Initialize validity mask for all points (start with all false)
-  torch::Tensor valid_mask = torch::zeros(
-      {num_points}, torch::TensorOptions().device(device).dtype(torch::kBool));
-
-  // Process each keyframe
-  for (const auto& [kfid, keyframe] : keyframes) {
-    if (!keyframe->set_pose_) continue;
-
-    // Get the rotation and translation from Sophus SE3
-    Eigen::Matrix3d R = keyframe->Tcw_.rotationMatrix();
-    Eigen::Vector3d t = keyframe->Tcw_.translation();
-
-    // Convert to tensors and ensure same dtype as points
-    torch::Tensor R_tensor =
-        torch::from_blob(const_cast<double*>(R.data()), {3, 3},
-                         torch::TensorOptions().dtype(torch::kDouble))
-            .to(device)
-            .to(points.dtype());
-
-    torch::Tensor t_tensor =
-        torch::from_blob(const_cast<double*>(t.data()), {3},
-                         torch::TensorOptions().dtype(torch::kDouble))
-            .to(device)
-            .to(points.dtype());
-
-    // Transform points: R * points + t
-    torch::Tensor points_cam = torch::matmul(points, R_tensor.t());
-    points_cam += t_tensor.unsqueeze(0);
-
-    // Extract depths (z-coordinates)
-    torch::Tensor depths = points_cam.select(1, 2);
-
-    // Check depth constraints
-    torch::Tensor valid_in_frame =
-        (depths >= keyframe->znear_) & (depths <= keyframe->zfar_);
-
-    // Update global validity mask
-    valid_mask = valid_mask | valid_in_frame;
-  }
-
-  // Count valid points
-  int64_t valid_count = valid_mask.sum().item<int64_t>();
-
-  // Use boolean indexing to filter points and colors
-  torch::Tensor filtered_points = points.index({valid_mask});
-  torch::Tensor filtered_colors = colors.index({valid_mask});
-
-  return std::make_tuple(filtered_points, filtered_colors);
 }
 
 void GaussianMapper::handleNewFrameExternal(const cv::Mat& rgb_image,

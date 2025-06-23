@@ -27,34 +27,93 @@ void GaussianKeyframe::setPose(const double qw,
                                const double tx,
                                const double ty,
                                const double tz) {
-  this->R_quaternion_.w() = qw;
-  this->R_quaternion_.x() = qx;
-  this->R_quaternion_.y() = qy;
-  this->R_quaternion_.z() = qz;
-  this->R_quaternion_.normalize();
-  this->t_.x() = tx;
-  this->t_.y() = ty;
-  this->t_.z() = tz;
+  // Convert quaternion to rotation matrix
+  Eigen::Quaterniond q(qw, qx, qy, qz);
+  q.normalize();
+  Eigen::Matrix3d R = q.toRotationMatrix();
+  Eigen::Vector3d t(tx, ty, tz);
 
-  this->Tcw_ = Sophus::SE3d(this->R_quaternion_, this->t_);
+  // Initialize tensor representation directly
+  rW2C_ = torch::zeros({3, 2}, torch::TensorOptions()
+                                   .dtype(torch::kFloat32)
+                                   .device(torch::kCUDA)
+                                   .requires_grad(true));
+
+  tW2C_ = torch::zeros({3}, torch::TensorOptions()
+                                .dtype(torch::kFloat32)
+                                .device(torch::kCUDA)
+                                .requires_grad(true));
+
+  // Copy pose to tensor parameters
+  {
+    torch::NoGradGuard no_grad;
+    for (int i = 0; i < 3; i++) {
+      for (int j = 0; j < 2; j++) {
+        rW2C_[i][j] = static_cast<float>(R(i, j));
+      }
+      tW2C_[i] = static_cast<float>(t(i));
+    }
+  }
 
   this->set_pose_ = true;
 }
 
 void GaussianKeyframe::setPose(const Eigen::Quaterniond& q,
                                const Eigen::Vector3d& t) {
-  this->R_quaternion_ = q;
-  this->R_quaternion_.normalize();
-  this->t_ = t;
+  // Normalize and convert to rotation matrix
+  Eigen::Quaterniond q_norm = q.normalized();
+  Eigen::Matrix3d R = q_norm.toRotationMatrix();
 
-  this->Tcw_ = Sophus::SE3d(this->R_quaternion_, this->t_);
+  // Initialize tensor representation
+  rW2C_ = torch::zeros({3, 2}, torch::TensorOptions()
+                                   .dtype(torch::kFloat32)
+                                   .device(torch::kCUDA)
+                                   .requires_grad(true));
+
+  tW2C_ = torch::zeros({3}, torch::TensorOptions()
+                                .dtype(torch::kFloat32)
+                                .device(torch::kCUDA)
+                                .requires_grad(true));
+
+  // Copy current pose to parameters
+  {
+    torch::NoGradGuard no_grad;
+    for (int i = 0; i < 3; i++) {
+      for (int j = 0; j < 2; j++) {
+        rW2C_[i][j] = static_cast<float>(R(i, j));
+      }
+      tW2C_[i] = static_cast<float>(t(i));
+    }
+  }
 
   this->set_pose_ = true;
 }
 
-Sophus::SE3d GaussianKeyframe::getPose() { return this->Tcw_; }
+Sophus::SE3d GaussianKeyframe::getPose() {
+  // Convert tensor representation to SE3
+  torch::Tensor R_tensor = sixD2RotationMatrix(rW2C_);
 
-Sophus::SE3f GaussianKeyframe::getPosef() { return this->Tcw_.cast<float>(); }
+  // Convert to Eigen
+  Eigen::Matrix3d R_eigen;
+  Eigen::Vector3d t_eigen;
+
+  auto R_cpu = R_tensor.detach().cpu();
+  auto t_cpu = tW2C_.detach().cpu();
+
+  for (int i = 0; i < 3; i++) {
+    t_eigen(i) = t_cpu[i].item<float>();
+    for (int j = 0; j < 3; j++) {
+      R_eigen(i, j) = R_cpu[i][j].item<float>();
+    }
+  }
+
+  Eigen::Quaterniond q(R_eigen);
+  return Sophus::SE3d(q, t_eigen);
+}
+
+Sophus::SE3f GaussianKeyframe::getPosef() {
+  return this->getPose().cast<float>();
+}
 
 void GaussianKeyframe::setCameraParams(const Camera& camera) {
   this->camera_id_ = camera.camera_id_;
@@ -140,11 +199,27 @@ void GaussianKeyframe::computeTransformTensors() {
 
 Eigen::Matrix4f GaussianKeyframe::getWorld2View2(const Eigen::Vector3f& trans,
                                                  float scale) {
+  // Get current pose from tensors
+  torch::Tensor R_tensor = sixD2RotationMatrix(rW2C_);
+
   Eigen::Matrix4f Rt;
   Rt.setZero();
-  Eigen::Matrix3f R = this->R_quaternion_.toRotationMatrix().cast<float>();
+
+  // Convert tensor to Eigen matrix
+  auto R_cpu = R_tensor.detach().cpu();
+  auto t_cpu = tW2C_.detach().cpu();
+
+  Eigen::Matrix3f R;
+  Eigen::Vector3f t;
+
+  for (int i = 0; i < 3; i++) {
+    t(i) = t_cpu[i].item<float>();
+    for (int j = 0; j < 3; j++) {
+      R(i, j) = R_cpu[i][j].item<float>();
+    }
+  }
+
   Rt.topLeftCorner<3, 3>() = R;
-  Eigen::Vector3f t = this->t_.cast<float>();
   Rt.topRightCorner<3, 1>() = t;
   Rt(3, 3) = 1.0f;
 
@@ -155,6 +230,49 @@ Eigen::Matrix4f GaussianKeyframe::getWorld2View2(const Eigen::Vector3f& trans,
   C2W.block<3, 1>(0, 3) = cam_center;
   Rt = C2W.inverse();
   return Rt;
+}
+
+Eigen::Matrix3d GaussianKeyframe::getRotationMatrix() {
+  torch::Tensor R_tensor = sixD2RotationMatrix(rW2C_);
+
+  Eigen::Matrix3d R_eigen;
+  auto R_cpu = R_tensor.detach().cpu();
+
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < 3; j++) {
+      R_eigen(i, j) = R_cpu[i][j].item<float>();
+    }
+  }
+
+  return R_eigen;
+}
+
+Eigen::Matrix3f GaussianKeyframe::getRotationMatrixf() {
+  return getRotationMatrix().cast<float>();
+}
+
+Eigen::Vector3d GaussianKeyframe::getTranslation() {
+  Eigen::Vector3d t_eigen;
+  auto t_cpu = tW2C_.detach().cpu();
+
+  for (int i = 0; i < 3; i++) {
+    t_eigen(i) = t_cpu[i].item<float>();
+  }
+
+  return t_eigen;
+}
+
+Eigen::Vector3f GaussianKeyframe::getTranslationf() {
+  return getTranslation().cast<float>();
+}
+
+Eigen::Quaterniond GaussianKeyframe::getQuaternion() {
+  Eigen::Matrix3d R = getRotationMatrix();
+  return Eigen::Quaterniond(R);
+}
+
+Eigen::Quaternionf GaussianKeyframe::getQuaternionf() {
+  return getQuaternion().cast<float>();
 }
 
 torch::Tensor GaussianKeyframe::getProjectionMatrix(
@@ -198,50 +316,79 @@ int GaussianKeyframe::getCurrentGausPyramidLevel() {
 }
 
 // Initialize appearance parameters with defaults
-void GaussianKeyframe::initAppearanceParams(
-    torch::DeviceType device_type,
-    float exposure_lr) {  // Simplified signature
-  if (!has_appearance_params_) {
-    // Initialize as 3x4 identity matrix [I|0]
-    appearance_transform_ = torch::zeros(
-        {3, 4},
-        torch::TensorOptions().dtype(torch::kFloat32).device(device_type));
+void GaussianKeyframe::initOptimizer(torch::DeviceType device_type,
+                                     float pose_lr,
+                                     float exposure_lr) {
+  std::vector<torch::Tensor> params_to_optimize;
 
-    // Set identity for 3x3 part
-    appearance_transform_.slice(1, 0, 3) = torch::eye(
-        3, torch::TensorOptions().dtype(torch::kFloat32).device(device_type));
+  pose_lr_ = pose_lr;
 
-    appearance_transform_.requires_grad_(true);
+  // Initialize as 3x4 identity matrix [I|0]
+  exposure_transform_ = torch::zeros(
+      {3, 4},
+      torch::TensorOptions().dtype(torch::kFloat32).device(device_type));
 
-    // Simple constant learning rate like Python
-    torch::optim::AdamOptions adam_options;
-    adam_options.set_lr(exposure_lr);  // Use 5e-4 like Python
-    std::vector<torch::Tensor> appearance_params = {appearance_transform_};
-    appearance_optimizer_ =
-        std::make_shared<torch::optim::Adam>(appearance_params, adam_options);
+  // Set identity for 3x3 part
+  exposure_transform_.slice(1, 0, 3) = torch::eye(
+      3, torch::TensorOptions().dtype(torch::kFloat32).device(device_type));
 
-    has_appearance_params_ = true;
-  }
+  exposure_transform_.requires_grad_(true);
+
+  Tensor_vec_rW2C_ = {rW2C_};
+  Tensor_vec_tW2C_ = {tW2C_};
+  Tensor_vec_exposure_ = {exposure_transform_};
+
+  torch::optim::AdamOptions adam_options;
+  adam_options.lr(pose_lr);
+  optimizer_ =
+      std::make_shared<torch::optim::Adam>(Tensor_vec_rW2C_, adam_options);
+  optimizer_->param_groups()[0].options().set_lr(pose_lr);
+
+  optimizer_->add_param_group(Tensor_vec_tW2C_);
+  optimizer_->param_groups()[1].options().set_lr(pose_lr);
+
+  optimizer_->add_param_group(Tensor_vec_exposure_);
+  optimizer_->param_groups()[2].options().set_lr(exposure_lr);
 }
 
 // Simplified step function
-void GaussianKeyframe::stepAppearanceOptimizer() {
-  if (!has_appearance_params_) return;
+void GaussianKeyframe::step() {
+  if (!optimizer_) return;
 
-  // No learning rate changes - keep it constant like Python
-  appearance_optimizer_->step();
-  appearance_optimizer_->zero_grad();
+  // // Debug: Check gradients before step
+  // if (local_iterations_ % 10 == 0) {
+  //   std::cout << "=== Pose Optimization Debug (Iteration " <<
+  //   local_iterations_
+  //             << ") ===" << "(ID: " << fid_ << " )===" << std::endl;
 
-  local_iterations_++;  // Keep local tracking for debugging
+  //   if (rW2C_.defined() && rW2C_.grad().defined()) {
+  //     auto rW2C_grad_norm = torch::norm(rW2C_.grad()).item<float>();
+  //     std::cout << "rW2C gradient norm: " << rW2C_grad_norm << std::endl;
+  //     std::cout << "rW2C values: " << rW2C_.detach().cpu() << std::endl;
+  //   } else {
+  //     std::cout << "rW2C gradient not defined!" << std::endl;
+  //   }
+
+  //   if (tW2C_.defined() && tW2C_.grad().defined()) {
+  //     auto tW2C_grad_norm = torch::norm(tW2C_.grad()).item<float>();
+  //     std::cout << "tW2C gradient norm: " << tW2C_grad_norm << std::endl;
+  //     std::cout << "tW2C values: " << tW2C_.detach().cpu() << std::endl;
+  //   } else {
+  //     std::cout << "tW2C gradient not defined!" << std::endl;
+  //   }
+  // }
+
+  optimizer_->step();
+  optimizer_->zero_grad();
+
+  local_iterations_++;
 }
 
 // Apply appearance transform to rendered colors
-torch::Tensor GaussianKeyframe::applyAppearanceTransform(
-    torch::Tensor& colors) {
-  if (!has_appearance_params_) {
+torch::Tensor GaussianKeyframe::applyExposureTransform(torch::Tensor& colors) {
+  if (!exposure_transform_.defined()) {
     return colors;
   }
-
   // Permute from [C, H, W] to [H, W, C]
   auto colors_hwc = colors.permute({1, 2, 0});
   auto original_shape = colors_hwc.sizes();  // [H, W, C]
@@ -250,8 +397,8 @@ torch::Tensor GaussianKeyframe::applyAppearanceTransform(
   auto colors_flat = colors_hwc.view({-1, 3});  // [H*W, 3]
 
   // Extract 3x3 transform and bias from 3x4 matrix
-  auto transform_3x3 = appearance_transform_.slice(1, 0, 3);    // [3, 3]
-  auto bias = appearance_transform_.slice(1, 3, 4).squeeze(1);  // [3]
+  auto transform_3x3 = exposure_transform_.slice(1, 0, 3);    // [3, 3]
+  auto bias = exposure_transform_.slice(1, 3, 4).squeeze(1);  // [3]
 
   // Apply transform: (H*W, 3) @ (3, 3) -> (H*W, 3)
   auto transformed =
@@ -262,6 +409,47 @@ torch::Tensor GaussianKeyframe::applyAppearanceTransform(
 
   // Clamp to [0, 1] like the Python version
   return result.clamp(0.0f, 1.0f);
+}
+
+torch::Tensor GaussianKeyframe::sixD2RotationMatrix(const torch::Tensor& rW2C) {
+  // Convert 6D representation to rotation matrix
+  // Input: rW2C [3, 2] - first two columns of rotation matrix
+  // Output: R [3, 3] - full rotation matrix
+
+  auto a1 = rW2C.select(1, 0);  // First column
+  auto a2 = rW2C.select(1, 1);  // Second column
+
+  // Normalize first column
+  auto b1 = torch::nn::functional::normalize(
+      a1, torch::nn::functional::NormalizeFuncOptions().dim(0));
+
+  // Gram-Schmidt orthogonalization for second column
+  auto b2 = a2 - torch::sum(b1 * a2) * b1;
+  b2 = torch::nn::functional::normalize(
+      b2, torch::nn::functional::NormalizeFuncOptions().dim(0));
+
+  // Cross product for third column
+  auto b3 = torch::cross(b1, b2, 0);
+
+  // Stack to form rotation matrix
+  return torch::stack({b1, b2, b3}, 1);  // [3, 3]
+}
+
+torch::Tensor GaussianKeyframe::getR() { return sixD2RotationMatrix(rW2C_); }
+
+torch::Tensor GaussianKeyframe::getT() { return tW2C_; }
+
+torch::Tensor GaussianKeyframe::getRT() {
+  torch::Tensor RT = torch::eye(
+      {4}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
+  RT.index_put_({torch::indexing::Slice(0, 3), torch::indexing::Slice(0, 3)},
+                getR());
+  RT.index_put_({torch::indexing::Slice(0, 3), 3}, getT());
+  return RT;
+}
+
+torch::Tensor GaussianKeyframe::getCenter() {
+  return -getR().transpose(0, 1).mv(getT());
 }
 
 void GaussianKeyframe::setupStereoData(

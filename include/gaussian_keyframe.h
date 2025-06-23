@@ -44,50 +44,6 @@
 #include "tensor_utils.h"
 #include "types.h"
 
-class ExponentialLRScheduler {
- private:
-  float lr_init_;
-  float lr_final_;
-  float lr_delay_mult_;
-  int lr_delay_steps_;
-  int max_steps_;
-
- public:
-  ExponentialLRScheduler(float lr_init,
-                         float lr_final,
-                         float lr_delay_mult = 1.0f,
-                         int lr_delay_steps = 0,
-                         int max_steps = 1000000)
-      : lr_init_(lr_init),
-        lr_final_(lr_final),
-        lr_delay_mult_(lr_delay_mult),
-        lr_delay_steps_(lr_delay_steps),
-        max_steps_(max_steps) {}
-
-  float getLR(int step) {
-    if (lr_init_ == 0.0f) return 0.0f;
-    if (step < 0 || (lr_init_ == 0.0f && lr_final_ == 0.0f)) return 0.0f;
-
-    // Calculate delay rate (reverse cosine decay)
-    float delay_rate;
-    if (lr_delay_steps_ > 0) {
-      float delay_progress =
-          std::min(1.0f, float(step) / float(lr_delay_steps_));
-      delay_rate = lr_delay_mult_ + (1.0f - lr_delay_mult_) *
-                                        std::sin(0.5f * M_PI * delay_progress);
-    } else {
-      delay_rate = 1.0f;
-    }
-
-    // Log-linear interpolation (true exponential decay)
-    float t = std::min(1.0f, float(step) / float(max_steps_));
-    float log_lerp =
-        std::exp(std::log(lr_init_) * (1.0f - t) + std::log(lr_final_) * t);
-
-    return delay_rate * log_lerp;
-  }
-};
-
 class GaussianKeyframe {
  public:
   GaussianKeyframe() {}
@@ -129,12 +85,29 @@ class GaussianKeyframe {
 
   int getCurrentGausPyramidLevel();
 
-  void initAppearanceParams(torch::DeviceType device_type,
-                            float exposure_lr = 5e-4);
+  void initOptimizer(torch::DeviceType device_type,
+                     float pose_lr,
+                     float exposure_lr);
 
-  void stepAppearanceOptimizer();
+  void step();
 
-  torch::Tensor applyAppearanceTransform(torch::Tensor& colors);
+  torch::Tensor applyExposureTransform(torch::Tensor& colors);
+
+  torch::Tensor sixD2RotationMatrix(const torch::Tensor& rW2C);
+
+  torch::Tensor getR();
+  torch::Tensor getT();
+  torch::Tensor getRT();
+  torch::Tensor getCenter();
+
+  Eigen::Matrix3d getRotationMatrix();
+  Eigen::Matrix3f getRotationMatrixf();
+  Eigen::Vector3d getTranslation();
+  Eigen::Vector3f getTranslationf();
+  Eigen::Quaterniond getQuaternion();
+  Eigen::Quaternionf getQuaternionf();
+
+  void updatePoseFromParameters();
 
   void setupStereoData(float baseline,
                        torch::DeviceType device_type,
@@ -186,12 +159,12 @@ class GaussianKeyframe {
   bool set_pose_ = false;
   bool set_projection_matrix_ = false;
 
-  Eigen::Quaterniond R_quaternion_;  ///< extrinsics
-  Eigen::Vector3d t_;                ///< extrinsics
-  Sophus::SE3d Tcw_;                 ///< extrinsics
+  // Optimizable pose parameters (similar to Python keyframe)
+  torch::Tensor rW2C_;  // 3x2 rotation parameters (6D representation)
+  torch::Tensor tW2C_;  // 3x1 translation parameters
 
-  torch::Tensor R_tensor_;  ///< extrinsics
-  torch::Tensor t_tensor_;  ///< extrinsics
+  std::vector<torch::Tensor> Tensor_vec_rW2C_, Tensor_vec_tW2C_,
+      Tensor_vec_exposure_;
 
   float zfar_ = 100.0f;
   float znear_ = 0.01f;
@@ -218,9 +191,10 @@ class GaussianKeyframe {
 
   bool done_inactive_geo_densify_ = false;
 
-  // Appearance embedding parameters (affine transform)
-  torch::Tensor appearance_transform_;  // 3x4 matrix
-  bool has_appearance_params_ = false;
-  std::shared_ptr<torch::optim::Adam> appearance_optimizer_;
+  torch::Tensor exposure_transform_;  // 3x4 matrix
+  bool exposure_optimization_enabled_ = false;
+  bool pose_optimization_enabled_ = false;
+  float pose_lr_ = 1e-4f;  // Learning rate for pose optimization
+  std::shared_ptr<torch::optim::Adam> optimizer_;
   int local_iterations_ = 0;  // Per-keyframe counter
 };

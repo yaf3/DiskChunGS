@@ -391,6 +391,8 @@ void GaussianModel::trainingSetup(
   adam_options.eps() = 1e-15;
 
   this->optimizer_.reset(new SparseGaussianAdam(Tensor_vec_xyz_, adam_options));
+  optimizer_->param_groups()[0].options().set_lr(
+      training_args.position_lr_init_);
 
   // For per-primitive learning rates, create tensor-based LRs
   int num_gaussians = this->getXYZ().size(0);
@@ -1485,6 +1487,7 @@ void GaussianModel::load_checkpoint_incremental(
   adam_options.eps() = 1e-15;
 
   this->optimizer_.reset(new SparseGaussianAdam(Tensor_vec_xyz_, adam_options));
+  optimizer_->param_groups()[0].options().set_lr(learning_rates[0]);
 
   optimizer_->add_param_group(Tensor_vec_feature_dc_);
   optimizer_->param_groups()[1].options().set_lr(learning_rates[1]);

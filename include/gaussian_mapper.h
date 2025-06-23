@@ -142,12 +142,6 @@ class GaussianMapper {
       const torch::Tensor &scales,
       std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> keyframes);
 
-  std::tuple<torch::Tensor, torch::Tensor> filterPointsByDepth(
-      const torch::Tensor &points,
-      const torch::Tensor &colors,
-      const std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>
-          &keyframes);
-
   float positionLearningRateInit();
   float featureLearningRate();
   float opacityLearningRate();

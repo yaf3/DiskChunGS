@@ -1030,64 +1030,6 @@ bool ChunkManager::deleteChunkSync(const ChunkCoord& coord) {
   }
 }
 
-std::tuple<torch::Tensor, torch::Tensor> ChunkManager::filterPointsByDepth(
-    const torch::Tensor& points,
-    const torch::Tensor& colors,
-    const std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>& keyframes) {
-  // std::cout << "Filtering points, starting with " << points.size(0)
-  //           << std::endl;
-  const int num_points = points.size(0);
-  auto device = points.device();
-  auto options = torch::TensorOptions().device(device).dtype(points.dtype());
-
-  // Initialize validity mask for all points (start with all false)
-  torch::Tensor valid_mask = torch::zeros(
-      {num_points}, torch::TensorOptions().device(device).dtype(torch::kBool));
-
-  // Process each keyframe
-  for (const auto& [kfid, keyframe] : keyframes) {
-    if (!keyframe->set_pose_) continue;
-
-    // Get the rotation and translation from Sophus SE3
-    Eigen::Matrix3d R = keyframe->Tcw_.rotationMatrix();
-    Eigen::Vector3d t = keyframe->Tcw_.translation();
-
-    // Convert to tensors and ensure same dtype as points
-    torch::Tensor R_tensor =
-        torch::from_blob(const_cast<double*>(R.data()), {3, 3},
-                         torch::TensorOptions().dtype(torch::kDouble))
-            .to(device)
-            .to(points.dtype());
-
-    torch::Tensor t_tensor =
-        torch::from_blob(const_cast<double*>(t.data()), {3},
-                         torch::TensorOptions().dtype(torch::kDouble))
-            .to(device)
-            .to(points.dtype());
-
-    // Transform points: R * points + t
-    torch::Tensor points_cam = torch::matmul(points, R_tensor.t());
-    points_cam += t_tensor.unsqueeze(0);
-
-    // Extract depths (z-coordinates)
-    torch::Tensor depths = points_cam.select(1, 2);
-
-    // Check depth constraints
-    torch::Tensor valid_in_frame =
-        (depths >= keyframe->znear_) & (depths <= keyframe->zfar_);
-
-    // Update global validity mask
-    valid_mask = valid_mask | valid_in_frame;
-  }
-
-  // Use boolean indexing to filter points and colors
-  torch::Tensor filtered_points = points.index({valid_mask});
-  torch::Tensor filtered_colors = colors.index({valid_mask});
-  // std::cout << "After filter " << filtered_points.size(0) << std::endl;
-
-  return std::make_tuple(filtered_points, filtered_colors);
-}
-
 // Get chunk filename
 std::filesystem::path ChunkManager::getChunkFilename(const ChunkCoord& coord) {
   // Using 'p' for positive and 'n' for negative prefixes

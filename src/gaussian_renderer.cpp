@@ -69,28 +69,7 @@ GaussianRenderer::render(
     float FoVx,
     float FoVy,
     torch::Tensor& world_view_transform,
-    torch::Tensor& full_proj_transform,
-    torch::Tensor& camera_center) {
-  // torch::Tensor dummy_world_view_transform =
-  //     torch::eye(4, torch::TensorOptions()
-  //                       .dtype(torch::kFloat32)
-  //                       .device(torch::kCUDA)
-  //                       .requires_grad(false))
-  //         .contiguous();
-
-  // torch::Tensor dummy_full_proj_transform =
-  //     torch::eye(4, torch::TensorOptions()
-  //                       .dtype(torch::kFloat32)
-  //                       .device(torch::kCUDA)
-  //                       .requires_grad(false))
-  //         .contiguous();
-
-  // torch::Tensor dummy_camera_center =
-  //     torch::zeros({3}, torch::TensorOptions()
-  //                           .dtype(torch::kFloat32)
-  //                           .device(torch::kCUDA)
-  //                           .requires_grad(false))
-  //         .contiguous();
+    torch::Tensor& projection_matrix) {
   /* Render the scene.
 
      Background tensor (bg_color) must be on GPU!
@@ -112,6 +91,11 @@ GaussianRenderer::render(
       active_sh_degree = std::max(active_sh_degree, pc->active_sh_degree_);
     }
   }
+
+  // torch::Tensor camera_center =
+  // world_view_transform.detach().inverse().index(
+  //     {3, torch::indexing::Slice(0, 3)});
+  torch::Tensor camera_center = viewpoint_camera->getCenter();
 
   std::vector<torch::Tensor> means3D_vec;
   std::vector<torch::Tensor> means2D_vec;
@@ -392,16 +376,19 @@ GaussianRenderer::render(
 
   GaussianRasterizationSettings raster_settings(
       image_height, image_width, tanfovx, tanfovy, bg_color, scaling_modifier,
-      full_proj_transform, active_sh_degree, camera_center, false, false);
+      projection_matrix, active_sh_degree, camera_center, false, false);
 
-  // std::cout << image_height << " " << image_width << " " << tanfovx << " "
-  //           << tanfovy << bg_color << " " << scaling_modifier << " "
-  //           << full_proj_transform << " " << active_sh_degree << " "
-  //           << camera_center << std::endl;
+  // std::cout << " Image height: " << image_height
+  //           << "Image width: " << image_width << "Tanfovx: " << tanfovx
+  //           << "Tanfovy: " << tanfovy << "BG color: " << bg_color
+  //           << "Scaling_modifier: " << scaling_modifier
+  //           << "Projection matrix: " << projection_matrix
+  //           << "Active SH degree: " << active_sh_degree
+  //           << "Camera center: " << camera_center << std::endl;
 
   GaussianRasterizer rasterizer(raster_settings);
 
-  // std::cout << world_view_transform << std::endl;
+  // std::cout << "View matrix: " << world_view_transform << std::endl;
 
   // Rasterize visible Gaussians to image, obtain their radii (on screen).
   auto rasterizer_result = rasterizer.forward(
@@ -423,9 +410,7 @@ GaussianRenderer::render(
 
   auto radii = std::get<3>(rasterizer_result);
 
-  if (viewpoint_camera->has_appearance_params_) {
-    rendered_image = viewpoint_camera->applyAppearanceTransform(rendered_image);
-  }
+  rendered_image = viewpoint_camera->applyExposureTransform(rendered_image);
 
   // auto timer_final_loop = ProfilingUtils::Timer("final_loop");
   // Split the radii tensor into separate tensors per model
