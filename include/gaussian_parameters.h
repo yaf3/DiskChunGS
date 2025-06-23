@@ -56,10 +56,8 @@ class GaussianPipelineParams {
 class GaussianOptimizationParams {
  public:
   GaussianOptimizationParams(int iterations = 30'000,
-                             float position_lr_init = 0.00016f,
-                             float position_lr_final = 0.0000016f,
-                             float position_lr_delay_mult = 0.01f,
-                             int position_lr_max_steps = 30'000,
+                             float position_lr_init = 0.00005f,
+                             float position_lr_decay_ = 0.99998f,
                              float feature_lr = 0.0025f,
                              float opacity_lr = 0.05f,
                              float scaling_lr = 0.005f,
@@ -79,9 +77,7 @@ class GaussianOptimizationParams {
  public:
   int iterations_;
   float position_lr_init_;
-  float position_lr_final_;
-  float position_lr_delay_mult_;
-  int position_lr_max_steps_;
+  float position_lr_decay_;
   float feature_lr_;
   float opacity_lr_;
   float scaling_lr_;

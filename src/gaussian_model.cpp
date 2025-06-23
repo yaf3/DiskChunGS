@@ -21,7 +21,7 @@
 GaussianModel::GaussianModel(const int sh_degree)
     : active_sh_degree_(0),
       position_lr_init_(0.00005),
-      position_lr_decay_(1 - 2e-5),
+      position_lr_decay_(0.99998),
       local_iteration_(0) {
   this->max_sh_degree_ = sh_degree;
 
@@ -37,7 +37,7 @@ GaussianModel::GaussianModel(const int sh_degree)
 GaussianModel::GaussianModel(const GaussianModelParams& model_params)
     : active_sh_degree_(0),
       position_lr_init_(0.00005),
-      position_lr_decay_(1 - 2e-5),
+      position_lr_decay_(0.99998),
       local_iteration_(0) {
   this->max_sh_degree_ = model_params.sh_degree_;
 
@@ -382,6 +382,10 @@ void GaussianModel::trainingSetup(
   this->denom_ = torch::zeros({this->getXYZ().size(0), 1},
                               torch::TensorOptions().device(device_type_));
 
+  position_lr_init_ = training_args.position_lr_init_;
+  position_lr_decay_ = training_args.position_lr_decay_;
+  position_lr_min_ = position_lr_init_ * 0.1f;
+
   torch::optim::AdamOptions adam_options;
   adam_options.set_lr(0.0);  // We'll set individual LRs below
   adam_options.eps() = 1e-15;
@@ -393,7 +397,7 @@ void GaussianModel::trainingSetup(
 
   // Position learning rates (per-primitive for positions)
   torch::Tensor position_lrs = torch::full(
-      {num_gaussians}, training_args.position_lr_init_,
+      {num_gaussians}, position_lr_init_,
       torch::TensorOptions().dtype(torch::kFloat32).device(device_type_));
   this->position_lrs_ = position_lrs;
 
@@ -413,10 +417,6 @@ void GaussianModel::trainingSetup(
 
   optimizer_->add_param_group(Tensor_vec_rotation_);
   optimizer_->param_groups()[5].options().set_lr(training_args.rotation_lr_);
-
-  position_lr_init_ = training_args.position_lr_init_;
-  position_lr_decay_ = 1 - 2e-5;
-  position_lr_min_ = position_lr_init_ * 0.1f;
 }
 
 void GaussianModel::updateLearningRates(const torch::Tensor& visibility) {

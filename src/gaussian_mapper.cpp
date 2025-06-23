@@ -589,12 +589,8 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       settings_file["Optimization.max_num_iterations"].operator int();
   opt_params_.position_lr_init_ =
       settings_file["Optimization.position_lr_init"].operator float();
-  opt_params_.position_lr_final_ =
-      settings_file["Optimization.position_lr_final"].operator float();
-  opt_params_.position_lr_delay_mult_ =
-      settings_file["Optimization.position_lr_delay_mult"].operator float();
-  opt_params_.position_lr_max_steps_ =
-      settings_file["Optimization.position_lr_max_steps"].operator int();
+  opt_params_.position_lr_decay_ =
+      settings_file["Optimization.position_lr_decay"].operator float();
   opt_params_.feature_lr_ =
       settings_file["Optimization.feature_lr"].operator float();
   opt_params_.opacity_lr_ =

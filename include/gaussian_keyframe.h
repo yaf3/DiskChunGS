@@ -222,6 +222,5 @@ class GaussianKeyframe {
   torch::Tensor appearance_transform_;  // 3x4 matrix
   bool has_appearance_params_ = false;
   std::shared_ptr<torch::optim::Adam> appearance_optimizer_;
-  std::unique_ptr<ExponentialLRScheduler> exposure_scheduler_;
   int local_iterations_ = 0;  // Per-keyframe counter
 };
