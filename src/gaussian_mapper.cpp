@@ -2593,26 +2593,27 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       torch::Tensor prob_s = torch::clamp(prob_L - prob_penalty, 0.0f, 1.0f);
 
       // Debug: Save probability visualizations
-      std::filesystem::create_directories("./debug_prob");
-      auto save_tensor = [](const torch::Tensor& t, const std::string& name) {
-        torch::Tensor cpu_t = t.detach().cpu().to(torch::kFloat);
-        if (cpu_t.dim() == 4)
-          cpu_t = cpu_t[0][0];
-        else if (cpu_t.dim() == 3 && cpu_t.size(0) == 1)
-          cpu_t = cpu_t[0];
-        cpu_t = torch::clamp(cpu_t, 0.0f, 1.0f);
+      // std::filesystem::create_directories("./debug_prob");
+      // auto save_tensor = [](const torch::Tensor& t, const std::string& name)
+      // {
+      //   torch::Tensor cpu_t = t.detach().cpu().to(torch::kFloat);
+      //   if (cpu_t.dim() == 4)
+      //     cpu_t = cpu_t[0][0];
+      //   else if (cpu_t.dim() == 3 && cpu_t.size(0) == 1)
+      //     cpu_t = cpu_t[0];
+      //   cpu_t = torch::clamp(cpu_t, 0.0f, 1.0f);
 
-        int h = cpu_t.size(0), w = cpu_t.size(1);
-        cv::Mat mat(h, w, CV_32F, cpu_t.data_ptr<float>());
-        cv::Mat img_8bit, colored;
-        mat.convertTo(img_8bit, CV_8U, 255.0);
-        cv::applyColorMap(img_8bit, colored, cv::COLORMAP_JET);
-        cv::imwrite("./debug_prob/" + name + ".png", colored);
-      };
+      //   int h = cpu_t.size(0), w = cpu_t.size(1);
+      //   cv::Mat mat(h, w, CV_32F, cpu_t.data_ptr<float>());
+      //   cv::Mat img_8bit, colored;
+      //   mat.convertTo(img_8bit, CV_8U, 255.0);
+      //   cv::applyColorMap(img_8bit, colored, cv::COLORMAP_JET);
+      //   cv::imwrite("./debug_prob/" + name + ".png", colored);
+      // };
 
-      save_tensor(prob_L, "prob_L");
-      save_tensor(prob_penalty, "prob_penalty");
-      save_tensor(prob_s, "prob_s");
+      // save_tensor(prob_L, "prob_L");
+      // save_tensor(prob_penalty, "prob_penalty");
+      // save_tensor(prob_s, "prob_s");
 
       // Step 4: Sample points based on probability and depth validity
       torch::Tensor random_mask = torch::rand_like(prob_s) < prob_s;
@@ -2667,9 +2668,9 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       scales = torch::log(torch::clamp(scales, 1e-6f, 1e6f));
       torch::Tensor sampled_scales = scales.unsqueeze(1).repeat({1, 3});
 
-      std::cout << "Sampled points: " << points3D.sizes()
-                << ", colors: " << sampled_colors.sizes()
-                << ", scales: " << sampled_scales.sizes() << std::endl;
+      // std::cout << "Sampled points: " << points3D.sizes()
+      //           << ", colors: " << sampled_colors.sizes()
+      //           << ", scales: " << sampled_scales.sizes() << std::endl;
 
       // Add to cache with scales
       if (depth_cached_ == 0) {
@@ -2761,22 +2762,23 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       torch::Tensor prob_s = torch::clamp(prob_L - prob_penalty, 0.0f, 1.0f);
 
       // Debug: Save probability visualizations
-      std::filesystem::create_directories("./debug_prob");
-      auto save_tensor = [](const torch::Tensor& t, const std::string& name) {
-        torch::Tensor cpu_t = t.detach().cpu().to(torch::kFloat);
-        if (cpu_t.dim() == 4)
-          cpu_t = cpu_t[0][0];
-        else if (cpu_t.dim() == 3 && cpu_t.size(0) == 1)
-          cpu_t = cpu_t[0];
-        cpu_t = torch::clamp(cpu_t, 0.0f, 1.0f);
+      // std::filesystem::create_directories("./debug_prob");
+      // auto save_tensor = [](const torch::Tensor& t, const std::string& name)
+      // {
+      //   torch::Tensor cpu_t = t.detach().cpu().to(torch::kFloat);
+      //   if (cpu_t.dim() == 4)
+      //     cpu_t = cpu_t[0][0];
+      //   else if (cpu_t.dim() == 3 && cpu_t.size(0) == 1)
+      //     cpu_t = cpu_t[0];
+      //   cpu_t = torch::clamp(cpu_t, 0.0f, 1.0f);
 
-        int h = cpu_t.size(0), w = cpu_t.size(1);
-        cv::Mat mat(h, w, CV_32F, cpu_t.data_ptr<float>());
-        cv::Mat img_8bit, colored;
-        mat.convertTo(img_8bit, CV_8U, 255.0);
-        cv::applyColorMap(img_8bit, colored, cv::COLORMAP_JET);
-        cv::imwrite("./debug_prob/" + name + ".png", colored);
-      };
+      //   int h = cpu_t.size(0), w = cpu_t.size(1);
+      //   cv::Mat mat(h, w, CV_32F, cpu_t.data_ptr<float>());
+      //   cv::Mat img_8bit, colored;
+      //   mat.convertTo(img_8bit, CV_8U, 255.0);
+      //   cv::applyColorMap(img_8bit, colored, cv::COLORMAP_JET);
+      //   cv::imwrite("./debug_prob/" + name + ".png", colored);
+      // };
 
       // save_tensor(prob_L, "prob_L");
       // save_tensor(prob_penalty, "prob_penalty");
@@ -2832,9 +2834,9 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       scales = torch::log(torch::clamp(scales, 1e-6f, 1e6f));
       torch::Tensor sampled_scales = scales.unsqueeze(1).repeat({1, 3});
 
-      std::cout << "Sampled points: " << points3D.sizes()
-                << ", colors: " << sampled_colors.sizes()
-                << ", scales: " << sampled_scales.sizes() << std::endl;
+      // std::cout << "Sampled points: " << points3D.sizes()
+      //           << ", colors: " << sampled_colors.sizes()
+      //           << ", scales: " << sampled_scales.sizes() << std::endl;
 
       // Add to cache with scales
       if (depth_cached_ == 0) {

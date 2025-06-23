@@ -1374,14 +1374,12 @@ void GaussianModel::load_checkpoint_incremental(
 
   // Temporary tensors to hold the loaded scalar values
   torch::Tensor active_sh_degree_tensor, max_sh_degree_tensor,
-      lr_delay_steps_tensor, max_steps_tensor, local_iteration_tensor;
+      local_iteration_tensor;
   torch::Tensor percent_dense_tensor, position_lr_init_tensor,
       position_lr_decay_tensor, position_lr_min_tensor;
 
   config_archive.read("active_sh_degree_", active_sh_degree_tensor);
   config_archive.read("max_sh_degree_", max_sh_degree_tensor);
-  config_archive.read("lr_delay_steps_", lr_delay_steps_tensor);
-  config_archive.read("max_steps_", max_steps_tensor);
   config_archive.read("local_iteration_", local_iteration_tensor);
 
   // Load float values
