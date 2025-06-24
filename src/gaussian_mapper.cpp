@@ -1041,6 +1041,10 @@ void GaussianMapper::trainForOneIteration() {
   increaseIteration(1);
   chunk_manager_->setCurrentIteration(getIteration());
 
+  // if (getIteration() % 100 == 0) {
+  //   updateORBSLAMPoses();
+  // }
+
   auto timer_cullSparseChunks = ProfilingUtils::Timer("cullSparseChunks");
   int min_points_chunk_threshold = 1000;
   int min_chunk_iterations = 200;
@@ -2706,11 +2710,11 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       if (!pkf->img_auxiliary_undist_.empty()) {
         double min_depth, max_depth;
         cv::minMaxLoc(pkf->img_auxiliary_undist_, &min_depth, &max_depth);
-        cv::Scalar mean_depth = cv::mean(pkf->img_auxiliary_undist_);
-        std::cout << "Depth range: " << min_depth << " - " << max_depth
-                  << " meters " << std::endl;
-        std::cout << " Mean depth: " << mean_depth[0] << " meters "
-                  << std::endl;
+        // cv::Scalar mean_depth = cv::mean(pkf->img_auxiliary_undist_);
+        // std::cout << "Depth range: " << min_depth << " - " << max_depth
+        //           << " meters " << std::endl;
+        // std::cout << " Mean depth: " << mean_depth[0] << " meters "
+        //           << std::endl;
       }
 
       cv::cuda::GpuMat img_rgb_gpu, img_depth_gpu;
@@ -5477,4 +5481,35 @@ void GaussianMapper::projectKeypointsToPointCloud(
   // std::cout << " Z: [" << mins[2].item<float>() << ", " <<
   // maxs[2].item<float>()
   //           << "]" << std::endl;
+}
+
+void GaussianMapper::updateORBSLAMPoses() {
+  if (!pSLAM_) return;
+
+  auto* atlas = pSLAM_->getAtlas();
+  auto* map = atlas->GetCurrentMap();
+
+  // Get all ORB-SLAM keyframes
+  std::vector<ORB_SLAM3::KeyFrame*> orb_keyframes;
+  {
+    std::unique_lock<std::mutex> lock(map->mMutexMapUpdate);
+    orb_keyframes = map->GetAllKeyFrames();
+  }
+
+  // Update each ORB-SLAM keyframe with optimized pose
+  for (auto* orb_kf : orb_keyframes) {
+    unsigned long kf_id = orb_kf->mnId;
+
+    // Find corresponding Gaussian keyframe
+    auto gaussian_kf_it = scene_->keyframes().find(kf_id);
+    if (gaussian_kf_it != scene_->keyframes().end()) {
+      auto gaussian_kf = gaussian_kf_it->second;
+
+      // Get optimized pose from Gaussian keyframe
+      Sophus::SE3f optimized_pose = gaussian_kf->getPosef();
+
+      // Convert to ORB-SLAM format and update
+      orb_kf->SetPose(optimized_pose);
+    }
+  }
 }

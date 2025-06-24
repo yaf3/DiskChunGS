@@ -299,6 +299,7 @@ class GaussianMapper {
   std::tuple<std::vector<float>, std::vector<float>>
   extractValidKeypointsForDepthAlignment(
       std::shared_ptr<GaussianKeyframe> pkf) const;
+  void updateORBSLAMPoses();
 
  private:
   // Updated function declarations:
