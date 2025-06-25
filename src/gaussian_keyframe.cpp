@@ -318,7 +318,8 @@ int GaussianKeyframe::getCurrentGausPyramidLevel() {
 // Initialize appearance parameters with defaults
 void GaussianKeyframe::initOptimizer(torch::DeviceType device_type,
                                      float pose_lr,
-                                     float exposure_lr) {
+                                     float exposure_lr,
+                                     float depth_scale_bias_lr) {
   std::vector<torch::Tensor> params_to_optimize;
 
   pose_lr_ = pose_lr;
@@ -334,9 +335,19 @@ void GaussianKeyframe::initOptimizer(torch::DeviceType device_type,
 
   exposure_transform_.requires_grad_(true);
 
+  depth_scale_ = torch::ones(
+      {1}, torch::TensorOptions().dtype(torch::kFloat32).device(device_type));
+  depth_scale_.requires_grad_(true);
+
+  depth_bias_ = torch::zeros(
+      {1}, torch::TensorOptions().dtype(torch::kFloat32).device(device_type));
+  depth_bias_.requires_grad_(true);
+
   Tensor_vec_rW2C_ = {rW2C_};
   Tensor_vec_tW2C_ = {tW2C_};
   Tensor_vec_exposure_ = {exposure_transform_};
+  Tensor_vec_depth_scale_ = {depth_scale_};
+  Tensor_vec_depth_bias_ = {depth_bias_};
 
   torch::optim::AdamOptions adam_options;
   adam_options.lr(pose_lr);
@@ -349,33 +360,68 @@ void GaussianKeyframe::initOptimizer(torch::DeviceType device_type,
 
   optimizer_->add_param_group(Tensor_vec_exposure_);
   optimizer_->param_groups()[2].options().set_lr(exposure_lr);
+
+  optimizer_->add_param_group(Tensor_vec_depth_scale_);
+  optimizer_->param_groups()[3].options().set_lr(depth_scale_bias_lr);
+
+  optimizer_->add_param_group(Tensor_vec_depth_bias_);
+  optimizer_->param_groups()[4].options().set_lr(depth_scale_bias_lr);
 }
 
 // Simplified step function
 void GaussianKeyframe::step() {
   if (!optimizer_) return;
 
-  // // Debug: Check gradients before step
+  // Debug: Check gradients before step
   // if (local_iterations_ % 10 == 0) {
   //   std::cout << "=== Pose Optimization Debug (Iteration " <<
   //   local_iterations_
   //             << ") ===" << "(ID: " << fid_ << " )===" << std::endl;
 
-  //   if (rW2C_.defined() && rW2C_.grad().defined()) {
-  //     auto rW2C_grad_norm = torch::norm(rW2C_.grad()).item<float>();
-  //     std::cout << "rW2C gradient norm: " << rW2C_grad_norm << std::endl;
-  //     std::cout << "rW2C values: " << rW2C_.detach().cpu() << std::endl;
+  //   // Check depth_scale_ gradients
+  //   if (depth_scale_.defined() && depth_scale_.grad().defined()) {
+  //     auto depth_scale_grad_norm =
+  //         torch::norm(depth_scale_.grad()).item<float>();
+  //     std::cout << "depth_scale_ gradient norm: " << depth_scale_grad_norm
+  //               << std::endl;
+  //     std::cout << "depth_scale_ values: " << depth_scale_.detach().cpu()
+  //               << std::endl;
+  //     std::cout << "depth_scale_ gradient: "
+  //               << depth_scale_.grad().detach().cpu() << std::endl;
   //   } else {
-  //     std::cout << "rW2C gradient not defined!" << std::endl;
+  //     std::cout << "depth_scale_ gradient not defined!" << std::endl;
   //   }
 
-  //   if (tW2C_.defined() && tW2C_.grad().defined()) {
-  //     auto tW2C_grad_norm = torch::norm(tW2C_.grad()).item<float>();
-  //     std::cout << "tW2C gradient norm: " << tW2C_grad_norm << std::endl;
-  //     std::cout << "tW2C values: " << tW2C_.detach().cpu() << std::endl;
+  //   // Check depth_bias_ gradients
+  //   if (depth_bias_.defined() && depth_bias_.grad().defined()) {
+  //     auto depth_bias_grad_norm =
+  //     torch::norm(depth_bias_.grad()).item<float>(); std::cout <<
+  //     "depth_bias_ gradient norm: " << depth_bias_grad_norm
+  //               << std::endl;
+  //     std::cout << "depth_bias_ values: " << depth_bias_.detach().cpu()
+  //               << std::endl;
+  //     std::cout << "depth_bias_ gradient: " <<
+  //     depth_bias_.grad().detach().cpu()
+  //               << std::endl;
   //   } else {
-  //     std::cout << "tW2C gradient not defined!" << std::endl;
+  //     std::cout << "depth_bias_ gradient not defined!" << std::endl;
   //   }
+
+  // if (rW2C_.defined() && rW2C_.grad().defined()) {
+  //   auto rW2C_grad_norm = torch::norm(rW2C_.grad()).item<float>();
+  //   std::cout << "rW2C gradient norm: " << rW2C_grad_norm << std::endl;
+  //   std::cout << "rW2C values: " << rW2C_.detach().cpu() << std::endl;
+  // } else {
+  //   std::cout << "rW2C gradient not defined!" << std::endl;
+  // }
+
+  // if (tW2C_.defined() && tW2C_.grad().defined()) {
+  //   auto tW2C_grad_norm = torch::norm(tW2C_.grad()).item<float>();
+  //   std::cout << "tW2C gradient norm: " << tW2C_grad_norm << std::endl;
+  //   std::cout << "tW2C values: " << tW2C_.detach().cpu() << std::endl;
+  // } else {
+  //   std::cout << "tW2C gradient not defined!" << std::endl;
+  // }
   // }
 
   optimizer_->step();
@@ -462,80 +508,6 @@ void GaussianKeyframe::setupStereoData(
     return;  // No stereo image available
   }
 
-  is_stereo_ = true;
-
-  // Calculate right camera pose from left camera
-  Sophus::SE3f Tcw_left = this->getPosef();
-  Sophus::SE3f Twc_left = Tcw_left.inverse();
-
-  // Right camera is offset along camera's x-axis by baseline
-  Eigen::Vector3f baseline_offset(baseline, 0, 0);
-
-  // Transform baseline from camera to world coordinates
-  Eigen::Vector3f baseline_in_world =
-      Twc_left.rotationMatrix() * baseline_offset;
-
-  // Right camera position = left camera position - baseline in world
-  Eigen::Vector3f right_pos = Twc_left.translation() + baseline_in_world;
-
-  // Create right camera world-to-camera transform (same rotation, different
-  // position)
-  Sophus::SE3f Twc_right(Twc_left.rotationMatrix(), right_pos);
-  Sophus::SE3f Tcw_right = Twc_right.inverse();
-
-  // Compute and store right camera transformation matrices
-  Eigen::Matrix4f right_world_view = Tcw_right.matrix();
-  this->world_view_transform_right_ =
-      tensor_utils::EigenMatrix2TorchTensor(right_world_view, device_type)
-          .transpose(0, 1);
-
-  // The projection matrix is the same for both cameras
-  this->full_proj_transform_right_ =
-      (this->world_view_transform_right_.unsqueeze(0).bmm(
-           this->projection_matrix_.unsqueeze(0)))
-          .squeeze(0);
-
-  // Calculate and store right camera center
-  this->camera_center_right_ =
-      this->world_view_transform_right_.inverse().index(
-          {3, torch::indexing::Slice(0, 3)});
-
-  // Preprocess and store right image tensor
-  if (device_type == torch::kCUDA) {
-    cv::cuda::GpuMat right_gpu;
-    right_gpu.upload(this->img_auxiliary_undist_);
-    this->right_original_image_ =
-        tensor_utils::cvGpuMat2TorchTensor_Float32(right_gpu);
-
-    // Also handle multi-resolution if needed
-    if (!gaus_pyramid_original_image_.empty()) {
-      gaus_pyramid_right_original_image_.resize(num_gaus_pyramid_sub_levels_);
-      for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-        cv::cuda::GpuMat img_resized;
-        cv::cuda::resize(
-            right_gpu, img_resized,
-            cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]));
-        gaus_pyramid_right_original_image_[l] =
-            tensor_utils::cvGpuMat2TorchTensor_Float32(img_resized);
-      }
-    }
-  } else {
-    this->right_original_image_ = tensor_utils::cvMat2TorchTensor_Float32(
-        this->img_auxiliary_undist_, device_type);
-
-    // Also handle multi-resolution pyramid for right image
-    if (!gaus_pyramid_original_image_.empty()) {
-      gaus_pyramid_right_original_image_.resize(num_gaus_pyramid_sub_levels_);
-      for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-        cv::Mat img_resized;
-        cv::resize(this->img_auxiliary_undist_, img_resized,
-                   cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]));
-        gaus_pyramid_right_original_image_[l] =
-            tensor_utils::cvMat2TorchTensor_Float32(img_resized, device_type);
-      }
-    }
-  }
-
   // FIX: Convert float32 [0,1] images to uint8 [0,255] images
   cv::Mat left_img_uint8, right_img_uint8;
   this->img_undist_.convertTo(left_img_uint8, CV_8UC3, 255.0);
@@ -593,32 +565,7 @@ void GaussianKeyframe::setupStereoData(
 
   // Create multi-resolution depth images for pyramid training
   if (!gaus_pyramid_original_image_.empty()) {
-    gaus_pyramid_depth_image_.resize(num_gaus_pyramid_sub_levels_);
-
-    if (device_type == torch::kCUDA) {
-      cv::cuda::GpuMat depth_gpu;
-      depth_gpu.upload(depth);
-
-      for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-        cv::cuda::GpuMat depth_resized;
-        // Use INTER_NEAREST for depth to avoid interpolation artifacts
-        cv::cuda::resize(
-            depth_gpu, depth_resized,
-            cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]), 0, 0,
-            cv::INTER_NEAREST);
-        gaus_pyramid_depth_image_[l] =
-            tensor_utils::cvGpuMat2TorchTensor_Float32(depth_resized);
-      }
-    } else {
-      for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-        cv::Mat depth_resized;
-        cv::resize(depth, depth_resized,
-                   cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]), 0,
-                   0, cv::INTER_NEAREST);
-        gaus_pyramid_depth_image_[l] =
-            tensor_utils::cvMat2TorchTensor_Float32(depth_resized, device_type);
-      }
-    }
+    generatePyramidDepth(device_type, depth);
   }
 }
 
@@ -740,12 +687,104 @@ void GaussianKeyframe::setupMonoData(torch::DeviceType device_type,
   //                             max_depth_, Tcw, pcd_path, 2);
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
-GaussianKeyframe::getRightCameraTransforms() const {
-  if (!is_stereo_) {
-    throw std::runtime_error(
-        "Attempted to get right camera transforms for non-stereo keyframe");
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, int, int>
+GaussianKeyframe::getTrainingData(
+    const torch::Tensor& undistort_mask,
+    const std::vector<torch::Tensor>& pyramid_masks,
+    bool doing_pyramid_training) {
+  int training_level =
+      num_gaus_pyramid_sub_levels_;  // Default to full resolution
+
+  if (doing_pyramid_training) {
+    training_level = getCurrentGausPyramidLevel();
   }
-  return std::make_tuple(world_view_transform_right_,
-                         full_proj_transform_right_, camera_center_right_);
+
+  torch::Tensor gt_image, gt_depth, mask;
+  int image_height, image_width;
+
+  if (training_level == num_gaus_pyramid_sub_levels_) {
+    // Full resolution
+    image_height = image_height_;
+    image_width = image_width_;
+    gt_image = original_image_.cuda();
+    mask = undistort_mask;
+
+    if (depth_image_.defined()) {
+      gt_depth = depth_image_.cuda();
+    }
+  } else {
+    // Pyramid level
+    image_height = gaus_pyramid_height_[training_level];
+    image_width = gaus_pyramid_width_[training_level];
+    gt_image = gaus_pyramid_original_image_[training_level].cuda();
+    mask = pyramid_masks[training_level];
+
+    if (!gaus_pyramid_depth_image_.empty() &&
+        training_level < gaus_pyramid_depth_image_.size()) {
+      gt_depth = gaus_pyramid_depth_image_[training_level].cuda();
+    }
+  }
+
+  gt_depth = gt_depth * depth_scale_ + depth_bias_;
+
+  return std::make_tuple(gt_image, gt_depth, mask, image_height, image_width);
+}
+
+// In GaussianKeyframe class
+void GaussianKeyframe::generatePyramidImages(torch::DeviceType device_type) {
+  if (device_type == torch::kCUDA) {
+    cv::cuda::GpuMat img_gpu;
+    img_gpu.upload(img_undist_);
+    gaus_pyramid_original_image_.resize(num_gaus_pyramid_sub_levels_);
+
+    for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
+      cv::cuda::GpuMat img_resized;
+      cv::cuda::resize(
+          img_gpu, img_resized,
+          cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]));
+      gaus_pyramid_original_image_[l] =
+          tensor_utils::cvGpuMat2TorchTensor_Float32(img_resized);
+    }
+  } else {
+    gaus_pyramid_original_image_.resize(num_gaus_pyramid_sub_levels_);
+    for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
+      cv::Mat img_resized;
+      cv::resize(img_undist_, img_resized,
+                 cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]));
+      gaus_pyramid_original_image_[l] =
+          tensor_utils::cvMat2TorchTensor_Float32(img_resized, device_type);
+    }
+  }
+}
+
+// In GaussianKeyframe class
+void GaussianKeyframe::generatePyramidDepth(torch::DeviceType device_type,
+                                            const cv::Mat& depth_mat) {
+  if (!depth_mat.empty()) {
+    gaus_pyramid_depth_image_.resize(num_gaus_pyramid_sub_levels_);
+
+    if (device_type == torch::kCUDA) {
+      cv::cuda::GpuMat depth_gpu;
+      depth_gpu.upload(depth_mat);
+
+      for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
+        cv::cuda::GpuMat depth_resized;
+        cv::cuda::resize(
+            depth_gpu, depth_resized,
+            cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]), 0, 0,
+            cv::INTER_NEAREST);
+        gaus_pyramid_depth_image_[l] =
+            tensor_utils::cvGpuMat2TorchTensor_Float32(depth_resized);
+      }
+    } else {
+      for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
+        cv::Mat depth_resized;
+        cv::resize(depth_mat, depth_resized,
+                   cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]), 0,
+                   0, cv::INTER_NEAREST);
+        gaus_pyramid_depth_image_[l] =
+            tensor_utils::cvMat2TorchTensor_Float32(depth_resized, device_type);
+      }
+    }
+  }
 }

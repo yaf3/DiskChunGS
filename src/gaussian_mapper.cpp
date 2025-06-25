@@ -602,6 +602,8 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
   opt_params_.pose_lr_ = settings_file["Optimization.pose_lr"].operator float();
   opt_params_.exposure_lr_ =
       settings_file["Optimization.exposure_lr"].operator float();
+  opt_params_.depth_scale_bias_lr_ =
+      settings_file["Optimization.depth_scale_bias_lr"].operator float();
   opt_params_.smooth_l1_ =
       (settings_file["Optimization.smooth_l1"].operator int()) != 0;
   opt_params_.opacity_reg_ =
@@ -719,7 +721,8 @@ void GaussianMapper::run() {
           new_kf->computeTransformTensors();
           scene_->addKeyframe(new_kf);
           new_kf->initOptimizer(device_type_, opt_params_.pose_lr_,
-                                opt_params_.exposure_lr_);
+                                opt_params_.exposure_lr_,
+                                opt_params_.depth_scale_bias_lr_);
           kfid_shuffled_ = false;
           keyframe_queue_->notifyNewKeyframeAdded(new_kf);
 
@@ -739,32 +742,7 @@ void GaussianMapper::run() {
       // Prepare multi resolution images for training
       for (auto& kfit : scene_->keyframes()) {
         auto pkf = kfit.second;
-        if (device_type_ == torch::kCUDA) {
-          cv::cuda::GpuMat img_gpu;
-          img_gpu.upload(pkf->img_undist_);
-          pkf->gaus_pyramid_original_image_.resize(
-              num_gaus_pyramid_sub_levels_);
-          for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-            cv::cuda::GpuMat img_resized;
-            cv::cuda::resize(img_gpu, img_resized,
-                             cv::Size(pkf->gaus_pyramid_width_[l],
-                                      pkf->gaus_pyramid_height_[l]));
-            pkf->gaus_pyramid_original_image_[l] =
-                tensor_utils::cvGpuMat2TorchTensor_Float32(img_resized);
-          }
-        } else {
-          pkf->gaus_pyramid_original_image_.resize(
-              num_gaus_pyramid_sub_levels_);
-          for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-            cv::Mat img_resized;
-            cv::resize(pkf->img_undist_, img_resized,
-                       cv::Size(pkf->gaus_pyramid_width_[l],
-                                pkf->gaus_pyramid_height_[l]));
-            pkf->gaus_pyramid_original_image_[l] =
-                tensor_utils::cvMat2TorchTensor_Float32(img_resized,
-                                                        device_type_);
-          }
-        }
+        pkf->generatePyramidImages(device_type_);
 
         if (sensor_type_ == MONOCULAR) {
           pkf->setupMonoData(device_type_, monocular_depth_estimator_,
@@ -781,40 +759,14 @@ void GaussianMapper::run() {
             depth_gpu.upload(pkf->img_auxiliary_undist_);
             pkf->depth_image_ =
                 tensor_utils::cvGpuMat2TorchTensor_Float32(depth_gpu);
-
-            // Create depth pyramid for initial keyframes
-            if (do_gaus_pyramid_training_) {
-              pkf->gaus_pyramid_depth_image_.resize(
-                  num_gaus_pyramid_sub_levels_);
-              for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-                cv::cuda::GpuMat depth_resized;
-                cv::cuda::resize(depth_gpu, depth_resized,
-                                 cv::Size(pkf->gaus_pyramid_width_[l],
-                                          pkf->gaus_pyramid_height_[l]),
-                                 0, 0, cv::INTER_NEAREST);
-                pkf->gaus_pyramid_depth_image_[l] =
-                    tensor_utils::cvGpuMat2TorchTensor_Float32(depth_resized);
-              }
-            }
           } else {
             // CPU version
             pkf->depth_image_ = tensor_utils::cvMat2TorchTensor_Float32(
                 pkf->img_auxiliary_undist_, device_type_);
-
-            if (do_gaus_pyramid_training_) {
-              pkf->gaus_pyramid_depth_image_.resize(
-                  num_gaus_pyramid_sub_levels_);
-              for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-                cv::Mat depth_resized;
-                cv::resize(pkf->img_auxiliary_undist_, depth_resized,
-                           cv::Size(pkf->gaus_pyramid_width_[l],
-                                    pkf->gaus_pyramid_height_[l]),
-                           0, 0, cv::INTER_NEAREST);
-                pkf->gaus_pyramid_depth_image_[l] =
-                    tensor_utils::cvMat2TorchTensor_Float32(depth_resized,
-                                                            device_type_);
-              }
-            }
+          }
+          // Create depth pyramid for initial keyframes
+          if (do_gaus_pyramid_training_) {
+            pkf->generatePyramidDepth(device_type_, pkf->img_auxiliary_undist_);
           }
         }
         if (isdoingDepthDensify()) increasePcdByDepthReconstruction(pkf);
@@ -1106,43 +1058,12 @@ void GaussianMapper::trainForOneIteration() {
   // !viewpoint_cam->done_inactive_geo_densify_)
   //   increasePcdByKeyframeInactiveGeoDensify(viewpoint_cam);
 
-  int training_level = num_gaus_pyramid_sub_levels_;
-  int image_height, image_width;
-  torch::Tensor gt_image, mask;
-  torch::Tensor gt_depth;
-
-  if (isdoingGausPyramidTraining())
-    training_level = viewpoint_cam->getCurrentGausPyramidLevel();
-
-  if (training_level == num_gaus_pyramid_sub_levels_) {
-    image_height = viewpoint_cam->image_height_;
-    image_width = viewpoint_cam->image_width_;
-    gt_image = viewpoint_cam->original_image_.cuda();
-    mask = undistort_mask_[viewpoint_cam->camera_id_];
-
-    // NEW: Use full resolution depth if available
-    if (viewpoint_cam->depth_image_.defined()) {
-      gt_depth = viewpoint_cam->depth_image_.cuda();
-    }
-
-  } else {
-    image_height = viewpoint_cam->gaus_pyramid_height_[training_level];
-    image_width = viewpoint_cam->gaus_pyramid_width_[training_level];
-    gt_image =
-        viewpoint_cam->gaus_pyramid_original_image_[training_level].cuda();
-    mask = scene_->cameras_.at(viewpoint_cam->camera_id_)
-               .gaus_pyramid_undistort_mask_[training_level];
-
-    // Use pyramid level depth if available
-    if (!viewpoint_cam->gaus_pyramid_depth_image_.empty() &&
-        training_level < viewpoint_cam->gaus_pyramid_depth_image_.size()) {
-      gt_depth =
-          viewpoint_cam->gaus_pyramid_depth_image_[training_level].cuda();
-    } else if (viewpoint_cam->depth_image_.defined()) {
-      // Fallback to full resolution depth if pyramid not available
-      // gt_depth = viewpoint_cam->depth_image_.cuda();
-    }
-  }
+  auto [gt_image, gt_depth, mask, image_height, image_width] =
+      viewpoint_cam->getTrainingData(
+          undistort_mask_[viewpoint_cam->camera_id_],
+          scene_->cameras_.at(viewpoint_cam->camera_id_)
+              .gaus_pyramid_undistort_mask_,
+          isdoingGausPyramidTraining());
 
   auto timer_waitForMutex = ProfilingUtils::Timer("waitForMutex");
   // Mutex lock for usage of the gaussian model
@@ -2061,32 +1982,11 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   // increasePcdByKeyframeInactiveGeoDensify(pkf);
 
   pkf->initOptimizer(device_type_, opt_params_.pose_lr_,
-                     opt_params_.exposure_lr_);
+                     opt_params_.exposure_lr_,
+                     opt_params_.depth_scale_bias_lr_);
 
   // Prepare multi resolution images for training
-  if (device_type_ == torch::kCUDA) {
-    cv::cuda::GpuMat img_gpu;
-    img_gpu.upload(pkf->img_undist_);
-    pkf->gaus_pyramid_original_image_.resize(num_gaus_pyramid_sub_levels_);
-    for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-      cv::cuda::GpuMat img_resized;
-      cv::cuda::resize(
-          img_gpu, img_resized,
-          cv::Size(pkf->gaus_pyramid_width_[l], pkf->gaus_pyramid_height_[l]));
-      pkf->gaus_pyramid_original_image_[l] =
-          tensor_utils::cvGpuMat2TorchTensor_Float32(img_resized);
-    }
-  } else {
-    pkf->gaus_pyramid_original_image_.resize(num_gaus_pyramid_sub_levels_);
-    for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-      cv::Mat img_resized;
-      cv::resize(
-          pkf->img_undist_, img_resized,
-          cv::Size(pkf->gaus_pyramid_width_[l], pkf->gaus_pyramid_height_[l]));
-      pkf->gaus_pyramid_original_image_[l] =
-          tensor_utils::cvMat2TorchTensor_Float32(img_resized, device_type_);
-    }
-  }
+  pkf->generatePyramidImages(device_type_);
 
   if (sensor_type_ == MONOCULAR) {
     pkf->setupMonoData(device_type_, monocular_depth_estimator_, min_depth_,
@@ -2100,38 +2000,12 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
       cv::cuda::GpuMat depth_gpu;
       depth_gpu.upload(pkf->img_auxiliary_undist_);
       pkf->depth_image_ = tensor_utils::cvGpuMat2TorchTensor_Float32(depth_gpu);
-
-      // NEW: Create multi-resolution depth images for RGBD
-      if (do_gaus_pyramid_training_) {
-        pkf->gaus_pyramid_depth_image_.resize(num_gaus_pyramid_sub_levels_);
-        for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-          cv::cuda::GpuMat depth_resized;
-          cv::cuda::resize(depth_gpu, depth_resized,
-                           cv::Size(pkf->gaus_pyramid_width_[l],
-                                    pkf->gaus_pyramid_height_[l]),
-                           0, 0, cv::INTER_NEAREST);
-          pkf->gaus_pyramid_depth_image_[l] =
-              tensor_utils::cvGpuMat2TorchTensor_Float32(depth_resized);
-        }
-      }
     } else {
-      // CPU version for RGBD
       pkf->depth_image_ = tensor_utils::cvMat2TorchTensor_Float32(
           pkf->img_auxiliary_undist_, device_type_);
-
-      if (do_gaus_pyramid_training_) {
-        pkf->gaus_pyramid_depth_image_.resize(num_gaus_pyramid_sub_levels_);
-        for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-          cv::Mat depth_resized;
-          cv::resize(pkf->img_auxiliary_undist_, depth_resized,
-                     cv::Size(pkf->gaus_pyramid_width_[l],
-                              pkf->gaus_pyramid_height_[l]),
-                     0, 0, cv::INTER_NEAREST);
-          pkf->gaus_pyramid_depth_image_[l] =
-              tensor_utils::cvMat2TorchTensor_Float32(depth_resized,
-                                                      device_type_);
-        }
-      }
+    }
+    if (do_gaus_pyramid_training_) {
+      pkf->generatePyramidDepth(device_type_, pkf->img_auxiliary_undist_);
     }
   }
 
@@ -4881,29 +4755,7 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
     // std::cout << "[ProcessFrame] Generating point cloud..." << std::endl;
 
     // Prepare multi resolution images for training
-    if (device_type_ == torch::kCUDA) {
-      cv::cuda::GpuMat img_gpu;
-      img_gpu.upload(new_kf->img_undist_);
-      new_kf->gaus_pyramid_original_image_.resize(num_gaus_pyramid_sub_levels_);
-      for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-        cv::cuda::GpuMat img_resized;
-        cv::cuda::resize(img_gpu, img_resized,
-                         cv::Size(new_kf->gaus_pyramid_width_[l],
-                                  new_kf->gaus_pyramid_height_[l]));
-        new_kf->gaus_pyramid_original_image_[l] =
-            tensor_utils::cvGpuMat2TorchTensor_Float32(img_resized);
-      }
-    } else {
-      new_kf->gaus_pyramid_original_image_.resize(num_gaus_pyramid_sub_levels_);
-      for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-        cv::Mat img_resized;
-        cv::resize(new_kf->img_undist_, img_resized,
-                   cv::Size(new_kf->gaus_pyramid_width_[l],
-                            new_kf->gaus_pyramid_height_[l]));
-        new_kf->gaus_pyramid_original_image_[l] =
-            tensor_utils::cvMat2TorchTensor_Float32(img_resized, device_type_);
-      }
-    }
+    new_kf->generatePyramidImages(device_type_);
 
     if (sensor_type_ == MONOCULAR) {
       new_kf->setupMonoData(device_type_, monocular_depth_estimator_,

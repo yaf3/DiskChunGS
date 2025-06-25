@@ -87,7 +87,8 @@ class GaussianKeyframe {
 
   void initOptimizer(torch::DeviceType device_type,
                      float pose_lr,
-                     float exposure_lr);
+                     float exposure_lr,
+                     float depth_scale_bias_lr);
 
   void step();
 
@@ -122,8 +123,15 @@ class GaussianKeyframe {
                      std::shared_ptr<MonoDepth> depth_estimator,
                      float min_depth,
                      float max_depth);
-  std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
-  getRightCameraTransforms() const;
+
+  std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, int, int>
+  getTrainingData(const torch::Tensor& undistort_mask,
+                  const std::vector<torch::Tensor>& pyramid_masks,
+                  bool doing_pyramid_training);
+
+  void generatePyramidImages(torch::DeviceType device_type);
+  void generatePyramidDepth(torch::DeviceType device_type,
+                            const cv::Mat& depth_mat);
 
  public:
   std::size_t fid_;
@@ -147,7 +155,6 @@ class GaussianKeyframe {
   std::vector<std::size_t> gaus_pyramid_height_;  ///< gaus_pyramid image
   std::vector<torch::Tensor>
       gaus_pyramid_original_image_;  ///< gaus_pyramid image
-  std::vector<torch::Tensor> gaus_pyramid_right_original_image_;
   std::vector<torch::Tensor> gaus_pyramid_depth_image_;
   // Tensor gt_alpha_mask_;
 
@@ -163,9 +170,6 @@ class GaussianKeyframe {
   torch::Tensor rW2C_;  // 3x2 rotation parameters (6D representation)
   torch::Tensor tW2C_;  // 3x1 translation parameters
 
-  std::vector<torch::Tensor> Tensor_vec_rW2C_, Tensor_vec_tW2C_,
-      Tensor_vec_exposure_;
-
   float zfar_ = 100.0f;
   float znear_ = 0.01f;
 
@@ -177,14 +181,6 @@ class GaussianKeyframe {
   torch::Tensor full_proj_transform_;   ///< transform tensors
   torch::Tensor camera_center_;         ///< transform tensors
 
-  bool is_stereo_ = false;
-  torch::Tensor right_original_image_;  // Pre-processed right image
-  torch::Tensor
-      world_view_transform_right_;  // Right camera world-to-view transform
-  torch::Tensor
-      full_proj_transform_right_;      // Right camera full projection transform
-  torch::Tensor camera_center_right_;  // Right camera center
-
   std::vector<Point2D> points2D_;
   std::vector<float> kps_pixel_;
   std::vector<float> kps_point_local_;
@@ -192,6 +188,10 @@ class GaussianKeyframe {
   bool done_inactive_geo_densify_ = false;
 
   torch::Tensor exposure_transform_;  // 3x4 matrix
+  torch::Tensor depth_scale_, depth_bias_;
+  std::vector<torch::Tensor> Tensor_vec_rW2C_, Tensor_vec_tW2C_,
+      Tensor_vec_exposure_, Tensor_vec_depth_scale_,
+      Tensor_vec_depth_bias_;  // For optimizer
   bool exposure_optimization_enabled_ = false;
   bool pose_optimization_enabled_ = false;
   float pose_lr_ = 1e-4f;  // Learning rate for pose optimization

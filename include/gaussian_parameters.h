@@ -64,6 +64,7 @@ class GaussianOptimizationParams {
                              float rotation_lr = 0.001f,
                              float pose_lr = 0.0001f,
                              float exposure_lr = 0.05f,
+                             float depth_scale_bias_lr = 0.0001f,
                              float percent_dense = 0.01f,
                              float lambda_dssim = 0.2f,
                              float lambda_depth = 0.001f,
@@ -86,6 +87,7 @@ class GaussianOptimizationParams {
   float rotation_lr_;
   float pose_lr_;
   float exposure_lr_;
+  float depth_scale_bias_lr_;
   float percent_dense_;
   float lambda_dssim_;
   float lambda_depth_;
