@@ -2431,17 +2431,22 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       // Step 2: Render current view and compute penalty (if scene is
       // initialized)
       torch::Tensor prob_penalty = torch::zeros_like(prob_L);
+      torch::Tensor rendered_depth;
+      torch::Tensor main_gaussian_ids;
+      std::vector<std::shared_ptr<GaussianModel>> models;
+      std::vector<std::shared_ptr<Chunk>> visible_chunks;
+      std::vector<int> model_sizes;
+      bool has_rendered_depth = false;
       if (initial_mapped_) {
         std::unique_lock<std::mutex> lock_render(mutex_render_);
-        std::vector<std::shared_ptr<Chunk>> visible_chunks =
-            chunk_manager_->loadVisibleChunks(pkf, true);
+        visible_chunks = chunk_manager_->loadVisibleChunks(pkf, true);
 
         if (!visible_chunks.empty()) {
-          std::vector<std::shared_ptr<GaussianModel>> models;
           for (const auto& chunk : visible_chunks) {
             if (chunk && chunk->getGaussians() &&
                 chunk->getGaussians()->getXYZ().sizes()[0] > 0) {
               models.push_back(chunk->getGaussians());
+              model_sizes.push_back(chunk->getGaussians()->getXYZ().sizes()[0]);
             }
           }
 
@@ -2453,16 +2458,18 @@ void GaussianMapper::increasePcdByDepthReconstruction(
                 pkf->FoVx_, pkf->FoVy_, view_matrix, pkf->projection_matrix_);
 
             torch::Tensor rendered_image = std::get<1>(render_pkg);
-            std::string rgb_render_filename = "./debug_prob/rendered_rgb.png";
-            cv::Mat output_image =
-                tensor_utils::torchTensor2CvMat_Float32(rendered_image);
-            output_image.convertTo(output_image, CV_8UC1, 255.0, 0.0);
-            cv::cvtColor(output_image, output_image, cv::COLOR_RGB2BGR);
-            cv::imwrite(rgb_render_filename, output_image);
+            rendered_depth = std::get<0>(render_pkg);
+            has_rendered_depth = true;
+            main_gaussian_ids = std::get<4>(render_pkg)[0];
+            // std::string rgb_render_filename =
+            // "./debug_prob/rendered_rgb.png"; cv::Mat output_image =
+            //     tensor_utils::torchTensor2CvMat_Float32(rendered_image);
+            // output_image.convertTo(output_image, CV_8UC1, 255.0, 0.0);
+            // cv::cvtColor(output_image, output_image, cv::COLOR_RGB2BGR);
+            // cv::imwrite(rgb_render_filename, output_image);
             prob_penalty = computeLoGProbability(rendered_image);
           }
         }
-        chunk_manager_->releaseChunksFromOptimization(visible_chunks);
       }
 
       // Step 3: Apply scaling factor and compute final probability
@@ -2501,8 +2508,22 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       torch::Tensor valid_depth = (depth >= min_depth_) & (depth <= max_depth_);
       torch::Tensor sample_mask = random_mask & valid_depth;
 
-      // Flatten everything for easier processing
-      sample_mask = sample_mask.flatten();
+      if (has_rendered_depth) {
+        torch::Tensor depth_flat = depth.flatten();
+        torch::Tensor rendered_depth_flat = rendered_depth.flatten();
+        torch::Tensor occlusion_mask = depth_flat < rendered_depth_flat;
+        sample_mask = sample_mask.flatten() & occlusion_mask;
+        removeOccludedGaussians(sample_mask, main_gaussian_ids.flatten(),
+                                models, model_sizes, pkf);
+      } else {
+        // If no rendered depth, we assume all sampled points are valid
+        sample_mask = sample_mask.flatten();
+      }
+
+      chunk_manager_->releaseChunksFromOptimization(visible_chunks);
+
+      // removeOccludedGaussians(sample_mask, main_gaussian_ids.flatten(), pkf);
+
       depth = depth.flatten();
       rgb = rgb.permute({1, 2, 0}).flatten(0, 1);
       prob_L = prob_L.flatten();
@@ -5037,25 +5058,32 @@ void GaussianMapper::visualizeDepthReconstruction(
 
 torch::Tensor GaussianMapper::computeLoGProbability(
     const torch::Tensor& image) {
-  // Convert to grayscale if needed
-  // std::cout << image.sizes() << std::endl;
-  torch::Tensor weights = torch::tensor({0.299, 0.587, 0.114}, image.options());
-  torch::Tensor gray = torch::sum(image * weights.view({3, 1, 1}), 0, true);
-
-  // Apply LoG filter
-  torch::Tensor log_response = torch::nn::functional::conv2d(
-      gray.unsqueeze(0), log_kernel_,
-      torch::nn::functional::Conv2dFuncOptions().padding(log_kernel_.size(2) /
-                                                         2));
-
-  // Take absolute value and normalize
-  log_response = log_response.squeeze(0).abs();
-  torch::Tensor max_val = log_response.max();
-  if (max_val.item<float>() > 0) {
-    log_response = log_response / max_val;
+  torch::Tensor gray_image;
+  if (image.size(0) == 3) {
+    // Convert RGB to grayscale using standard weights
+    torch::Tensor weights =
+        torch::tensor({0.299, 0.587, 0.114}, image.options());
+    gray_image =
+        torch::sum(image * weights.view({3, 1, 1}), 0, true);  // [1, H, W]
+  } else {
+    // Already single channel
+    gray_image = image;
   }
 
-  return log_response.clamp(0, 1);
+  // Calculate padding for "same" behavior
+  int pad_h = disc_kernel_.size(2) / 2;  // kernel height / 2
+  int pad_w = disc_kernel_.size(3) / 2;  // kernel width / 2
+
+  torch::Tensor result = torch::nn::functional::conv2d(
+      gray_image.unsqueeze(0),  // Add batch dimension [1, 1, H, W]
+      disc_kernel_,             // [1, 1, kernel_h, kernel_w]
+      torch::nn::functional::Conv2dFuncOptions().padding({pad_h, pad_w}));
+  // Result is [1, 1, H, W]
+
+  // Extract the result and remove batch/channel dimensions
+  result = result[0][0];  // -> [H, W]
+
+  return result;
 }
 
 // Alternative fast implementation using morphological operations
@@ -5118,24 +5146,31 @@ torch::Tensor GaussianMapper::densify_depth_morphological(
 }
 
 void GaussianMapper::initializeLaplacianOfGaussianKernel() {
-  int kernel_size = 2 * int(3 * log_sigma_) + 1;
-  torch::Tensor x =
-      torch::arange(-kernel_size / 2, kernel_size / 2 + 1,
-                    torch::TensorOptions().dtype(torch::kFloat32));
-  torch::Tensor y = x.unsqueeze(0).t();
-  x = x.unsqueeze(0);
+  int radius = 3;  // Match Python version
+  int kernel_size = 2 * radius + 1;
 
-  torch::Tensor gaussian =
-      torch::exp(-(x * x + y * y) / (2 * log_sigma_ * log_sigma_));
-  gaussian = gaussian / gaussian.sum();
+  // Create coordinate grids
+  torch::Tensor y = torch::arange(
+      -radius, radius + 1, torch::TensorOptions().dtype(torch::kFloat32));
+  torch::Tensor x = y.clone();
 
-  // Laplacian of Gaussian
-  torch::Tensor log_kernel =
-      -(x * x + y * y - 2 * log_sigma_ * log_sigma_) /
-      (log_sigma_ * log_sigma_ * log_sigma_ * log_sigma_) * gaussian;
-  log_kernel = log_kernel - log_kernel.mean();
+  // Create 2D grids
+  auto meshgrid = torch::meshgrid({x, y}, "ij");
+  torch::Tensor X = meshgrid[1];  // x coordinates
+  torch::Tensor Y = meshgrid[0];  // y coordinates
 
-  log_kernel_ = log_kernel.unsqueeze(0).unsqueeze(0).to(device_type_);
+  // Create disc kernel: 1 where distance <= radius + 0.5, 0 elsewhere
+  torch::Tensor distances = torch::sqrt(X * X + Y * Y);
+  torch::Tensor disc_mask = distances <= (radius + 0.5);
+
+  // Initialize kernel with zeros and set disc region to 1
+  disc_kernel_ = torch::zeros({1, 1, kernel_size, kernel_size},
+                              torch::TensorOptions().dtype(torch::kFloat32));
+  disc_kernel_[0][0] = disc_mask.to(torch::kFloat32);
+
+  // Normalize kernel (divide by sum)
+  disc_kernel_ = disc_kernel_ / disc_kernel_.sum();
+  disc_kernel_ = disc_kernel_.to(device_type_);
 }
 
 void GaussianMapper::initializeStereoDepthEstimator() {
@@ -5363,5 +5398,109 @@ void GaussianMapper::updateORBSLAMPoses() {
       // Convert to ORB-SLAM format and update
       orb_kf->SetPose(optimized_pose);
     }
+  }
+}
+
+void GaussianMapper::removeOccludedGaussians(
+    const torch::Tensor& sample_mask,
+    const torch::Tensor& main_gaussian_ids,
+    const std::vector<std::shared_ptr<GaussianModel>>& models,
+    const std::vector<int>& model_sizes,
+    std::shared_ptr<GaussianKeyframe> pkf) {
+  // For now, use all samples as "accurate"
+  torch::Tensor accurate_sample_mask = sample_mask;
+
+  if (!accurate_sample_mask.any().item<bool>()) {
+    return;
+  }
+
+  // std::cout << "accurate_sample_mask size: " << accurate_sample_mask.sizes()
+  //           << std::endl;
+  // std::cout << "main_gaussian_ids size: " << main_gaussian_ids.sizes()
+  //           << std::endl;
+
+  // Step 1: Get main Gaussian IDs for accurate sample locations only
+  torch::Tensor selected_main_gaussians =
+      main_gaussian_ids.index({accurate_sample_mask});
+
+  // Step 2: Filter out invalid IDs
+  torch::Tensor valid_ids_mask = selected_main_gaussians >= 0;
+  if (!valid_ids_mask.any().item<bool>()) {
+    return;
+  }
+
+  selected_main_gaussians = selected_main_gaussians.index({valid_ids_mask});
+
+  // Step 3: Count occurrences - THIS IS THE BOTTLENECK in the old approach
+  auto unique_result = torch::_unique2(selected_main_gaussians,
+                                       /*sorted=*/false,
+                                       /*return_inverse=*/false,
+                                       /*return_counts=*/true);
+
+  torch::Tensor unique_ids = std::get<0>(unique_result);
+  torch::Tensor counts =
+      std::get<2>(unique_result);  // Note: counts is at index 2
+  // std::cout << "Unique IDs: " << unique_ids << std::endl;
+  // std::cout << "Counts: " << counts << std::endl;
+  // std::cout << "Selected main gaussians: " << selected_main_gaussians
+  //           << std::endl;
+
+  // Step 4: Mark Gaussians for removal
+  const int max_replacement_count = 10;
+  torch::Tensor removal_mask = counts >= max_replacement_count;
+
+  if (!removal_mask.any().item<bool>()) {
+    return;
+  }
+
+  torch::Tensor gaussians_to_remove = unique_ids.index({removal_mask});
+
+  // EFFICIENT APPROACH: Don't map to models, create a global removal mask
+  // instead
+  createAndApplyGlobalRemovalMask(gaussians_to_remove, models, model_sizes);
+}
+
+// MUCH MORE EFFICIENT: Create boolean masks instead of loops
+void GaussianMapper::createAndApplyGlobalRemovalMask(
+    const torch::Tensor& global_ids_to_remove,
+    const std::vector<std::shared_ptr<GaussianModel>>& models,
+    const std::vector<int>& model_sizes) {
+  if (global_ids_to_remove.numel() == 0) return;
+
+  // Calculate total gaussians across all models
+  int total_gaussians = 0;
+  for (int size : model_sizes) {
+    total_gaussians += size;
+  }
+
+  // Create a global boolean mask for all gaussians (MUCH faster than loops)
+  torch::Tensor global_removal_mask = torch::zeros(
+      {total_gaussians}, torch::dtype(torch::kBool).device(device_type_));
+
+  // Mark gaussians for removal using advanced indexing (GPU-accelerated)
+  global_removal_mask.index_put_({global_ids_to_remove}, true);
+
+  // Split the global mask back into per-model masks and apply
+  int offset = 0;
+  for (size_t model_idx = 0; model_idx < models.size(); model_idx++) {
+    int model_size = model_sizes[model_idx];
+
+    if (model_size == 0) continue;
+
+    // Extract this model's portion of the removal mask
+    torch::Tensor model_removal_mask =
+        global_removal_mask.slice(0, offset, offset + model_size);
+
+    // Only call prunePoints if there's actually something to remove
+    if (model_removal_mask.any().item<bool>()) {
+      std::unique_lock<std::mutex> lock_render(mutex_render_);
+      models[model_idx]->prunePoints(model_removal_mask);
+
+      int removed_count = model_removal_mask.sum().item<int>();
+      // std::cout << "Model " << model_idx << ": Removed " << removed_count
+      //           << " Gaussians" << std::endl;
+    }
+
+    offset += model_size;
   }
 }

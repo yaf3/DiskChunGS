@@ -286,7 +286,7 @@ class GaussianMapper {
 
   void saveTotalGaussians(std::string name_suffix);
 
-  torch::Tensor log_kernel_;
+  torch::Tensor disc_kernel_;
   float log_sigma_ = 3.0f;  // Sigma for LoG operator
 
   torch::Tensor computeLoGProbability(const torch::Tensor &image);
@@ -300,6 +300,18 @@ class GaussianMapper {
   extractValidKeypointsForDepthAlignment(
       std::shared_ptr<GaussianKeyframe> pkf) const;
   void updateORBSLAMPoses();
+
+  void removeOccludedGaussians(
+      const torch::Tensor &sample_mask,
+      const torch::Tensor &main_gaussian_ids,
+      const std::vector<std::shared_ptr<GaussianModel>> &models,
+      const std::vector<int> &model_sizes,
+      std::shared_ptr<GaussianKeyframe> pkf);
+
+  void createAndApplyGlobalRemovalMask(
+      const torch::Tensor &global_ids_to_remove,
+      const std::vector<std::shared_ptr<GaussianModel>> &models,
+      const std::vector<int> &model_sizes);
 
  private:
   // Updated function declarations:
