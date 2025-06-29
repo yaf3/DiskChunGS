@@ -96,9 +96,6 @@ class ChunkManager {
                int num_io_threads = 32);
 
   ~ChunkManager();
-  // Shutdown the manager (stops background threads)
-  void shutdown();
-  void shutdownWithoutSaving();
 
   // New async methods
   std::future<bool> loadChunkAsync(const ChunkCoord& coord,

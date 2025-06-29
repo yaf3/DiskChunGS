@@ -196,20 +196,6 @@ ChunkManager::~ChunkManager() {
       lru_eviction_thread_.join();
     }
 
-    // Save all active chunks
-    std::vector<std::future<bool>> pending_saves;
-    {
-      std::unique_lock<std::mutex> lock(active_chunks_mutex_);
-      for (const auto& [coord, chunk] : active_chunks_) {
-        pending_saves.push_back(saveChunkAsync(coord, 20));
-      }
-    }
-
-    // Wait for all saves to complete
-    for (auto& future : pending_saves) {
-      future.wait();  // Wait without timeout
-    }
-
     // Shutdown the thread pool
     shutdownThreadPool();
   }
@@ -1546,93 +1532,6 @@ void ChunkManager::addPointsToChunks(const torch::Tensor& points,
   // std::cout << "addPointsToChunks completed in " << duration.count() <<
   // "ms"
   //           << std::endl;
-}
-
-// Updated shutdown to properly clean up threads
-void ChunkManager::shutdown() {
-  std::cout << "ChunkManager shutting down..." << std::endl;
-
-  bool expected = false;
-  if (!is_shutting_down_.compare_exchange_strong(expected, true)) {
-    std::cout << "Shutdown already in progress, ignoring duplicate call"
-              << std::endl;
-    return;  // Already shutting down
-  }
-
-  should_terminate_ = true;
-
-  releaseAllChunksFromOptimization();
-
-  // Stop the LRU thread
-  {
-    std::unique_lock<std::mutex> lock(lru_mutex_);
-    stop_lru_thread_ = true;
-    lru_cv_.notify_all();
-  }
-
-  // Join the LRU thread if it's running
-  if (lru_eviction_thread_.joinable()) {
-    lru_eviction_thread_.join();
-  }
-
-  // Save all active chunks first
-  std::vector<std::future<bool>> pending_saves;
-
-  {
-    std::unique_lock<std::mutex> lock(active_chunks_mutex_);
-    for (const auto& [coord, chunk] : active_chunks_) {
-      // Queue high-priority save
-      pending_saves.push_back(saveChunkAsync(coord, 20));
-    }
-  }
-
-  // Wait for all saves to complete (with timeout)
-  const auto timeout = std::chrono::seconds(30);
-  for (auto& future : pending_saves) {
-    future.wait_for(timeout);
-  }
-
-  std::cout << "All chunks saved" << std::endl;
-
-  // Now shutdown the thread pool
-  shutdownThreadPool();
-
-  std::cout << "ChunkManager shutdown complete" << std::endl;
-}
-
-// Emergency shutdown without saving anything
-void ChunkManager::shutdownWithoutSaving() {
-  std::cout << "ChunkManager emergency shutdown..." << std::endl;
-
-  bool expected = false;
-  if (!is_shutting_down_.compare_exchange_strong(expected, true)) {
-    std::cout << "Shutdown already in progress, ignoring duplicate call"
-              << std::endl;
-    return;  // Already shutting down
-  }
-
-  should_terminate_ = true;
-
-  // Stop the LRU thread
-  {
-    std::unique_lock<std::mutex> lock(lru_mutex_);
-    stop_lru_thread_ = true;
-    lru_cv_.notify_all();
-  }
-
-  // Join the LRU thread if it's running
-  if (lru_eviction_thread_.joinable()) {
-    lru_eviction_thread_.join();
-  }
-
-  // Just shutdown the thread pool
-  shutdownThreadPool();
-
-  // Clear active chunks directly
-  std::unique_lock<std::mutex> lock(active_chunks_mutex_);
-  active_chunks_.clear();
-
-  std::cout << "ChunkManager emergency shutdown complete" << std::endl;
 }
 
 // Get stats

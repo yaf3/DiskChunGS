@@ -10,6 +10,4 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("render_from_pose", &gs::renderFromPose,
         "Render image from a given pose (4x4 transformation matrix)",
         py::arg("pose_tensor"), py::arg("width"), py::arg("height"));
-
-  m.def("cleanup", &gs::cleanup, "Clean up resources before program exit");
 }

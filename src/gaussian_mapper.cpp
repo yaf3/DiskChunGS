@@ -1477,9 +1477,6 @@ void GaussianMapper::signalStop(const bool going_to_stop) {
   std::unique_lock<std::mutex> lock_status(this->mutex_status_);
   this->stopped_ = going_to_stop;
   std::cout << "Signal stop received" << std::endl;
-  // if (chunk_manager_) {
-  //   chunk_manager_->shutdown();
-  // }
 }
 
 bool GaussianMapper::hasMetInitialMappingConditions() {
@@ -2481,15 +2478,29 @@ void GaussianMapper::increasePcdByDepthReconstruction(
             createAndApplyGlobalRemovalMask(gaussians_to_remove, models,
                                             model_sizes);
 
-            // Re-render after gaussian removal
-            torch::Tensor view_matrix = pkf->getRT().transpose(0, 1);
-            auto updated_render_pkg = GaussianRenderer::render(
-                models, pkf, pkf->image_height_, pkf->image_width_,
-                pipe_params_, background_, override_color_, 1.0f, false,
-                pkf->FoVx_, pkf->FoVy_, view_matrix, pkf->projection_matrix_);
+            // Recompute visible chunks after removal
+            std::vector<std::shared_ptr<GaussianModel>> pruned_models;
+            if (!visible_chunks.empty()) {
+              for (const auto& chunk : visible_chunks) {
+                if (chunk && chunk->getGaussians() &&
+                    chunk->getGaussians()->getXYZ().sizes()[0] > 0) {
+                  pruned_models.push_back(chunk->getGaussians());
+                }
+              }
 
-            rendered_depth = std::get<0>(updated_render_pkg);
-            rendered_depth_flat = rendered_depth.flatten();
+              if (!pruned_models.empty()) {
+                // Re-render after gaussian removal
+                torch::Tensor view_matrix = pkf->getRT().transpose(0, 1);
+                auto updated_render_pkg = GaussianRenderer::render(
+                    pruned_models, pkf, pkf->image_height_, pkf->image_width_,
+                    pipe_params_, background_, override_color_, 1.0f, false,
+                    pkf->FoVx_, pkf->FoVy_, view_matrix,
+                    pkf->projection_matrix_);
+
+                rendered_depth = std::get<0>(updated_render_pkg);
+                rendered_depth_flat = rendered_depth.flatten();
+              }
+            }
           }
         }
       }
@@ -4208,17 +4219,6 @@ void GaussianMapper::saveTotalGaussians(std::string name_suffix) {
 
   // Close the file
   outFile.close();
-}
-
-void GaussianMapper::signalStopEvalMode() {
-  std::unique_lock<std::mutex> lock_status(this->mutex_status_);
-  this->stopped_ = true;
-  std::cout << "signalStopEvalMode called" << std::endl;
-  if (chunk_manager_) {
-    chunk_manager_->shutdownWithoutSaving();
-  }
-
-  torch::cuda::synchronize();
 }
 
 std::shared_ptr<GaussianKeyframe> GaussianMapper::useRecentKeyframe() {

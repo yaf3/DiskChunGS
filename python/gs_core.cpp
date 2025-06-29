@@ -14,19 +14,6 @@ namespace gs {
 // Global GaussianMapper instance
 std::shared_ptr<GaussianMapper> g_pGausMapper = nullptr;
 
-void cleanup() {
-  if (g_pGausMapper) {
-    std::cout << "Cleaning up GaussianMapper resources (eval mode)..."
-              << std::endl;
-    g_pGausMapper->signalStopEvalMode();  // Use the eval-specific shutdown
-    std::cout << "Cleanup complete." << std::endl;
-
-    // Reset the global pointer to prevent double-destruction
-    g_pGausMapper.reset();
-    std::cout << "Global pointer reset." << std::endl;
-  }
-}
-
 bool initialize(const std::string& gaussian_cfg_path,
                 const std::string& result_path) {
   // Device
