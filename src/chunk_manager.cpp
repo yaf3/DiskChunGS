@@ -1383,12 +1383,9 @@ ChunkManager::groupPointsByChunk(const torch::Tensor& positions) {
 }
 
 // Add points to appropriate chunks
-// Add points to appropriate chunks - simplified sequential version
-void ChunkManager::addPointsToChunks(
-    const torch::Tensor& points,
-    const torch::Tensor& colors,
-    const torch::Tensor& scales,
-    std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> keyframes) {
+void ChunkManager::addPointsToChunks(const torch::Tensor& points,
+                                     const torch::Tensor& colors,
+                                     const torch::Tensor& scales) {
   auto start_time = std::chrono::steady_clock::now();
   torch::NoGradGuard no_grad;
   const int min_new_points_threshold = 10;

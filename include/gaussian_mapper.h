@@ -136,11 +136,9 @@ class GaussianMapper {
   void increaseIteration(const int inc = 1);
 
   // Gaussian management
-  void addPoints(
-      const torch::Tensor &points,
-      const torch::Tensor &colors,
-      const torch::Tensor &scales,
-      std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> keyframes);
+  void addPoints(const torch::Tensor &points,
+                 const torch::Tensor &colors,
+                 const torch::Tensor &scales);
 
   float positionLearningRateInit();
   float featureLearningRate();
@@ -301,13 +299,6 @@ class GaussianMapper {
       std::shared_ptr<GaussianKeyframe> pkf) const;
   void updateORBSLAMPoses();
 
-  void removeOccludedGaussians(
-      const torch::Tensor &sample_mask,
-      const torch::Tensor &main_gaussian_ids,
-      const std::vector<std::shared_ptr<GaussianModel>> &models,
-      const std::vector<int> &model_sizes,
-      std::shared_ptr<GaussianKeyframe> pkf);
-
   void createAndApplyGlobalRemovalMask(
       const torch::Tensor &global_ids_to_remove,
       const std::vector<std::shared_ptr<GaussianModel>> &models,
@@ -438,13 +429,6 @@ class GaussianMapper {
 
   bool inactive_geo_densify_ = true;
   bool depth_densify_ = false;
-  int depth_cached_ = 0;
-  int max_depth_cached_ = 1;
-  torch::Tensor depth_cache_points_;
-  torch::Tensor depth_cache_colors_;
-  torch::Tensor depth_cache_scales_;
-  std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>
-      depth_cache_keyframes_;
 
   unsigned long min_num_initial_map_kfs_;
   torch::Tensor background_;
@@ -493,7 +477,6 @@ class GaussianMapper {
   std::mutex mutex_external_data_;
 
  public:
-  void initializeMapFromExternal();
   bool isKeyframe(const Sophus::SE3f &current_pose, double current_time);
   void processNewFrame(const cv::Mat &rgb_image,
                        const cv::Mat &depth_or_right_image,

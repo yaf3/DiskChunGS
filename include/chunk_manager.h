@@ -174,11 +174,9 @@ class ChunkManager {
       const torch::Tensor& positions);
 
   // Add points to appropriate chunks (simplified interface)
-  void addPointsToChunks(
-      const torch::Tensor& points,
-      const torch::Tensor& colors,
-      const torch::Tensor& scales,
-      std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> keyframes);
+  void addPointsToChunks(const torch::Tensor& points,
+                         const torch::Tensor& colors,
+                         const torch::Tensor& scales);
 
   // Get chunk at specific coordinate
   std::shared_ptr<Chunk> getChunkAt(const ChunkCoord& coord);
