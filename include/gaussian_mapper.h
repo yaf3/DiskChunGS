@@ -138,7 +138,8 @@ class GaussianMapper {
   // Gaussian management
   void addPoints(const torch::Tensor &points,
                  const torch::Tensor &colors,
-                 const torch::Tensor &scales);
+                 const torch::Tensor &scales,
+                 const torch::Tensor &opacities);
 
   float positionLearningRateInit();
   float featureLearningRate();

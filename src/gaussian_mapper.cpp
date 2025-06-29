@@ -661,8 +661,7 @@ void GaussianMapper::run() {
       auto pMap = pSLAM_->getAtlas()->GetCurrentMap();
       std::vector<ORB_SLAM3::KeyFrame*> vpKFs;
       std::vector<ORB_SLAM3::MapPoint*> vpMPs;
-      torch::Tensor initialSparsePoints;
-      torch::Tensor initialSparseColors;
+      torch::Tensor initialSparsePoints, initialSparseColors, initialOpacities;
       {
         std::unique_lock<std::mutex> lock_map(pMap->mMutexMapUpdate);
         vpKFs = pMap->GetAllKeyFrames();
@@ -673,6 +672,11 @@ void GaussianMapper::run() {
             torch::zeros({static_cast<int64_t>(vpMPs.size()), 3}, options);
         initialSparseColors =
             torch::zeros({static_cast<int64_t>(vpMPs.size()), 3}, options);
+        initialOpacities = general_utils::inverse_sigmoid(
+            0.2f * torch::ones({initialSparsePoints.size(0), 1},
+                               torch::TensorOptions()
+                                   .dtype(torch::kFloat)
+                                   .device(device_type_)));
 
         // Get accessor for direct memory access
         auto accessor_points = initialSparsePoints.accessor<float, 2>();
@@ -773,7 +777,8 @@ void GaussianMapper::run() {
           std::unique_lock<std::mutex> lock_render(mutex_render_);
           scene_->cameras_extent_ = std::get<1>(scene_->getNerfppNorm());
           std::cout << "Adding initial points\n";
-          addPoints(initialSparsePoints, initialSparseColors, torch::Tensor());
+          addPoints(initialSparsePoints, initialSparseColors, torch::Tensor(),
+                    initialOpacities);
           initial_mapped_ = true;
         }
         if (isdoingDepthDensify()) increasePcdByDepthReconstruction(pkf);
@@ -1117,9 +1122,6 @@ void GaussianMapper::trainForOneIteration() {
 
   for (const auto& gaussians : models) {
     gaussians->incrementLocalIteration();
-    // Call oneUpShDegree for each model - this now uses local_iteration_
-    // internally
-    gaussians->oneUpShDegree();
 
     // Update learning rate based on the model's local iteration count
     // gaussians->updateLearningRate();
@@ -1171,7 +1173,7 @@ void GaussianMapper::trainForOneIteration() {
     torch::Tensor rendered_depth, depth_loss;
     rendered_depth = std::get<0>(render_pkg);
     depth_loss = loss_utils::smooth_l1_depth_loss(rendered_depth, gt_depth);
-    loss += lambda_depth * depth_loss;
+    loss += viewpoint_cam->depth_loss_weight * depth_loss;
 
     // if (getIteration() % 100 == 0) {
     //   std::filesystem::create_directories("./debug_mono");
@@ -1623,11 +1625,16 @@ void GaussianMapper::processLocalMappingBABatch(
     torch::Tensor colors_tensor =
         torch::from_blob(all_colors.data(), {num_new_points, 3}, tensor_options)
             .to(device_type_);
+    torch::Tensor opacities_tensor = general_utils::inverse_sigmoid(
+        0.2f *
+        torch::ones(
+            {points_tensor.size(0), 1},
+            torch::TensorOptions().dtype(torch::kFloat).device(device_type_)));
 
     // Process all points at once
     torch::NoGradGuard no_grad;
     std::unique_lock<std::mutex> lock_render(mutex_render_);
-    addPoints(points_tensor, colors_tensor, torch::Tensor());
+    addPoints(points_tensor, colors_tensor, torch::Tensor(), opacities_tensor);
   }
   // timer_addPoints.stop();
 }
@@ -1825,6 +1832,11 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
         torch::from_blob(colors.data(), {num_new_points, 3},
                          torch::TensorOptions().dtype(torch::kFloat32))
             .to(device_type_);
+    torch::Tensor opacities_tensor = general_utils::inverse_sigmoid(
+        0.2f *
+        torch::ones(
+            {points_tensor.size(0), 1},
+            torch::TensorOptions().dtype(torch::kFloat).device(device_type_)));
 
     // Create a map of keyframes for the chunk manager
     std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> loop_keyframes;
@@ -1838,7 +1850,7 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
 
     std::cout << "Adding points to chunks" << std::endl;
     chunk_manager_->addPointsToChunks(points_tensor, colors_tensor,
-                                      torch::Tensor());
+                                      torch::Tensor(), opacities_tensor);
   }
 
   chunk_manager_->releaseAllChunksFromOptimization();
@@ -2188,8 +2200,15 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
               .transpose(0, 1);
       transformPoints(points3D_valid, Twc_tensor);
 
+      torch::Tensor opacities_tensor = general_utils::inverse_sigmoid(
+          0.02f *
+          torch::ones({points3D_valid.size(0), 1}, torch::TensorOptions()
+                                                       .dtype(torch::kFloat)
+                                                       .device(device_type_)));
+
       std::unique_lock<std::mutex> lock_render(mutex_render_);
-      addPoints(points3D_valid, colors_valid, torch::Tensor());
+      addPoints(points3D_valid, colors_valid, torch::Tensor(),
+                opacities_tensor);
     } break;
     case STEREO: {
       // savePly(result_dir_ / (std::to_string(getIteration()) + "_" +
@@ -2260,8 +2279,15 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
               .transpose(0, 1);
       transformPoints(points3D_valid, Twc_tensor);
 
+      torch::Tensor opacities_tensor = general_utils::inverse_sigmoid(
+          0.02f *
+          torch::ones({points3D_valid.size(0), 1}, torch::TensorOptions()
+                                                       .dtype(torch::kFloat)
+                                                       .device(device_type_)));
+
       std::unique_lock<std::mutex> lock_render(mutex_render_);
-      addPoints(points3D_valid, colors_valid, torch::Tensor());
+      addPoints(points3D_valid, colors_valid, torch::Tensor(),
+                opacities_tensor);
     } break;
     case RGBD: {
       cv::cuda::GpuMat img_rgb_gpu, img_depth_gpu;
@@ -2320,8 +2346,15 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
               .transpose(0, 1);
       transformPoints(points3D_valid, Twc_tensor);
 
+      torch::Tensor opacities_tensor = general_utils::inverse_sigmoid(
+          0.02f *
+          torch::ones({points3D_valid.size(0), 1}, torch::TensorOptions()
+                                                       .dtype(torch::kFloat)
+                                                       .device(device_type_)));
+
       std::unique_lock<std::mutex> lock_render(mutex_render_);
-      addPoints(points3D_valid, colors_valid, torch::Tensor());
+      addPoints(points3D_valid, colors_valid, torch::Tensor(),
+                opacities_tensor);
     } break;
     default: {
       throw std::runtime_error("[Gaussian Mapper]Unsupported sensor type!");
@@ -2551,6 +2584,26 @@ void GaussianMapper::increasePcdByDepthReconstruction(
   scales = torch::log(torch::clamp(scales, 1e-6f, 1e6f));
   torch::Tensor sampled_scales = scales.unsqueeze(1).repeat({1, 3});
 
+  // // Compute opacities based on depth (closer = higher opacity)
+  // float min_opacity = 0.02f;  // For furthest points
+  // float max_opacity = 0.2f;   // For closest points
+
+  // // Map depth range [min_depth_, max_depth_] to opacity range [max_opacity,
+  // // min_opacity]
+  // torch::Tensor normalized_depths =
+  //     (sampled_depths - min_depth_) / (max_depth_ - min_depth_);
+  // normalized_depths = torch::clamp(normalized_depths, 0.0f, 1.0f);
+
+  // // Linear interpolation: opacity = max_opacity - (max_opacity -
+  // min_opacity) *
+  // // normalized_depth This gives max_opacity for min_depth_ (closest) and
+  // // min_opacity for max_depth_ (furthest)
+  // const float opacity_range = max_opacity - min_opacity;
+  // torch::Tensor opacities = max_opacity - opacity_range * normalized_depths;
+  // opacities =
+  //     opacities.unsqueeze(1);  // Add dimension to match expected shape [N,
+  //     1]
+
   // Compute opacities (like Python - lower for inaccurate points)
   torch::Tensor opacities =
       torch::full({points3D.size(0), 1}, 0.07f,
@@ -2559,7 +2612,7 @@ void GaussianMapper::increasePcdByDepthReconstruction(
   std::cout << "New points from depth size: " << points3D.sizes() << std::endl;
 
   std::unique_lock lock_render(mutex_render_);
-  addPoints(points3D, sampled_colors, sampled_scales);
+  addPoints(points3D, sampled_colors, sampled_scales, opacities);
 }
 
 void GaussianMapper::recordKeyframeRendered(
@@ -3387,7 +3440,8 @@ void GaussianMapper::initializeChunkManagement() {
 
 void GaussianMapper::addPoints(const torch::Tensor& points,
                                const torch::Tensor& colors,
-                               const torch::Tensor& scales) {
+                               const torch::Tensor& scales,
+                               const torch::Tensor& opacities) {
   // std::cout << "addPoints called in GaussianMapper" << std::endl;
   // Make sure chunk manager has current iteration
   if (!chunk_manager_) {
@@ -3399,7 +3453,7 @@ void GaussianMapper::addPoints(const torch::Tensor& points,
   // std::endl;
 
   // Delegate to chunk manager
-  chunk_manager_->addPointsToChunks(points, colors, scales);
+  chunk_manager_->addPointsToChunks(points, colors, scales, opacities);
 }
 
 /**
@@ -3957,8 +4011,8 @@ void GaussianMapper::saveChunkManifest(std::filesystem::path scene_dir) {
         Json::Value::Int64(chunk->getGaussians()->getXYZ().size(0));
     chunk_entry["local_iteration"] =
         Json::Value::Int64(chunk->getGaussians()->getLocalIteration());
-    chunk_entry["active_sh_degree"] =
-        Json::Value::Int64(chunk->getGaussians()->active_sh_degree_);
+    chunk_entry["sh_degree"] =
+        Json::Value::Int64(chunk->getGaussians()->sh_degree_);
 
     chunk_manager_->releaseChunksFromOptimization({chunk_coords[i]});
     chunk_manager_->saveChunkSync(chunk_coords[i]);
@@ -4912,6 +4966,10 @@ void GaussianMapper::initializeStereoDepthEstimator() {
       "fast_acvnet_plus_kitti_2015_opset16_" +
       std::to_string(model_resolution.height) + "x" +
       std::to_string(model_resolution.width) + ".onnx";
+
+  // std::string model_path =
+  //     "/workspace/repo/models/crestereo/"
+  //     "crestereo_init_iter20_720x1280.onnx";
   this->stereo_depth_estimator_ = std::make_shared<StereoDepth>(model_path);
 }
 

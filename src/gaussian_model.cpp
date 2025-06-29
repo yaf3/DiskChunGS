@@ -19,11 +19,11 @@
 #include "include/gaussian_rasterizer.h"
 
 GaussianModel::GaussianModel(const int sh_degree)
-    : active_sh_degree_(0),
+    : sh_degree_(0),
       position_lr_init_(0.00005),
       position_lr_decay_(0.99998),
       local_iteration_(0) {
-  this->max_sh_degree_ = sh_degree;
+  this->sh_degree_ = sh_degree;
 
   // Device
   if (torch::cuda::is_available())
@@ -35,11 +35,11 @@ GaussianModel::GaussianModel(const int sh_degree)
 }
 
 GaussianModel::GaussianModel(const GaussianModelParams& model_params)
-    : active_sh_degree_(0),
+    : sh_degree_(0),
       position_lr_init_(0.00005),
       position_lr_decay_(0.99998),
       local_iteration_(0) {
-  this->max_sh_degree_ = model_params.sh_degree_;
+  this->sh_degree_ = model_params.sh_degree_;
 
   // Device
   if (model_params.data_device_ == "cuda")
@@ -89,25 +89,14 @@ torch::Tensor GaussianModel::getCovarianceActivation(int scaling_modifier) {
   return actual_covariance;
 }
 
-void GaussianModel::oneUpShDegree() {
-  // Only increase SH degree every 1000 local iterations
-  if (local_iteration_ % 1000 == 0 &&
-      this->active_sh_degree_ < this->max_sh_degree_)
-    this->active_sh_degree_ += 1;
-}
-
-void GaussianModel::setShDegree(const int sh) {
-  this->active_sh_degree_ =
-      (sh > this->max_sh_degree_ ? this->max_sh_degree_ : sh);
-}
-
 void GaussianModel::createFromPcd(const torch::Tensor& fused_point_cloud,
                                   const torch::Tensor& color,
-                                  const torch::Tensor& new_scales) {
+                                  const torch::Tensor& new_scales,
+                                  const torch::Tensor& new_opacities) {
   int num_points = static_cast<int>(fused_point_cloud.sizes()[0]);
 
   torch::Tensor fused_color = sh_utils::RGB2SH(color);
-  auto temp = this->max_sh_degree_ + 1;
+  auto temp = this->sh_degree_ + 1;
   torch::Tensor features = torch::zeros(
       {fused_color.size(0), 3, temp * temp},
       torch::TensorOptions().dtype(torch::kFloat).device(device_type_));
@@ -138,11 +127,7 @@ void GaussianModel::createFromPcd(const torch::Tensor& fused_point_cloud,
                    torch::TensorOptions().device(device_type_));
   rots.index({torch::indexing::Slice(), 0}) = 1;
 
-  torch::Tensor opacities = general_utils::inverse_sigmoid(
-      0.5f *
-      torch::ones(
-          {fused_point_cloud.size(0), 1},
-          torch::TensorOptions().dtype(torch::kFloat).device(device_type_)));
+  torch::Tensor opacities = new_opacities;
 
   this->exist_since_iter_ = torch::zeros(
       {fused_point_cloud.size(0)},
@@ -176,13 +161,14 @@ void GaussianModel::createFromPcd(const torch::Tensor& fused_point_cloud,
 void GaussianModel::increasePcd(const torch::Tensor& new_point_cloud,
                                 const torch::Tensor& new_colors,
                                 const torch::Tensor& new_scales,
+                                const torch::Tensor& new_opacities,
                                 const int iteration) {
   // auto time1 = std::chrono::steady_clock::now();
   auto num_new_points = new_point_cloud.size(0);
   if (num_new_points == 0) return;
 
   torch::Tensor new_fused_colors = sh_utils::RGB2SH(new_colors);
-  auto temp = this->max_sh_degree_ + 1;
+  auto temp = this->sh_degree_ + 1;
   torch::Tensor features = torch::zeros(
       {new_fused_colors.size(0), 3, temp * temp},
       torch::TensorOptions().dtype(torch::kFloat).device(device_type_));
@@ -209,11 +195,6 @@ void GaussianModel::increasePcd(const torch::Tensor& new_point_cloud,
       torch::zeros({new_point_cloud.size(0), 4},
                    torch::TensorOptions().device(device_type_));
   rots.index({torch::indexing::Slice(), 0}) = 1;
-  torch::Tensor opacities = general_utils::inverse_sigmoid(
-      0.5f *
-      torch::ones(
-          {new_point_cloud.size(0), 1},
-          torch::TensorOptions().dtype(torch::kFloat).device(device_type_)));
 
   torch::Tensor new_exist_since_iter = torch::full(
       {new_point_cloud.size(0)}, iteration,
@@ -232,7 +213,7 @@ void GaussianModel::increasePcd(const torch::Tensor& new_point_cloud,
                   torch::indexing::Slice(1, features.size(2))})
           .transpose(1, 2)
           .contiguous();
-  auto new_opacities = opacities;
+  auto new_opacities_tensor = new_opacities;
   auto new_scaling = scales;
   auto new_rotation = rots;
 
@@ -243,7 +224,7 @@ void GaussianModel::increasePcd(const torch::Tensor& new_point_cloud,
   // <<std::endl;
 
   densificationPostfix(new_xyz, new_features_dc, new_features_rest,
-                       new_opacities, new_scaling, new_rotation,
+                       new_opacities_tensor, new_scaling, new_rotation,
                        new_exist_since_iter);
 
   c10::cuda::CUDACachingAllocator::emptyCache();
@@ -970,7 +951,7 @@ void GaussianModel::loadPly(std::filesystem::path ply_path) {
     std::cerr << "tinyply exception: " << e.what() << std::endl;
   }
 
-  int n_f_rest = ((max_sh_degree_ + 1) * (max_sh_degree_ + 1) - 1) * 3;
+  int n_f_rest = ((sh_degree_ + 1) * (sh_degree_ + 1) - 1) * 3;
   if (n_f_rest >= 0) {
     std::vector<std::string> f_rest_element_names(n_f_rest);
     for (int i = 0; i < n_f_rest; ++i)
@@ -1079,7 +1060,7 @@ void GaussianModel::loadPly(std::filesystem::path ply_path) {
 
   GAUSSIAN_MODEL_TENSORS_TO_VEC
 
-  this->active_sh_degree_ = this->max_sh_degree_;
+  this->sh_degree_ = sh_degree_;
 }
 
 void GaussianModel::savePly(std::filesystem::path result_path) {
@@ -1205,8 +1186,7 @@ void GaussianModel::save_checkpoint(const std::string& path) {
   model_archive.write("position_lrs_", position_lrs_);
   model_archive.save_to(path + "/model.pt");
 
-  assert(active_sh_degree_ >= 0);
-  assert(max_sh_degree_ <= 3);
+  assert(sh_degree_ <= 3);
   assert(position_lr_init_ >= 0);
   assert(position_lr_decay_ > 0);
   assert(position_lr_min_ >= 0);
@@ -1216,8 +1196,7 @@ void GaussianModel::save_checkpoint(const std::string& path) {
 
   // Save configuration as before
   torch::serialize::OutputArchive config_archive;
-  config_archive.write("active_sh_degree_", torch::tensor(active_sh_degree_));
-  config_archive.write("max_sh_degree_", torch::tensor(max_sh_degree_));
+  config_archive.write("sh_degree_", torch::tensor(sh_degree_));
   config_archive.write("position_lr_init_", torch::tensor(position_lr_init_));
   config_archive.write("position_lr_decay_", torch::tensor(position_lr_decay_));
   config_archive.write("position_lr_min_", torch::tensor(position_lr_min_));
@@ -1373,13 +1352,11 @@ void GaussianModel::load_checkpoint_incremental(
   }
 
   // Temporary tensors to hold the loaded scalar values
-  torch::Tensor active_sh_degree_tensor, max_sh_degree_tensor,
-      local_iteration_tensor;
+  torch::Tensor sh_degree_tensor, local_iteration_tensor;
   torch::Tensor percent_dense_tensor, position_lr_init_tensor,
       position_lr_decay_tensor, position_lr_min_tensor;
 
-  config_archive.read("active_sh_degree_", active_sh_degree_tensor);
-  config_archive.read("max_sh_degree_", max_sh_degree_tensor);
+  config_archive.read("sh_degree_", sh_degree_tensor);
   config_archive.read("local_iteration_", local_iteration_tensor);
 
   // Load float values
@@ -1389,10 +1366,8 @@ void GaussianModel::load_checkpoint_incremental(
   config_archive.read("position_lr_min_", position_lr_min_tensor);
 
   // Convert tensors back to native types
-  active_sh_degree_ = active_sh_degree_tensor.item<int>();
-  assert(active_sh_degree_ >= 0);
-  max_sh_degree_ = max_sh_degree_tensor.item<int>();
-  assert(max_sh_degree_ <= 3);
+  sh_degree_ = sh_degree_tensor.item<int>();
+  assert(sh_degree_ <= 3);
 
   local_iteration_ = local_iteration_tensor.item<int>();
   assert(local_iteration_ >= 0);

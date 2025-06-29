@@ -197,4 +197,6 @@ class GaussianKeyframe {
   float pose_lr_ = 1e-4f;  // Learning rate for pose optimization
   std::shared_ptr<torch::optim::Adam> optimizer_;
   int local_iterations_ = 0;  // Per-keyframe counter
+  float depth_loss_weight = 1e-2f;
+  float depth_loss_weight_decay_ = 0.9;
 };

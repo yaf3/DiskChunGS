@@ -1371,7 +1371,8 @@ ChunkManager::groupPointsByChunk(const torch::Tensor& positions) {
 // Add points to appropriate chunks
 void ChunkManager::addPointsToChunks(const torch::Tensor& points,
                                      const torch::Tensor& colors,
-                                     const torch::Tensor& scales) {
+                                     const torch::Tensor& scales,
+                                     const torch::Tensor& opacities) {
   auto start_time = std::chrono::steady_clock::now();
   torch::NoGradGuard no_grad;
   const int min_new_points_threshold = 10;
@@ -1388,6 +1389,7 @@ void ChunkManager::addPointsToChunks(const torch::Tensor& points,
   // Convert to CUDA for processing - only once
   torch::Tensor points_cuda = points.to(torch::kCUDA);
   torch::Tensor colors_cuda = colors.to(torch::kCUDA);
+  torch::Tensor opacities_cuda = opacities.to(torch::kCUDA);
   torch::Tensor scales_cuda;
   if (scales.defined() && scales.size(0) > 0)
     scales_cuda = scales.to(torch::kCUDA);
@@ -1412,6 +1414,7 @@ void ChunkManager::addPointsToChunks(const torch::Tensor& points,
     // Extract points for this chunk
     torch::Tensor chunk_points = points_cuda.index({chunk_mask});
     torch::Tensor chunk_colors = colors_cuda.index({chunk_mask});
+    torch::Tensor chunk_opacities = opacities_cuda.index({chunk_mask});
 
     torch::Tensor chunk_scales;
     if (scales.defined() && scales.size(0) > 0)
@@ -1464,11 +1467,12 @@ void ChunkManager::addPointsToChunks(const torch::Tensor& points,
 
         // Add points to existing chunk
         if (chunk_scales.defined() && chunk_scales.size(0) > 0) {
-          chunk->getGaussians()->increasePcd(
-              chunk_points, chunk_colors, chunk_scales, getCurrentIteration());
+          chunk->getGaussians()->increasePcd(chunk_points, chunk_colors,
+                                             chunk_scales, chunk_opacities,
+                                             getCurrentIteration());
         } else {
           chunk->getGaussians()->increasePcd(chunk_points, chunk_colors,
-                                             torch::Tensor(),
+                                             torch::Tensor(), chunk_opacities,
                                              getCurrentIteration());
         }
       } else {
@@ -1508,10 +1512,10 @@ void ChunkManager::addPointsToChunks(const torch::Tensor& points,
       // Initialize the Gaussian model
       if (chunk_scales.defined() && chunk_scales.size(0) > 0) {
         chunk->getGaussians()->createFromPcd(chunk_points, chunk_colors,
-                                             chunk_scales);
+                                             chunk_scales, chunk_opacities);
       } else {
         chunk->getGaussians()->createFromPcd(chunk_points, chunk_colors,
-                                             torch::Tensor());
+                                             torch::Tensor(), chunk_opacities);
       }
       chunk->getGaussians()->trainingSetup(opt_params_);
     }

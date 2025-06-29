@@ -424,6 +424,8 @@ void GaussianKeyframe::step() {
   // }
   // }
 
+  depth_loss_weight *= depth_loss_weight_decay_;
+
   optimizer_->step();
   optimizer_->zero_grad();
 
@@ -525,15 +527,21 @@ void GaussianKeyframe::setupStereoData(
   cv::Mat depth = depth_estimator->estimate_metric_depth(
       left_img_uint8, right_img_uint8, this->intr_[0], baseline);
 
-  cv::Mat min_depth_mask, max_depth_mask;
-  cv::threshold(depth, min_depth_mask, min_depth, 1.0, cv::THRESH_BINARY);
-  cv::threshold(depth, max_depth_mask, max_depth, 1.0, cv::THRESH_BINARY_INV);
+  cv::max(depth, min_depth,
+          depth);  // Set values < min_depth to min_depth
+  cv::min(depth, max_depth,
+          depth);  // Set values > max_depth to max_depth
 
-  cv::Mat combined_mask;
-  cv::multiply(max_depth_mask, min_depth_mask, combined_mask);
+  // cv::Mat min_depth_mask, max_depth_mask;
+  // cv::threshold(depth, min_depth_mask, min_depth, 1.0, cv::THRESH_BINARY);
+  // cv::threshold(depth, max_depth_mask, max_depth, 1.0,
+  // cv::THRESH_BINARY_INV);
 
-  // Apply final mask to depth map
-  cv::cuda::multiply(depth, combined_mask, depth);
+  // cv::Mat combined_mask;
+  // cv::multiply(max_depth_mask, min_depth_mask, combined_mask);
+
+  // // Apply final mask to depth map
+  // cv::cuda::multiply(depth, combined_mask, depth);
   // Get some depth statistics
   // if (!depth.empty()) {
   //   double min_depth, max_depth;
@@ -562,6 +570,12 @@ void GaussianKeyframe::setupStereoData(
   // Store depth image as tensor
   this->depth_image_ =
       tensor_utils::cvMat2TorchTensor_Float32(depth, torch::kCUDA);
+
+  // std::string gt_filename =
+  //     "./debug_mono/gt_depth_" + std::to_string(this->fid_) + ".png";
+  // colorize_and_save_depth(depth_image_.detach().cpu(), gt_filename,
+  // min_depth,
+  //                         max_depth);
 
   // Create multi-resolution depth images for pyramid training
   if (!gaus_pyramid_original_image_.empty()) {

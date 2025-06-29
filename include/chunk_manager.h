@@ -173,7 +173,8 @@ class ChunkManager {
   // Add points to appropriate chunks (simplified interface)
   void addPointsToChunks(const torch::Tensor& points,
                          const torch::Tensor& colors,
-                         const torch::Tensor& scales);
+                         const torch::Tensor& scales,
+                         const torch::Tensor& opacities);
 
   // Get chunk at specific coordinate
   std::shared_ptr<Chunk> getChunkAt(const ChunkCoord& coord);

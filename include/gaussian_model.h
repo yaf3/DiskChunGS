@@ -79,20 +79,19 @@ class GaussianModel {
   torch::Tensor getOpacityActivation();
   torch::Tensor getCovarianceActivation(int scaling_modifier = 1);
 
-  void oneUpShDegree();
-  void setShDegree(const int sh);
-
   int getLocalIteration() const { return local_iteration_; }
   void incrementLocalIteration(int inc = 1) { local_iteration_ += inc; }
   void setLocalIteration(int iter) { local_iteration_ = iter; }
 
   void createFromPcd(const torch::Tensor& fused_point_cloud,
                      const torch::Tensor& color,
-                     const torch::Tensor& new_scales);
+                     const torch::Tensor& new_scales,
+                     const torch::Tensor& new_opacities);
 
   void increasePcd(const torch::Tensor& new_point_cloud,
                    const torch::Tensor& new_colors,
                    const torch::Tensor& new_scales,
+                   const torch::Tensor& new_opacities,
                    const int iteration);
 
   void applyScaledTransformation(
@@ -189,8 +188,7 @@ class GaussianModel {
  public:
   torch::DeviceType device_type_;
 
-  int active_sh_degree_;
-  int max_sh_degree_;
+  int sh_degree_;
 
   torch::Tensor xyz_;
   torch::Tensor features_dc_;

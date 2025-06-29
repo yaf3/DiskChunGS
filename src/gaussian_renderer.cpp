@@ -88,7 +88,8 @@ GaussianRenderer::render(
       if (pc->getXYZ().sizes()[0] == 0) {
         throw std::runtime_error("Empty model");
       }
-      active_sh_degree = std::max(active_sh_degree, pc->active_sh_degree_);
+      active_sh_degree = pc->sh_degree_;
+      break;
     }
   }
 
@@ -162,7 +163,7 @@ GaussianRenderer::render(
       colors_precomp = override_color;
     } else {
       if (pipe.convert_SHs_) {
-        int max_sh_degree = pc->max_sh_degree_ + 1;
+        int max_sh_degree = pc->sh_degree_ + 1;
         torch::Tensor shs_view = pc->getFeatures().transpose(1, 2).view(
             {-1, 3, max_sh_degree * max_sh_degree});
         torch::Tensor dir_pp =
@@ -171,8 +172,8 @@ GaussianRenderer::render(
         auto dir_pp_normalized =
             dir_pp /
             torch::frobenius_norm(dir_pp, /*dim=*/{1}, /*keepdim=*/true);
-        auto sh2rgb = sh_utils::eval_sh(pc->active_sh_degree_, shs_view,
-                                        dir_pp_normalized);
+        auto sh2rgb =
+            sh_utils::eval_sh(pc->sh_degree_, shs_view, dir_pp_normalized);
         colors_precomp = torch::clamp_min(sh2rgb + 0.5, 0.0);
       } else {
         if (pipe.separate_sh_) {
