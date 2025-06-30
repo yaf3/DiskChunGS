@@ -1242,45 +1242,59 @@ std::vector<ChunkCoord> ChunkManager::frustumCullChunks(
   // Determine search radius - consider reducing for small chunks
   int search_radius = std::ceil(keyframe->zfar_ / chunk_size_);
 
-  // Create a flattened list of candidate chunks for parallel processing
   std::vector<ChunkCoord> candidate_chunks;
-  candidate_chunks.reserve((2 * search_radius + 1) * (2 * search_radius + 1) *
-                           (2 * search_radius + 1));
+  const int total_chunks = (2 * search_radius + 1) * (2 * search_radius + 1) *
+                           (2 * search_radius + 1);
+  candidate_chunks.reserve(total_chunks);
 
-  for (int dx = -search_radius; dx <= search_radius; dx++) {
-    for (int dy = -search_radius; dy <= search_radius; dy++) {
-      for (int dz = -search_radius; dz <= search_radius; dz++) {
-        ChunkCoord check_coord{camera_chunk.x + dx, camera_chunk.y + dy,
-                               camera_chunk.z + dz};
+  // Pre-allocate with maximum possible size
+  std::vector<ChunkCoord> temp_candidates(total_chunks);
+  std::vector<char> valid_mask(total_chunks, 0);
 
-        // Quick distance check before adding to candidates
-        Eigen::Vector3f chunk_center = getChunkCenter(check_coord);
-        float dist_to_camera = (chunk_center - camera_position).norm();
-        if (dist_to_camera <= keyframe->zfar_ + chunk_size_ * 1.732f) {
-          candidate_chunks.push_back(check_coord);
-        }
-      }
+  const int side_length = 2 * search_radius + 1;
+  const float zfar_plus_chunk = keyframe->zfar_ + chunk_size_ * 0.866f;
+
+#pragma omp parallel for
+  for (int idx = 0; idx < total_chunks; idx++) {
+    // Convert 1D index back to 3D coordinates
+    int dz = idx % side_length - search_radius;
+    int dy = (idx / side_length) % side_length - search_radius;
+    int dx = idx / (side_length * side_length) - search_radius;
+
+    ChunkCoord check_coord{camera_chunk.x + dx, camera_chunk.y + dy,
+                           camera_chunk.z + dz};
+
+    // Quick distance check
+    Eigen::Vector3f chunk_center = getChunkCenter(check_coord);
+    float dist_to_camera = (chunk_center - camera_position).norm();
+
+    if (dist_to_camera <= zfar_plus_chunk) {
+      temp_candidates[idx] = check_coord;
+      valid_mask[idx] = 1;
+    }
+  }
+
+  // Serial collection of valid candidates
+  for (int i = 0; i < total_chunks; i++) {
+    if (valid_mask[i]) {
+      candidate_chunks.push_back(temp_candidates[i]);
     }
   }
 
   // Vector to hold visibility results
-  std::vector<bool> visibility_results(candidate_chunks.size(), false);
-
-  // Parallel processing of candidate chunks
+  std::vector<int> visibility_results(candidate_chunks.size(), 0);
 #pragma omp parallel for
   for (size_t i = 0; i < candidate_chunks.size(); i++) {
     const ChunkCoord& check_coord = candidate_chunks[i];
     AABB chunk_aabb = getChunkAABB(check_coord);
     bool visible = test_AABB_against_frustum_eigen(vp_matrix, chunk_aabb);
-#pragma omp critical
-    {
-      visibility_results[i] = visible;
-    }
+
+    visibility_results[i] = visible ? 1 : 0;
   }
 
-  // Collect visible chunks (serial operation)
+  // Collect visible chunks
   std::vector<ChunkCoord> visible_coords;
-  visible_coords.reserve(candidate_chunks.size() / 4);  // Estimate
+  visible_coords.reserve(candidate_chunks.size() / 4);
 
   for (size_t i = 0; i < candidate_chunks.size(); i++) {
     if (visibility_results[i]) {
