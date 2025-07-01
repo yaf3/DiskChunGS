@@ -50,7 +50,7 @@ bool test_AABB_against_frustum_eigen(const Eigen::Matrix4f& MVP,
     outside_right[i] = x > w;
     outside_bottom[i] = y < -w;
     outside_top[i] = y > w;
-    outside_near[i] = z < 0;
+    outside_near[i] = z < -w;
     outside_far[i] = z > w;
 
     // If any corner is inside, we're done
@@ -128,7 +128,7 @@ Eigen::Matrix4f ChunkManager::createProjectionMatrix(
   float fovX = keyframe->FoVx_;
   float fovY = keyframe->FoVy_;
   float znear = keyframe->znear_;
-  float zfar = keyframe->zfar_;
+  float zfar = 3 * keyframe->zfar_;
 
   float tanHalfFovY = std::tan(fovY / 2);
   float tanHalfFovX = std::tan(fovX / 2);
@@ -1231,7 +1231,14 @@ std::vector<ChunkCoord> ChunkManager::frustumCullChunks(
 
   Eigen::Matrix4f view_matrix =
       keyframe->getWorld2View2(keyframe->trans_, keyframe->scale_);
-  Eigen::Matrix4f proj_matrix = createProjectionMatrix(keyframe);
+  torch::Tensor tensor_matrix = keyframe->projection_matrix_;
+
+  // Ensure tensor is on CPU and contiguous
+  tensor_matrix = tensor_matrix.cpu().contiguous();
+
+  // Get data pointer and create Eigen matrix
+  float* data_ptr = tensor_matrix.data_ptr<float>();
+  Eigen::Matrix4f proj_matrix = Eigen::Map<Eigen::Matrix4f>(data_ptr);
   Eigen::Matrix4f vp_matrix = proj_matrix * view_matrix;
 
   // Get camera position for chunk search
@@ -1240,49 +1247,31 @@ std::vector<ChunkCoord> ChunkManager::frustumCullChunks(
   ChunkCoord camera_chunk = getChunkCoord(camera_position);
 
   // Determine search radius - consider reducing for small chunks
-  int search_radius = std::ceil(keyframe->zfar_ / chunk_size_);
+  int search_radius =
+      std::ceil(keyframe->zfar_ / chunk_size_ * std::sqrt(3.0f)) + 2;
 
+  // Generate chunks directly within spherical bounds
   std::vector<ChunkCoord> candidate_chunks;
   const int total_chunks = (2 * search_radius + 1) * (2 * search_radius + 1) *
                            (2 * search_radius + 1);
   candidate_chunks.reserve(total_chunks);
 
-  // Pre-allocate with maximum possible size
-  std::vector<ChunkCoord> temp_candidates(total_chunks);
-  std::vector<char> valid_mask(total_chunks, 0);
-
   const int side_length = 2 * search_radius + 1;
-  const float zfar_plus_chunk = keyframe->zfar_ + chunk_size_ * 0.866f;
 
-#pragma omp parallel for
-  for (int idx = 0; idx < total_chunks; idx++) {
-    // Convert 1D index back to 3D coordinates
-    int dz = idx % side_length - search_radius;
-    int dy = (idx / side_length) % side_length - search_radius;
-    int dx = idx / (side_length * side_length) - search_radius;
-
-    ChunkCoord check_coord{camera_chunk.x + dx, camera_chunk.y + dy,
-                           camera_chunk.z + dz};
-
-    // Quick distance check
-    Eigen::Vector3f chunk_center = getChunkCenter(check_coord);
-    float dist_to_camera = (chunk_center - camera_position).norm();
-
-    if (dist_to_camera <= zfar_plus_chunk) {
-      temp_candidates[idx] = check_coord;
-      valid_mask[idx] = 1;
-    }
-  }
-
-  // Serial collection of valid candidates
-  for (int i = 0; i < total_chunks; i++) {
-    if (valid_mask[i]) {
-      candidate_chunks.push_back(temp_candidates[i]);
+  // Generate all candidate chunks without distance filtering
+  for (int dx = -search_radius; dx <= search_radius; dx++) {
+    for (int dy = -search_radius; dy <= search_radius; dy++) {
+      for (int dz = -search_radius; dz <= search_radius; dz++) {
+        ChunkCoord check_coord{camera_chunk.x + dx, camera_chunk.y + dy,
+                               camera_chunk.z + dz};
+        candidate_chunks.push_back(check_coord);
+      }
     }
   }
 
   // Vector to hold visibility results
   std::vector<int> visibility_results(candidate_chunks.size(), 0);
+
 #pragma omp parallel for
   for (size_t i = 0; i < candidate_chunks.size(); i++) {
     const ChunkCoord& check_coord = candidate_chunks[i];
@@ -1295,7 +1284,6 @@ std::vector<ChunkCoord> ChunkManager::frustumCullChunks(
   // Collect visible chunks
   std::vector<ChunkCoord> visible_coords;
   visible_coords.reserve(candidate_chunks.size() / 4);
-
   for (size_t i = 0; i < candidate_chunks.size(); i++) {
     if (visibility_results[i]) {
       visible_coords.push_back(candidate_chunks[i]);
