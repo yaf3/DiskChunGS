@@ -303,6 +303,10 @@ class GaussianMapper {
       const std::vector<std::shared_ptr<GaussianModel>> &models,
       const std::vector<int> &model_sizes);
 
+  void pruneLowOpacityGaussians(
+      std::shared_ptr<GaussianKeyframe> pkf,
+      std::vector<std::shared_ptr<GaussianModel>> &models);
+
  private:
   // Updated function declarations:
   std::shared_ptr<GaussianKeyframe> selectLocalityAwareKeyframe();
