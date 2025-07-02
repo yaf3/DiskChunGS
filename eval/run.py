@@ -11,11 +11,6 @@ from argparse import ArgumentParser
 from scipy.spatial.transform import Rotation
 from PIL import Image
 import cv2
-# import atexit
-
-# Register the cleanup function to be called at exit
-# atexit.register(gs_render.cleanup)
-
 
 from torchmetrics.image.psnr import PeakSignalNoiseRatio
 from torchmetrics.image.ssim import StructuralSimilarityIndexMeasure
@@ -396,14 +391,6 @@ if __name__ == "__main__":
         # print(f"Render: {t_render*1000:.1f}ms, Process: {t_process*1000:.1f}ms, " 
         #     f"Metrics: {t_metrics*1000:.1f}ms, Save: {t_save*1000:.1f}ms, " 
         #     f"Total: {t_total*1000:.1f}ms")
-        
-    print("Calling cleanup to properly release resources...")
-    try: 
-        gs_render.cleanup()
-        time.sleep(3)
-    except Exception as e:
-        print(f"Error during cleanup: {e}")
-    print("Cleanup finished.")
 
     psnr_list = np.array(psnr_list)
     ssim_list = np.array(ssim_list)
