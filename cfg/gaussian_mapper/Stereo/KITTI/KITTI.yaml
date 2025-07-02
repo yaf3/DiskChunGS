@@ -22,14 +22,9 @@ Mapper.cull_keyframes: 0  # 0:false, 1 or other integer:true
 Mapper.large_rotation_threshold: 1.0
 Mapper.large_translation_threshold: 0.1
 Mapper.stable_num_iter_existence: 1000
-
-External.min_keyframe_translation: 0.25
-External.min_keyframe_rotation: 0.15
-External.min_keyframe_time: 0.5
-
-GausPyramid.do: 0  # 0:false, 1 or other integer:true
+GausPyramid.do: 1  # 0:false, 1 or other integer:true
 GausPyramid.num_sub_levels: 2
-GausPyramid.sub_level_times_of_use: 5
+GausPyramid.sub_level_times_of_use: 8
 Pipeline.convert_SHs: 0  # 0:false, 1 or other integer:true
 Pipeline.compute_cov3D: 0  # 0:false, 1 or other integer:true
 Record.keyframe_record_interval: 0 # 0:never, 1:always, others:periodically
@@ -44,36 +39,36 @@ Record.render_fly_through_speed: 5.0 # 0:false, 1 or other integer:true
 Optimization.max_num_iterations: -1
 Optimization.smooth_l1: 0  # 0:false, 1:true
 Chunking.chunk_size: 50.0
-Chunking.max_chunks: 300
+Chunking.max_chunks: 40
 Optimization.opacity_reset_interval: 0  # 0:never, 1:always, others:periodically
 Optimization.prune_big_point_after_iter: -1
 Optimization.densify_from_iter: 100
 Optimization.densify_until_iter: -1
 Optimization.auto_distribute: 4  # 0:false, 1 or other integer:true
-GaussianViewer.glfw_window_width: 1862
-GaussianViewer.glfw_window_height: 564
+GaussianViewer.glfw_window_width: 1839
+GaussianViewer.glfw_window_height: 555
 GaussianViewer.image_scale: 0.5
 GaussianViewer.image_scale_main: 1.0
 GaussianViewer.camera_watch_dist: 0.000001
 Camera.z_near: 0.1
-Camera.z_far: 100.0
-Model.sh_degree: 1
+Camera.z_far: 300.0
+Model.sh_degree: 3
 Mapper.depth_densify_subsample_ratio: 0.1
 Optimization.position_lr_init: 0.001
 Optimization.position_lr_decay: 0.998
-Optimization.feature_lr: 0.0025
-Optimization.opacity_lr: 0.01
-Optimization.scaling_lr: 0.005
-Optimization.rotation_lr: 0.001
-Optimization.pose_lr: 0.0001
+Optimization.feature_lr: 0.005
+Optimization.opacity_lr: 0.1
+Optimization.scaling_lr: 0.01
+Optimization.rotation_lr: 0.002
+Optimization.pose_lr: 0.0000
 Optimization.exposure_lr: 0.00
 Optimization.depth_scale_bias_lr: 0.0001
 Optimization.percent_dense: 0.018072950932851207
 Optimization.lambda_dssim: 0.2
-Optimization.lambda_depth: 0.1
+Optimization.lambda_depth: 0.0
 Optimization.densification_interval: 500
 Optimization.densify_min_opacity: 0.05
 Optimization.densify_grad_threshold: 0.05 
 Optimization.opacity_reg: 0.000
 Optimization.appearance_embedding: 1
-Optimization.init_proba_scaler: 1.0
+Optimization.init_proba_scaler: 2.0
