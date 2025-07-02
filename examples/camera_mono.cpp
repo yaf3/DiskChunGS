@@ -58,6 +58,8 @@ int main(int argc, char **argv) {
   if (argc == 7)
     use_viewer = (std::string(argv[6]) == "no_viewer" ? false : true);
 
+  float target_fps = 2.0;
+
   std::string output_directory = std::string(argv[5]);
   if (output_directory.back() != '/') output_directory += "/";
   std::filesystem::path output_dir(output_directory);
@@ -112,9 +114,12 @@ int main(int argc, char **argv) {
   std::vector<float> vTimesTrack;
   vTimesTrack.resize(nImages);
 
+  double frame_interval = 1.0 / target_fps;  // Time between frames in seconds
+
   std::cout << std::endl << "-------" << std::endl;
   std::cout << "Start processing sequence ..." << std::endl;
   std::cout << "Images in the sequence: " << nImages << std::endl << std::endl;
+  std::cout << "Target FPS: " << target_fps << std::endl;
 
   // Main loop
   cv::Mat im;
@@ -152,6 +157,11 @@ int main(int argc, char **argv) {
         std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1)
             .count();
     vTimesTrack[ni] = ttrack;
+
+    // Wait to maintain target FPS
+    if (ttrack < frame_interval) {
+      usleep((frame_interval - ttrack) * 1e6);  // Convert to microseconds
+    }
   }
 
   // Stop all threads
