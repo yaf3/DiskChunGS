@@ -39,6 +39,7 @@ services:
       - .:/workspace/repo
       - /tmp/.X11-unix:/tmp/.X11-unix
       - /mnt/auxiliary1/datasets:/data
+      - /mnt/nas/casimir/datasets:/data2
     environment:
       - DISPLAY=${DISPLAY}
       - NVIDIA_VISIBLE_DEVICES=all
