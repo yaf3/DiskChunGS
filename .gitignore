@@ -58,3 +58,7 @@ gs_render.egg-info
 dist
 cfg/gaussian_mapper/Stereo/KITTI/runs
 models
+calibration_images
+calibration_images_v2
+debug_mono
+debug_stereo
