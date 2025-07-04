@@ -364,9 +364,7 @@ void ImGuiViewer::run() {
         auto render_result = pGausMapper_->renderFromPose(
             Tcw, rendered_image_width_, rendered_image_height_, false);
         cv::Mat rendered_img =
-            show_depth_view_ ? applyMagmaColormap(std::get<1>(render_result),
-                                                  pGausMapper_->min_depth_,
-                                                  pGausMapper_->max_depth_)
+            show_depth_view_ ? applyInfernoColormap(std::get<1>(render_result))
                              : std::get<0>(render_result);
         cv::Mat rendered_img_to_show =
             cv::Mat(rendered_image_height_, padded_sub_image_width_, CV_32FC3,
@@ -441,9 +439,7 @@ void ImGuiViewer::run() {
         auto render_result = pGausMapper_->renderFromPose(
             Tcw, rendered_image_width_, rendered_image_height_, false);
         cv::Mat rendered_img =
-            show_depth_view_ ? applyMagmaColormap(std::get<1>(render_result),
-                                                  pGausMapper_->min_depth_,
-                                                  pGausMapper_->max_depth_)
+            show_depth_view_ ? applyInfernoColormap(std::get<1>(render_result))
                              : std::get<0>(render_result);
         cv::Mat rendered_img_to_show =
             cv::Mat(rendered_image_height_, padded_sub_image_width_, CV_32FC3,
@@ -482,10 +478,9 @@ void ImGuiViewer::run() {
           auto render_result = pGausMapper_->renderFromPose(
               Tcw, rendered_image_width_, rendered_image_height_, false);
           cv::Mat rendered_img =
-              show_depth_view_ ? applyMagmaColormap(std::get<1>(render_result),
-                                                    pGausMapper_->min_depth_,
-                                                    pGausMapper_->max_depth_)
-                               : std::get<0>(render_result);
+              show_depth_view_
+                  ? applyInfernoColormap(std::get<1>(render_result))
+                  : std::get<0>(render_result);
           cv::Mat rendered_img_to_show =
               cv::Mat(rendered_image_height_, padded_sub_image_width_, CV_32FC3,
                       cv::Vec3f(0.0f, 0.0f, 0.0f));
@@ -504,9 +499,7 @@ void ImGuiViewer::run() {
                                          rendered_image_height_main_, true);
         cv::Mat main_img =
             show_depth_view_
-                ? applyMagmaColormap(std::get<1>(main_render_result),
-                                     pGausMapper_->min_depth_,
-                                     pGausMapper_->max_depth_)
+                ? applyInfernoColormap(std::get<1>(main_render_result))
                 : std::get<0>(main_render_result);
         cv::Mat main_img_to_show =
             cv::Mat(rendered_image_height_main_, padded_main_image_width_,
@@ -866,46 +859,31 @@ void ImGuiViewer::keyboardEvent() {
   Twc_main_.setRotationMatrix(R * rotating);
 }
 
-cv::Mat ImGuiViewer::applyMagmaColormap(const cv::Mat& depth_image,
-                                        float min_depth,
-                                        float max_depth) {
-  // Normalize depth to 0-1 range using provided min/max values
-  cv::Mat normalized_depth;
+cv::Mat ImGuiViewer::applyInfernoColormap(const cv::Mat& invdepth_image) {
+  // Convert inverse depth to 8-bit format matching Python: mul(100).clamp(0,
+  // 255)
+  cv::Mat scaled_invdepth;
+  invdepth_image.convertTo(scaled_invdepth, CV_32F, 100.0, 0.0);
 
-  // Handle case where min == max (flat depth)
-  if (std::abs(max_depth - min_depth) < 1e-6) {
-    normalized_depth = cv::Mat::ones(depth_image.size(), CV_32F) * 0.5f;
-  } else {
-    // Normalize to 0-1 range: (depth - min) / (max - min)
-    depth_image.convertTo(normalized_depth, CV_32F,
-                          1.0 / (max_depth - min_depth),
-                          -min_depth / (max_depth - min_depth));
-  }
-
-  // Apply magma colormap
-  cv::Mat magma_colored;
-  cv::Mat depth_8u;
-
-  // Clamp normalized values to [0,1] range (like your libtorch function handles
-  // edge cases)
+  // Clamp to [0, 255] range
   cv::Mat clamped;
-  cv::max(normalized_depth, 0.0, clamped);
-  cv::min(clamped, 1.0, clamped);
+  cv::max(scaled_invdepth, 0.0, clamped);
+  cv::min(clamped, 255.0, clamped);
 
-  clamped = 1 - clamped;
+  // Convert to 8-bit
+  cv::Mat depth_8u;
+  clamped.convertTo(depth_8u, CV_8U);
 
-  // Convert to 8-bit multiply by 255 then cast to uchar
-  clamped.convertTo(depth_8u, CV_8U, 255.0, 0.0);
+  // Apply INFERNO colormap (matches Python cv2.COLORMAP_INFERNO)
+  cv::Mat inferno_colored;
+  cv::applyColorMap(depth_8u, inferno_colored, cv::COLORMAP_INFERNO);
 
-  // Apply the magma colormap
-  cv::applyColorMap(depth_8u, magma_colored, cv::COLORMAP_MAGMA);
+  // Convert BGR to RGB (matches Python cv2.cvtColor(..., cv2.COLOR_BGR2RGB))
+  cv::Mat inferno_rgb;
+  cv::cvtColor(inferno_colored, inferno_rgb, cv::COLOR_BGR2RGB);
 
-  // Convert BGR to RGB before converting back to float
-  cv::Mat magma_rgb;
-  cv::cvtColor(magma_colored, magma_rgb, cv::COLOR_BGR2RGB);
-
-  // Convert back to float for consistency with RGB rendering
+  // Convert back to float for consistency
   cv::Mat result;
-  magma_rgb.convertTo(result, CV_32FC3, 1.0 / 255.0);
+  inferno_rgb.convertTo(result, CV_32FC3, 1.0 / 255.0);
   return result;
 }

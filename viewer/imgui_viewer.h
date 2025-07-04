@@ -71,9 +71,7 @@ class ImGuiViewer {
   void mouseWheel();
   void mouseDrag();
   void keyboardEvent();
-  cv::Mat applyMagmaColormap(const cv::Mat& depth_image,
-                             float min_depth,
-                             float max_depth);
+  cv::Mat applyInfernoColormap(const cv::Mat& invdepth_image);
 
  protected:
   std::shared_ptr<ORB_SLAM3::System> pSLAM_;

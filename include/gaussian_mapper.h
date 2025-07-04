@@ -51,9 +51,11 @@
 #include "chunk_types.h"
 #include "gaussian_keyframe.h"
 #include "gaussian_scene.h"
+#include "guided_mvs.h"
 #include "keyframe_selection.h"
 #include "mono_depth.h"
 #include "operate_points.h"
+#include "slam_deps/xfeat_cpp/include/XFeat.h"
 #include "stereo_depth.h"
 #include "stereo_vision.h"
 #include "tensor_utils.h"
@@ -212,6 +214,9 @@ class GaussianMapper {
   std::vector<std::shared_ptr<GaussianKeyframe>> getUpcomingKeyframes(
       size_t count);
   std::shared_ptr<GaussianKeyframe> useOneRandomKeyframe();
+  std::vector<std::shared_ptr<GaussianKeyframe>> getClosestKeyframes(
+      std::shared_ptr<GaussianKeyframe> current_kf,
+      int n);
   std::shared_ptr<GaussianKeyframe> useRecentKeyframe();
   void generateKfidRandomShuffle();
 
@@ -306,6 +311,11 @@ class GaussianMapper {
   void pruneLowOpacityGaussians(
       std::shared_ptr<GaussianKeyframe> pkf,
       std::vector<std::shared_ptr<GaussianModel>> &models);
+
+  torch::Tensor sampleConf(const torch::Tensor &mono_depth_conf,
+                           const torch::Tensor &uv,
+                           int width,
+                           int height);
 
  private:
   // Updated function declarations:
@@ -429,6 +439,9 @@ class GaussianMapper {
   std::shared_ptr<MonoDepth> monocular_depth_estimator_;
   float min_depth_ = 0.0f;
   float max_depth_ = 100.0f;
+
+  std::unique_ptr<XFeat::XFDetector> feat_extractor_;
+  std::unique_ptr<GuidedMVS> guided_mvs_;
 
   bool inactive_geo_densify_ = true;
   bool depth_densify_ = false;

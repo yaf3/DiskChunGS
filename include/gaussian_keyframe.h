@@ -112,7 +112,7 @@ class GaussianKeyframe {
 
   void setupStereoData(float baseline,
                        torch::DeviceType device_type,
-                       std::shared_ptr<StereoDepth> depth_estimator,
+                       std::shared_ptr<MonoDepth> depth_estimator,
                        float min_depth,
                        float max_depth);
 
@@ -199,4 +199,7 @@ class GaussianKeyframe {
   int local_iterations_ = 0;  // Per-keyframe counter
   float depth_loss_weight = 1e-2f;
   float depth_loss_weight_decay_ = 0.9;
+
+  torch::Tensor feature_map_;
+  torch::Tensor depth_confidence_;
 };

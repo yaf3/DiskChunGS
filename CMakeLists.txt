@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.20 FATAL_ERROR)
 project(lsgs LANGUAGES CXX CUDA)
 
+set_property(GLOBAL PROPERTY JOB_POOLS link_pool=2)
+set(CMAKE_JOB_POOL_LINK link_pool)
+
 if(NOT CMAKE_BUILD_TYPE)
     # set(CMAKE_BUILD_TYPE Debug)
     set(CMAKE_BUILD_TYPE Release)
@@ -68,6 +71,40 @@ find_path(ONNXRUNTIME_INCLUDE_DIR
 message(STATUS "Found ONNX Runtime headers: ${ONNXRUNTIME_INCLUDE_DIR}")
 message(STATUS "Found ONNX Runtime library: ${ONNXRUNTIME_LIB}")
 
+
+# # Find TensorRT
+# find_path(TENSORRT_INCLUDE_DIR 
+#     NAMES NvInfer.h
+#     PATHS /usr/include/x86_64-linux-gnu /usr/include /usr/local/include
+#     REQUIRED
+# )
+
+# find_library(TENSORRT_LIB 
+#     NAMES nvinfer
+#     PATHS /usr/lib/x86_64-linux-gnu /usr/lib /usr/local/lib
+#     REQUIRED
+# )
+
+# # Check for TensorRT provider library (modern approach)
+# find_library(ONNXRUNTIME_TENSORRT_PROVIDER_LIB 
+#     NAMES onnxruntime_providers_tensorrt
+#     PATHS /usr/local/lib /usr/lib
+# )
+
+# if(ONNXRUNTIME_TENSORRT_PROVIDER_LIB)
+#     message(STATUS "ONNX Runtime TensorRT provider found: ${ONNXRUNTIME_TENSORRT_PROVIDER_LIB}")
+#     set(HAVE_TENSORRT_PROVIDER TRUE)
+# else()
+#     message(WARNING "ONNX Runtime TensorRT provider not found - TensorRT support disabled")
+#     set(HAVE_TENSORRT_PROVIDER FALSE)
+# endif()
+
+# # Add TensorRT and ONNX Runtime include directories
+# include_directories(
+#     ${TENSORRT_INCLUDE_DIR}
+#     ${ONNXRUNTIME_INCLUDE_DIR}
+# )
+
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS} -pthread ${OpenMP_CXX_FLAGS}")
 
 set(ORB_SLAM3_SOURCE_DIR "${PROJECT_SOURCE_DIR}/slam_deps/ORB-SLAM3")
@@ -83,6 +120,7 @@ include_directories(
     ${ORB_SLAM3_SOURCE_DIR}/Thirdparty/Sophus
     ${EIGEN3_INCLUDE_DIR}
     ${OPENGL_INCLUDE_DIR}
+    ${ONNXRUNTIME_INCLUDE_DIR}
 )
 
 ##################################################################################
@@ -101,12 +139,25 @@ add_library(
 target_link_libraries(simple_knn ${TORCH_LIBRARIES})
 
 add_library(
+    xfeat
+    SHARED
+    slam_deps/xfeat_cpp/src/XFModel.cc
+    slam_deps/xfeat_cpp/src/XFeat.cc
+    slam_deps/xfeat_cpp/src/InterpolateSparse2d.cc
+)
+target_include_directories(xfeat PRIVATE ${PROJECT_SOURCE_DIR}/slam_deps/xfeat_cpp/include)
+target_compile_options(xfeat PRIVATE ${TORCH_CXX_FLAGS})
+target_link_libraries(xfeat ${OpenCV_LIBRARIES} ${TORCH_LIBRARIES})
+
+add_library(
     cuda_rasterizer
     SHARED
     include/operate_points.h
     src/operate_points.cu
     include/stereo_vision.h
     src/stereo_vision.cu
+    src/guided_mvs.cu
+    include/cuda_utils.h
     cuda_rasterizer/auxiliary.h
     cuda_rasterizer/rasterize_points.h
     cuda_rasterizer/rasterize_points.cu
@@ -194,6 +245,7 @@ add_library(
     include/debugging_utils.h
     include/stereo_depth.h
     include/mono_depth.h
+    include/guided_mvs.h
     src/gaussian_keyframe.cpp
     src/gaussian_model.cpp
     src/gaussian_parameters.cpp
@@ -207,6 +259,7 @@ add_library(
     src/debugging_utils.cpp
     src/stereo_depth.cpp
     src/mono_depth.cpp
+    src/guided_mvs.cpp
 )
 target_link_libraries(
     gaussian_mapper
@@ -217,9 +270,15 @@ target_link_libraries(
     Eigen3::Eigen
     simple_knn
     cuda_rasterizer
+    xfeat
     OpenMP::OpenMP_CXX
     ${ONNXRUNTIME_LIB}
 )
+
+# if(HAVE_TENSORRT_PROVIDER)
+#     target_compile_definitions(gaussian_mapper PRIVATE -DHAVE_TENSORRT_PROVIDER)
+#     target_link_libraries(gaussian_mapper ${TENSORRT_LIB} ${ONNXRUNTIME_TENSORRT_PROVIDER_LIB})
+# endif()
 
 ##################################################################################
 ##  Build the viewer library to ${PROJECT_SOURCE_DIR}/lib

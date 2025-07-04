@@ -56,44 +56,12 @@ class MonoDepth {
    */
   cv::Mat estimate_relative_depth(const cv::Mat& image);
 
-  torch::Tensor align_depth_to_metric(const torch::Tensor& relative_depth_map,
-                                      const std::vector<float>& keypoint_pixels,
-                                      const std::vector<float>& keypoint_depths,
-                                      int width,
-                                      int height) const;
-
-  torch::Tensor align_depth_to_metric_direct(
-      const torch::Tensor& relative_depth_map,
+  torch::Tensor align_depth_equivalent(
+      const torch::Tensor& mono_depth_map,
       const std::vector<float>& keypoint_pixels,
       const std::vector<float>& keypoint_depths,
       int width,
       int height) const;
-
-  torch::Tensor align_depth_least_squares(
-      const torch::Tensor& relative_depth_map,
-      const std::vector<float>& keypoint_pixels,
-      const std::vector<float>& keypoint_depths,
-      int width,
-      int height) const;
-
-  /**
-   * @brief Estimate depth using both RGB image and reference depth, with depth
-   * taking precedence
-   * @param rgb_image Input RGB image for monocular depth estimation
-   * @param depth_image Reference depth image (can be sparse or incomplete)
-   * @param focal_length Camera focal length for metric conversion
-   * @param depth_threshold Minimum valid depth value (depths below this are
-   * considered invalid)
-   * @param blend_sigma Standard deviation for Gaussian blending around depth
-   * boundaries
-   * @return Merged depth map with confidence
-   */
-  std::tuple<torch::Tensor, torch::Tensor> estimate_depth_with_reference(
-      const cv::Mat& rgb_image,
-      const cv::Mat& depth_image,
-      float focal_length,
-      float depth_threshold = 0.1f,
-      float blend_sigma = 5.0f);
 
  private:
   // ONNX Runtime components
@@ -151,6 +119,10 @@ class MonoDepth {
                                             cv::Size& original_size,
                                             std::vector<int>& pad_info);
 
+  cv::Mat postprocess_depth_metric3d(const cv::Mat& raw_depth,
+                                     const cv::Size& original_size,
+                                     const std::vector<int>& pad_info);
+
   /**
    * @brief Run inference on input data (Optimized version)
    * @param left_input Left image data
@@ -164,7 +136,7 @@ class MonoDepth {
   std::tuple<torch::Tensor, torch::Tensor> get_t_s(
       const torch::Tensor& depth) const;
 
-  std::tuple<torch::Tensor, float, float> align_samples(
+  std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> align_samples(
       const torch::Tensor& tri_idepth,
       const torch::Tensor& mono_idepth) const;
 
@@ -172,25 +144,4 @@ class MonoDepth {
                                        const torch::Tensor& pixel_coords,
                                        int width,
                                        int height) const;
-
-  /**
-   * @brief Create a distance field from valid depth pixels for smooth blending
-   * @param depth_mask Binary mask of valid depth pixels
-   * @param max_distance Maximum distance to compute
-   * @return Distance field as torch tensor
-   */
-  torch::Tensor compute_distance_field(const torch::Tensor& depth_mask,
-                                       float max_distance = 20.0f);
-
-  /**
-   * @brief Align monocular depth to reference depth using valid pixels
-   * @param mono_depth Monocular depth prediction
-   * @param ref_depth Reference depth image
-   * @param valid_mask Mask of valid reference depth pixels
-   * @return Aligned monocular depth
-   */
-  torch::Tensor align_mono_to_reference_depth(const torch::Tensor& mono_depth,
-                                              const torch::Tensor& ref_depth,
-                                              const torch::Tensor& valid_mask);
-  ;
 };

@@ -503,7 +503,7 @@ torch::Tensor GaussianKeyframe::getCenter() {
 void GaussianKeyframe::setupStereoData(
     float baseline,
     torch::DeviceType device_type,
-    std::shared_ptr<StereoDepth> depth_estimator,
+    std::shared_ptr<MonoDepth> depth_estimator,
     float min_depth,
     float max_depth) {
   if (img_auxiliary_undist_.empty()) {
@@ -511,9 +511,9 @@ void GaussianKeyframe::setupStereoData(
   }
 
   // FIX: Convert float32 [0,1] images to uint8 [0,255] images
-  cv::Mat left_img_uint8, right_img_uint8;
-  this->img_undist_.convertTo(left_img_uint8, CV_8UC3, 255.0);
-  this->img_auxiliary_undist_.convertTo(right_img_uint8, CV_8UC3, 255.0);
+  // cv::Mat left_img_uint8, right_img_uint8;
+  // this->img_undist_.convertTo(left_img_uint8, CV_8UC3, 255.0);
+  // this->img_auxiliary_undist_.convertTo(right_img_uint8, CV_8UC3, 255.0);
 
   // Verify conversion worked
   // std::cout << "Converted left image - Type: " << left_img_uint8.type()
@@ -523,63 +523,92 @@ void GaussianKeyframe::setupStereoData(
   // std::cout << "Converted left image range: " << min_val << " to " << max_val
   // << std::endl;
 
-  // Now estimate depth with properly formatted images
-  cv::Mat depth = depth_estimator->estimate_metric_depth(
-      left_img_uint8, right_img_uint8, this->intr_[0], baseline);
+  auto [relative_depth, depth_confidence] =
+      depth_estimator->estimate_depth(img_undist_, intr_[0]);
 
-  cv::max(depth, min_depth,
-          depth);  // Set values < min_depth to min_depth
-  cv::min(depth, max_depth,
-          depth);  // Set values > max_depth to max_depth
+  depth_confidence_ = depth_confidence;
+  // std::cout << "Relative depth size: " << relative_depth.sizes() <<
+  // std::endl;
 
-  // cv::Mat min_depth_mask, max_depth_mask;
-  // cv::threshold(depth, min_depth_mask, min_depth, 1.0, cv::THRESH_BINARY);
-  // cv::threshold(depth, max_depth_mask, max_depth, 1.0,
-  // cv::THRESH_BINARY_INV);
+  // std::string keypoint_pcd_path = "slam_keypoints.ply";
+  // projectKeypointsToPointCloud(pkf, keypoint_pcd_path);
 
-  // cv::Mat combined_mask;
-  // cv::multiply(max_depth_mask, min_depth_mask, combined_mask);
+  // Extract keypoint pixels and depths
+  auto [valid_pixel_coords, valid_depths] =
+      extractValidKeypointsForDepthAlignment();
 
-  // // Apply final mask to depth map
-  // cv::cuda::multiply(depth, combined_mask, depth);
-  // Get some depth statistics
-  // if (!depth.empty()) {
-  //   double min_depth, max_depth;
-  //   cv::minMaxLoc(depth, &min_depth, &max_depth);
-  //   cv::Scalar mean_depth = cv::mean(depth);
-  //   std::cout << "Depth range: " << min_depth << " - " << max_depth
-  //             << " meters " << std::endl;
-  //   std::cout << " Mean depth: " << mean_depth[0] << " meters " << std::endl;
-  // }
+  if (valid_depths.size() < 5) {
+    std::cout << "Not enough valid depths for monocular depth alignment: "
+              << valid_depths.size() << std::endl;
+    return;
+  }
 
-  // float max_dist = 80;
-  // cv::Mat norm_depth_map = 255.0 * (1.0 - depth / max_dist);
+  // Align depth to keypoints
+  torch::Tensor aligned_depth = depth_estimator->align_depth_equivalent(
+      relative_depth, valid_pixel_coords, valid_depths, image_width_,
+      image_height_);
 
-  // // Clamp values
-  // cv::threshold(norm_depth_map, norm_depth_map, 0, 0, cv::THRESH_TOZERO);
-  // cv::threshold(norm_depth_map, norm_depth_map, 255, 0,
-  // cv::THRESH_TOZERO_INV);
+  // std::cout << "Aligned depth stats:" << std::endl;
+  // std::cout << "  Min: " << aligned_depth.min().item<float>() << std::endl;
+  // std::cout << "  Max: " << aligned_depth.max().item<float>() << std::endl;
+  // std::cout << "  Mean: " << aligned_depth.mean().item<float>() << std::endl;
+  // std::cout << "  Median: " << aligned_depth.median().item<float>()
+  //           << std::endl;
 
-  // cv::Mat depth_8u;
-  // norm_depth_map.convertTo(depth_8u, CV_8U);
+  depth_image_ = aligned_depth.squeeze(0).squeeze(0);
 
-  // cv::Mat colored_depth;
-  // cv::applyColorMap(depth_8u, colored_depth, cv::COLORMAP_JET);
+  std::string gt_filename =
+      "./debug_mono/gt_depth_" + std::to_string(this->fid_) + ".png";
+  colorize_and_save_depth(depth_image_.detach().cpu(), gt_filename, 0.0f, 6.0f);
 
-  // cv::imwrite("kitti_depth_map_pipeline.png", colored_depth);
-  // Store depth image as tensor
-  this->depth_image_ =
-      tensor_utils::cvMat2TorchTensor_Float32(depth, torch::kCUDA);
-
-  // std::string gt_filename =
-  //     "./debug_mono/gt_depth_" + std::to_string(this->fid_) + ".png";
-  // colorize_and_save_depth(depth_image_.detach().cpu(), gt_filename,
-  // min_depth,
+  // std::filesystem::create_directories("./debug_mono");
+  // colorize_and_save_depth(relative_depth.detach().cpu(),
+  //                         "./debug_mono/depth_prealigned.png", min_depth,
+  //                         max_depth);
+  // colorize_and_save_depth(depth_image_.detach().cpu(),
+  //                         "./debug_mono/depth_aligned.png", min_depth,
   //                         max_depth);
 
-  // Create multi-resolution depth images for pyramid training
+  // torch::Tensor aligned_depth = relative_depth.squeeze(0).squeeze(0);
+  // pkf->depth_image_ = aligned_depth;
+  // std::cout << "Aligned depth min value: "
+  //           << aligned_depth.min().item<float>()
+  //           << ", max value: " << aligned_depth.max().item<float>()
+  //           << std::endl;
+
+  // // Convert tensors to cv::Mat for processing
+  // torch::Tensor rgb_image =
+  //     tensor_utils::cvMat2TorchTensor_Float32(pkf->img_undist_,
+  //     device_type_);
+
+  // // Get camera pose (world-to-camera)
+  // Sophus::SE3f Tcw = pkf->getPosef();
+
+  // std::string render_filename = "aligned_depth.png";
+  // colorize_and_save_depth(aligned_depth.detach().cpu(), render_filename,
+  //                         aligned_depth.min().item<float>(),
+  //                         aligned_depth.max().item<float>());
+
+  // // Project to point cloud
+  // std::string pcd_path = "depth_pcd.ply";
+  // projectRgbDepthToPointCloud(rgb_image, aligned_depth, pkf->intr_,
+  //                             min_depth_, max_depth_, Tcw, pcd_path, 2);
+
+  // torch::Tensor manual_depth =
+  //     relative_depth.squeeze(0).squeeze(0) * 0.41558 - 1.29237;
+
+  // std::cout << "Manual depths range: " << manual_depth.min().item<float>()
+  //           << " - " << manual_depth.max().item<float>() << std::endl;
+
+  // pcd_path = "depth_pcd_C.ply";
+  // projectRgbDepthToPointCloud(rgb_image, manual_depth, pkf->intr_,
+  // min_depth_,
+  //                             max_depth_, Tcw, pcd_path, 2);
+
+  cv::Mat depth_mat = tensor_utils::torchTensor2CvMat_Float32(depth_image_);
+
   if (!gaus_pyramid_original_image_.empty()) {
-    generatePyramidDepth(device_type, depth);
+    generatePyramidDepth(device_type, depth_mat);
   }
 }
 
@@ -633,6 +662,8 @@ void GaussianKeyframe::setupMonoData(torch::DeviceType device_type,
                                      float max_depth) {
   auto [relative_depth, depth_confidence] =
       depth_estimator->estimate_depth(img_undist_, intr_[0]);
+
+  depth_confidence_ = depth_confidence;
   // std::cout << "Relative depth size: " << relative_depth.sizes() <<
   // std::endl;
 
@@ -650,11 +681,22 @@ void GaussianKeyframe::setupMonoData(torch::DeviceType device_type,
   }
 
   // Align depth to keypoints
-  torch::Tensor aligned_depth = depth_estimator->align_depth_to_metric(
+  torch::Tensor aligned_depth = depth_estimator->align_depth_equivalent(
       relative_depth, valid_pixel_coords, valid_depths, image_width_,
       image_height_);
 
+  std::cout << "Aligned depth stats:" << std::endl;
+  std::cout << "  Min: " << aligned_depth.min().item<float>() << std::endl;
+  std::cout << "  Max: " << aligned_depth.max().item<float>() << std::endl;
+  std::cout << "  Mean: " << aligned_depth.mean().item<float>() << std::endl;
+  std::cout << "  Median: " << aligned_depth.median().item<float>()
+            << std::endl;
+
   depth_image_ = aligned_depth.squeeze(0).squeeze(0);
+
+  std::string gt_filename =
+      "./debug_mono/gt_depth_" + std::to_string(this->fid_) + ".png";
+  colorize_and_save_depth(depth_image_.detach().cpu(), gt_filename, 0.0f, 6.0f);
 
   // std::filesystem::create_directories("./debug_mono");
   // colorize_and_save_depth(relative_depth.detach().cpu(),
@@ -699,6 +741,12 @@ void GaussianKeyframe::setupMonoData(torch::DeviceType device_type,
   // projectRgbDepthToPointCloud(rgb_image, manual_depth, pkf->intr_,
   // min_depth_,
   //                             max_depth_, Tcw, pcd_path, 2);
+
+  cv::Mat depth_mat = tensor_utils::torchTensor2CvMat_Float32(depth_image_);
+
+  if (!gaus_pyramid_original_image_.empty()) {
+    generatePyramidDepth(device_type, depth_mat);
+  }
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, int, int>
@@ -739,7 +787,9 @@ GaussianKeyframe::getTrainingData(
     }
   }
 
-  gt_depth = gt_depth * depth_scale_ + depth_bias_;
+  if (gt_depth.defined()) {
+    gt_depth = gt_depth * depth_scale_ + depth_bias_;
+  }
 
   return std::make_tuple(gt_image, gt_depth, mask, image_height, image_width);
 }

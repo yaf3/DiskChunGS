@@ -399,12 +399,13 @@ GaussianRenderer::render(
   // timer_raster.stop();
   auto rendered_image = std::get<0>(rasterizer_result);
 
-  auto inverse_depth = std::get<1>(rasterizer_result);
+  auto rendered_depth = std::get<1>(rasterizer_result);
 
   // std::cout << "Inverse depth min: " << inverse_depth.min().item<float>()
   //           << ", max: " << inverse_depth.max().item<float>() << std::endl;
-  torch::Tensor rendered_depth = 1.0f / torch::clamp_min(inverse_depth, 1e-6f);
-  // std::cout << "Rendered depth min: " << rendered_depth.min().item<float>()
+  // torch::Tensor rendered_depth = 1.0f / torch::clamp_min(inverse_depth,
+  // 1e-6f); std::cout << "Rendered depth min: " <<
+  // rendered_depth.min().item<float>()
   //           << ", max: " << rendered_depth.max().item<float>() << std::endl;
 
   auto mainGaussID = std::get<2>(rasterizer_result);
