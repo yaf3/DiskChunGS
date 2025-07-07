@@ -1333,8 +1333,9 @@ void GaussianModel::load_checkpoint_incremental(
     model_archive.read("exist_since_iter_", exist_since_iter_);
     model_archive.read("position_lrs_", position_lrs_);
   } catch (const std::exception& e) {
-    std::cerr << "Warning: Failed to load auxiliary tensors info: " << e.what()
-              << std::endl;
+    throw std::runtime_error(
+        "Warning: Failed to load auxiliary tensors info: " +
+        std::string(e.what()));
   }
 
   // Load model configuration
@@ -1343,12 +1344,12 @@ void GaussianModel::load_checkpoint_incremental(
     try {
       config_archive.load_from(path + "/config.pt");
     } catch (const std::exception& e) {
-      std::cerr << "Warning: Failed to load chunk config: " << e.what()
-                << std::endl;
+      throw std::runtime_error("Failed to load chunk config: " +
+                               std::string(e.what()));
     }
   } else {
-    std::cerr << "Warning: Chunk config not found at " << path + "/config.pt"
-              << std::endl;
+    throw std::runtime_error("Warning: Chunk config not found at " + path +
+                             "/config.pt");
   }
 
   // Temporary tensors to hold the loaded scalar values

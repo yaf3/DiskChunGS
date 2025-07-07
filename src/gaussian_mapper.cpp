@@ -2415,8 +2415,8 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       torch::rand_like(init_proba) < init_proba - penalty;
   torch::Tensor flat_sample_mask = sample_mask.flatten();
 
-  std::cout << "Sample mask count: " << sample_mask.sum().item<int>()
-            << std::endl;
+  // std::cout << "Sample mask count: " << sample_mask.sum().item<int>()
+  //           << std::endl;
 
   // Pre-compute UV grid (similar to Python's self.uv)
   torch::Tensor uv_;
@@ -2426,14 +2426,14 @@ void GaussianMapper::increasePcdByDepthReconstruction(
         torch::arange(0, pkf->image_height_, torch::kFloat32).cuda();
     auto meshgrid = torch::meshgrid({x_coords, y_coords}, "xy");
     uv_ = torch::stack({meshgrid[0], meshgrid[1]}, -1);
-    std::cout << "UV grid size: " << uv_.sizes() << std::endl;
+    // std::cout << "UV grid size: " << uv_.sizes() << std::endl;
   }
 
-  std::cout << "Sample mask size: " << sample_mask.sizes() << std::endl;
+  // std::cout << "Sample mask size: " << sample_mask.sizes() << std::endl;
 
   // Get UV coordinates of initially sampled points
   torch::Tensor sampled_uv = uv_.view({-1, 2}).index({sample_mask.flatten()});
-  std::cout << "Sampled UV size: " << sampled_uv.sizes() << std::endl;
+  // std::cout << "Sampled UV size: " << sampled_uv.sizes() << std::endl;
 
   // Get closest keyframes for MVS
   std::vector<std::shared_ptr<GaussianKeyframe>> prev_keyframes =
@@ -2444,27 +2444,28 @@ void GaussianMapper::increasePcdByDepthReconstruction(
   }
 
   // Apply guided MVS - returns depth and accurate mask for sampled points
-  auto [depth, accurate_mask] = (*guided_mvs_)(sampled_uv, pkf, prev_keyframes);
+  // auto [depth, accurate_mask] = (*guided_mvs_)(sampled_uv, pkf,
+  // prev_keyframes);
 
-  // torch::Tensor depth_map = 1 / pkf->depth_image_.clamp_min(1e-8);
+  torch::Tensor depth_map = 1 / pkf->depth_image_.clamp_min(1e-8);
 
-  // // Sample depths at the sample mask locations
+  // Sample depths at the sample mask locations
 
-  // torch::Tensor sample_indices =
-  // torch::nonzero(flat_sample_mask).squeeze(-1); torch::Tensor depth_map_flat
-  // = depth_map.flatten(); torch::Tensor depth =
-  // depth_map_flat.index({sample_indices});
+  torch::Tensor sample_indices = torch::nonzero(flat_sample_mask).squeeze(-1);
+  torch::Tensor depth_map_flat = depth_map.flatten();
+  torch::Tensor depth = depth_map_flat.index({sample_indices});
 
-  // // Set accurate mask to all ones (since we're not using MVS)
-  // torch::Tensor accurate_mask = torch::ones_like(depth, torch::kBool);
+  // Set accurate mask to all ones (since we're not using MVS)
+  torch::Tensor accurate_mask = torch::ones_like(depth, torch::kBool);
 
   // Apply confidence filtering exactly like Python
-  torch::Tensor sampled_confidence = sampleConf(
-      mono_depth_confidence, sampled_uv, pkf->image_width_, pkf->image_height_);
-  torch::Tensor valid_mask = (sampled_confidence > 0.5f) & (depth > 1e-6);
+  // torch::Tensor sampled_confidence = sampleConf(
+  //     mono_depth_confidence, sampled_uv, pkf->image_width_,
+  //     pkf->image_height_);
+  torch::Tensor valid_mask = (depth > 1e-6);
 
-  std::cout << "Valid mask count: " << valid_mask.sum().item<int>()
-            << std::endl;
+  // std::cout << "Valid mask count: " << valid_mask.sum().item<int>()
+  //           << std::endl;
 
   // Update the sample_mask correctly
   torch::Tensor original_sample_indices =
@@ -2482,15 +2483,15 @@ void GaussianMapper::increasePcdByDepthReconstruction(
   accurate_mask = accurate_mask.index({valid_mask});
 
   // Gaussian replacement and occlusion checks (same as before)
-  std::cout << "=== Starting Gaussian Replacement and Occlusion Checks ==="
-            << std::endl;
-  std::cout << "Initial valid samples: " << depth.size(0) << std::endl;
+  // std::cout << "=== Starting Gaussian Replacement and Occlusion Checks ==="
+  //           << std::endl;
+  // std::cout << "Initial valid samples: " << depth.size(0) << std::endl;
 
   // Handle Gaussian removal (only if we have existing Gaussians and rendered
   // depth)
   if (has_rendered_depth && !models.empty()) {
-    std::cout << "Processing Gaussian removal for coarser Gaussians..."
-              << std::endl;
+    // std::cout << "Processing Gaussian removal for coarser Gaussians..."
+    //           << std::endl;
 
     torch::Tensor accurate_sample_mask = torch::zeros_like(sample_mask);
     torch::Tensor current_flat_indices =
@@ -2500,15 +2501,15 @@ void GaussianMapper::increasePcdByDepthReconstruction(
     accurate_sample_mask.view(-1).index_put_(
         {accurate_positions.to(torch::kLong)}, true);
 
-    std::cout << "Accurate samples for Gaussian removal: "
-              << accurate_sample_mask.sum().item<int>() << std::endl;
+    // std::cout << "Accurate samples for Gaussian removal: "
+    //           << accurate_sample_mask.sum().item<int>() << std::endl;
 
     if (accurate_sample_mask.any().item<bool>()) {
       torch::Tensor selected_main_gaussians =
           main_gaussian_ids.index({accurate_sample_mask});
       torch::Tensor valid_ids_mask = selected_main_gaussians >= 0;
-      std::cout << "Valid Gaussian IDs found: "
-                << valid_ids_mask.sum().item<int>() << std::endl;
+      // std::cout << "Valid Gaussian IDs found: "
+      //           << valid_ids_mask.sum().item<int>() << std::endl;
 
       if (valid_ids_mask.any().item<bool>()) {
         selected_main_gaussians =
@@ -2521,15 +2522,15 @@ void GaussianMapper::increasePcdByDepthReconstruction(
         torch::Tensor unique_ids = std::get<0>(unique_result);
         torch::Tensor counts = std::get<2>(unique_result);
 
-        std::cout << "Found " << unique_ids.size(0) << " unique Gaussians"
-                  << std::endl;
+        // std::cout << "Found " << unique_ids.size(0) << " unique Gaussians"
+        //           << std::endl;
 
         torch::Tensor removal_mask = counts >= 10;
 
         if (removal_mask.any().item<bool>()) {
           torch::Tensor gaussians_to_remove = unique_ids.index({removal_mask});
-          std::cout << "Removing " << gaussians_to_remove.size(0)
-                    << " coarser Gaussians" << std::endl;
+          // std::cout << "Removing " << gaussians_to_remove.size(0)
+          //           << " coarser Gaussians" << std::endl;
 
           createAndApplyGlobalRemovalMask(gaussians_to_remove, models,
                                           model_sizes);
@@ -2552,12 +2553,12 @@ void GaussianMapper::increasePcdByDepthReconstruction(
 
             rendered_depth =
                 1 / std::get<0>(updated_render_pkg).clamp_min(1e-8);
-            std::cout << "Re-rendered scene after Gaussian removal"
-                      << std::endl;
+            // std::cout << "Re-rendered scene after Gaussian removal"
+            //           << std::endl;
           }
         } else {
-          std::cout << "No Gaussians need removal (all counts < 10)"
-                    << std::endl;
+          // std::cout << "No Gaussians need removal (all counts < 10)"
+          //           << std::endl;
         }
       }
     }
@@ -2565,7 +2566,7 @@ void GaussianMapper::increasePcdByDepthReconstruction(
 
   // Check for occlusions
   if (has_rendered_depth) {
-    std::cout << "Checking for occlusions..." << std::endl;
+    // std::cout << "Checking for occlusions..." << std::endl;
 
     torch::Tensor current_flat_indices =
         sampled_uv.select(1, 1) * pkf->image_width_ + sampled_uv.select(1, 0);
@@ -2575,9 +2576,9 @@ void GaussianMapper::increasePcdByDepthReconstruction(
 
     torch::Tensor occlusion_mask = depth < rendered_depth_sampled;
 
-    std::cout << "Samples passing occlusion check: "
-              << occlusion_mask.sum().item<int>() << " / " << depth.size(0)
-              << std::endl;
+    // std::cout << "Samples passing occlusion check: "
+    //           << occlusion_mask.sum().item<int>() << " / " << depth.size(0)
+    //           << std::endl;
 
     // Filter all our data by occlusion mask
     depth = depth.index({occlusion_mask});
@@ -2593,11 +2594,11 @@ void GaussianMapper::increasePcdByDepthReconstruction(
                                       true);
     }
 
-    std::cout << "Final samples after all filtering: " << depth.size(0)
-              << std::endl;
+    // std::cout << "Final samples after all filtering: " << depth.size(0)
+    //           << std::endl;
   } else {
-    std::cout << "No rendered depth available, skipping occlusion check"
-              << std::endl;
+    // std::cout << "No rendered depth available, skipping occlusion check"
+    //           << std::endl;
   }
 
   // Release chunks from optimization
@@ -2605,7 +2606,7 @@ void GaussianMapper::increasePcdByDepthReconstruction(
 
   // Early exit if no samples remain
   if (depth.size(0) == 0) {
-    std::cout << "No samples remain after filtering, exiting" << std::endl;
+    // std::cout << "No samples remain after filtering, exiting" << std::endl;
     return;
   }
 
@@ -2620,7 +2621,7 @@ void GaussianMapper::increasePcdByDepthReconstruction(
   // Check if we have valid keypoints with 3D coordinates
   if (!pkf->kps_pixel_.empty() && !pkf->kps_point_local_.empty()) {
     int num_keypoints = pkf->kps_pixel_.size() / 2;
-    std::cout << "Processing " << num_keypoints << " keypoints" << std::endl;
+    // std::cout << "Processing " << num_keypoints << " keypoints" << std::endl;
 
     // Convert vectors to tensors directly on GPU for vectorized operations
     torch::Tensor kps_pixel_tensor =
@@ -2646,7 +2647,7 @@ void GaussianMapper::increasePcdByDepthReconstruction(
         torch::isfinite(z_coords);
 
     num_matched_points = valid_mask.sum().item<int>();
-    std::cout << "Valid matched points: " << num_matched_points << std::endl;
+    // std::cout << "Valid matched points: " << num_matched_points << std::endl;
 
     if (num_matched_points > 0) {
       // Extract valid keypoints using mask indexing
@@ -2669,8 +2670,8 @@ void GaussianMapper::increasePcdByDepthReconstruction(
       torch::Tensor grid =
           normalized_coords.view({1, 1, num_matched_points, 2});
 
-      std::cout << "Grid size: " << grid.sizes() << std::endl;
-      std::cout << "RGB size before sampling: " << rgb.sizes() << std::endl;
+      // std::cout << "Grid size: " << grid.sizes() << std::endl;
+      // std::cout << "RGB size before sampling: " << rgb.sizes() << std::endl;
 
       // Use grid_sample for RGB (expects [N, C, H, W] format)
       torch::Tensor rgb_for_sampling = rgb.unsqueeze(0);  // [1, 3, H, W]
@@ -2694,11 +2695,13 @@ void GaussianMapper::increasePcdByDepthReconstruction(
 
       match_init_proba = sampled_proba_raw.squeeze();  // [N]
 
-      std::cout << "match_colors size: " << match_colors.sizes() << std::endl;
-      std::cout << "match_init_proba size: " << match_init_proba.sizes()
-                << std::endl;
-      std::cout << "Found " << num_matched_points << " valid matched keypoints"
-                << std::endl;
+      // std::cout << "match_colors size: " << match_colors.sizes() <<
+      // std::endl; std::cout << "match_init_proba size: " <<
+      // match_init_proba.sizes()
+      //           << std::endl;
+      // std::cout << "Found " << num_matched_points << " valid matched
+      // keypoints"
+      //           << std::endl;
     }
   }
 
@@ -2714,9 +2717,10 @@ void GaussianMapper::increasePcdByDepthReconstruction(
   torch::Tensor sampled_init_proba =
       init_proba.index({flat_indices.to(torch::kLong)});
 
-  std::cout << "Sampled colors size: " << sampled_colors.sizes() << std::endl;
-  std::cout << "Sampled init proba size: " << sampled_init_proba.sizes()
-            << std::endl;
+  // std::cout << "Sampled colors size: " << sampled_colors.sizes() <<
+  // std::endl; std::cout << "Sampled init proba size: " <<
+  // sampled_init_proba.sizes()
+  //           << std::endl;
 
   // Step 10: Reproject sampled points to 3D
   float fx = pkf->intr_[0];
@@ -2744,17 +2748,18 @@ void GaussianMapper::increasePcdByDepthReconstruction(
     all_colors = torch::cat({sampled_colors, match_colors}, 0);
     all_init_proba = torch::cat({sampled_init_proba, match_init_proba}, 0);
 
-    std::cout << "Combined " << sampled_points3D.size(0)
-              << " sampled points with " << num_matched_points
-              << " matched points" << std::endl;
+    // std::cout << "Combined " << sampled_points3D.size(0)
+    //           << " sampled points with " << num_matched_points
+    //           << " matched points" << std::endl;
   } else {
     // Only sampled points
     all_points3D = sampled_points3D;
     all_colors = sampled_colors;
     all_init_proba = sampled_init_proba;
 
-    std::cout << "Using only " << sampled_points3D.size(0) << " sampled points"
-              << std::endl;
+    // std::cout << "Using only " << sampled_points3D.size(0) << " sampled
+    // points"
+    //           << std::endl;
   }
 
   // Transform all points to world coordinates
@@ -2763,7 +2768,7 @@ void GaussianMapper::increasePcdByDepthReconstruction(
           .transpose(0, 1);
   transformPoints(all_points3D, Twc_tensor);
 
-  std::cout << "All Points3D size: " << all_points3D.sizes() << std::endl;
+  // std::cout << "All Points3D size: " << all_points3D.sizes() << std::endl;
 
   // Step 12: Compute scales for all points (following Python implementation)
   torch::Tensor scales = 1.0f / torch::sqrt(all_init_proba + 1e-8f);
@@ -2778,7 +2783,7 @@ void GaussianMapper::increasePcdByDepthReconstruction(
   scales = torch::log(torch::clamp(scales, 1e-6f, 1e6f));
   torch::Tensor all_scales = scales.unsqueeze(1).repeat({1, 3});
 
-  std::cout << "All scales size: " << all_scales.sizes() << std::endl;
+  // std::cout << "All scales size: " << all_scales.sizes() << std::endl;
 
   // Step 13: Set opacities based on point type (sampled vs matched)
   torch::Tensor all_opacities = torch::zeros(
@@ -2812,7 +2817,7 @@ void GaussianMapper::increasePcdByDepthReconstruction(
         matched_opacities;
   }
 
-  std::cout << "All opacities size: " << all_opacities.sizes() << std::endl;
+  // std::cout << "All opacities size: " << all_opacities.sizes() << std::endl;
 
   // Step 14: Add all points to the scene in a single call
   std::unique_lock lock_render(mutex_render_);
@@ -2821,9 +2826,11 @@ void GaussianMapper::increasePcdByDepthReconstruction(
     pruneLowOpacityGaussians(pkf, models);
   }
 
-  std::cout << "Adding " << all_points3D.size(0) << " total points to scene ("
-            << num_sampled << " sampled + " << num_matched_points << " matched)"
-            << std::endl;
+  // std::cout << "Adding " << all_points3D.size(0) << " total points to scene
+  // ("
+  //           << num_sampled << " sampled + " << num_matched_points << "
+  //           matched)"
+  //           << std::endl;
 
   // Convert opacities using inverse sigmoid (like Python)
   torch::Tensor final_opacities = general_utils::inverse_sigmoid(all_opacities);
