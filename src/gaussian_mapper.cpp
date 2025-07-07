@@ -132,8 +132,8 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
       this->stereo_Q_ = pSLAM->getSettings()->Q().clone();
       stereo_Q_.convertTo(stereo_Q_, CV_32FC3, 1.0);
 
-      // initializeStereoDepthEstimator();
-      initializeMonocularDepthEstimator();
+      initializeStereoDepthEstimator();
+      // initializeMonocularDepthEstimator();
     } break;
     case ORB_SLAM3::System::RGBD:
     case ORB_SLAM3::System::IMU_RGBD: {
@@ -476,8 +476,8 @@ GaussianMapper::GaussianMapper(const SystemSensorType sensor_type,
   }
 
   if (sensor_type == STEREO) {
-    // initializeStereoDepthEstimator();
-    initializeMonocularDepthEstimator();
+    initializeStereoDepthEstimator();
+    // initializeMonocularDepthEstimator();
   } else if (sensor_type == RGBD) {
     // initializeMonocularDepthEstimator();
   } else {
@@ -742,8 +742,7 @@ void GaussianMapper::run() {
         } else if (sensor_type_ == STEREO &&
                    !pkf->img_auxiliary_undist_.empty()) {
           pkf->setupStereoData(stereo_baseline_length_, device_type_,
-                               monocular_depth_estimator_, min_depth_,
-                               max_depth_);
+                               stereo_depth_estimator_, min_depth_, max_depth_);
         } else if (sensor_type_ == RGBD &&
                    !pkf->img_auxiliary_undist_.empty()) {
           // Preprocess and store depth image tensor
@@ -1919,7 +1918,7 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
                        max_depth_);
   } else if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
     pkf->setupStereoData(stereo_baseline_length_, device_type_,
-                         monocular_depth_estimator_, min_depth_, max_depth_);
+                         stereo_depth_estimator_, min_depth_, max_depth_);
   } else if (sensor_type_ == RGBD && !pkf->img_auxiliary_undist_.empty()) {
     // Preprocess and store depth image tensor
     if (device_type_ == torch::kCUDA) {
@@ -2414,6 +2413,7 @@ void GaussianMapper::increasePcdByDepthReconstruction(
   // Step 5: Generate initial sample mask based on probability
   torch::Tensor sample_mask =
       torch::rand_like(init_proba) < init_proba - penalty;
+  torch::Tensor flat_sample_mask = sample_mask.flatten();
 
   std::cout << "Sample mask count: " << sample_mask.sum().item<int>()
             << std::endl;
@@ -2437,13 +2437,7 @@ void GaussianMapper::increasePcdByDepthReconstruction(
 
   // Get closest keyframes for MVS
   std::vector<std::shared_ptr<GaussianKeyframe>> prev_keyframes =
-      getClosestKeyframes(pkf, guided_mvs_->getNumCams() + 1);
-
-  // Remove current keyframe from prev_keyframes if present
-  prev_keyframes.erase(
-      std::remove_if(prev_keyframes.begin(), prev_keyframes.end(),
-                     [&pkf](const auto& kf) { return kf->fid_ == pkf->fid_; }),
-      prev_keyframes.end());
+      getClosestKeyframes(pkf, guided_mvs_->getNumCams());
 
   if (prev_keyframes.empty()) {
     std::cout << "No previous keyframes found for MVS." << std::endl;
@@ -2451,6 +2445,18 @@ void GaussianMapper::increasePcdByDepthReconstruction(
 
   // Apply guided MVS - returns depth and accurate mask for sampled points
   auto [depth, accurate_mask] = (*guided_mvs_)(sampled_uv, pkf, prev_keyframes);
+
+  // torch::Tensor depth_map = 1 / pkf->depth_image_.clamp_min(1e-8);
+
+  // // Sample depths at the sample mask locations
+
+  // torch::Tensor sample_indices =
+  // torch::nonzero(flat_sample_mask).squeeze(-1); torch::Tensor depth_map_flat
+  // = depth_map.flatten(); torch::Tensor depth =
+  // depth_map_flat.index({sample_indices});
+
+  // // Set accurate mask to all ones (since we're not using MVS)
+  // torch::Tensor accurate_mask = torch::ones_like(depth, torch::kBool);
 
   // Apply confidence filtering exactly like Python
   torch::Tensor sampled_confidence = sampleConf(
@@ -2461,7 +2467,6 @@ void GaussianMapper::increasePcdByDepthReconstruction(
             << std::endl;
 
   // Update the sample_mask correctly
-  torch::Tensor flat_sample_mask = sample_mask.flatten();
   torch::Tensor original_sample_indices =
       torch::nonzero(flat_sample_mask).squeeze(-1);
   torch::Tensor valid_sample_indices =
@@ -4802,8 +4807,7 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
                             min_depth_, max_depth_);
     } else if (sensor_type_ == STEREO && !depth_or_right_image.empty()) {
       new_kf->setupStereoData(stereo_baseline_length_, device_type_,
-                              monocular_depth_estimator_, min_depth_,
-                              max_depth_);
+                              stereo_depth_estimator_, min_depth_, max_depth_);
     }
 
     if (sensor_type_ == RGBD && !new_kf->img_auxiliary_undist_.empty()) {

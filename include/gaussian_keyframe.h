@@ -112,7 +112,7 @@ class GaussianKeyframe {
 
   void setupStereoData(float baseline,
                        torch::DeviceType device_type,
-                       std::shared_ptr<MonoDepth> depth_estimator,
+                       std::shared_ptr<StereoDepth> depth_estimator,
                        float min_depth,
                        float max_depth);
 
