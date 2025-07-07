@@ -1804,22 +1804,28 @@ void GaussianModel::initializeFromExistingGaussians(
   this->denom_ = torch::zeros({this->getXYZ().size(0), 1},
                               torch::TensorOptions().device(device_type_));
 
-  // Initialize optimizer with properly set learning rates
+  position_lr_init_ = training_args.position_lr_init_;
+  position_lr_decay_ = training_args.position_lr_decay_;
+  position_lr_min_ = position_lr_init_ * 0.1f;
+
   torch::optim::AdamOptions adam_options;
-  adam_options.set_lr(0.0);
+  adam_options.set_lr(0.0);  // We'll set individual LRs below
   adam_options.eps() = 1e-15;
-
-  int num_gaussians = this->getXYZ().size(0);
-
-  // Position learning rates (per-primitive for positions)
-  torch::Tensor position_lrs = torch::full(
-      {num_gaussians}, training_args.position_lr_init_,
-      torch::TensorOptions().dtype(torch::kFloat32).device(device_type_));
 
   this->optimizer_.reset(new SparseGaussianAdam(Tensor_vec_xyz_, adam_options));
   optimizer_->param_groups()[0].options().set_lr(
       training_args.position_lr_init_);
 
+  // For per-primitive learning rates, create tensor-based LRs
+  int num_gaussians = this->getXYZ().size(0);
+
+  // Position learning rates (per-primitive for positions)
+  torch::Tensor position_lrs = torch::full(
+      {num_gaussians}, position_lr_init_,
+      torch::TensorOptions().dtype(torch::kFloat32).device(device_type_));
+  this->position_lrs_ = position_lrs;
+
+  // For other parameters, we can still use scalar learning rates
   optimizer_->add_param_group(Tensor_vec_feature_dc_);
   optimizer_->param_groups()[1].options().set_lr(training_args.feature_lr_);
 

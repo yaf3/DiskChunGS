@@ -295,8 +295,8 @@ std::tuple<torch::Tensor, torch::Tensor> MonoDepth::estimate_depth(
       end_prep - start_prep);
   auto inf_time = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_inf - start_inf);
-  std::cout << "Preprocessing: " << prep_time.count()
-            << "ms, Inference: " << inf_time.count() << "ms" << std::endl;
+  // std::cout << "Preprocessing: " << prep_time.count()
+  //           << "ms, Inference: " << inf_time.count() << "ms" << std::endl;
 
   // Convert to torch tensor for processing
   cv::Mat resized_depth;
@@ -426,10 +426,10 @@ torch::Tensor MonoDepth::align_depth_equivalent(
     torch::Tensor mono_depth_map_aligned =
         mono_depth_map * scale_final + offset_final;
 
-    std::cout << "Alignment: scale=" << scale_final.item<float>()
-              << ", offset=" << offset_final.item<float>() << " (using "
-              << valid_mask.sum().item<int>() << "/" << num_keypoints
-              << " keypoints)" << std::endl;
+    // std::cout << "Alignment: scale=" << scale_final.item<float>()
+    //           << ", offset=" << offset_final.item<float>() << " (using "
+    //           << valid_mask.sum().item<int>() << "/" << num_keypoints
+    //           << " keypoints)" << std::endl;
 
     return mono_depth_map_aligned;  // Return normalized depth, NOT metric!
 
