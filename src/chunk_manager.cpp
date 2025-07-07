@@ -7,93 +7,6 @@
 
 #include "include/profiling.h"
 
-// Pure Eigen implementation without explicit SIMD (relies on Eigen's
-// optimizations)
-bool test_AABB_against_frustum_eigen(const Eigen::Matrix4f& MVP,
-                                     const AABB& aabb) {
-  // Define the 8 corners of the AABB
-  std::array<Eigen::Vector4f, 8> corners;
-  corners[0] = Eigen::Vector4f(aabb.min.x(), aabb.min.y(), aabb.min.z(), 1.0f);
-  corners[1] = Eigen::Vector4f(aabb.max.x(), aabb.min.y(), aabb.min.z(), 1.0f);
-  corners[2] = Eigen::Vector4f(aabb.min.x(), aabb.max.y(), aabb.min.z(), 1.0f);
-  corners[3] = Eigen::Vector4f(aabb.max.x(), aabb.max.y(), aabb.min.z(), 1.0f);
-  corners[4] = Eigen::Vector4f(aabb.min.x(), aabb.min.y(), aabb.max.z(), 1.0f);
-  corners[5] = Eigen::Vector4f(aabb.max.x(), aabb.min.y(), aabb.max.z(), 1.0f);
-  corners[6] = Eigen::Vector4f(aabb.min.x(), aabb.max.y(), aabb.max.z(), 1.0f);
-  corners[7] = Eigen::Vector4f(aabb.max.x(), aabb.max.y(), aabb.max.z(), 1.0f);
-
-  // Test 1: Check if any corner is inside the view frustum
-  bool any_corner_inside = false;
-  bool all_corners_outside_same_plane = true;
-
-  // Arrays to track which side of each frustum plane each corner is on
-  bool outside_left[8] = {false};
-  bool outside_right[8] = {false};
-  bool outside_bottom[8] = {false};
-  bool outside_top[8] = {false};
-  bool outside_near[8] = {false};
-  bool outside_far[8] = {false};
-
-  // Transform and test all corners
-  for (int i = 0; i < 8; ++i) {
-    // Transform to clip space
-    Eigen::Vector4f clipSpace = MVP * corners[i];
-
-    // To handle perspective division properly
-    float w = clipSpace.w();
-    float x = clipSpace.x();
-    float y = clipSpace.y();
-    float z = clipSpace.z();
-
-    // Check which side of each plane this corner is on
-    outside_left[i] = x < -w;
-    outside_right[i] = x > w;
-    outside_bottom[i] = y < -w;
-    outside_top[i] = y > w;
-    outside_near[i] = z < -w;
-    outside_far[i] = z > w;
-
-    // If any corner is inside, we're done
-    if (!outside_left[i] && !outside_right[i] && !outside_bottom[i] &&
-        !outside_top[i] && !outside_near[i] && !outside_far[i]) {
-      any_corner_inside = true;
-    }
-  }
-
-  if (any_corner_inside) {
-    return true;
-  }
-
-  // Test 2: If all corners are outside the same frustum plane, the AABB is
-  // outside
-  bool all_outside_left = true;
-  bool all_outside_right = true;
-  bool all_outside_bottom = true;
-  bool all_outside_top = true;
-  bool all_outside_near = true;
-  bool all_outside_far = true;
-
-  for (int i = 0; i < 8; ++i) {
-    all_outside_left &= outside_left[i];
-    all_outside_right &= outside_right[i];
-    all_outside_bottom &= outside_bottom[i];
-    all_outside_top &= outside_top[i];
-    all_outside_near &= outside_near[i];
-    all_outside_far &= outside_far[i];
-  }
-
-  // If all corners are outside any single plane, the AABB is outside the
-  // frustum
-  if (all_outside_left || all_outside_right || all_outside_bottom ||
-      all_outside_top || all_outside_near || all_outside_far) {
-    return false;
-  }
-
-  // Test 3: If we reach here, the AABB and frustum intersect
-  // (No corner is inside, but the AABB isn't completely outside any plane)
-  return true;
-}
-
 // Get chunk coordinate from 3D position
 ChunkCoord ChunkManager::getChunkCoord(const Eigen::Vector3f& position) {
   float half_chunk = chunk_size_ * 0.5f;
@@ -119,33 +32,6 @@ AABB ChunkManager::getChunkAABB(const ChunkCoord& coord) {
   Eigen::Vector3f min_corner = center - Eigen::Vector3f::Constant(half_chunk);
   Eigen::Vector3f max_corner = center + Eigen::Vector3f::Constant(half_chunk);
   return AABB(min_corner, max_corner);
-}
-
-// Helper function to create the projection matrix from keyframe parameters
-Eigen::Matrix4f ChunkManager::createProjectionMatrix(
-    std::shared_ptr<GaussianKeyframe> keyframe) {
-  Eigen::Matrix4f proj_matrix = Eigen::Matrix4f::Zero();
-  float fovX = keyframe->FoVx_;
-  float fovY = keyframe->FoVy_;
-  float znear = keyframe->znear_;
-  float zfar = 3 * keyframe->zfar_;
-
-  float tanHalfFovY = std::tan(fovY / 2);
-  float tanHalfFovX = std::tan(fovX / 2);
-  float top = tanHalfFovY * znear;
-  float bottom = -top;
-  float right = tanHalfFovX * znear;
-  float left = -right;
-
-  proj_matrix(0, 0) = 2.0f * znear / (right - left);
-  proj_matrix(1, 1) = 2.0f * znear / (top - bottom);
-  proj_matrix(0, 2) = (right + left) / (right - left);
-  proj_matrix(1, 2) = (top + bottom) / (top - bottom);
-  proj_matrix(3, 2) = 1.0f;  // z_sign
-  proj_matrix(2, 2) = zfar / (zfar - znear);
-  proj_matrix(2, 3) = -(zfar * znear) / (zfar - znear);
-
-  return proj_matrix;
 }
 
 // Constructor
@@ -1080,11 +966,8 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::loadVisibleChunks(
 
   triggerLruCheck();
 
-  // auto timer_frustumCullChunks =
-  //     ProfilingUtils::Timer("ChunkManager::frustumCullChunks");
   std::vector<ChunkCoord> visible_chunk_coords =
       frustumCullChunks(keyframe, use_cache);
-  // timer_frustumCullChunks.stop();
 
   // Now we have the list of visible chunk coordinates
   // Start asynchronous loading of chunks
@@ -1246,61 +1129,27 @@ std::vector<ChunkCoord> ChunkManager::frustumCullChunks(
   Eigen::Vector3f camera_position = Twc.translation().cast<float>();
   ChunkCoord camera_chunk = getChunkCoord(camera_position);
 
-  // Determine search radius - consider reducing for small chunks
+  // Calculate parameters
   int search_radius =
       std::ceil(keyframe->zfar_ / chunk_size_ * std::sqrt(3.0f)) + 2;
+  float max_distance = keyframe->zfar_ + chunk_size_ * 1.732f;
 
-  // Generate chunks directly within spherical bounds
-  std::vector<ChunkCoord> candidate_chunks;
-  const int total_chunks = (2 * search_radius + 1) * (2 * search_radius + 1) *
-                           (2 * search_radius + 1);
-  candidate_chunks.reserve(total_chunks);
-
-  const int side_length = 2 * search_radius + 1;
-
-  // Generate all candidate chunks without distance filtering
-  for (int dx = -search_radius; dx <= search_radius; dx++) {
-    for (int dy = -search_radius; dy <= search_radius; dy++) {
-      for (int dz = -search_radius; dz <= search_radius; dz++) {
-        ChunkCoord check_coord{camera_chunk.x + dx, camera_chunk.y + dy,
-                               camera_chunk.z + dz};
-        candidate_chunks.push_back(check_coord);
-      }
-    }
-  }
-
-  // Vector to hold visibility results
-  std::vector<int> visibility_results(candidate_chunks.size(), 0);
-
-#pragma omp parallel for
-  for (size_t i = 0; i < candidate_chunks.size(); i++) {
-    const ChunkCoord& check_coord = candidate_chunks[i];
-    AABB chunk_aabb = getChunkAABB(check_coord);
-    bool visible = test_AABB_against_frustum_eigen(vp_matrix, chunk_aabb);
-
-    visibility_results[i] = visible ? 1 : 0;
-  }
-
-  // Collect visible chunks
-  std::vector<ChunkCoord> visible_coords;
-  visible_coords.reserve(candidate_chunks.size() / 4);
-  for (size_t i = 0; i < candidate_chunks.size(); i++) {
-    if (visibility_results[i]) {
-      visible_coords.push_back(candidate_chunks[i]);
-    }
-  }
+  // Call hierarchical culling
+  std::vector<ChunkCoord> visible_chunks =
+      cullChunksHierarchical(vp_matrix, camera_position, camera_chunk,
+                             search_radius, chunk_size_, max_distance);
 
   // Update cache (keep original cache update logic)
   if (use_cache) {
     std::lock_guard<std::mutex> lock(cache_mutex_);
     VisibilityCacheEntry entry;
     entry.pose = current_pose;
-    entry.visible_chunks = visible_coords;
+    entry.visible_chunks = visible_chunks;
     entry.timestamp = std::chrono::steady_clock::now();
     visibility_cache_[keyframe_id] = entry;
   }
 
-  return visible_coords;
+  return visible_chunks;
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>

@@ -16,30 +16,9 @@
 #include <vector>
 
 #include "chunk_types.h"
+#include "frustum_culler.h"
 #include "gaussian_keyframe.h"
 #include "gaussian_model.h"
-
-// Removed forward declaration of GaussianMapper
-
-// Type definitions
-using u32 = uint32_t;
-
-// Axis-aligned bounding box
-struct AABB {
-  Eigen::Vector3f min;
-  Eigen::Vector3f max;
-
-  AABB() : min(Eigen::Vector3f::Zero()), max(Eigen::Vector3f::Zero()) {}
-  AABB(const Eigen::Vector3f& min_val, const Eigen::Vector3f& max_val)
-      : min(min_val), max(max_val) {}
-};
-
-// Camera structure
-struct Cam {
-  Eigen::Matrix4f view;
-  Eigen::Matrix4f projection;
-  // Additional camera properties can be added here
-};
 
 // Pure Eigen implementation without explicit SIMD (relies on Eigen's
 // optimizations)

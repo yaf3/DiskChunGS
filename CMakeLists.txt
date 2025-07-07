@@ -246,6 +246,7 @@ add_library(
     include/stereo_depth.h
     include/mono_depth.h
     include/guided_mvs.h
+    include/frustum_culler.h
     src/gaussian_keyframe.cpp
     src/gaussian_model.cpp
     src/gaussian_parameters.cpp
@@ -260,6 +261,7 @@ add_library(
     src/stereo_depth.cpp
     src/mono_depth.cpp
     src/guided_mvs.cpp
+    src/frustum_culler.cpp
 )
 target_link_libraries(
     gaussian_mapper
