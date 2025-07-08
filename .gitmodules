@@ -1,0 +1,6 @@
+[submodule "slam_deps/xfeat_cpp"]
+	path = slam_deps/xfeat_cpp
+	url = https://github.com/casimirfeldmann/xfeat_cpp
+[submodule "slam_deps/depth-anything-tensorrt"]
+	path = slam_deps/depth-anything-tensorrt
+	url = https://github.com/casimirfeldmann/depth-anything-tensorrt
