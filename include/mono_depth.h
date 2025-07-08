@@ -1,6 +1,5 @@
 #pragma once
 
-#include <onnxruntime_cxx_api.h>
 #include <torch/torch.h>
 
 #include <memory>
@@ -14,20 +13,20 @@
 #include <tuple>
 #include <vector>
 
+#include "slam_deps/depth-anything-tensorrt/depth_anything.h"  // Include the TensorRT DepthAnything
 #include "tensor_utils.h"
 
 /**
- * @brief Fast ACVNet depth estimation class using ONNX Runtime
+ * @brief MonoDepth estimation class using TensorRT DepthAnything
  *
- * This class provides stereo depth estimation using the Fast ACVNet model
- * with ONNX Runtime for inference and OpenCV for image processing.
+ * This class provides monocular depth estimation using the DepthAnything model
+ * with TensorRT for fast inference.
  */
 class MonoDepth {
  public:
   /**
    * @brief Constructor
-   * @param model_path Path to the ONNX model file
-   * @param max_dist Maximum distance for depth visualization
+   * @param model_path Path to the TensorRT engine file or ONNX model file
    */
   MonoDepth(const std::string& model_path);
 
@@ -37,25 +36,31 @@ class MonoDepth {
   ~MonoDepth() = default;
 
   /**
-   * @brief Estimate depth from stereo images
-   * @param left_img Left stereo image
-   * @param right_img Right stereo image
-   * @return Disparity map
+   * @brief Estimate depth from monocular image
+   * @param image Input monocular image
+   * @param focal_length Camera focal length (optional, for scale)
+   * @return Tuple of depth tensor and confidence tensor
    */
-  std::tuple<torch::Tensor, torch::Tensor> estimate_depth(const cv::Mat& image,
-                                                          float focal_length);
+  std::tuple<torch::Tensor, torch::Tensor> estimate_depth(
+      const cv::Mat& image,
+      float focal_length = 0.0f);
 
   /**
-   * @brief Estimate depth from stereo images and convert to metric depth
-   * @param left_img Left stereo image
-   * @param right_img Right stereo image
-   * @param focal_length Camera focal length in pixels (for original image
-   * resolution)
-   * @param baseline Stereo baseline distance in meters
-   * @return Depth map in meters
+   * @brief Estimate relative depth from monocular image
+   * @param image Input monocular image
+   * @return Depth map as OpenCV Mat
    */
   cv::Mat estimate_relative_depth(const cv::Mat& image);
 
+  /**
+   * @brief Align depth using sparse keypoints
+   * @param mono_depth_map Normalized depth from model
+   * @param keypoint_pixels Pixel coordinates of keypoints
+   * @param keypoint_depths Metric depths of keypoints in meters
+   * @param width Image width
+   * @param height Image height
+   * @return Aligned depth tensor
+   */
   torch::Tensor align_depth_equivalent(
       const torch::Tensor& mono_depth_map,
       const std::vector<float>& keypoint_pixels,
@@ -64,82 +69,51 @@ class MonoDepth {
       int height) const;
 
  private:
-  // ONNX Runtime components
-  std::unique_ptr<Ort::Session> session_;
-  Ort::Env env_;
-  Ort::SessionOptions session_options_;
+  // TensorRT DepthAnything instance
+  std::unique_ptr<DepthAnything> depth_anything_;
 
   // Model information
-  std::vector<std::string> input_names_;
-  std::vector<std::string> output_names_;
-  std::vector<const char*> input_names_char_;
-  std::vector<const char*> output_names_char_;
-
-  std::vector<int64_t> input_shape_;
   int input_height_;
   int input_width_;
-  int input_size_;  // Pre-calculated input size
   int img_height_;
   int img_width_;
 
-  // Results
-  cv::Mat disparity_map_;
-  cv::Mat depth_map_;
-
-  // Configuration
-  float max_dist_;
-
+  // Sobel kernels for gradient computation
   torch::Tensor sobel_x_;
   torch::Tensor sobel_y_;
 
-  float resize_scale_;
-
   /**
-   * @brief Initialize ONNX model
-   * @param model_path Path to ONNX model file
+   * @brief Initialize the TensorRT model
+   * @param model_path Path to model file
    */
   void initialize_model(const std::string& model_path);
 
   /**
-   * @brief Get input layer details from model
+   * @brief Get median and median absolute deviation for depth normalization
+   * @param depth Input depth tensor
+   * @return Tuple of median (t) and MAD (s)
    */
-  void get_input_details();
-
-  /**
-   * @brief Get output layer details from model
-   */
-  void get_output_details();
-
-  /**
-   * @brief Prepare input image for inference (Optimized version)
-   * @param img Input image
-   * @return Preprocessed data as vector
-   */
-  std::vector<float> prepare_input_metric3d(const cv::Mat& img,
-                                            cv::Size& original_size,
-                                            std::vector<int>& pad_info);
-
-  cv::Mat postprocess_depth_metric3d(const cv::Mat& raw_depth,
-                                     const cv::Size& original_size,
-                                     const std::vector<int>& pad_info);
-
-  /**
-   * @brief Run inference on input data (Optimized version)
-   * @param left_input Left image data
-   * @param right_input Right image data
-   * @return Disparity map
-   */
-  cv::Mat inference_optimized(const std::vector<float>& input);
-
-  void debug_preprocessing(const std::vector<float>& input);
-
   std::tuple<torch::Tensor, torch::Tensor> get_t_s(
       const torch::Tensor& depth) const;
 
+  /**
+   * @brief Align samples by finding scale and offset
+   * @param tri_idepth Target inverse depths
+   * @param mono_idepth Source inverse depths
+   * @return Tuple of aligned depths, scale, and offset
+   */
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> align_samples(
       const torch::Tensor& tri_idepth,
       const torch::Tensor& mono_idepth) const;
 
+  /**
+   * @brief Sample depth values at given pixel coordinates
+   * @param depth_map Input depth map
+   * @param pixel_coords Pixel coordinates
+   * @param width Image width
+   * @param height Image height
+   * @return Sampled depth values
+   */
   torch::Tensor sample_depth_at_pixels(const torch::Tensor& depth_map,
                                        const torch::Tensor& pixel_coords,
                                        int width,

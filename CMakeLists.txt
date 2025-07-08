@@ -107,6 +107,46 @@ message(STATUS "Found ONNX Runtime library: ${ONNXRUNTIME_LIB}")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS} -pthread ${OpenMP_CXX_FLAGS}")
 
+find_path(TENSORRT_INCLUDE_DIR NvInfer.h
+    HINTS ${TENSORRT_ROOT} ${CUDA_TOOLKIT_ROOT_DIR}
+    PATH_SUFFIXES include)
+
+find_library(TENSORRT_LIBRARY_INFER nvinfer
+    HINTS ${TENSORRT_ROOT} ${TENSORRT_BUILD} ${CUDA_TOOLKIT_ROOT_DIR}
+    PATH_SUFFIXES lib lib64 lib/x64)
+
+if(TENSORRT_INCLUDE_DIR AND TENSORRT_LIBRARY_INFER)
+    set(TENSORRT_FOUND TRUE)
+    set(TENSORRT_DIR ${TENSORRT_INCLUDE_DIR}/..)
+endif()
+
+if(NOT TENSORRT_FOUND)
+    message(WARNING "TensorRT not found. TensorRT depth estimation will be disabled.")
+else()
+    # Read TensorRT version
+    file(STRINGS "${TENSORRT_INCLUDE_DIR}/NvInferVersion.h" tensorrt_version REGEX "#define NV_TENSORRT_MAJOR +[0-9]+")
+    string(REGEX MATCH "[0-9]+" tensorrt_version_major ${tensorrt_version})
+    
+    # Check TensorRT version and set library accordingly
+    if (WIN32)
+        if (tensorrt_version_major EQUAL 10)
+            set(TENSORRT_LIBS nvinfer_10 nvinfer_plugin_10 nvonnxparser_10)
+        else()
+            set(TENSORRT_LIBS nvinfer nvinfer_plugin nvparsers nvonnxparser)
+        endif()
+    else()
+        if (tensorrt_version_major EQUAL 10)
+            set(TENSORRT_LIBS nvinfer nvinfer_plugin nvonnxparser)
+        else()
+            set(TENSORRT_LIBS nvinfer nvinfer_plugin nvparsers nvonnxparser)
+        endif()
+    endif()
+    
+    message(STATUS "Found TensorRT headers: ${TENSORRT_INCLUDE_DIR}")
+    message(STATUS "TensorRT version: ${tensorrt_version_major}")
+endif()
+
+
 set(ORB_SLAM3_SOURCE_DIR "${PROJECT_SOURCE_DIR}/slam_deps/ORB-SLAM3")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
@@ -121,6 +161,7 @@ include_directories(
     ${EIGEN3_INCLUDE_DIR}
     ${OPENGL_INCLUDE_DIR}
     ${ONNXRUNTIME_INCLUDE_DIR}
+    ${TENSORRT_INCLUDE_DIR}
 )
 
 ##################################################################################
@@ -148,6 +189,23 @@ add_library(
 target_include_directories(xfeat PRIVATE ${PROJECT_SOURCE_DIR}/slam_deps/xfeat_cpp/include)
 target_compile_options(xfeat PRIVATE ${TORCH_CXX_FLAGS})
 target_link_libraries(xfeat ${OpenCV_LIBRARIES} ${TORCH_LIBRARIES})
+
+add_library(
+    depth_anything_tensorrt
+    SHARED
+    slam_deps/depth-anything-tensorrt/depth_anything.cpp
+    slam_deps/depth-anything-tensorrt/utils.cpp
+)
+target_include_directories(depth_anything_tensorrt PRIVATE 
+    ${TENSORRT_INCLUDE_DIR}
+    ${CUDA_INCLUDE_DIRS}
+)
+target_link_libraries(
+    depth_anything_tensorrt
+    ${OpenCV_LIBRARIES}
+    ${CUDA_LIBRARIES}
+    ${TENSORRT_LIBS}
+)
 
 add_library(
     cuda_rasterizer
@@ -275,6 +333,8 @@ target_link_libraries(
     xfeat
     OpenMP::OpenMP_CXX
     ${ONNXRUNTIME_LIB}
+    depth_anything_tensorrt  # <-- ADD THIS LINE
+    ${TENSORRT_LIBS}         # <-- ADD THIS LINE
 )
 
 # if(HAVE_TENSORRT_PROVIDER)

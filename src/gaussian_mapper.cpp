@@ -2444,19 +2444,19 @@ void GaussianMapper::increasePcdByDepthReconstruction(
   }
 
   // Apply guided MVS - returns depth and accurate mask for sampled points
-  // auto [depth, accurate_mask] = (*guided_mvs_)(sampled_uv, pkf,
-  // prev_keyframes);
+  auto [depth, accurate_mask] = (*guided_mvs_)(sampled_uv, pkf, prev_keyframes);
 
-  torch::Tensor depth_map = 1 / pkf->depth_image_.clamp_min(1e-8);
+  // torch::Tensor depth_map = 1 / pkf->depth_image_.clamp_min(1e-8);
 
-  // Sample depths at the sample mask locations
+  // // Sample depths at the sample mask locations
 
-  torch::Tensor sample_indices = torch::nonzero(flat_sample_mask).squeeze(-1);
-  torch::Tensor depth_map_flat = depth_map.flatten();
-  torch::Tensor depth = depth_map_flat.index({sample_indices});
+  // torch::Tensor sample_indices =
+  // torch::nonzero(flat_sample_mask).squeeze(-1); torch::Tensor depth_map_flat
+  // = depth_map.flatten(); torch::Tensor depth =
+  // depth_map_flat.index({sample_indices});
 
-  // Set accurate mask to all ones (since we're not using MVS)
-  torch::Tensor accurate_mask = torch::ones_like(depth, torch::kBool);
+  // // Set accurate mask to all ones (since we're not using MVS)
+  // torch::Tensor accurate_mask = torch::ones_like(depth, torch::kBool);
 
   // Apply confidence filtering exactly like Python
   // torch::Tensor sampled_confidence = sampleConf(
@@ -5226,10 +5226,32 @@ void GaussianMapper::initializeStereoDepthEstimator() {
 
 void GaussianMapper::initializeMonocularDepthEstimator() {
   // std::string model_path =
-  //     "/workspace/repo/models/metric3dv2/metric3d-vit-large.onnx";
-  std::string model_path =
-      "/workspace/repo/models/depth_anything/"
+  // "/workspace/repo/models/metric3dv2/metric3d-vit-large.onnx";
+  // std::string model_path =
+  // "/workspace/repo/models/depth_anything/"
+  // "depth_anything_v2_vitl.onnx";
+
+  std::string onnx_path =
+      "/workspace/repo/slam_deps/depth-anything-tensorrt/"
       "depth_anything_v2_vitl.onnx";
+
+  // Create engine path by replacing .onnx with .engine
+  std::string engine_path =
+      onnx_path.substr(0, onnx_path.find_last_of(".")) + ".engine";
+
+  std::string model_path;
+
+  // Check if engine file exists
+  if (std::filesystem::exists(engine_path)) {
+    std::cout << "Using cached TensorRT engine: " << engine_path << std::endl;
+    model_path = engine_path;
+  } else {
+    std::cout << "Engine file not found. Building from ONNX: " << onnx_path
+              << std::endl;
+    std::cout << "This will create: " << engine_path << std::endl;
+    model_path = onnx_path;
+  }
+
   this->monocular_depth_estimator_ = std::make_shared<MonoDepth>(model_path);
 }
 

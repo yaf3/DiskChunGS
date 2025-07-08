@@ -1,5 +1,4 @@
 version: '3'
-
 services:
   base:
     image: casimirfeldmann/diskchungs:base
@@ -7,6 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile.base
       target: base-dev
+    profiles: ["build-base"]  # Only build when this profile is active
     privileged: true
     network_mode: host
     shm_size: 20G
@@ -23,15 +23,13 @@ services:
             - driver: nvidia
               count: all
               capabilities: [ gpu ]
-
+              
   dev:
     image: casimirfeldmann/diskchungs:dev
     build:
       context: .
       dockerfile: Dockerfile.dev
       target: dev
-    depends_on:
-      - base
     privileged: true
     network_mode: host
     shm_size: 20G
