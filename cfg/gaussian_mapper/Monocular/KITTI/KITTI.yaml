@@ -8,7 +8,7 @@ Stereo.min_disparity: 0
 Stereo.num_disparity: 128
 Stereo.do_stereo_loss: 0  # 0:false, 1 or other integer:true
 Mapper.min_depth_: 0.01
-Mapper.max_depth_: 100.0
+Mapper.max_depth_: 100
 Mapper.inactive_geo_densify: 0  # 0:false, 1 or other integer:true
 Mapper.depth_densify: 1  # 0:false, 1 or other integer:true
 Mapper.depth_cache: 0
@@ -22,8 +22,8 @@ Mapper.cull_keyframes: 0  # 0:false, 1 or other integer:true
 Mapper.large_rotation_threshold: 1.0
 Mapper.large_translation_threshold: 0.1
 Mapper.stable_num_iter_existence: 1000
-GausPyramid.do: 0  # 0:false, 1 or other integer:true
-GausPyramid.num_sub_levels: 2
+GausPyramid.do: 1  # 0:false, 1 or other integer:true
+GausPyramid.num_sub_levels: 1
 GausPyramid.sub_level_times_of_use: 5
 Pipeline.convert_SHs: 0  # 0:false, 1 or other integer:true
 Pipeline.compute_cov3D: 0  # 0:false, 1 or other integer:true
@@ -38,8 +38,8 @@ Record.render_fly_through: 0 # 0:false, 1 or other integer:true
 Record.render_fly_through_speed: 5.0 # 0:false, 1 or other integer:true
 Optimization.max_num_iterations: -1
 Optimization.smooth_l1: 0  # 0:false, 1:true
-Chunking.chunk_size: 50.0
-Chunking.max_chunks: 30
+Chunking.chunk_size: 10.0
+Chunking.max_chunks: 100
 Optimization.opacity_reset_interval: 0  # 0:never, 1:always, others:periodically
 Optimization.prune_big_point_after_iter: -1
 Optimization.densify_from_iter: 100
@@ -50,17 +50,17 @@ GaussianViewer.glfw_window_height: 564
 GaussianViewer.image_scale: 0.5
 GaussianViewer.image_scale_main: 1.0
 GaussianViewer.camera_watch_dist: 0.000001
-Camera.z_near: 0.1
-Camera.z_far: 300.0
+Camera.z_near: 0.01
+Camera.z_far: 10.0
 Model.sh_degree: 3
 Mapper.depth_densify_subsample_ratio: 0.1
-Optimization.position_lr_init: 0.001
-Optimization.position_lr_decay: 0.998
+Optimization.position_lr_init: 0.00005
+Optimization.position_lr_decay: 0.99998
 Optimization.feature_lr: 0.005
 Optimization.opacity_lr: 0.1
 Optimization.scaling_lr: 0.01
 Optimization.rotation_lr: 0.002
-Optimization.pose_lr: 0.0000
+Optimization.pose_lr: 0.0001
 Optimization.exposure_lr: 0.00
 Optimization.depth_scale_bias_lr: 0.0001
 Optimization.percent_dense: 0.018072950932851207

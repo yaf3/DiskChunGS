@@ -45,8 +45,8 @@ Optimization.prune_big_point_after_iter: -1
 Optimization.densify_from_iter: 100
 Optimization.densify_until_iter: -1
 Optimization.auto_distribute: 4  # 0:false, 1 or other integer:true
-GaussianViewer.glfw_window_width: 1839
-GaussianViewer.glfw_window_height: 555
+GaussianViewer.glfw_window_width: 1862
+GaussianViewer.glfw_window_height: 564
 GaussianViewer.image_scale: 0.5
 GaussianViewer.image_scale_main: 1.0
 GaussianViewer.camera_watch_dist: 0.000001
