@@ -5232,7 +5232,7 @@ void GaussianMapper::initializeMonocularDepthEstimator() {
   // "depth_anything_v2_vitl.onnx";
 
   std::string onnx_path =
-      "/workspace/repo/slam_deps/depth-anything-tensorrt/"
+      "/workspace/models/"
       "depth_anything_v2_vitl.onnx";
 
   // Create engine path by replacing .onnx with .engine

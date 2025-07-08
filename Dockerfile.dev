@@ -50,6 +50,11 @@ RUN wget https://developer.nvidia.com/downloads/compute/machine-learning/tensorr
     rm nv-tensorrt-local-repo-${os}-${tag}_1.0-1_amd64.deb && \
     rm -rf /var/lib/apt/lists/*
 
+
+# Get models
+RUN mkdir -p /workspace/models && \
+    wget -P /workspace/models https://huggingface.co/yuvraj108c/Depth-Anything-2-Onnx/resolve/main/depth_anything_v2_vitl.onnx
+
 # Update library paths
 WORKDIR /workspace
 RUN echo "export LD_LIBRARY_PATH=/workspace/repo/slam_deps/ORB-SLAM3/lib:\$LD_LIBRARY_PATH" >> /root/.bashrc
@@ -73,6 +78,9 @@ RUN echo '#!/bin/bash' > /workspace/welcome.sh && \
     echo 'echo ""' >> /workspace/welcome.sh && \
     chmod +x /workspace/welcome.sh && \
     echo "if [ -f /workspace/welcome.sh ]; then /workspace/welcome.sh; fi" >> /root/.bashrc
+
+
+WORKDIR /workspace/repo
 
 # Copy entrypoint script
 COPY docker-entrypoint.sh /
