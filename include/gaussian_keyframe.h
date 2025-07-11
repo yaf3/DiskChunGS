@@ -149,6 +149,8 @@ class GaussianKeyframe {
   int image_width_;                             ///< image
   int image_height_;                            ///< image
 
+  torch::Tensor idepth_;
+
   int num_gaus_pyramid_sub_levels_;
   std::vector<int> gaus_pyramid_times_of_use_;
   std::vector<std::size_t> gaus_pyramid_width_;   ///< gaus_pyramid image

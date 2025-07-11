@@ -580,6 +580,8 @@ void GaussianKeyframe::setupStereoData(
   this->depth_image_ =
       tensor_utils::cvMat2TorchTensor_Float32(inverted_depth, torch::kCUDA);
 
+  this->idepth_ = depth_image_.unsqueeze(0).unsqueeze(0);
+
   // std::string gt_filename =
   //     "./debug_mono/gt_depth_" + std::to_string(this->fid_) + ".png";
   // colorize_and_save_depth(depth_image_.detach().cpu(), gt_filename,
@@ -618,7 +620,13 @@ GaussianKeyframe::extractValidKeypointsForDepthAlignment() const {
     // Check if keypoint has valid 3D coordinates
     // Following the pattern from the Python code where has_pt3d checks for
     // valid points
-    bool has_valid_3d = (z > 0.1f && z < 100.0f) &&  // reasonable depth range
+    // bool has_valid_3d = (z > 0.1f && z < 100.0f) &&  // reasonable depth
+    // range
+    //                     (u >= 0 && u < image_width_) &&  // within image
+    //                     bounds (v >= 0 && v < image_height_) &&
+    //                     std::isfinite(x) && std::isfinite(y) &&
+    //                     std::isfinite(z);
+    bool has_valid_3d = (z > 0.0) &&
                         (u >= 0 && u < image_width_) &&  // within image bounds
                         (v >= 0 && v < image_height_) && std::isfinite(x) &&
                         std::isfinite(y) && std::isfinite(z);
@@ -643,6 +651,12 @@ void GaussianKeyframe::setupMonoData(torch::DeviceType device_type,
   auto [relative_depth, depth_confidence] =
       depth_estimator->estimate_depth(img_undist_, intr_[0]);
 
+  // std::cout << "Depth info right after prediction" << std::endl;
+  // std::cout << relative_depth.sizes() << std::endl;
+  // std::cout << relative_depth.mean().item() << std::endl;
+  // std::cout << relative_depth.max().item() << std::endl;
+  // std::cout << relative_depth.min().item() << std::endl;
+
   depth_confidence_ = depth_confidence;
   // std::cout << "Relative depth size: " << relative_depth.sizes() <<
   // std::endl;
@@ -665,18 +679,28 @@ void GaussianKeyframe::setupMonoData(torch::DeviceType device_type,
       relative_depth, valid_pixel_coords, valid_depths, image_width_,
       image_height_);
 
-  std::cout << "Aligned depth stats:" << std::endl;
-  std::cout << "  Min: " << aligned_depth.min().item<float>() << std::endl;
-  std::cout << "  Max: " << aligned_depth.max().item<float>() << std::endl;
-  std::cout << "  Mean: " << aligned_depth.mean().item<float>() << std::endl;
-  std::cout << "  Median: " << aligned_depth.median().item<float>()
-            << std::endl;
+  // std::cout << "Aligned depth stats:" << std::endl;
+  // std::cout << "  Min: " << aligned_depth.min().item<float>() << std::endl;
+  // std::cout << "  Max: " << aligned_depth.max().item<float>() << std::endl;
+  // std::cout << "  Mean: " << aligned_depth.mean().item<float>() << std::endl;
+  // std::cout << "  Median: " << aligned_depth.median().item<float>()
+  //           << std::endl;
 
-  depth_image_ = aligned_depth.squeeze(0).squeeze(0);
+  idepth_ = aligned_depth;
 
-  std::string gt_filename =
-      "./debug_mono/gt_depth_" + std::to_string(this->fid_) + ".png";
-  colorize_and_save_depth(depth_image_.detach().cpu(), gt_filename, 0.0f, 6.0f);
+  // std::string gt_filename =
+  //     "./debug_mono/gt_depth_" + std::to_string(this->fid_) + ".png";
+  // colorize_and_save_depth(idepth_.detach().cpu(), gt_filename, 0.0f, 6.0f);
+
+  depth_image_ =
+      torch::nn::functional::interpolate(
+          aligned_depth,
+          torch::nn::functional::InterpolateFuncOptions()
+              .size(std::vector<int64_t>{image_height_, image_width_})
+              .mode(torch::kBilinear)
+              .align_corners(true))
+          .squeeze(0)
+          .squeeze(0);
 
   // std::filesystem::create_directories("./debug_mono");
   // colorize_and_save_depth(relative_depth.detach().cpu(),

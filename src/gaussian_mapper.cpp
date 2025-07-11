@@ -116,12 +116,15 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
     return;
   }
 
+  float mvs_inverse_depth_range;
+
   // Sensors
   switch (pSLAM->getSensorType()) {
     case ORB_SLAM3::System::MONOCULAR:
     case ORB_SLAM3::System::IMU_MONOCULAR: {
       this->sensor_type_ = MONOCULAR;
       initializeMonocularDepthEstimator();
+      mvs_inverse_depth_range = 0.2f;
     } break;
     case ORB_SLAM3::System::STEREO:
     case ORB_SLAM3::System::IMU_STEREO: {
@@ -133,11 +136,13 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
       stereo_Q_.convertTo(stereo_Q_, CV_32FC3, 1.0);
 
       initializeStereoDepthEstimator();
+      mvs_inverse_depth_range = 0.01f;
       // initializeMonocularDepthEstimator();
     } break;
     case ORB_SLAM3::System::RGBD:
     case ORB_SLAM3::System::IMU_RGBD: {
       this->sensor_type_ = RGBD;
+      mvs_inverse_depth_range = 0.05f;
     } break;
     default: {
       throw std::runtime_error("[Gaussian Mapper]Unsupported sensor type!");
@@ -148,8 +153,9 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
 
   int num_prev_keyframes = 6;
   int num_depth_candidates = 16;
-  guided_mvs_ =
-      std::make_unique<GuidedMVS>(num_prev_keyframes, num_depth_candidates);
+
+  guided_mvs_ = std::make_unique<GuidedMVS>(
+      num_prev_keyframes, num_depth_candidates, mvs_inverse_depth_range);
 
   // Cameras
   // TODO: not only monocular
@@ -1883,6 +1889,10 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   kfid_shuffled_ = false;
   keyframe_queue_->notifyNewKeyframeAdded(pkf);
 
+  std::cout << "------------------------------" << std::endl;
+  std::cout << "Processing kf: " << pkf->fid_ << std::endl;
+  std::cout << "------------------------------" << std::endl;
+
   // Give new keyframes times of use and add it to the training sliding window
   increaseKeyframeTimesOfUse(pkf, newKeyframeTimesOfUse());
 
@@ -2053,37 +2063,25 @@ std::shared_ptr<GaussianKeyframe> GaussianMapper::useOneRandomKeyframe() {
 std::vector<std::shared_ptr<GaussianKeyframe>>
 GaussianMapper::getClosestKeyframes(
     std::shared_ptr<GaussianKeyframe> current_kf,
-    int n) {
+    int n,
+    int k) {
   std::vector<std::shared_ptr<GaussianKeyframe>> closest_keyframes;
-  if (n <= 0) return closest_keyframes;
+  if (n <= 0 || k <= 0) return closest_keyframes;
 
   auto all_keyframes = scene_->getAllKeyframes();
   if (all_keyframes.empty()) return closest_keyframes;
 
   // Get current keyframe's camera center position
   Eigen::Vector3f current_center = current_kf->getTranslationf();
-  // Alternative: if you want world coordinates, use:
-  // Eigen::Vector3f current_center =
-  // -current_kf->getRotationMatrixf().transpose() *
-  // current_kf->getTranslationf();
 
-  // Create a vector of keyframes sorted by spatial distance to current
-  // keyframe
+  // Create a vector of keyframes sorted by spatial distance to current keyframe
   std::vector<std::pair<float, std::shared_ptr<GaussianKeyframe>>> candidates;
-
   for (const auto& kf_pair : all_keyframes) {
     if (kf_pair.second != current_kf) {  // Exclude current keyframe
       // Get candidate keyframe's camera center position
       Eigen::Vector3f candidate_center = kf_pair.second->getTranslationf();
-      // Alternative: if you want world coordinates, use:
-      // Eigen::Vector3f candidate_center =
-      // -kf_pair.second->getRotationMatrixf().transpose() *
-      // kf_pair.second->getTranslationf();
-
       // Calculate Euclidean distance between camera centers
       float spatial_distance = (current_center - candidate_center).norm();
-      // std::cout << "Keyframe: " << std::to_string(kf_pair.second->fid_)
-      //           << " Dist: " << spatial_distance << std::endl;
       candidates.push_back({spatial_distance, kf_pair.second});
     }
   }
@@ -2092,18 +2090,45 @@ GaussianMapper::getClosestKeyframes(
   std::sort(candidates.begin(), candidates.end(),
             [](const auto& a, const auto& b) { return a.first < b.first; });
 
-  // Take the n closest keyframes
-  int count = std::min(n, static_cast<int>(candidates.size()));
-  for (int i = 0; i < count; ++i) {
+  // First, try to take every k-th keyframe from the sorted list
+  int selected_count = 0;
+  for (int i = 0; i < static_cast<int>(candidates.size()) && selected_count < n;
+       i += k) {
     closest_keyframes.push_back(candidates[i].second);
-    // std::cout << "Chosen Keyframe: "
+    selected_count++;
+
+    // Optional debug output
+    // std::cout << "Chosen Keyframe (k-spaced): "
     //           << std::to_string(candidates[i].second->fid_)
     //           << " Dist: " << candidates[i].first << std::endl;
   }
 
+  // If we still need more keyframes and haven't used all candidates,
+  // fill the remaining slots with the closest unused keyframes
+  if (selected_count < n) {
+    // Create a set of already selected keyframes for quick lookup
+    std::set<std::shared_ptr<GaussianKeyframe>> selected_set;
+    for (const auto& kf : closest_keyframes) {
+      selected_set.insert(kf);
+    }
+
+    // Add remaining closest keyframes that weren't selected
+    for (int i = 0;
+         i < static_cast<int>(candidates.size()) && selected_count < n; ++i) {
+      if (selected_set.find(candidates[i].second) == selected_set.end()) {
+        closest_keyframes.push_back(candidates[i].second);
+        selected_count++;
+
+        // Optional debug output
+        // std::cout << "Chosen Keyframe (fill): "
+        //           << std::to_string(candidates[i].second->fid_)
+        //           << " Dist: " << candidates[i].first << std::endl;
+      }
+    }
+  }
+
   return closest_keyframes;
 }
-
 void GaussianMapper::increaseKeyframeTimesOfUse(
     std::shared_ptr<GaussianKeyframe> pkf,
     int times) {
@@ -2437,14 +2462,27 @@ void GaussianMapper::increasePcdByDepthReconstruction(
 
   // Get closest keyframes for MVS
   std::vector<std::shared_ptr<GaussianKeyframe>> prev_keyframes =
-      getClosestKeyframes(pkf, guided_mvs_->getNumCams());
+      getClosestKeyframes(pkf, guided_mvs_->getNumCams(), 6);
+
+  if (prev_keyframes.size() != guided_mvs_->getNumCams()) {
+    std::cout << "No enough previous keyframes found for MVS." << std::endl;
+    return;
+  }
 
   if (prev_keyframes.empty()) {
     std::cout << "No previous keyframes found for MVS." << std::endl;
+    return;
   }
 
   // Apply guided MVS - returns depth and accurate mask for sampled points
   auto [depth, accurate_mask] = (*guided_mvs_)(sampled_uv, pkf, prev_keyframes);
+  // auto [nonsense, nonsense2] = (*guided_mvs_)(sampled_uv, pkf,
+  // prev_keyframes);
+
+  // auto [depth, accurate_mask, debug_stats] = guided_mvs_->operator_debug(
+  //     sampled_uv, pkf, prev_keyframes, true, "kitti_scene_10");
+
+  // guided_mvs_->debug_specific_point(sampled_uv, pkf, prev_keyframes, 420);
 
   // torch::Tensor depth_map = 1 / pkf->depth_image_.clamp_min(1e-8);
 
@@ -2459,10 +2497,9 @@ void GaussianMapper::increasePcdByDepthReconstruction(
   // torch::Tensor accurate_mask = torch::ones_like(depth, torch::kBool);
 
   // Apply confidence filtering exactly like Python
-  // torch::Tensor sampled_confidence = sampleConf(
-  //     mono_depth_confidence, sampled_uv, pkf->image_width_,
-  //     pkf->image_height_);
-  torch::Tensor valid_mask = (depth > 1e-6);
+  torch::Tensor sampled_confidence = sampleConf(
+      mono_depth_confidence, sampled_uv, pkf->image_width_, pkf->image_height_);
+  torch::Tensor valid_mask = (depth > 1e-6) & (sampled_confidence > 0.5);
 
   // std::cout << "Valid mask count: " << valid_mask.sum().item<int>()
   //           << std::endl;
@@ -2612,7 +2649,8 @@ void GaussianMapper::increasePcdByDepthReconstruction(
 
   // ==== NEW: Add keyframe matched points alongside depth points ====
 
-  // Step 8: Get matched keypoints and their 3D positions BEFORE flattening RGB
+  // Step 8: Get matched keypoints and their 3D positions BEFORE flattening
+  // RGB
   torch::Tensor match_pts_3d;
   torch::Tensor match_colors;
   torch::Tensor match_init_proba;
@@ -2621,7 +2659,8 @@ void GaussianMapper::increasePcdByDepthReconstruction(
   // Check if we have valid keypoints with 3D coordinates
   if (!pkf->kps_pixel_.empty() && !pkf->kps_point_local_.empty()) {
     int num_keypoints = pkf->kps_pixel_.size() / 2;
-    // std::cout << "Processing " << num_keypoints << " keypoints" << std::endl;
+    // std::cout << "Processing " << num_keypoints << " keypoints" <<
+    // std::endl;
 
     // Convert vectors to tensors directly on GPU for vectorized operations
     torch::Tensor kps_pixel_tensor =
@@ -2647,7 +2686,8 @@ void GaussianMapper::increasePcdByDepthReconstruction(
         torch::isfinite(z_coords);
 
     num_matched_points = valid_mask.sum().item<int>();
-    // std::cout << "Valid matched points: " << num_matched_points << std::endl;
+    // std::cout << "Valid matched points: " << num_matched_points <<
+    // std::endl;
 
     if (num_matched_points > 0) {
       // Extract valid keypoints using mask indexing
@@ -2671,7 +2711,8 @@ void GaussianMapper::increasePcdByDepthReconstruction(
           normalized_coords.view({1, 1, num_matched_points, 2});
 
       // std::cout << "Grid size: " << grid.sizes() << std::endl;
-      // std::cout << "RGB size before sampling: " << rgb.sizes() << std::endl;
+      // std::cout << "RGB size before sampling: " << rgb.sizes() <<
+      // std::endl;
 
       // Use grid_sample for RGB (expects [N, C, H, W] format)
       torch::Tensor rgb_for_sampling = rgb.unsqueeze(0);  // [1, 3, H, W]
@@ -2817,7 +2858,8 @@ void GaussianMapper::increasePcdByDepthReconstruction(
         matched_opacities;
   }
 
-  // std::cout << "All opacities size: " << all_opacities.sizes() << std::endl;
+  // std::cout << "All opacities size: " << all_opacities.sizes() <<
+  // std::endl;
 
   // Step 14: Add all points to the scene in a single call
   std::unique_lock lock_render(mutex_render_);
@@ -2928,11 +2970,17 @@ std::tuple<cv::Mat, cv::Mat> GaussianMapper::renderFromPose(
     // std::cout << "[" << chunk->getCoord().x << " " << chunk->getCoord().y
     // << " "
     //           << chunk->getCoord().z << "], ";
-    if (chunk && chunk->getGaussians() &&
-        chunk->getGaussians()->getXYZ().sizes()[0] > 0) {
-      models.push_back(chunk->getGaussians());
+    if (!chunk) {
+      throw std::runtime_error("[renderFromPose] Chunk not valid");
+    } else if (!chunk->getGaussians()) {
+      throw std::runtime_error("[renderFromPose] Gaussians not valid");
+    } else if (!(chunk->getGaussians()->getXYZ().sizes()[0] > 0)) {
+      std::cout
+          << "[renderFromPose] Need > 0 gaussians per model, skipping this "
+             "model"
+          << std::endl;
     } else {
-      throw "[renderFromPose] Chunk/Gaussian not valid";
+      models.push_back(chunk->getGaussians());
     }
   }
   // std::cout << std::endl;

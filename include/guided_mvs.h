@@ -26,7 +26,9 @@ class GuidedMVS {
    * @param num_prev_keyframes Number of previous keyframes to use
    * @param num_depth_candidates Number of depth candidates (default: 16)
    */
-  GuidedMVS(int num_prev_keyframes, int num_depth_candidates = 16);
+  GuidedMVS(int num_prev_keyframes,
+            int num_depth_candidates = 16,
+            float inverse_depth_range = 2e-1f);
 
   /**
    * @brief Perform guided multi-view stereo depth estimation
@@ -50,3 +52,32 @@ class GuidedMVS {
   // Setters
   void setIdepthRange(float range) { idepth_range = range; }
 };
+
+struct DebugStats {
+  int valid_cams_count;
+  int best_cam_idx;
+  float max_baseline_dist;
+  float initial_idepth;
+  float final_depth;
+  float min_cost;
+  float max_cost;
+  float cost_ratio;
+  bool quadratic_applied;
+  float quadratic_variation;
+  int best_candidate_idx;
+  bool insufficient_baseline;
+  bool out_of_bounds;
+};
+
+void analyze_debug_stats(const std::vector<DebugStats>& stats,
+                         float idepth_range);
+
+void validateFeatureQuality(const std::shared_ptr<GaussianKeyframe>& refKeyframe,
+                            const std::vector<std::shared_ptr<GaussianKeyframe>>& keyframes,
+                            const torch::Tensor& uv);
+
+void saveDepthMapAsPointCloud(const torch::Tensor& depth_map,
+                              const torch::Tensor& intrinsics,
+                              const torch::Tensor& image,
+                              const std::string& filename,
+                              float depth_threshold = 0.1f);

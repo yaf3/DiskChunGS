@@ -216,7 +216,8 @@ class GaussianMapper {
   std::shared_ptr<GaussianKeyframe> useOneRandomKeyframe();
   std::vector<std::shared_ptr<GaussianKeyframe>> getClosestKeyframes(
       std::shared_ptr<GaussianKeyframe> current_kf,
-      int n);
+      int n,
+      int k = 1);
   std::shared_ptr<GaussianKeyframe> useRecentKeyframe();
   void generateKfidRandomShuffle();
 

@@ -470,6 +470,12 @@ target_link_libraries(camera_mono
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
 
+
+# Xfeat matching
+add_executable(match examples/match.cpp)
+target_link_libraries(match
+    gaussian_mapper)
+
 ##################################################################################
 ##  Build the mapping examples to ${PROJECT_SOURCE_DIR}/bin
 ##################################################################################

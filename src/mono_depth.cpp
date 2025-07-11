@@ -132,26 +132,9 @@ std::tuple<torch::Tensor, torch::Tensor> MonoDepth::estimate_depth(
 
   auto end_inf = std::chrono::high_resolution_clock::now();
 
-  // Convert the colormap result back to grayscale depth values
-  cv::Mat depth_gray;
-  if (raw_depth.channels() == 3) {
-    cv::cvtColor(raw_depth, depth_gray, cv::COLOR_BGR2GRAY);
-  } else {
-    depth_gray = raw_depth.clone();
-  }
-
-  // Convert to float and normalize to [0,1] range
-  cv::Mat depth_float;
-  depth_gray.convertTo(depth_float, CV_32F, 1.0 / 255.0);
-
-  // Resize to original image dimensions
-  cv::Mat resized_depth;
-  cv::resize(depth_float, resized_depth, cv::Size(img_width_, img_height_), 0,
-             0, cv::INTER_LINEAR);
-
   // Convert to torch tensor for processing
   torch::Tensor depth =
-      tensor_utils::cvMat2TorchTensor_Float32(resized_depth, torch::kCUDA);
+      tensor_utils::cvMat2TorchTensor_Float32(raw_depth, torch::kCUDA);
 
   // Apply normalization like Python code: (depth - t) / s
   auto [t, s] = get_t_s(depth);
