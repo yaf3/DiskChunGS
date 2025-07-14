@@ -47,8 +47,17 @@ void saveSlowdownFactor(float slowdown_factor,
                         const std::filesystem::path &output_dir);
 
 // New function to calculate slowdown factor based on the sequence
-float calculateSlowdownFactor(const std::string &sequencePath,
-                              float targetSpeedKmh = 5.0) {
+float calculateSlowdownFactor(
+    const std::string &sequencePath,
+    float targetSpeedKmh = 0.0) {  // Changed default to 0.0
+  // If targetSpeedKmh is 0 or negative, return 1.0 (no slowdown)
+  if (targetSpeedKmh <= 0.0) {
+    std::cout << "No target speed specified, using default slowdown factor: "
+                 "1.0x (no slowdown)"
+              << std::endl;
+    return 1.0f;
+  }
+
   // Extract sequence number from path
   std::string seqNum = "";
   std::size_t found = sequencePath.find_last_of("/\\");
@@ -80,7 +89,7 @@ float calculateSlowdownFactor(const std::string &sequencePath,
   };
 
   // Default slowdown factor if sequence not found
-  float defaultFactor = 6.87;  // Weighted average of all sequences
+  float defaultFactor = 1.0f;  // Changed from 6.87 to 1.0
 
   // Calculate slowdown factor based on original speed
   if (!seqNum.empty() && sequenceSpeeds.find(seqNum) != sequenceSpeeds.end()) {
@@ -130,14 +139,12 @@ int main(int argc, char **argv) {
   if (argc >= 7)
     use_viewer = (std::string(argv[6]) == "no_viewer" ? false : true);
 
-  float target_speed_kmh = 5.0;  // Default target speed (walking pace)
+  float target_speed_kmh = 0.0;  // Default target speed (walking pace)
   if (argc >= 8) {
     try {
       target_speed_kmh = std::stof(argv[7]);
       if (target_speed_kmh <= 0) {
-        std::cerr << "Target speed must be positive. Using default of 5.0 km/h."
-                  << std::endl;
-        target_speed_kmh = 5.0;
+        std::cerr << "Target speed must be positive!" << std::endl;
       }
     } catch (std::exception &e) {
       std::cerr << "Invalid target speed. Using default of 5.0 km/h."
