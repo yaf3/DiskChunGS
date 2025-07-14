@@ -95,8 +95,8 @@ cv::Mat MonoDepth::estimate_relative_depth(const cv::Mat& image) {
   auto inf_time = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_inf - start_inf);
 
-  std::cout << "TensorRT inference time: " << inf_time.count() << "ms"
-            << std::endl;
+  // std::cout << "TensorRT inference time: " << inf_time.count() << "ms"
+  //           << std::endl;
 
   return depth_result;
 }
@@ -162,8 +162,8 @@ std::tuple<torch::Tensor, torch::Tensor> MonoDepth::estimate_depth(
 
   auto inf_time = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_inf - start_inf);
-  std::cout << "TensorRT inference time: " << inf_time.count() << "ms"
-            << std::endl;
+  // std::cout << "TensorRT inference time: " << inf_time.count() << "ms"
+  //           << std::endl;
 
   return std::make_tuple(depth, confidence);
 }

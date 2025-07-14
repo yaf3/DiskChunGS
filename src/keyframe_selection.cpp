@@ -13,13 +13,6 @@ KeyframeQueue::KeyframeQueue(std::shared_ptr<GaussianScene> scene,
       queue_size_(queue_size),
       recent_keyframes_count_(queue_size),  // Use queue_size as default for k
       rng_(std::random_device{}()) {
-  // Initialize with existing keyframes if any
-  if (scene_) {
-    for (const auto& [fid, _] : scene_->keyframes()) {
-      keyframe_ids_.push_back(fid);
-    }
-  }
-
   std::cout << "Created SimpleKeyframeQueue with k=" << recent_keyframes_count_
             << " most recent keyframes" << std::endl;
 }
@@ -53,11 +46,21 @@ void KeyframeQueue::notifyNewKeyframeAdded(
 
   // Add to the list of keyframe IDs
   if (keyframe_ids_.size() >= queue_size_) {
-    // Remove the oldest keyframe ID
+    // Remove the oldest keyframe ID and erase it from scene
+    std::size_t oldest_kf_id = keyframe_ids_.front();
     keyframe_ids_.erase(keyframe_ids_.begin());
+
+    // // Erase the keyframe from the scene entirely, but only if it exists
+    auto it = scene_->keyframes().find(oldest_kf_id);
+    if (it != scene_->keyframes().end()) {
+      it->second->saveDataToDisk();
+      // scene_->keyframes().erase(oldest_kf_id);
+      // std::cout << "Erased keyframe " << oldest_kf_id
+      //           << " from scene (no longer in recent k)" << std::endl;
+    }
   }
   keyframe_ids_.push_back(keyframe->fid_);
-
-  // std::cout << "Added keyframe " << keyframe->fid_ << ", now tracking "
-  //           << keyframe_ids_.size() << " keyframes" << std::endl;
+  // std::cout << "Added keyframe " << keyframe->fid_
+  //           << " to queue, queue size now: " << keyframe_ids_.size()
+  //           << std::endl;
 }

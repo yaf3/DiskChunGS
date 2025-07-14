@@ -182,22 +182,22 @@ std::pair<torch::Tensor, torch::Tensor> GuidedMVS::operator()(
   // std::cout << refFeatMap.sizes() << std::endl;
   // std::cout << featMaps.sizes() << std::endl;
 
-  std::cout << "P: " << P << std::endl;
-  std::cout << "refFeatMap.size(0): " << static_cast<int>(refFeatMap.size(1))
-            << std::endl;
-  std::cout << "refFeatMap.size(1): " << static_cast<int>(refFeatMap.size(2))
-            << std::endl;
-  std::cout << "mono_idepth.size(-2): "
-            << static_cast<int>(mono_idepth.size(-2)) << std::endl;
-  std::cout << "mono_idepth.size(-1): "
-            << static_cast<int>(mono_idepth.size(-1)) << std::endl;
-  std::cout << "refKeyframe->image_height_: "
-            << static_cast<int>(refKeyframe->original_image_.size(1))
-            << std::endl;
-  std::cout << "refKeyframe->image_width_: "
-            << static_cast<int>(refKeyframe->original_image_.size(2))
-            << std::endl;
-  std::cout << "num_depth_candidates: " << num_depth_candidates << std::endl;
+  // std::cout << "P: " << P << std::endl;
+  // std::cout << "refFeatMap.size(0): " << static_cast<int>(refFeatMap.size(1))
+  //           << std::endl;
+  // std::cout << "refFeatMap.size(1): " << static_cast<int>(refFeatMap.size(2))
+  //           << std::endl;
+  // std::cout << "mono_idepth.size(-2): "
+  //           << static_cast<int>(mono_idepth.size(-2)) << std::endl;
+  // std::cout << "mono_idepth.size(-1): "
+  //           << static_cast<int>(mono_idepth.size(-1)) << std::endl;
+  // std::cout << "refKeyframe->image_height_: "
+  //           << static_cast<int>(refKeyframe->original_image_.size(1))
+  //           << std::endl;
+  // std::cout << "refKeyframe->image_width_: "
+  //           << static_cast<int>(refKeyframe->original_image_.size(2))
+  //           << std::endl;
+  // std::cout << "num_depth_candidates: " << num_depth_candidates << std::endl;
 
   // Run feature quality validation
   // validateFeatureQuality(refKeyframe, keyframes, uv_cuda);
@@ -239,7 +239,7 @@ std::pair<torch::Tensor, torch::Tensor> GuidedMVS::operator()(
   }
   cudaFree(d_debug_stats);
 
-  analyze_debug_stats(h_debug_stats, idepth_range);
+  // analyze_debug_stats(h_debug_stats, idepth_range);
 
   auto valid_mask = idist >= 0;
   return std::make_pair(depth, valid_mask);

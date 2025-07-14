@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include <c10/cuda/CUDACachingAllocator.h>
 #include <torch/torch.h>
 
 #include <Eigen/Geometry>
@@ -48,8 +49,12 @@ class GaussianKeyframe {
  public:
   GaussianKeyframe() {}
 
-  explicit GaussianKeyframe(std::size_t fid, int creation_iter = 0)
-      : fid_(fid), creation_iter_(creation_iter) {}
+  explicit GaussianKeyframe(std::size_t fid,
+                            int creation_iter = 0,
+                            std::filesystem::path keyframe_save_dir = "")
+      : fid_(fid),
+        creation_iter_(creation_iter),
+        keyframe_save_dir_(keyframe_save_dir) {}
 
   void setPose(const double qw,
                const double qx,
@@ -133,6 +138,12 @@ class GaussianKeyframe {
   void generatePyramidDepth(torch::DeviceType device_type,
                             const cv::Mat& depth_mat);
 
+  // Save only memory-heavy data to disk and clear from memory
+  void saveDataToDisk();
+
+  // Load memory-heavy data from disk back into memory
+  void loadDataFromDisk();
+
  public:
   std::size_t fid_;
   int creation_iter_;
@@ -204,4 +215,7 @@ class GaussianKeyframe {
 
   torch::Tensor feature_map_;
   torch::Tensor depth_confidence_;
+
+  std::filesystem::path keyframe_save_dir_;
+  bool loaded_ = true;
 };

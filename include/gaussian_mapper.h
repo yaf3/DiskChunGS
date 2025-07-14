@@ -374,6 +374,7 @@ class GaussianMapper {
   float chunk_size_ = 50.0;
   int max_chunks_in_memory_ = 50;
   std::filesystem::path chunk_save_dir_;
+  std::filesystem::path keyframe_save_dir_;
 
   // Settings
   torch::DeviceType device_type_;

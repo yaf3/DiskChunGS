@@ -18,6 +18,8 @@
 
 #include "include/gaussian_mapper.h"
 
+#include <torch/csrc/cuda/memory_snapshot.h>
+
 #include "include/chunk_manager.h"
 #include "include/debugging_utils.h"
 #include "include/gaussian_rasterizer.h"
@@ -80,6 +82,7 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
 
   chunk_save_dir_ = result_dir_ / "chunks";
+  keyframe_save_dir_ = result_dir_ / "keyframes";
 
   config_file_path_ = gaussian_config_file_path;
   readConfigFromFile(gaussian_config_file_path);
@@ -683,7 +686,8 @@ void GaussianMapper::run() {
 
         for (const auto& pKF : vpKFs) {
           std::shared_ptr<GaussianKeyframe> new_kf =
-              std::make_shared<GaussianKeyframe>(pKF->mnId, getIteration());
+              std::make_shared<GaussianKeyframe>(pKF->mnId, getIteration(),
+                                                 keyframe_save_dir_);
           new_kf->zfar_ = z_far_;
           new_kf->znear_ = z_near_;
           // Pose
@@ -715,7 +719,11 @@ void GaussianMapper::run() {
                                 opt_params_.exposure_lr_,
                                 opt_params_.depth_scale_bias_lr_);
           kfid_shuffled_ = false;
-          keyframe_queue_->notifyNewKeyframeAdded(new_kf);
+
+          // Only update it if we are actually using it
+          if (keyframe_selection_strategy_ == 1) {
+            keyframe_queue_->notifyNewKeyframeAdded(new_kf);
+          }
 
           increaseKeyframeTimesOfUse(new_kf, newKeyframeTimesOfUse());
 
@@ -790,6 +798,13 @@ void GaussianMapper::run() {
     }
   }
 
+  // Enable memory history recording using the second overload
+  // torch::cuda::_record_memory_history("all",    // enabled
+  //                                     "all",    // context
+  //                                     "all",    // stacks
+  //                                     SIZE_MAX  // max_entries
+  // );
+
   // Second loop: Incremental gaussian mapping
   int SLAM_stop_iter = 0;
   while (!isStopped()) {
@@ -804,6 +819,21 @@ void GaussianMapper::run() {
     // Invoke training once
     trainForOneIteration();
     timer_TotalLoop.stop();
+
+    // if (getIteration() % 10 == 0) {
+    //   // chunk_manager_->testMemoryUsagePattern();
+
+    //   // Get the pickled snapshot
+    //   std::string snapshot_data = torch::cuda::_memory_snapshot_pickled();
+
+    //   // Write to file
+    //   std::ofstream file("./memory_snapshot.pickle", std::ios::binary);
+    //   file.write(snapshot_data.data(), snapshot_data.size());
+    //   file.close();
+
+    //   std::cout << "Memory snapshot saved to memory_snapshot.pickle"
+    //             << std::endl;
+    // }
 
     // if (getIteration() % 2000 == 0) {
     //   keyframe_queue_->visualizeClusters(
@@ -1046,6 +1076,14 @@ void GaussianMapper::trainForOneIteration() {
         "[GaussianMapper] Keyframe not found for training");
     return;
   }
+
+  auto timer_loadKeyframe = ProfilingUtils::Timer("LoadKeyframe");
+  bool had_to_load = false;
+  if (!viewpoint_cam->loaded_) {
+    viewpoint_cam->loadDataFromDisk();
+    had_to_load = true;
+  }
+  timer_loadKeyframe.stop();
 
   // std::cout << "Using keyframe id: " << viewpoint_cam->fid_ << std::endl;
 
@@ -1406,6 +1444,12 @@ void GaussianMapper::trainForOneIteration() {
   }
 
   if (loop_closure_iteration_) loop_closure_iteration_ = false;
+
+  auto timer_saveKeyframe = ProfilingUtils::Timer("SaveKeyframe");
+  if (had_to_load) {
+    viewpoint_cam->saveDataToDisk();
+  }
+  timer_saveKeyframe.stop();
 
   // auto timer_evictUnusedChunks =
   // ProfilingUtils::Timer("evictUnusedChunks"); Periodically cull gaussians
@@ -1855,8 +1899,8 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
                                                   std::vector<float>,
                                                   std::vector<float>,
                                                   std::string>& kf) {
-  std::shared_ptr<GaussianKeyframe> pkf =
-      std::make_shared<GaussianKeyframe>(std::get<0>(kf), getIteration());
+  std::shared_ptr<GaussianKeyframe> pkf = std::make_shared<GaussianKeyframe>(
+      std::get<0>(kf), getIteration(), keyframe_save_dir_);
   pkf->zfar_ = z_far_;
   pkf->znear_ = z_near_;
   // Pose
@@ -1887,11 +1931,10 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   pkf->computeTransformTensors();
   scene_->addKeyframe(pkf);
   kfid_shuffled_ = false;
-  keyframe_queue_->notifyNewKeyframeAdded(pkf);
-
-  std::cout << "------------------------------" << std::endl;
-  std::cout << "Processing kf: " << pkf->fid_ << std::endl;
-  std::cout << "------------------------------" << std::endl;
+  // Only update it if we are actually using it
+  if (keyframe_selection_strategy_ == 1) {
+    keyframe_queue_->notifyNewKeyframeAdded(pkf);
+  }
 
   // Give new keyframes times of use and add it to the training sliding window
   increaseKeyframeTimesOfUse(pkf, newKeyframeTimesOfUse());
@@ -2370,21 +2413,25 @@ void GaussianMapper::increasePcdByDepthReconstruction(
   rgb_gpu.upload(pkf->img_undist_);
   torch::Tensor rgb = tensor_utils::cvGpuMat2TorchTensor_Float32(rgb_gpu);
 
-  // Step 1: Downsample by factor of 2 using average pooling
-  // avg_pool2d expects [N, C, H, W], so add batch dimension
-  rgb = rgb.unsqueeze(0);           // [1, 3, H, W]
-  rgb = torch::avg_pool2d(rgb, 2);  // [1, 3, H/2, W/2]
+  bool downsample = false;
+  if (downsample) {
+    // Step 1: Downsample by factor of 2 using average pooling
+    // avg_pool2d expects [N, C, H, W], so add batch dimension
+    rgb = rgb.unsqueeze(0);           // [1, 3, H, W]
+    rgb = torch::avg_pool2d(rgb, 2);  // [1, 3, H/2, W/2]
 
-  // Step 2: Upsample back to original resolution using bilinear interpolation
-  rgb = torch::nn::functional::interpolate(
-      rgb,
-      torch::nn::functional::InterpolateFuncOptions()
-          .size(std::vector<int64_t>{pkf->image_height_, pkf->image_width_})
-          .mode(torch::kBilinear)
-          .align_corners(true));
+    // // Step 2: Upsample back to original resolution using bilinear
+    // interpolation
+    rgb = torch::nn::functional::interpolate(
+        rgb,
+        torch::nn::functional::InterpolateFuncOptions()
+            .size(std::vector<int64_t>{pkf->image_height_, pkf->image_width_})
+            .mode(torch::kBilinear)
+            .align_corners(true));
 
-  // Remove batch dimension: [1, 3, H, W] -> [3, H, W]
-  rgb = rgb.squeeze(0);
+    // Remove batch dimension: [1, 3, H, W] -> [3, H, W]
+    rgb = rgb.squeeze(0);
+  }
 
   torch::Tensor mono_idepth = pkf->depth_image_.clamp_min(1e-8);
   torch::Tensor mono_depth_confidence = pkf->depth_confidence_;
@@ -2476,8 +2523,6 @@ void GaussianMapper::increasePcdByDepthReconstruction(
 
   // Apply guided MVS - returns depth and accurate mask for sampled points
   auto [depth, accurate_mask] = (*guided_mvs_)(sampled_uv, pkf, prev_keyframes);
-  // auto [nonsense, nonsense2] = (*guided_mvs_)(sampled_uv, pkf,
-  // prev_keyframes);
 
   // auto [depth, accurate_mask, debug_stats] = guided_mvs_->operator_debug(
   //     sampled_uv, pkf, prev_keyframes, true, "kitti_scene_10");
@@ -3050,6 +3095,12 @@ void GaussianMapper::renderAndRecordKeyframe(
     std::string name_suffix) {
   auto start_timing = std::chrono::steady_clock::now();
 
+  bool had_to_load = false;
+  if (!pkf->loaded_) {
+    pkf->loadDataFromDisk();
+    had_to_load = true;
+  }
+
   // Get visible chunks using ChunkManager instead of updateActiveChunks
   std::vector<std::shared_ptr<Chunk>> visible_chunks =
       chunk_manager_->loadVisibleChunks(pkf, false);
@@ -3094,6 +3145,10 @@ void GaussianMapper::renderAndRecordKeyframe(
 
   recordKeyframeRendered(rendered_image, gt_image, pkf->fid_, result_img_dir,
                          result_gt_dir, result_loss_dir, name_suffix);
+
+  if (had_to_load) {
+    pkf->saveDataToDisk();
+  }
 }
 
 void GaussianMapper::renderAndRecordAllKeyframes(std::string name_suffix) {
@@ -4142,6 +4197,10 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(scene_chunk_dir);
   copyFolder(chunk_save_dir_, scene_dir / "chunks");
 
+  std::filesystem::path scene_keyframe_dir = scene_dir / "keyframes";
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(scene_keyframe_dir);
+  copyFolder(keyframe_save_dir_, scene_dir / "keyframes");
+
   std::cout << "Scene saved to " << scene_dir << std::endl;
   return all_saved;
 }
@@ -4358,8 +4417,8 @@ void GaussianMapper::loadCamerasFromJson(std::filesystem::path json_path) {
     unsigned long fid = camera_entry["id"].asUInt64();
 
     // Create a new keyframe
-    std::shared_ptr<GaussianKeyframe> pkf =
-        std::make_shared<GaussianKeyframe>(fid, getIteration());
+    std::shared_ptr<GaussianKeyframe> pkf = std::make_shared<GaussianKeyframe>(
+        fid, getIteration(), keyframe_save_dir_);
 
     // Set image dimensions
     pkf->image_width_ = camera_entry["width"].asInt();
@@ -4467,7 +4526,10 @@ void GaussianMapper::loadCamerasFromJson(std::filesystem::path json_path) {
                        opt_params_.exposure_lr_,
                        opt_params_.depth_scale_bias_lr_);
     kfid_shuffled_ = false;
-    keyframe_queue_->notifyNewKeyframeAdded(pkf);
+    // Only update it if we are actually using it
+    if (keyframe_selection_strategy_ == 1) {
+      keyframe_queue_->notifyNewKeyframeAdded(pkf);
+    }
 
     break;
   }
@@ -4706,7 +4768,7 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
     // std::cout << "[ProcessFrame] Creating new keyframe..." << std::endl;
     std::shared_ptr<GaussianKeyframe> new_kf =
         std::make_shared<GaussianKeyframe>(scene_->keyframes().size(),
-                                           getIteration());
+                                           getIteration(), keyframe_save_dir_);
     // std::cout << "New kf. fid: " << new_kf->fid_ << std::endl;
 
     new_kf->zfar_ = z_far_;
@@ -4941,7 +5003,10 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
            "Depth densification needs to be enabled for external mode!");
     increasePcdByDepthReconstruction(new_kf);
 
-    keyframe_queue_->notifyNewKeyframeAdded(new_kf);
+    // Only update it if we are actually using it
+    if (keyframe_selection_strategy_ == 1) {
+      keyframe_queue_->notifyNewKeyframeAdded(new_kf);
+    }
 
     // std::cout << "[ProcessFrame] Successfully completed" << std::endl;
   } catch (const std::exception& e) {

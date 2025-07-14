@@ -448,6 +448,8 @@ std::future<bool> ChunkManager::saveChunkAsync(const ChunkCoord& coord,
 // Process a load operation
 bool ChunkManager::processLoadOperation(const ChunkCoord& coord,
                                         bool load_for_optimization) {
+  // logMemoryUsage("Before Load chunk " + std::to_string(coord.x) + "," +
+  //                std::to_string(coord.y) + "," + std::to_string(coord.z));
   // std::cout << "Called processLoadOperation" << std::endl;
   auto start_time = std::chrono::steady_clock::now();
 
@@ -539,6 +541,9 @@ bool ChunkManager::processLoadOperation(const ChunkCoord& coord,
   incrementStat(stats_.active_chunks);
   incrementStat(stats_.disk_loads);
 
+  // logMemoryUsage("After Load chunk " + std::to_string(coord.x) + "," +
+  //                std::to_string(coord.y) + "," + std::to_string(coord.z));
+
   // std::cout << "IO Thread: Load operation successful for: " << coord.x << "
   // "
   //           << coord.y << " " << coord.z << " " << std::endl;
@@ -553,6 +558,8 @@ bool ChunkManager::processLoadOperation(const ChunkCoord& coord,
 
 // Process a save operation
 bool ChunkManager::processSaveOperation(const ChunkCoord& coord) {
+  // logMemoryUsage("Before Save chunk " + std::to_string(coord.x) + "," +
+  //                std::to_string(coord.y) + "," + std::to_string(coord.z));
   // std::cout << "Called processSaveOperation" << std::endl;
   auto start_time = std::chrono::steady_clock::now();
   // std::chrono::milliseconds time_spend_waiting_for_mutex(0);
@@ -614,6 +621,9 @@ bool ChunkManager::processSaveOperation(const ChunkCoord& coord) {
 
     // Clear CUDA cache after saving to free memory
     c10::cuda::CUDACachingAllocator::emptyCache();
+
+    // logMemoryUsage("After Save chunk " + std::to_string(coord.x) + "," +
+    //                std::to_string(coord.y) + "," + std::to_string(coord.z));
 
     // std::cout << "IO Thread: Save operation successful for: " << coord.x <<
     // "
@@ -801,6 +811,8 @@ std::future<bool> ChunkManager::deleteChunkAsync(const ChunkCoord& coord,
 
 // Process a delete operation
 bool ChunkManager::processDeleteOperation(const ChunkCoord& coord) {
+  // logMemoryUsage("Before Delete chunk " + std::to_string(coord.x) + "," +
+  //                std::to_string(coord.y) + "," + std::to_string(coord.z));
   // Delete from active_chunks_ if exists
   {
     std::unique_lock<std::mutex> lock(active_chunks_mutex_);
@@ -870,6 +882,12 @@ bool ChunkManager::processDeleteOperation(const ChunkCoord& coord) {
         chunk_metadata_.erase(coord);
       }
     }
+
+    // Force CUDA cache cleanup after deletion
+    c10::cuda::CUDACachingAllocator::emptyCache();
+
+    // logMemoryUsage("After Delete chunk " + std::to_string(coord.x) + "," +
+    //                std::to_string(coord.y) + "," + std::to_string(coord.z));
 
     return success;
   } catch (const std::exception& e) {
@@ -1405,6 +1423,42 @@ void ChunkManager::incrementStat(int& stat) {
 void ChunkManager::decrementStat(int& stat) {
   std::lock_guard<std::mutex> lock(stats_mutex_);
   if (stat > 0) stat--;
+}
+
+size_t ChunkManager::getGPUMemoryUsage() const {
+  if (torch::cuda::is_available()) {
+    namespace c10Alloc = c10::cuda::CUDACachingAllocator;
+    c10Alloc::DeviceStats mem_stats = c10Alloc::getDeviceStats(0);
+
+    // Get current allocated bytes (this is what we want to track for chunks)
+    c10Alloc::Stat alloc_bytes =
+        mem_stats
+            .allocated_bytes[static_cast<int>(c10Alloc::StatType::AGGREGATE)];
+    return alloc_bytes.current;
+  }
+  return 0;
+}
+
+void ChunkManager::logMemoryUsage(const std::string& operation) const {
+  if (torch::cuda::is_available()) {
+    namespace c10Alloc = c10::cuda::CUDACachingAllocator;
+    c10Alloc::DeviceStats mem_stats = c10Alloc::getDeviceStats(0);
+
+    // Get current allocated and reserved bytes
+    c10Alloc::Stat alloc_bytes =
+        mem_stats
+            .allocated_bytes[static_cast<int>(c10Alloc::StatType::AGGREGATE)];
+    c10Alloc::Stat reserved_bytes =
+        mem_stats
+            .reserved_bytes[static_cast<int>(c10Alloc::StatType::AGGREGATE)];
+
+    size_t allocated_mb = alloc_bytes.current / (1024 * 1024);
+    size_t reserved_mb = reserved_bytes.current / (1024 * 1024);
+
+    std::cout << "[GPU Memory] " << operation << ": " << allocated_mb
+              << " MB allocated, " << reserved_mb << " MB reserved"
+              << std::endl;
+  }
 }
 
 // Cull chunks with too few points to ensure rendering stability
@@ -2050,4 +2104,105 @@ void ChunkManager::initializeMetaData(ChunkCoord& coord) {
   meta.last_used = meta.load_time;
   meta.usage_count = 0;
   meta.state.store(ChunkState::INACTIVE);
+}
+
+// Memory test function - saves all active chunks, checks memory, then reloads
+void ChunkManager::testMemoryUsagePattern() {
+  std::cout << "=== MEMORY TEST STARTING ===" << std::endl;
+
+  // Step 1: Log initial memory
+  logMemoryUsage("Initial memory before test");
+
+  // Step 2: Get all currently active chunks
+  std::vector<ChunkCoord> active_chunk_coords;
+  {
+    std::unique_lock<std::mutex> lock(active_chunks_mutex_);
+    for (const auto& [coord, chunk] : active_chunks_) {
+      if (chunk && chunk->getGaussians()) {
+        active_chunk_coords.push_back(coord);
+      }
+    }
+  }
+
+  std::cout << "Found " << active_chunk_coords.size()
+            << " active chunks to test" << std::endl;
+
+  if (active_chunk_coords.empty()) {
+    std::cout << "No active chunks to test, exiting memory test" << std::endl;
+    return;
+  }
+
+  // Step 3: Release all chunks from optimization first
+  releaseAllChunksFromOptimization();
+
+  // Step 4: Save all active chunks
+  std::cout << "Saving all active chunks..." << std::endl;
+  std::vector<std::future<bool>> save_futures;
+  for (const auto& coord : active_chunk_coords) {
+    save_futures.push_back(saveChunkAsync(coord, 15));  // High priority
+  }
+
+  // Wait for all saves to complete
+  int saved_count = 0;
+  for (auto& future : save_futures) {
+    try {
+      if (future.get()) {
+        saved_count++;
+      }
+    } catch (const std::exception& e) {
+      std::cerr << "Save failed: " << e.what() << std::endl;
+    }
+  }
+
+  std::cout << "Saved " << saved_count << " chunks successfully" << std::endl;
+
+  // Step 5: Force memory cleanup
+  std::cout << "Forcing memory cleanup..." << std::endl;
+  torch::cuda::synchronize();
+  c10::cuda::CUDACachingAllocator::emptyCache();
+
+  // Log memory after saves
+  logMemoryUsage("After saving all chunks");
+
+  // Step 6: Wait a moment for cleanup to complete
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+  // Step 7: Log memory after cleanup delay
+  logMemoryUsage("After cleanup delay");
+
+  // Step 8: Reload all chunks
+  std::cout << "Reloading all chunks..." << std::endl;
+  std::vector<std::future<bool>> load_futures;
+  for (const auto& coord : active_chunk_coords) {
+    load_futures.push_back(loadChunkAsync(
+        coord, 15, true, false));  // High priority, for optimization
+  }
+
+  // Wait for all loads to complete
+  int loaded_count = 0;
+  for (auto& future : load_futures) {
+    try {
+      if (future.get()) {
+        loaded_count++;
+      }
+    } catch (const std::exception& e) {
+      std::cerr << "Load failed: " << e.what() << std::endl;
+    }
+  }
+
+  std::cout << "Loaded " << loaded_count << " chunks successfully" << std::endl;
+
+  // Step 9: Log final memory
+  logMemoryUsage("After reloading all chunks");
+
+  // Step 10: Force final cleanup and log again
+  torch::cuda::synchronize();
+  c10::cuda::CUDACachingAllocator::emptyCache();
+  logMemoryUsage("Final memory after cleanup");
+
+  std::cout << "=== MEMORY TEST COMPLETE ===" << std::endl;
+  std::cout << "Active chunks before: " << active_chunk_coords.size()
+            << std::endl;
+  std::cout << "Chunks saved: " << saved_count << std::endl;
+  std::cout << "Chunks reloaded: " << loaded_count << std::endl;
 }

@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "chunk_types.h"
+#include "cuda.h"
 #include "frustum_culler.h"
 #include "gaussian_keyframe.h"
 #include "gaussian_model.h"
@@ -258,6 +259,10 @@ class ChunkManager {
   void incrementStat(int& stat);
   void decrementStat(int& stat);
 
+  // Memory monitoring
+  size_t getGPUMemoryUsage() const;
+  void logMemoryUsage(const std::string& operation) const;
+
   // Cache for keyframe visibility results
   struct VisibilityCacheEntry {
     Sophus::SE3d pose;  // Keyframe pose when visibility was calculated
@@ -309,4 +314,5 @@ class ChunkManager {
     // std::lock_guard<std::mutex> lock(queue_mutex_);
     return operation_queue_.size();
   }
+  void testMemoryUsagePattern();
 };
