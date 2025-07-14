@@ -11,6 +11,7 @@ from argparse import ArgumentParser
 from scipy.spatial.transform import Rotation
 from PIL import Image
 import cv2
+import pandas as pd
 
 from torchmetrics.image.psnr import PeakSignalNoiseRatio
 from torchmetrics.image.ssim import StructuralSimilarityIndexMeasure
@@ -29,6 +30,49 @@ import copy
 calc_psnr = PeakSignalNoiseRatio().cuda()
 calc_ssim = StructuralSimilarityIndexMeasure().cuda()
 calc_lpips = LearnedPerceptualImagePatchSimilarity().cuda()
+
+
+def create_error_visualization(render_image, gt_image, psnr_value, lpips_value, save_path):
+    """Create and save error visualization showing where PSNR differences come from."""
+    # Convert to numpy if needed
+    if torch.is_tensor(render_image):
+        render_np = render_image.detach().cpu().numpy()
+    else:
+        render_np = render_image
+    
+    if torch.is_tensor(gt_image):
+        gt_np = gt_image.detach().cpu().numpy()
+    else:
+        gt_np = gt_image
+    
+    # Ensure images are in [0, 1] range
+    render_np = np.clip(render_np, 0, 1)
+    gt_np = np.clip(gt_np, 0, 1)
+    
+    # Create error heatmap - simplified to 3 panels
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    
+    # Original rendered image
+    axes[0].imshow(render_np)
+    axes[0].set_title('Rendered Image')
+    axes[0].axis('off')
+    
+    # Ground truth image
+    axes[1].imshow(gt_np)
+    axes[1].set_title('Ground Truth')
+    axes[1].axis('off')
+    
+    # Absolute difference heatmap
+    abs_diff = np.abs(render_np - gt_np)
+    abs_diff_gray = np.mean(abs_diff, axis=2)
+    im = axes[2].imshow(abs_diff_gray, cmap='hot', vmin=0, vmax=0.2)  # Fixed scale for consistency
+    axes[2].set_title(f'Error Map\nPSNR: {psnr_value:.2f} dB | LPIPS: {lpips_value:.3f}')
+    axes[2].axis('off')
+    fig.colorbar(im, ax=axes[2], shrink=0.8)
+    
+    plt.subplots_adjust(wspace=0.1)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')  # Reduced DPI for speed
+    plt.close(fig)
 
 
 def loadReplica(path):
@@ -76,21 +120,13 @@ def loadEuRoC(path):
     return color_paths, tstamp
 
 
-def associate_frames(tstamp_image, tstamp_pose, max_dt=0.1, slowdown_factor=1.0):
-    """Pair images, depths, and poses, accounting for slowdown factor."""
+def associate_frames(tstamp_image, tstamp_pose, max_dt=0.1):
+    """Pair images, depths, and poses."""
     associations = []
     
-    # If there's a slowdown factor, adjust the pose timestamps
-    if slowdown_factor != 1.0:
-        # Adjust estimated timestamps back to the original time scale
-        # (start_time + (current_time - start_time) / slowdown)
-        tstamp_pose_adjusted = tstamp_pose[0] + (tstamp_pose - tstamp_pose[0]) / slowdown_factor
-    else:
-        tstamp_pose_adjusted = tstamp_pose
-    
     for i, t in enumerate(tstamp_image):
-        j = np.argmin(np.abs(tstamp_pose_adjusted - t))
-        if np.abs(tstamp_pose_adjusted[j] - t) < max_dt:
+        j = np.argmin(np.abs(tstamp_pose - t))
+        if np.abs(tstamp_pose[j] - t) < max_dt:
             associations.append((i, j))
             
     print(f"Associated {len(associations)} frames out of {len(tstamp_image)} ground truth frames")
@@ -122,6 +158,8 @@ if __name__ == "__main__":
     parser.add_argument("--show_plot", action="store_true")
     parser.add_argument("--skip_trajectory_eval", action="store_true", 
                         help="Skip trajectory evaluation and use ground truth poses for rendering")
+    parser.add_argument("--skip_error_vis", action="store_true",
+                        help="Skip creating error visualization images (saves time)")
     args = parser.parse_args()
     dirs = os.listdir(args.result_path)
     # load model
@@ -260,9 +298,8 @@ if __name__ == "__main__":
         if slowdown_factor != 1.0:
             # Make a deep copy to avoid modifying the original
             traj_est_adjusted = copy.deepcopy(traj_est)
-            # Adjust timestamps: start_time + (current_time - start_time) / slowdown
-            start_time = traj_est_adjusted.timestamps[0]
-            traj_est_adjusted.timestamps = start_time + (traj_est_adjusted.timestamps - start_time) / slowdown_factor
+            # Adjust timestamps: current_time / slowdown
+            traj_est_adjusted.timestamps = traj_est_adjusted.timestamps / slowdown_factor
             # Use the adjusted trajectory for association
             traj_ref_sync, traj_est = sync.associate_trajectories(
                 traj_ref, traj_est_adjusted, max_diff=0.1
@@ -325,10 +362,17 @@ if __name__ == "__main__":
     ## render and evaluation
     associations = associate_frames(tstamp, gt_tstamp)
     
+    # Create output directories
     os.makedirs(os.path.join(args.result_path, "image"), exist_ok=True)
+    if not args.skip_error_vis:
+        os.makedirs(os.path.join(args.result_path, "error_analysis"), exist_ok=True)
     if "_0" in args.result_path:
         os.makedirs(os.path.join(args.result_path, "gt"), exist_ok=True)
+    
+    # Lists to store results and detailed information
     psnr_list, ssim_list, lpips_list, time_list = [], [], [], []
+    detailed_results = []  # For CSV output
+    
     for index in trange(
         len(associations),
         desc="rendering {}".format(args.result_path.split("/")[-1]),
@@ -356,6 +400,19 @@ if __name__ == "__main__":
         val_lpips = calc_lpips(render_image_torch, gt_image_torch).item()
         t_metrics = time.time() - t0
 
+        # Store detailed results for CSV
+        image_name = gt_color_paths[gt_indx].split("/")[-1]
+        detailed_results.append({
+            'image_name': image_name,
+            'frame_index': index,
+            'gt_index': gt_indx,
+            'result_index': result_indx,
+            'psnr': val_psnr,
+            'ssim': val_ssim,
+            'lpips': val_lpips,
+            'render_time_ms': t_render * 1000
+        })
+
         t0 = time.time()
         if "_0" in args.result_path:
             # Convert floating point (0.0-1.0) to uint8 (0-255)
@@ -380,6 +437,22 @@ if __name__ == "__main__":
             ),
             predict_image_img,
         )
+        
+        # Create error visualization
+        if not args.skip_error_vis:
+            error_vis_path = os.path.join(
+                args.result_path,
+                "error_analysis",
+                f"error_{image_name.replace('.jpg', '.png').replace('.png', '.png')}"
+            )
+            create_error_visualization(
+                render_image.detach().cpu().numpy(),
+                gt_image,
+                val_psnr,
+                val_lpips,
+                error_vis_path
+            )
+        
         t_save = time.time() - t0
 
         psnr_list.append(val_psnr)
@@ -392,13 +465,41 @@ if __name__ == "__main__":
         #     f"Metrics: {t_metrics*1000:.1f}ms, Save: {t_save*1000:.1f}ms, " 
         #     f"Total: {t_total*1000:.1f}ms")
 
+    # Convert results to arrays
     psnr_list = np.array(psnr_list)
     ssim_list = np.array(ssim_list)
     lpips_list = np.array(lpips_list)
     time_list = np.array(time_list)
+    
+    # Save individual metric arrays (existing functionality)
     np.savetxt(os.path.join(args.result_path, "psnr.txt"), psnr_list)
     np.savetxt(os.path.join(args.result_path, "ssim.txt"), ssim_list)
     np.savetxt(os.path.join(args.result_path, "lpips.txt"), lpips_list)
+    
+    # Save detailed results as CSV
+    detailed_df = pd.DataFrame(detailed_results)
+    detailed_df.to_csv(os.path.join(args.result_path, "detailed_metrics.csv"), index=False)
+    
+    # Also save a simple PSNR-only file for easy analysis
+    psnr_df = detailed_df[['image_name', 'frame_index', 'psnr']].copy()
+    psnr_df.to_csv(os.path.join(args.result_path, "psnr_per_image.csv"), index=False)
+    
+    # Save summary statistics
+    summary_stats = {
+        'metric': ['psnr', 'ssim', 'lpips'],
+        'mean': [np.mean(psnr_list), np.mean(ssim_list), np.mean(lpips_list)],
+        'std': [np.std(psnr_list), np.std(ssim_list), np.std(lpips_list)],
+        'min': [np.min(psnr_list), np.min(ssim_list), np.min(lpips_list)],
+        'max': [np.max(psnr_list), np.max(ssim_list), np.max(lpips_list)],
+        'median': [np.median(psnr_list), np.median(ssim_list), np.median(lpips_list)]
+    }
+    summary_df = pd.DataFrame(summary_stats)
+    summary_df.to_csv(os.path.join(args.result_path, "metrics_summary.csv"), index=False)
+    
+    print(f"\nMetrics Summary:")
+    print(f"PSNR: {np.mean(psnr_list):.3f} ± {np.std(psnr_list):.3f} dB (range: {np.min(psnr_list):.3f} - {np.max(psnr_list):.3f})")
+    print(f"SSIM: {np.mean(ssim_list):.3f} ± {np.std(ssim_list):.3f} (range: {np.min(ssim_list):.3f} - {np.max(ssim_list):.3f})")
+    print(f"LPIPS: {np.mean(lpips_list):.3f} ± {np.std(lpips_list):.3f} (range: {np.min(lpips_list):.3f} - {np.max(lpips_list):.3f})")
 
     # Handle tracking time evaluation if file exists
     tracking_time_path = os.path.join(args.result_path, "TrackingTime.txt")
@@ -429,3 +530,12 @@ if __name__ == "__main__":
         fout.write("rendering ms: {}\n".format(np.mean(render_time)))
         fout.write("rendering FPS: {}\n".format(1000 / np.mean(render_time)))
         fout.write("num gaussians: {}\n".format(num_gaussians))
+    
+    print(f"\nFiles saved:")
+    print(f"- Individual metrics: detailed_metrics.csv")
+    print(f"- PSNR per image: psnr_per_image.csv") 
+    print(f"- Summary statistics: metrics_summary.csv")
+    if not args.skip_error_vis:
+        print(f"- Error visualizations: error_analysis/ folder")
+    else:
+        print("- Error visualizations skipped (use --skip_error_vis=False to enable)")
