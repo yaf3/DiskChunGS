@@ -129,14 +129,14 @@ class GaussianKeyframe {
                      float min_depth,
                      float max_depth);
 
+  void setupRGBDData();
+
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, int, int>
   getTrainingData(const torch::Tensor& undistort_mask,
-                  const std::vector<torch::Tensor>& pyramid_masks,
-                  bool doing_pyramid_training);
+                  const std::vector<torch::Tensor>& pyramid_masks);
 
-  void generatePyramidImages(torch::DeviceType device_type);
-  void generatePyramidDepth(torch::DeviceType device_type,
-                            const cv::Mat& depth_mat);
+  void generateImagePyramid();
+  void generateInverseDepthPyramid(const cv::Mat& depth_mat);
 
   // Save only memory-heavy data to disk and clear from memory
   void saveDataToDisk();
@@ -156,11 +156,8 @@ class GaussianKeyframe {
 
   std::string img_filename_;
   cv::Mat img_undist_, img_auxiliary_undist_;
-  torch::Tensor original_image_, depth_image_;  ///< image, depth
-  int image_width_;                             ///< image
-  int image_height_;                            ///< image
-
-  torch::Tensor idepth_;
+  int image_width_;   ///< image
+  int image_height_;  ///< image
 
   int num_gaus_pyramid_sub_levels_;
   std::vector<int> gaus_pyramid_times_of_use_;
@@ -168,7 +165,7 @@ class GaussianKeyframe {
   std::vector<std::size_t> gaus_pyramid_height_;  ///< gaus_pyramid image
   std::vector<torch::Tensor>
       gaus_pyramid_original_image_;  ///< gaus_pyramid image
-  std::vector<torch::Tensor> gaus_pyramid_depth_image_;
+  std::vector<torch::Tensor> gaus_pyramid_inv_depth_image_;
   // Tensor gt_alpha_mask_;
 
   std::vector<float> intr_;  ///< intrinsics

@@ -139,7 +139,11 @@ std::pair<torch::Tensor, torch::Tensor> GuidedMVS::operator()(
                         .cuda();
 
   // Get monocular inverse depth
-  auto mono_idepth = refKeyframe->idepth_.contiguous().cuda();
+  auto mono_idepth = refKeyframe->gaus_pyramid_inv_depth_image_[0]
+                         .unsqueeze(0)
+                         .unsqueeze(0)
+                         .contiguous()
+                         .cuda();
 
   // std::cout << mono_idepth.sizes() << std::endl;
   // std::cout << mono_idepth.mean().item() << std::endl;
@@ -218,18 +222,18 @@ std::pair<torch::Tensor, torch::Tensor> GuidedMVS::operator()(
     //             "mono_idepth must be float32");
 
     // Launch CUDA kernel via wrapper
-    launch_uvToDepth(uv_cuda.data_ptr<float>(), refFeatMap.data_ptr<at::Half>(),
-                     featMaps.data_ptr<at::Half>(), other2ref.data_ptr<float>(),
-                     intrinsics.data_ptr<float>(),
-                     mono_idepth.data_ptr<float>(), depth.data_ptr<float>(),
-                     idist.data_ptr<float>(), d_debug_stats, idepth_range, P,
-                     static_cast<int>(refFeatMap.size(1)),
-                     static_cast<int>(refFeatMap.size(2)),
-                     static_cast<int>(mono_idepth.size(-2)),
-                     static_cast<int>(mono_idepth.size(-1)),
-                     static_cast<int>(refKeyframe->original_image_.size(1)),
-                     static_cast<int>(refKeyframe->original_image_.size(2)),
-                     num_depth_candidates);
+    launch_uvToDepth(
+        uv_cuda.data_ptr<float>(), refFeatMap.data_ptr<at::Half>(),
+        featMaps.data_ptr<at::Half>(), other2ref.data_ptr<float>(),
+        intrinsics.data_ptr<float>(), mono_idepth.data_ptr<float>(),
+        depth.data_ptr<float>(), idist.data_ptr<float>(), d_debug_stats,
+        idepth_range, P, static_cast<int>(refFeatMap.size(1)),
+        static_cast<int>(refFeatMap.size(2)),
+        static_cast<int>(mono_idepth.size(-2)),
+        static_cast<int>(mono_idepth.size(-1)),
+        static_cast<int>(refKeyframe->gaus_pyramid_original_image_[0].size(1)),
+        static_cast<int>(refKeyframe->gaus_pyramid_original_image_[0].size(2)),
+        num_depth_candidates);
   }
 
   std::vector<DebugStats> h_debug_stats(P);

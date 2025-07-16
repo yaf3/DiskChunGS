@@ -305,14 +305,15 @@ torch::Tensor GaussianKeyframe::getProjectionMatrix(
 }
 
 int GaussianKeyframe::getCurrentGausPyramidLevel() {
-  for (int i = 0; i < gaus_pyramid_times_of_use_.size(); ++i) {
+  // Start from the highest level (smallest image) and work down
+  for (int i = num_gaus_pyramid_sub_levels_ - 1; i >= 0; --i) {
     if (gaus_pyramid_times_of_use_[i]) {
       --gaus_pyramid_times_of_use_[i];
       return i;
     }
   }
-  // If all sub levels has been used up
-  return num_gaus_pyramid_sub_levels_;
+  // If all sub levels have been used up, default to level 0 (largest/original)
+  return 0;
 }
 
 // Initialize appearance parameters with defaults
@@ -577,16 +578,16 @@ void GaussianKeyframe::setupStereoData(
   // cv::imwrite("kitti_depth_map_pipeline.png", colored_depth);
   // Store depth image as tensor
 
-  this->depth_image_ =
-      tensor_utils::cvMat2TorchTensor_Float32(inverted_depth, torch::kCUDA);
-
-  this->idepth_ = depth_image_.unsqueeze(0).unsqueeze(0);
-
   // std::string gt_filename =
   //     "./debug_mono/gt_depth_" + std::to_string(this->fid_) + ".png";
   // colorize_and_save_depth(depth_image_.detach().cpu(), gt_filename,
   // min_depth,
   //                         max_depth);
+
+  torch::Tensor depth_image =
+      tensor_utils::cvMat2TorchTensor_Float32(inverted_depth, torch::kCUDA)
+          .unsqueeze(0)
+          .unsqueeze(0);
 
   // Initialize Sobel kernels
   torch::Tensor sobel_x = torch::tensor(
@@ -599,10 +600,12 @@ void GaussianKeyframe::setupStereoData(
 
   // Compute gradients using Sobel filters
   torch::Tensor grad_x = torch::nn::functional::conv2d(
-      idepth_, sobel_x, torch::nn::functional::Conv2dFuncOptions().padding(1));
+      depth_image, sobel_x,
+      torch::nn::functional::Conv2dFuncOptions().padding(1));
 
   torch::Tensor grad_y = torch::nn::functional::conv2d(
-      idepth_, sobel_y, torch::nn::functional::Conv2dFuncOptions().padding(1));
+      depth_image, sobel_y,
+      torch::nn::functional::Conv2dFuncOptions().padding(1));
 
   // Compute edge magnitude and confidence
   torch::Tensor edges = torch::cat({grad_x, grad_y}, 0);
@@ -612,9 +615,7 @@ void GaussianKeyframe::setupStereoData(
   depth_confidence_ = torch::exp(-edges_sq_norm / var);
 
   // Create multi-resolution depth images for pyramid training
-  if (!gaus_pyramid_original_image_.empty()) {
-    generatePyramidDepth(device_type, inverted_depth);
-  }
+  generateInverseDepthPyramid(inverted_depth);
 }
 
 /**
@@ -698,7 +699,7 @@ void GaussianKeyframe::setupMonoData(torch::DeviceType device_type,
   }
 
   // Align depth to keypoints
-  torch::Tensor aligned_depth = depth_estimator->align_depth_equivalent(
+  torch::Tensor aligned_inv_depth = depth_estimator->align_depth_equivalent(
       relative_depth, valid_pixel_coords, valid_depths, image_width_,
       image_height_);
 
@@ -709,15 +710,13 @@ void GaussianKeyframe::setupMonoData(torch::DeviceType device_type,
   // std::cout << "  Median: " << aligned_depth.median().item<float>()
   //           << std::endl;
 
-  idepth_ = aligned_depth;
-
   // std::string gt_filename =
   //     "./debug_mono/gt_depth_" + std::to_string(this->fid_) + ".png";
   // colorize_and_save_depth(idepth_.detach().cpu(), gt_filename, 0.0f, 6.0f);
 
-  depth_image_ =
+  torch::Tensor inv_depth =
       torch::nn::functional::interpolate(
-          aligned_depth,
+          aligned_inv_depth,
           torch::nn::functional::InterpolateFuncOptions()
               .size(std::vector<int64_t>{image_height_, image_width_})
               .mode(torch::kBilinear)
@@ -769,118 +768,121 @@ void GaussianKeyframe::setupMonoData(torch::DeviceType device_type,
   // min_depth_,
   //                             max_depth_, Tcw, pcd_path, 2);
 
-  cv::Mat depth_mat = tensor_utils::torchTensor2CvMat_Float32(depth_image_);
+  cv::Mat inverted_depth_mat =
+      tensor_utils::torchTensor2CvMat_Float32(inv_depth);
 
-  if (!gaus_pyramid_original_image_.empty()) {
-    generatePyramidDepth(device_type, depth_mat);
-  }
+  generateInverseDepthPyramid(inverted_depth_mat);
+}
+
+void GaussianKeyframe::setupRGBDData() {
+  cv::Mat depth = img_auxiliary_undist_;
+
+  // Clamp minimum to 1e-8
+  cv::Mat clamped_depth;
+  cv::max(depth, 1e-8, clamped_depth);
+
+  // Take inverse (1 / clamped_depth)
+  cv::Mat inverse_depth;
+  cv::divide(1.0, clamped_depth, inverse_depth);
+
+  torch::Tensor depth_image =
+      tensor_utils::cvMat2TorchTensor_Float32(inverse_depth, torch::kCUDA)
+          .unsqueeze(0)
+          .unsqueeze(0);
+
+  // Initialize Sobel kernels
+  torch::Tensor sobel_x = torch::tensor(
+      {{{{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}}}},
+      torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
+
+  torch::Tensor sobel_y = torch::tensor(
+      {{{{-1, -2, -1}, {0, 0, 0}, {1, 2, 1}}}},
+      torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
+
+  // Compute gradients using Sobel filters
+  torch::Tensor grad_x = torch::nn::functional::conv2d(
+      depth_image, sobel_x,
+      torch::nn::functional::Conv2dFuncOptions().padding(1));
+
+  torch::Tensor grad_y = torch::nn::functional::conv2d(
+      depth_image, sobel_y,
+      torch::nn::functional::Conv2dFuncOptions().padding(1));
+
+  // Compute edge magnitude and confidence
+  torch::Tensor edges = torch::cat({grad_x, grad_y}, 0);
+  torch::Tensor edges_sq_norm = (edges.pow(2)).sum(0, true);
+
+  float var = 0.2f;
+  depth_confidence_ = torch::exp(-edges_sq_norm / var);
+
+  generateInverseDepthPyramid(inverse_depth);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, int, int>
 GaussianKeyframe::getTrainingData(
     const torch::Tensor& undistort_mask,
-    const std::vector<torch::Tensor>& pyramid_masks,
-    bool doing_pyramid_training) {
-  int training_level =
-      num_gaus_pyramid_sub_levels_;  // Default to full resolution
+    const std::vector<torch::Tensor>& pyramid_masks) {
+  int training_level = getCurrentGausPyramidLevel();
 
-  if (doing_pyramid_training) {
-    training_level = getCurrentGausPyramidLevel();
-  }
-
-  torch::Tensor gt_image, gt_depth, mask;
+  torch::Tensor gt_image, gt_inv_depth, mask;
   int image_height, image_width;
 
-  if (training_level == num_gaus_pyramid_sub_levels_) {
-    // Full resolution
-    image_height = image_height_;
-    image_width = image_width_;
-    gt_image = original_image_.cuda();
-    mask = undistort_mask;
+  // Pyramid level
+  image_height = gaus_pyramid_height_[training_level];
+  image_width = gaus_pyramid_width_[training_level];
+  gt_image = gaus_pyramid_original_image_[training_level].cuda();
+  mask = pyramid_masks[training_level];
 
-    if (depth_image_.defined()) {
-      gt_depth = depth_image_.cuda();
-    }
-  } else {
-    // Pyramid level
-    image_height = gaus_pyramid_height_[training_level];
-    image_width = gaus_pyramid_width_[training_level];
-    gt_image = gaus_pyramid_original_image_[training_level].cuda();
-    mask = pyramid_masks[training_level];
-
-    if (!gaus_pyramid_depth_image_.empty() &&
-        training_level < gaus_pyramid_depth_image_.size()) {
-      gt_depth = gaus_pyramid_depth_image_[training_level].cuda();
-    }
+  if (!gaus_pyramid_inv_depth_image_.empty() &&
+      training_level < gaus_pyramid_inv_depth_image_.size()) {
+    gt_inv_depth = gaus_pyramid_inv_depth_image_[training_level].cuda();
   }
 
-  if (gt_depth.defined()) {
-    gt_depth = gt_depth * depth_scale_ + depth_bias_;
+  if (gt_inv_depth.defined()) {
+    gt_inv_depth = gt_inv_depth * depth_scale_ + depth_bias_;
   }
 
-  return std::make_tuple(gt_image, gt_depth, mask, image_height, image_width);
+  return std::make_tuple(gt_image, gt_inv_depth, mask, image_height,
+                         image_width);
 }
 
 // In GaussianKeyframe class
-void GaussianKeyframe::generatePyramidImages(torch::DeviceType device_type) {
-  if (device_type == torch::kCUDA) {
-    cv::cuda::GpuMat img_gpu;
-    img_gpu.upload(img_undist_);
-    gaus_pyramid_original_image_.resize(num_gaus_pyramid_sub_levels_);
+void GaussianKeyframe::generateImagePyramid() {
+  cv::cuda::GpuMat img_gpu;
+  img_gpu.upload(img_undist_);
+  gaus_pyramid_original_image_.resize(num_gaus_pyramid_sub_levels_);
 
-    for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-      cv::cuda::GpuMat img_resized;
-      cv::cuda::resize(
-          img_gpu, img_resized,
-          cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]));
-      gaus_pyramid_original_image_[l] =
-          tensor_utils::cvGpuMat2TorchTensor_Float32(img_resized);
-    }
-  } else {
-    gaus_pyramid_original_image_.resize(num_gaus_pyramid_sub_levels_);
-    for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-      cv::Mat img_resized;
-      cv::resize(img_undist_, img_resized,
-                 cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]));
-      gaus_pyramid_original_image_[l] =
-          tensor_utils::cvMat2TorchTensor_Float32(img_resized, device_type);
-    }
+  for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
+    cv::cuda::GpuMat img_resized;
+    cv::cuda::resize(img_gpu, img_resized,
+                     cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]));
+    gaus_pyramid_original_image_[l] =
+        tensor_utils::cvGpuMat2TorchTensor_Float32(img_resized);
   }
 }
 
 // In GaussianKeyframe class
-void GaussianKeyframe::generatePyramidDepth(torch::DeviceType device_type,
-                                            const cv::Mat& depth_mat) {
+void GaussianKeyframe::generateInverseDepthPyramid(const cv::Mat& depth_mat) {
   if (!depth_mat.empty()) {
-    gaus_pyramid_depth_image_.resize(num_gaus_pyramid_sub_levels_);
+    gaus_pyramid_inv_depth_image_.resize(num_gaus_pyramid_sub_levels_);
 
-    if (device_type == torch::kCUDA) {
-      cv::cuda::GpuMat depth_gpu;
-      depth_gpu.upload(depth_mat);
+    cv::cuda::GpuMat depth_gpu;
+    depth_gpu.upload(depth_mat);
 
-      for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-        cv::cuda::GpuMat depth_resized;
-        cv::cuda::resize(
-            depth_gpu, depth_resized,
-            cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]), 0, 0,
-            cv::INTER_NEAREST);
-        gaus_pyramid_depth_image_[l] =
-            tensor_utils::cvGpuMat2TorchTensor_Float32(depth_resized);
-      }
-    } else {
-      for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-        cv::Mat depth_resized;
-        cv::resize(depth_mat, depth_resized,
-                   cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]), 0,
-                   0, cv::INTER_NEAREST);
-        gaus_pyramid_depth_image_[l] =
-            tensor_utils::cvMat2TorchTensor_Float32(depth_resized, device_type);
-      }
+    for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
+      cv::cuda::GpuMat depth_resized;
+      cv::cuda::resize(
+          depth_gpu, depth_resized,
+          cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]), 0, 0,
+          cv::INTER_NEAREST);
+      gaus_pyramid_inv_depth_image_[l] =
+          tensor_utils::cvGpuMat2TorchTensor_Float32(depth_resized);
     }
   }
 }
 
 void GaussianKeyframe::saveDataToDisk() {
+  auto start_time = std::chrono::steady_clock::now();
   if (!loaded_) {
     throw std::runtime_error("Can't save keyframe to disk that isn't loaded");
   }
@@ -889,20 +891,6 @@ void GaussianKeyframe::saveDataToDisk() {
 
   // Save heavy image/depth tensors
   torch::serialize::OutputArchive archive;
-
-  // Save original image tensor
-  if (original_image_.defined()) {
-    archive.write("original_image_", original_image_);
-  }
-
-  // Save depth-related tensors
-  if (depth_image_.defined()) {
-    archive.write("depth_image_", depth_image_);
-  }
-
-  if (idepth_.defined()) {
-    archive.write("idepth_", idepth_);
-  }
 
   if (depth_confidence_.defined()) {
     archive.write("depth_confidence_", depth_confidence_);
@@ -921,14 +909,14 @@ void GaussianKeyframe::saveDataToDisk() {
   }
 
   // Save pyramid depth data
-  if (!gaus_pyramid_depth_image_.empty()) {
-    archive.write(
-        "pyramid_depth_size",
-        torch::tensor(static_cast<int64_t>(gaus_pyramid_depth_image_.size())));
-    for (size_t i = 0; i < gaus_pyramid_depth_image_.size(); ++i) {
-      if (gaus_pyramid_depth_image_[i].defined()) {
+  if (!gaus_pyramid_inv_depth_image_.empty()) {
+    archive.write("pyramid_depth_size",
+                  torch::tensor(static_cast<int64_t>(
+                      gaus_pyramid_inv_depth_image_.size())));
+    for (size_t i = 0; i < gaus_pyramid_inv_depth_image_.size(); ++i) {
+      if (gaus_pyramid_inv_depth_image_[i].defined()) {
         archive.write("pyramid_depth_" + std::to_string(i),
-                      gaus_pyramid_depth_image_[i]);
+                      gaus_pyramid_inv_depth_image_[i]);
       }
     }
   }
@@ -937,16 +925,6 @@ void GaussianKeyframe::saveDataToDisk() {
       keyframe_save_dir_ / ("keyframe_data_" + std::to_string(fid_) + ".pt");
   archive.save_to(data_path.string());
 
-  // Clear heavy data from memory after saving
-  if (original_image_.defined()) {
-    original_image_.reset();
-  }
-  if (depth_image_.defined()) {
-    depth_image_.reset();
-  }
-  if (idepth_.defined()) {
-    idepth_.reset();
-  }
   if (depth_confidence_.defined()) {
     depth_confidence_.reset();
   }
@@ -959,19 +937,25 @@ void GaussianKeyframe::saveDataToDisk() {
   }
   gaus_pyramid_original_image_.clear();
 
-  for (auto& depth : gaus_pyramid_depth_image_) {
+  for (auto& depth : gaus_pyramid_inv_depth_image_) {
     if (depth.defined()) {
       depth.reset();
     }
   }
-  gaus_pyramid_depth_image_.clear();
+  gaus_pyramid_inv_depth_image_.clear();
 
-  c10::cuda::CUDACachingAllocator::emptyCache();
+  // c10::cuda::CUDACachingAllocator::emptyCache();
 
   loaded_ = false;
 
-  // std::cout << "Keyframe data saved and cleared from memory for keyframe "
-  //           << fid_ << std::endl;
+  auto end_time = std::chrono::steady_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+      end_time - start_time);
+  std::cout << "Keyframe " << fid_ << " saved. Save completed in "
+            << duration.count() << "ms" << std::endl;
+
+  std::cout << "Keyframe data saved and cleared from memory for keyframe "
+            << fid_ << std::endl;
 }
 
 void GaussianKeyframe::loadDataFromDisk() {
@@ -992,29 +976,6 @@ void GaussianKeyframe::loadDataFromDisk() {
 
   try {
     archive.load_from(data_path.string());
-
-    // Load original image
-    try {
-      archive.read("original_image_", original_image_);
-      original_image_ = original_image_.to(torch::kCUDA);
-    } catch (const std::exception& e) {
-      // Silent fail - data might not exist
-    }
-
-    // Load depth data
-    try {
-      archive.read("depth_image_", depth_image_);
-      depth_image_ = depth_image_.to(torch::kCUDA);
-    } catch (const std::exception& e) {
-      // Silent fail
-    }
-
-    try {
-      archive.read("idepth_", idepth_);
-      idepth_ = idepth_.to(torch::kCUDA);
-    } catch (const std::exception& e) {
-      // Silent fail
-    }
 
     try {
       archive.read("depth_confidence_", depth_confidence_);
@@ -1050,13 +1011,13 @@ void GaussianKeyframe::loadDataFromDisk() {
       archive.read("pyramid_depth_size", pyramid_depth_size_tensor);
       int pyramid_depth_size = pyramid_depth_size_tensor.item<int64_t>();
 
-      gaus_pyramid_depth_image_.resize(pyramid_depth_size);
+      gaus_pyramid_inv_depth_image_.resize(pyramid_depth_size);
       for (int i = 0; i < pyramid_depth_size; ++i) {
         try {
           archive.read("pyramid_depth_" + std::to_string(i),
-                       gaus_pyramid_depth_image_[i]);
-          gaus_pyramid_depth_image_[i] =
-              gaus_pyramid_depth_image_[i].to(torch::kCUDA);
+                       gaus_pyramid_inv_depth_image_[i]);
+          gaus_pyramid_inv_depth_image_[i] =
+              gaus_pyramid_inv_depth_image_[i].to(torch::kCUDA);
         } catch (const std::exception& e) {
           // Silent fail for individual pyramid levels
         }
@@ -1065,7 +1026,7 @@ void GaussianKeyframe::loadDataFromDisk() {
       // Silent fail
     }
 
-    // std::cout << "Data loaded from disk for keyframe " << fid_ << std::endl;
+    std::cout << "Data loaded from disk for keyframe " << fid_ << std::endl;
 
   } catch (const std::exception& e) {
     std::cerr << "Error loading data for keyframe " << fid_ << ": " << e.what()

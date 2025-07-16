@@ -140,7 +140,6 @@ void ImGuiViewer::readConfigFromFile(std::filesystem::path cfg_path) {
   new_kf_times_of_use_ = pGausMapper_->newKeyframeTimesOfUse();
   stable_num_iter_existence_ = pGausMapper_->stableNumIterExistence();
 
-  do_gaus_pyramid_training_ = pGausMapper_->isdoingGausPyramidTraining();
   do_inactive_geo_densify_ = pGausMapper_->isdoingInactiveGeoDensify();
 }
 
@@ -528,7 +527,6 @@ void ImGuiViewer::run() {
     new_kf_times_of_use_ = params_in.new_kf_times_of_use;
     stable_num_iter_existence_ = params_in.stable_num_iter_existence;
     keep_training_ = params_in.keep_training;
-    do_gaus_pyramid_training_ = params_in.do_gaus_pyramid_training;
     do_inactive_geo_densify_ = params_in.do_inactive_geo_densify;
 
     //--------------Display mode panel--------------
@@ -585,8 +583,6 @@ void ImGuiViewer::run() {
         ImGui::Text("Chunk Operations Pending: %d",
                     pGausMapper_->chunk_manager_->getOperationQueueSize());
 
-        ImGui::Checkbox("Gaussian-pyramid-based training",
-                        &do_gaus_pyramid_training_);
         ImGui::Checkbox("Densify with inactive geometries",
                         &do_inactive_geo_densify_);
         ImGui::Checkbox("Keep training after stop", &keep_training_);
@@ -628,7 +624,6 @@ void ImGuiViewer::run() {
     params_out.new_kf_times_of_use = new_kf_times_of_use_;
     params_out.stable_num_iter_existence = stable_num_iter_existence_;
     params_out.keep_training = keep_training_;
-    params_out.do_gaus_pyramid_training = do_gaus_pyramid_training_;
     params_out.do_inactive_geo_densify = do_inactive_geo_densify_;
     pGausMapper_->setVaribleParameters(params_out);
 

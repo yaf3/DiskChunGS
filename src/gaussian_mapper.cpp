@@ -82,7 +82,9 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
 
   chunk_save_dir_ = result_dir_ / "chunks";
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
   keyframe_save_dir_ = result_dir_ / "keyframes";
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(keyframe_save_dir_)
 
   config_file_path_ = gaussian_config_file_path;
   readConfigFromFile(gaussian_config_file_path);
@@ -209,6 +211,10 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
             camera.width_ * this->kf_gaus_pyramid_factors_[l];
         camera.gaus_pyramid_height_[l] =
             camera.height_ * this->kf_gaus_pyramid_factors_[l];
+        std::cout << "For level: " << l
+                  << " width: " << camera.gaus_pyramid_width_[l]
+                  << " and height: " << camera.gaus_pyramid_height_[l]
+                  << std::endl;
       }
 
       camera.params_[0] /*new fx*/ = SLAM_fx * x_ratio;
@@ -567,9 +573,6 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       (settings_file["Pipeline.convert_SHs"].operator int()) != 0;
   pipe_params_.compute_cov3D_ =
       (settings_file["Pipeline.compute_cov3D"].operator int()) != 0;
-
-  do_gaus_pyramid_training_ =
-      (settings_file["GausPyramid.do"].operator int()) != 0;
   num_gaus_pyramid_sub_levels_ =
       settings_file["GausPyramid.num_sub_levels"].operator int();
   int sub_level_times_of_use =
@@ -578,8 +581,7 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
   kf_gaus_pyramid_factors_.resize(num_gaus_pyramid_sub_levels_);
   for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
     kf_gaus_pyramid_times_of_use_[l] = sub_level_times_of_use;
-    kf_gaus_pyramid_factors_[l] =
-        std::pow(0.5f, num_gaus_pyramid_sub_levels_ - l);
+    kf_gaus_pyramid_factors_[l] = std::pow(0.5f, l);
   }
 
   keyframe_record_interval_ =
@@ -703,8 +705,6 @@ void GaussianMapper::run() {
             imgRGB_undistorted = pKF->imgLeftRGB;
             imgAux_undistorted = pKF->imgAuxiliary;
 
-            new_kf->original_image_ = tensor_utils::cvMat2TorchTensor_Float32(
-                imgRGB_undistorted, device_type_);
             new_kf->img_filename_ = pKF->mNameFile;
             new_kf->gaus_pyramid_height_ = camera.gaus_pyramid_height_;
             new_kf->gaus_pyramid_width_ = camera.gaus_pyramid_width_;
@@ -748,7 +748,7 @@ void GaussianMapper::run() {
       // Prepare multi resolution images for training
       for (auto& kfit : scene_->keyframes()) {
         auto pkf = kfit.second;
-        pkf->generatePyramidImages(device_type_);
+        pkf->generateImagePyramid();
 
         if (sensor_type_ == MONOCULAR) {
           pkf->setupMonoData(device_type_, monocular_depth_estimator_,
@@ -759,21 +759,7 @@ void GaussianMapper::run() {
                                stereo_depth_estimator_, min_depth_, max_depth_);
         } else if (sensor_type_ == RGBD &&
                    !pkf->img_auxiliary_undist_.empty()) {
-          // Preprocess and store depth image tensor
-          if (device_type_ == torch::kCUDA) {
-            cv::cuda::GpuMat depth_gpu;
-            depth_gpu.upload(pkf->img_auxiliary_undist_);
-            pkf->depth_image_ =
-                tensor_utils::cvGpuMat2TorchTensor_Float32(depth_gpu);
-          } else {
-            // CPU version
-            pkf->depth_image_ = tensor_utils::cvMat2TorchTensor_Float32(
-                pkf->img_auxiliary_undist_, device_type_);
-          }
-          // Create depth pyramid for initial keyframes
-          if (do_gaus_pyramid_training_) {
-            pkf->generatePyramidDepth(device_type_, pkf->img_auxiliary_undist_);
-          }
+          pkf->setupRGBDData();
         }
 
         if (!initial_mapped_) {
@@ -782,7 +768,7 @@ void GaussianMapper::run() {
           std::cout << "Inital mapped!\n";
           initial_mapped_ = true;
         }
-        if (isdoingDepthDensify()) increasePcdByDepthReconstruction(pkf);
+        sampleGaussians(pkf);
       }
 
       // Invoke training once
@@ -1097,8 +1083,7 @@ void GaussianMapper::trainForOneIteration() {
       viewpoint_cam->getTrainingData(
           undistort_mask_[viewpoint_cam->camera_id_],
           scene_->cameras_.at(viewpoint_cam->camera_id_)
-              .gaus_pyramid_undistort_mask_,
-          isdoingGausPyramidTraining());
+              .gaus_pyramid_undistort_mask_);
 
   auto timer_waitForMutex = ProfilingUtils::Timer("waitForMutex");
   // Mutex lock for usage of the gaussian model
@@ -1765,55 +1750,55 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
               "data");
   }
 
-  std::cout << "All points transformed, now time to add new points"
-            << std::endl;
-  // Get new points (scaled transformation applied in ORB-SLAM3, so this
-  // step is performed at last to avoid scaling twice)
-  auto& associated_points = opr.associatedMapPoints();
-  auto& points = std::get<0>(associated_points);
-  auto& colors = std::get<1>(associated_points);
+  // std::cout << "All points transformed, now time to add new points"
+  //           << std::endl;
+  // // Get new points (scaled transformation applied in ORB-SLAM3, so this
+  // // step is performed at last to avoid scaling twice)
+  // auto& associated_points = opr.associatedMapPoints();
+  // auto& points = std::get<0>(associated_points);
+  // auto& colors = std::get<1>(associated_points);
 
-  // Add new points to the appropriate chunks
-  if (initial_mapped_ && points.size() >= 30) {
-    torch::NoGradGuard no_grad;
-    std::unique_lock<std::mutex> lock_render(mutex_render_);
+  // // Add new points to the appropriate chunks
+  // if (initial_mapped_ && points.size() >= 30) {
+  //   torch::NoGradGuard no_grad;
+  //   std::unique_lock<std::mutex> lock_render(mutex_render_);
 
-    // Convert to tensors
-    int num_new_points = static_cast<int>(points.size() / 3);
-    torch::Tensor points_tensor =
-        torch::from_blob(points.data(), {num_new_points, 3},
-                         torch::TensorOptions().dtype(torch::kFloat32))
-            .to(device_type_);
-    torch::Tensor colors_tensor =
-        torch::from_blob(colors.data(), {num_new_points, 3},
-                         torch::TensorOptions().dtype(torch::kFloat32))
-            .to(device_type_);
-    torch::Tensor opacities_tensor = general_utils::inverse_sigmoid(
-        0.2f *
-        torch::ones(
-            {points_tensor.size(0), 1},
-            torch::TensorOptions().dtype(torch::kFloat).device(device_type_)));
+  //   // Convert to tensors
+  //   int num_new_points = static_cast<int>(points.size() / 3);
+  //   torch::Tensor points_tensor =
+  //       torch::from_blob(points.data(), {num_new_points, 3},
+  //                        torch::TensorOptions().dtype(torch::kFloat32))
+  //           .to(device_type_);
+  //   torch::Tensor colors_tensor =
+  //       torch::from_blob(colors.data(), {num_new_points, 3},
+  //                        torch::TensorOptions().dtype(torch::kFloat32))
+  //           .to(device_type_);
+  //   torch::Tensor opacities_tensor = general_utils::inverse_sigmoid(
+  //       0.2f *
+  //       torch::ones(
+  //           {points_tensor.size(0), 1},
+  //           torch::TensorOptions().dtype(torch::kFloat).device(device_type_)));
 
-    // Create a map of keyframes for the chunk manager
-    std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> loop_keyframes;
-    for (auto& kf : associated_kfs) {
-      auto kfid = std::get<0>(kf);
-      auto pkf = scene_->getKeyframe(kfid);
-      if (pkf) {
-        loop_keyframes[kfid] = pkf;
-      }
-    }
+  //   // Create a map of keyframes for the chunk manager
+  //   std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> loop_keyframes;
+  //   for (auto& kf : associated_kfs) {
+  //     auto kfid = std::get<0>(kf);
+  //     auto pkf = scene_->getKeyframe(kfid);
+  //     if (pkf) {
+  //       loop_keyframes[kfid] = pkf;
+  //     }
+  //   }
 
-    std::cout << "Adding points to chunks" << std::endl;
-    chunk_manager_->addPointsToChunks(points_tensor, colors_tensor,
-                                      torch::Tensor(), opacities_tensor);
-  }
+  //   std::cout << "Adding points to chunks" << std::endl;
+  //   chunk_manager_->addPointsToChunks(points_tensor, colors_tensor,
+  //                                     torch::Tensor(), opacities_tensor);
+  // }
 
   chunk_manager_->releaseAllChunksFromOptimization();
 
   // Gaussians will be all over the place, transfer them to their
   // respective chunks
-  // std::cout << "Transferring gaussians across chunks" << std::endl;
+  std::cout << "Transferring gaussians across chunks" << std::endl;
   // chunk_manager_->transferGaussiansAcrossChunks();
 
   chunk_manager_->releaseAllChunksFromOptimization();
@@ -1887,7 +1872,7 @@ void GaussianMapper::processScaleRefinement(ORB_SLAM3::MappingOperation& opr) {
 
   // Gaussians will be all over the place, transfer them to their
   // respective chunks
-  chunk_manager_->transferGaussiansAcrossChunks();
+  // chunk_manager_->transferGaussiansAcrossChunks();
 }
 
 void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
@@ -1916,8 +1901,6 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
     imgRGB_undistorted = std::get<3>(kf);
     imgAux_undistorted = std::get<5>(kf);
 
-    pkf->original_image_ = tensor_utils::cvMat2TorchTensor_Float32(
-        imgRGB_undistorted, device_type_);
     pkf->img_filename_ = std::get<8>(kf);
     pkf->gaus_pyramid_height_ = camera.gaus_pyramid_height_;
     pkf->gaus_pyramid_width_ = camera.gaus_pyramid_width_;
@@ -1964,7 +1947,7 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
                      opt_params_.depth_scale_bias_lr_);
 
   // Prepare multi resolution images for training
-  pkf->generatePyramidImages(device_type_);
+  pkf->generateImagePyramid();
 
   if (sensor_type_ == MONOCULAR) {
     pkf->setupMonoData(device_type_, monocular_depth_estimator_, min_depth_,
@@ -1973,18 +1956,7 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
     pkf->setupStereoData(stereo_baseline_length_, device_type_,
                          stereo_depth_estimator_, min_depth_, max_depth_);
   } else if (sensor_type_ == RGBD && !pkf->img_auxiliary_undist_.empty()) {
-    // Preprocess and store depth image tensor
-    if (device_type_ == torch::kCUDA) {
-      cv::cuda::GpuMat depth_gpu;
-      depth_gpu.upload(pkf->img_auxiliary_undist_);
-      pkf->depth_image_ = tensor_utils::cvGpuMat2TorchTensor_Float32(depth_gpu);
-    } else {
-      pkf->depth_image_ = tensor_utils::cvMat2TorchTensor_Float32(
-          pkf->img_auxiliary_undist_, device_type_);
-    }
-    if (do_gaus_pyramid_training_) {
-      pkf->generatePyramidDepth(device_type_, pkf->img_auxiliary_undist_);
-    }
+    pkf->setupRGBDData();
   }
 
   // Convert tensors to cv::Mat for processing
@@ -1992,14 +1964,14 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
       tensor_utils::cvMat2TorchTensor_Float32(pkf->img_undist_, device_type_);
 
   // Get camera pose (world-to-camera)
-  Sophus::SE3f Tcw = pkf->getPosef();
+  // Sophus::SE3f Tcw = pkf->getPosef();
 
   // Project to point cloud
   // std::string pcd_path = "depth_pcd_kf.ply";
   // projectRgbDepthToPointCloud(rgb_image, pkf->depth_image_, pkf->intr_,
   //                             min_depth_, max_depth_, Tcw, pcd_path, 2);
 
-  if (isdoingDepthDensify()) increasePcdByDepthReconstruction(pkf);
+  sampleGaussians(pkf);
 }
 
 void GaussianMapper::generateKfidRandomShuffle() {
@@ -2402,16 +2374,13 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
   }
 }
 
-void GaussianMapper::increasePcdByDepthReconstruction(
-    std::shared_ptr<GaussianKeyframe> pkf) {
+void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   torch::NoGradGuard no_grad;
 
   Sophus::SE3f Twc = pkf->getPosef().inverse();
 
   // Step 1: Get RGB image and depth data
-  cv::cuda::GpuMat rgb_gpu;
-  rgb_gpu.upload(pkf->img_undist_);
-  torch::Tensor rgb = tensor_utils::cvGpuMat2TorchTensor_Float32(rgb_gpu);
+  torch::Tensor rgb = pkf->gaus_pyramid_original_image_[0];
 
   bool downsample = false;
   if (downsample) {
@@ -2433,8 +2402,7 @@ void GaussianMapper::increasePcdByDepthReconstruction(
     rgb = rgb.squeeze(0);
   }
 
-  torch::Tensor mono_idepth = pkf->depth_image_.clamp_min(1e-8);
-  torch::Tensor mono_depth_confidence = pkf->depth_confidence_;
+  torch::Tensor depth_confidence = pkf->depth_confidence_;
 
   // Step 2: Compute initial probability based on image gradients (like
   // Python)
@@ -2543,7 +2511,7 @@ void GaussianMapper::increasePcdByDepthReconstruction(
 
   // Apply confidence filtering exactly like Python
   torch::Tensor sampled_confidence = sampleConf(
-      mono_depth_confidence, sampled_uv, pkf->image_width_, pkf->image_height_);
+      depth_confidence, sampled_uv, pkf->image_width_, pkf->image_height_);
   torch::Tensor valid_mask = (depth > 1e-6) & (sampled_confidence > 0.5);
 
   // std::cout << "Valid mask count: " << valid_mask.sum().item<int>()
@@ -2691,8 +2659,6 @@ void GaussianMapper::increasePcdByDepthReconstruction(
     // std::cout << "No samples remain after filtering, exiting" << std::endl;
     return;
   }
-
-  // ==== NEW: Add keyframe matched points alongside depth points ====
 
   // Step 8: Get matched keypoints and their 3D positions BEFORE flattening
   // RGB
@@ -3135,7 +3101,7 @@ void GaussianMapper::renderAndRecordKeyframe(
                             end_timing - start_timing)
                             .count();
   render_time = 1e-6 * render_time_ns;
-  auto gt_image = pkf->original_image_;
+  auto gt_image = pkf->gaus_pyramid_original_image_[0];
 
   dssim = loss_utils::fast_ssim(rendered_image, gt_image).item().toFloat();
   psnr = loss_utils::psnr(rendered_image, gt_image).item().toFloat();
@@ -3422,17 +3388,9 @@ bool GaussianMapper::isKeepingTraining() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return keep_training_;
 }
-bool GaussianMapper::isdoingGausPyramidTraining() {
-  std::unique_lock<std::mutex> lock(mutex_settings_);
-  return do_gaus_pyramid_training_;
-}
 bool GaussianMapper::isdoingInactiveGeoDensify() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return inactive_geo_densify_;
-}
-bool GaussianMapper::isdoingDepthDensify() {
-  std::unique_lock<std::mutex> lock(mutex_settings_);
-  return depth_densify_;
 }
 void GaussianMapper::setPositionLearningRateInit(const float lr) {
   std::unique_lock<std::mutex> lock(mutex_settings_);
@@ -3487,10 +3445,6 @@ void GaussianMapper::setKeepTraining(const bool keep) {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   keep_training_ = keep;
 }
-void GaussianMapper::setDoGausPyramidTraining(const bool gaus_pyramid) {
-  std::unique_lock<std::mutex> lock(mutex_settings_);
-  do_gaus_pyramid_training_ = gaus_pyramid;
-}
 void GaussianMapper::setDoInactiveGeoDensify(const bool inactive_geo_densify) {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   inactive_geo_densify_ = inactive_geo_densify;
@@ -3512,7 +3466,6 @@ VariableParameters GaussianMapper::getVaribleParameters() {
   params.new_kf_times_of_use = new_keyframe_times_of_use_;
   params.stable_num_iter_existence = stable_num_iter_existence_;
   params.keep_training = keep_training_;
-  params.do_gaus_pyramid_training = do_gaus_pyramid_training_;
   params.do_inactive_geo_densify = inactive_geo_densify_;
   return params;
 }
@@ -3533,7 +3486,6 @@ void GaussianMapper::setVaribleParameters(const VariableParameters& params) {
   new_keyframe_times_of_use_ = params.new_kf_times_of_use;
   stable_num_iter_existence_ = params.stable_num_iter_existence;
   keep_training_ = params.keep_training;
-  do_gaus_pyramid_training_ = params.do_gaus_pyramid_training;
   inactive_geo_densify_ = params.do_inactive_geo_densify;
 }
 
@@ -4192,14 +4144,13 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
     }
   }
 
+  std::cout << "Copying chunk data to save dir" << std::endl;
   // Copy chunks over to scene dir
   std::filesystem::path scene_chunk_dir = scene_dir / "chunks";
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(scene_chunk_dir);
   copyFolder(chunk_save_dir_, scene_dir / "chunks");
 
-  std::filesystem::path scene_keyframe_dir = scene_dir / "keyframes";
-  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(scene_keyframe_dir);
-  copyFolder(keyframe_save_dir_, scene_dir / "keyframes");
+  std::cout << "Done copying chunk data to save dir" << std::endl;
 
   std::cout << "Scene saved to " << scene_dir << std::endl;
   return all_saved;
@@ -4823,8 +4774,6 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
       // device_type_
       // << std::endl;
 
-      new_kf->original_image_ = tensor_utils::cvMat2TorchTensor_Float32(
-          rgb_undistorted, device_type_);
       new_kf->gaus_pyramid_height_ = camera.gaus_pyramid_height_;
       new_kf->gaus_pyramid_width_ = camera.gaus_pyramid_width_;
       new_kf->gaus_pyramid_times_of_use_ = kf_gaus_pyramid_times_of_use_;
@@ -4917,7 +4866,7 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
     // std::cout << "[ProcessFrame] Generating point cloud..." << std::endl;
 
     // Prepare multi resolution images for training
-    new_kf->generatePyramidImages(device_type_);
+    new_kf->generateImagePyramid();
 
     if (sensor_type_ == MONOCULAR) {
       new_kf->setupMonoData(device_type_, monocular_depth_estimator_,
@@ -4925,83 +4874,11 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
     } else if (sensor_type_ == STEREO && !depth_or_right_image.empty()) {
       new_kf->setupStereoData(stereo_baseline_length_, device_type_,
                               stereo_depth_estimator_, min_depth_, max_depth_);
+    } else if (sensor_type_ == RGBD && !new_kf->img_auxiliary_undist_.empty()) {
+      new_kf->setupRGBDData();
     }
 
-    if (sensor_type_ == RGBD && !new_kf->img_auxiliary_undist_.empty()) {
-      // Create a clean version of the depth map
-      cv::Mat depth = new_kf->img_auxiliary_undist_.clone();
-
-      // First replace NaN values with 0 (or some invalid depth marker)
-      cv::patchNaNs(depth, 0.0);
-
-      cv::Mat min_depth_mask, max_depth_mask;
-      cv::threshold(depth, min_depth_mask, min_depth_, 1.0, cv::THRESH_BINARY);
-      cv::threshold(depth, max_depth_mask, max_depth_, 1.0,
-                    cv::THRESH_BINARY_INV);
-      cv::Mat valid_mask = (depth > min_depth_);
-
-      // cv::Mat combined_mask;
-      // cv::multiply(max_depth_mask, min_depth_mask, combined_mask);
-      // cv::multiply(depth, combined_mask, depth);
-
-      // Now threshold to handle infinity values
-      // cv::threshold(depth_cleaned, depth_cleaned, max_depth_, max_depth_,
-      //               cv::THRESH_TRUNC);
-
-      // // Finally, create a valid mask to exclude zeros from later
-      // computations cv::Mat valid_mask = (depth_cleaned > min_depth_);
-
-      // double min_val, max_val;
-      // cv::minMaxLoc(depth_cleaned, &min_val, &max_val);
-      // cv::Scalar mean = cv::mean(depth_cleaned, valid_mask);
-
-      // // Get camera pose (world-to-camera)
-      // Sophus::SE3f Tcw = new_kf->getPosef();
-
-      // std::string render_filename =
-      // "/workspace/repo/rgbd_predicted_depth.png";
-      // colorize_and_save_depth(merged_depth.detach().cpu(), render_filename,
-      //                         merged_depth.min().item<float>(),
-      //                         merged_depth.max().item<float>());
-
-      // // Project to point cloud
-      // std::string pcd_path = "/workspace/repo/depth_pcd.ply";
-      // torch::Tensor rgb_torch =
-      //     tensor_utils::cvMat2TorchTensor_Float32(rgb_image, torch::kCUDA);
-      // projectRgbDepthToPointCloud(rgb_torch, merged_depth, new_kf->intr_,
-      //                             min_depth_, max_depth_, Tcw, pcd_path,
-      //                             2);
-
-      // std::cout << "Cleaned depth matrix - type: " << depth_cleaned.type()
-      //           << ", min: " << min_val << ", max: " << max_val
-      //           << ", mean: " << mean[0] << std::endl;
-
-      // Preprocess and store right image tensor
-      if (device_type_ == torch::kCUDA) {
-        cv::cuda::GpuMat depth_gpu;
-        depth_gpu.upload(depth);
-        new_kf->depth_image_ =
-            tensor_utils::cvGpuMat2TorchTensor_Float32(depth_gpu);
-        // std::cout << "GT Depth statistics: min "
-        //           << new_kf->depth_image_.min().item<float>() << " max "
-        //           << new_kf->depth_image_.max().item<float>() << " mean"
-        //           << new_kf->depth_image_.mean().item<float>() << " median
-        //           "
-        //           << new_kf->depth_image_.median().item<float>() <<
-        //           std::endl;
-      } else {
-        throw std::runtime_error(
-            "[GaussianMapper] RGBD mode only supported on CUDA for now");
-      }
-
-      if (do_gaus_pyramid_training_) {
-        new_kf->generatePyramidDepth(device_type_, depth);
-      }
-    }
-
-    assert(isdoingDepthDensify() &&
-           "Depth densification needs to be enabled for external mode!");
-    increasePcdByDepthReconstruction(new_kf);
+    sampleGaussians(new_kf);
 
     // Only update it if we are actually using it
     if (keyframe_selection_strategy_ == 1) {

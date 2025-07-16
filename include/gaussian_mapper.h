@@ -157,9 +157,7 @@ class GaussianMapper {
   int newKeyframeTimesOfUse();
   int stableNumIterExistence();
   bool isKeepingTraining();
-  bool isdoingGausPyramidTraining();
   bool isdoingInactiveGeoDensify();
-  bool isdoingDepthDensify();
 
   void setPositionLearningRateInit(const float lr);
   void setFeatureLearningRate(const float lr);
@@ -174,7 +172,6 @@ class GaussianMapper {
   void setNewKeyframeTimesOfUse(const int times);
   void setStableNumIterExistence(const int niter);
   void setKeepTraining(const bool keep);
-  void setDoGausPyramidTraining(const bool gaus_pyramid);
   void setDoInactiveGeoDensify(const bool inactive_geo_densify);
 
   VariableParameters getVaribleParameters();
@@ -234,7 +231,7 @@ class GaussianMapper {
   void increasePcdByKeyframeInactiveGeoDensify(
       std::shared_ptr<GaussianKeyframe> pkf);
 
-  void increasePcdByDepthReconstruction(std::shared_ptr<GaussianKeyframe> pkf);
+  void sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf);
 
   // bool needInterruptTraining();
   // void setInterruptTraining(const bool interrupt_training);
@@ -460,8 +457,6 @@ class GaussianMapper {
 
   bool cull_keyframes_;
   int stable_num_iter_existence_;
-
-  bool do_gaus_pyramid_training_;
 
   std::filesystem::path result_dir_;
   int keyframe_record_interval_;
