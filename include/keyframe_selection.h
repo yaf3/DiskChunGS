@@ -16,6 +16,7 @@ class KeyframeQueue {
                 float similarity_threshold = 0.30f,
                 int auto_distribute = 4,
                 const std::map<std::size_t, float>* loss_map = nullptr);
+  ~KeyframeQueue();
 
   // Interface methods to match the original
   void setChunkManager(std::shared_ptr<ChunkManager> chunk_manager);
@@ -55,4 +56,13 @@ class KeyframeQueue {
   std::mt19937 rng_;
 
   std::mutex mutex_new_keyframe_;
+
+  std::queue<std::shared_ptr<GaussianKeyframe>> save_queue_;
+  std::thread save_worker_;
+  std::mutex save_mutex_;
+  std::condition_variable save_cv_;
+  bool save_worker_stop_ = false;
+
+  void saveWorker();
+  void queueForSaving(std::shared_ptr<GaussianKeyframe> keyframe);
 };
