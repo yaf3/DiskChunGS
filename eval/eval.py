@@ -84,15 +84,21 @@ for result in results:
     print("processing", result)
     # support datasetName_cameratype_xx
     gt_dataset_name = result.split("_")[0].lower()
+    
+    if gt_dataset_name not in gt_dataset:
+        continue
     gt_dataset_path = gt_dataset[gt_dataset_name]["path"]
     gt_dataset_scenes = gt_dataset[gt_dataset_name]["scenes"]
+    
     for scene in gt_dataset_scenes:
         result_path = os.path.join(result_main_folder, result, scene)
+        if not os.path.isdir(result_path):
+            continue
         gt_path = os.path.join(gt_dataset_path, scene)
         # if not os.path.exists(os.path.join(result_path, "eval.txt")):
         skip_tracking_eval = ""
         if "rsl" in result.lower():
-            skip_tracking_eval = "--skip_trajectory_eval"
+            skip_tracking_eval = "--skip_trajectory_eval --skip_error_vis"
         if "mono" in result.lower():
             os.system(
                 "python3 run.py {} {} --correct_scale {}".format(
@@ -101,7 +107,7 @@ for result in results:
             )
         else:
             os.system(
-                "python3 run.py {} {} {}".format(result_path, gt_path, skip_tracking_eval)
+                "python3 run.py {} {} {} --skip_error_vis".format(result_path, gt_path, skip_tracking_eval)
             )
 
 
