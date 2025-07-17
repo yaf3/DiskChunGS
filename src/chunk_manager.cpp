@@ -558,8 +558,8 @@ bool ChunkManager::processLoadOperation(const ChunkCoord& coord,
 
 // Process a save operation
 bool ChunkManager::processSaveOperation(const ChunkCoord& coord) {
-  // logMemoryUsage("Before Save chunk " + std::to_string(coord.x) + "," +
-  //                std::to_string(coord.y) + "," + std::to_string(coord.z));
+  logMemoryUsage("Before Save chunk " + std::to_string(coord.x) + "," +
+                 std::to_string(coord.y) + "," + std::to_string(coord.z));
   // std::cout << "Called processSaveOperation" << std::endl;
   auto start_time = std::chrono::steady_clock::now();
   // std::chrono::milliseconds time_spend_waiting_for_mutex(0);
@@ -619,11 +619,13 @@ bool ChunkManager::processSaveOperation(const ChunkCoord& coord) {
       }
     }
 
-    // Clear CUDA cache after saving to free memory
-    c10::cuda::CUDACachingAllocator::emptyCache();
+    // torch::cuda::synchronize();
 
-    // logMemoryUsage("After Save chunk " + std::to_string(coord.x) + "," +
-    //                std::to_string(coord.y) + "," + std::to_string(coord.z));
+    // // Clear CUDA cache after saving to free memory
+    // c10::cuda::CUDACachingAllocator::emptyCache();
+
+    logMemoryUsage("After Save chunk " + std::to_string(coord.x) + "," +
+                   std::to_string(coord.y) + "," + std::to_string(coord.z));
 
     // std::cout << "IO Thread: Save operation successful for: " << coord.x <<
     // "
@@ -883,8 +885,10 @@ bool ChunkManager::processDeleteOperation(const ChunkCoord& coord) {
       }
     }
 
-    // Force CUDA cache cleanup after deletion
-    c10::cuda::CUDACachingAllocator::emptyCache();
+    // torch::cuda::synchronize();
+
+    // // Force CUDA cache cleanup after deletion
+    // c10::cuda::CUDACachingAllocator::emptyCache();
 
     // logMemoryUsage("After Delete chunk " + std::to_string(coord.x) + "," +
     //                std::to_string(coord.y) + "," + std::to_string(coord.z));
@@ -1882,7 +1886,7 @@ void ChunkManager::transferGaussiansAcrossChunks() {
     triggerLruCheck();
   }
   // Clear CUDA cache after processing
-  c10::cuda::CUDACachingAllocator::emptyCache();
+  // c10::cuda::CUDACachingAllocator::emptyCache();
 }
 
 void ChunkManager::releaseChunksFromOptimization(
@@ -2159,7 +2163,7 @@ void ChunkManager::testMemoryUsagePattern() {
   // Step 5: Force memory cleanup
   std::cout << "Forcing memory cleanup..." << std::endl;
   torch::cuda::synchronize();
-  c10::cuda::CUDACachingAllocator::emptyCache();
+  // c10::cuda::CUDACachingAllocator::emptyCache();
 
   // Log memory after saves
   logMemoryUsage("After saving all chunks");
@@ -2197,7 +2201,7 @@ void ChunkManager::testMemoryUsagePattern() {
 
   // Step 10: Force final cleanup and log again
   torch::cuda::synchronize();
-  c10::cuda::CUDACachingAllocator::emptyCache();
+  // c10::cuda::CUDACachingAllocator::emptyCache();
   logMemoryUsage("Final memory after cleanup");
 
   std::cout << "=== MEMORY TEST COMPLETE ===" << std::endl;

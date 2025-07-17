@@ -227,7 +227,7 @@ void GaussianModel::increasePcd(const torch::Tensor& new_point_cloud,
                        new_opacities_tensor, new_scaling, new_rotation,
                        new_exist_since_iter);
 
-  c10::cuda::CUDACachingAllocator::emptyCache();
+  // c10::cuda::CUDACachingAllocator::emptyCache();
 
   // auto time3 = std::chrono::steady_clock::now();
   // time =
@@ -850,7 +850,7 @@ void GaussianModel::densifyAndPrune(float max_grad,
             << total_points << std::endl;
 
   this->prunePoints(prune_mask);
-  c10::cuda::CUDACachingAllocator::emptyCache();
+  // c10::cuda::CUDACachingAllocator::emptyCache();
 }
 
 void GaussianModel::prune(float min_opacity, int max_screen_size) {
@@ -883,7 +883,7 @@ void GaussianModel::prune(float min_opacity, int max_screen_size) {
   //           << total_points << std::endl;
 
   this->prunePoints(prune_mask);
-  c10::cuda::CUDACachingAllocator::emptyCache();
+  // c10::cuda::CUDACachingAllocator::emptyCache();
 }
 
 void GaussianModel::addDensificationStats(
@@ -1763,9 +1763,9 @@ void GaussianModel::load_checkpoint_incremental(
   // }
 
   // Optional CUDA cache clear
-  if (clear_cache_after_load) {
-    c10::cuda::CUDACachingAllocator::emptyCache();
-  }
+  // if (clear_cache_after_load) {
+  //   c10::cuda::CUDACachingAllocator::emptyCache();
+  // }
 
   // std::cout << "Loaded " << xyz_.size(0) << " points from checkpoint"
   //           << std::endl;
