@@ -146,8 +146,6 @@ void readColmapImagesBinary(std::shared_ptr<GaussianMapper> pMapper,
     image.convertTo(image, CV_32FC3, 1.0f / 255.0f);
     cv::Mat imgRGB_undistorted;
     camera.undistortImage(image, imgRGB_undistorted);
-    new_kf->original_image_ =
-        tensor_utils::cvMat2TorchTensor_Float32(image, pMapper->device_type_);
     // TODO: to fit to a size BUG (camera size != image size) in the gaussian
     // splatting tandt dataset
     //  new_kf->image_height_ = image.rows;
