@@ -26,7 +26,7 @@ DiskChunGS is a 3D Gaussian Splatting SLAM system that enables unbounded scene r
 
 ```bash
 # Clone this repo
-git clone git@github.com:leggedrobotics/large_scale_gaussian_slam.git
+git clone --recursive git@github.com:leggedrobotics/large_scale_gaussian_slam.git
 
 cd large_scale_gaussian_slam
 
@@ -158,6 +158,10 @@ This work incorporates many open-source codes. Thanks for their great work!
 - [Photo-SLAM](https://github.com/HuajianUP/Photo-SLAM)
 - [Taming 3DGS](https://github.com/humansensinglab/taming-3dgs)
 - [Frustum Culling](https://bruop.github.io/frustum_culling/)
+- [On-the-fly](https://repo-sam.inria.fr/nerphys/on-the-fly-nvs/)
+- [depth-anything-tensorrt](https://github.com/spacewalk01/depth-anything-tensorrt)
+- [xfeat_cpp](https://github.com/udaysankar01/xfeat_cpp)
+- [ORB_SLAM3](https://github.com/UZ-SLAMLab/ORB_SLAM3)
 
 ## Citation
 
