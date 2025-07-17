@@ -99,7 +99,8 @@
         "__split_buffer": "cpp",
         "__node_handle": "cpp",
         "queue": "cpp",
-        "stack": "cpp"
+        "stack": "cpp",
+        "__functional_base": "cpp"
     },
     "editor.formatOnSave": true,
 }

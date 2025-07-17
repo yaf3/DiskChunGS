@@ -22,8 +22,10 @@ Mapper.cull_keyframes: 0  # 0:false, 1 or other integer:true
 Mapper.large_rotation_threshold: 1.0
 Mapper.large_translation_threshold: 0.1
 Mapper.stable_num_iter_existence: 1000
+Mapper.keyframe_similarity_threshold: 0.0
+Mapper.keyframe_selection_strategy: 1 #0:all, 1:recent k
 GausPyramid.do: 1  # 0:false, 1 or other integer:true
-GausPyramid.num_sub_levels: 1
+GausPyramid.num_sub_levels: 2
 GausPyramid.sub_level_times_of_use: 5
 Pipeline.convert_SHs: 0  # 0:false, 1 or other integer:true
 Pipeline.compute_cov3D: 0  # 0:false, 1 or other integer:true
@@ -33,13 +35,14 @@ Record.record_rendered_image: 0 # 0:false, 1 or other integer:true
 Record.record_ground_truth_image: 0 # 0:false, 1 or other integer:true
 Record.record_loss_image: 0 # 0:false, 1 or other integer:true
 Record.training_report_interval: 0 # 0:never, 1:always, others:periodically
-Record.record_loop_ply: 1 # 0:false, 1 or other integer:trues
+Record.record_loop_ply: 0 # 0:false, 1 or other integer:trues
 Record.render_fly_through: 0 # 0:false, 1 or other integer:true
 Record.render_fly_through_speed: 5.0 # 0:false, 1 or other integer:true
 Optimization.max_num_iterations: -1
 Optimization.smooth_l1: 0  # 0:false, 1:true
-Chunking.chunk_size: 10.0
-Chunking.max_chunks: 100
+Chunking.chunk_size: 5.0
+Chunking.max_chunks: 40
+Chunking.vram_limit_gb: 8
 Optimization.opacity_reset_interval: 0  # 0:never, 1:always, others:periodically
 Optimization.prune_big_point_after_iter: -1
 Optimization.densify_from_iter: 100
