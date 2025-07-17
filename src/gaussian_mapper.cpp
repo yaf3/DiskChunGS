@@ -1079,7 +1079,7 @@ void GaussianMapper::trainForOneIteration() {
   // !viewpoint_cam->done_inactive_geo_densify_)
   //   increasePcdByKeyframeInactiveGeoDensify(viewpoint_cam);
 
-  auto [gt_image, gt_depth, mask, image_height, image_width] =
+  auto [gt_image, gt_inv_depth, mask, image_height, image_width] =
       viewpoint_cam->getTrainingData(
           undistort_mask_[viewpoint_cam->camera_id_],
           scene_->cameras_.at(viewpoint_cam->camera_id_)
@@ -1187,11 +1187,10 @@ void GaussianMapper::trainForOneIteration() {
   float lambda_depth = lambdaDepth();
   auto loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - Lssim);
 
-  if (gt_depth.defined()) {
-    torch::Tensor rendered_depth, depth_loss;
-    rendered_depth = std::get<0>(render_pkg);
+  if (gt_inv_depth.defined()) {
+    torch::Tensor rendered_inv_depth = std::get<0>(render_pkg);
     // depth_loss = loss_utils::smooth_l1_depth_loss(rendered_depth, gt_depth);
-    depth_loss = (rendered_depth - gt_depth).abs().mean();
+    torch::Tensor depth_loss = (rendered_inv_depth - gt_inv_depth).abs().mean();
     loss += viewpoint_cam->depth_loss_weight * depth_loss;
 
     // if (getIteration() % 100 == 0) {

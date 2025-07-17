@@ -892,6 +892,21 @@ void GaussianKeyframe::saveDataToDisk() {
   // Save heavy image/depth tensors
   torch::serialize::OutputArchive archive;
 
+  torch::Tensor img_undist_tensor =
+      tensor_utils::cvMat2TorchTensor_Float32(img_undist_, torch::kCUDA);
+  if (img_undist_tensor.defined()) {
+    archive.write("img_undist_", img_undist_tensor);
+  }
+  img_undist_.release();
+
+  torch::Tensor img_auxiliary_undist_tensor =
+      tensor_utils::cvMat2TorchTensor_Float32(img_auxiliary_undist_,
+                                              torch::kCUDA);
+  if (img_auxiliary_undist_tensor.defined()) {
+    archive.write("img_auxiliary_undist_", img_auxiliary_undist_tensor);
+  }
+  img_auxiliary_undist_.release();
+
   if (depth_confidence_.defined()) {
     archive.write("depth_confidence_", depth_confidence_);
   }
@@ -951,11 +966,11 @@ void GaussianKeyframe::saveDataToDisk() {
   auto end_time = std::chrono::steady_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_time - start_time);
-  std::cout << "Keyframe " << fid_ << " saved. Save completed in "
-            << duration.count() << "ms" << std::endl;
+  // std::cout << "Keyframe " << fid_ << " saved. Save completed in "
+  //           << duration.count() << "ms" << std::endl;
 
-  std::cout << "Keyframe data saved and cleared from memory for keyframe "
-            << fid_ << std::endl;
+  // std::cout << "Keyframe data saved and cleared from memory for keyframe "
+  //           << fid_ << std::endl;
 }
 
 void GaussianKeyframe::loadDataFromDisk() {
@@ -976,6 +991,23 @@ void GaussianKeyframe::loadDataFromDisk() {
 
   try {
     archive.load_from(data_path.string());
+
+    try {
+      torch::Tensor img_undist_tensor;
+      archive.read("img_undist_", img_undist_tensor);
+      img_undist_ = tensor_utils::torchTensor2CvMat_Float32(img_undist_tensor);
+    } catch (const std::exception& e) {
+      // Silent fail
+    }
+
+    try {
+      torch::Tensor img_auxiliary_undist_tensor;
+      archive.read("img_auxiliary_undist_", img_auxiliary_undist_tensor);
+      img_auxiliary_undist_ =
+          tensor_utils::torchTensor2CvMat_Float32(img_auxiliary_undist_tensor);
+    } catch (const std::exception& e) {
+      // Silent fail
+    }
 
     try {
       archive.read("depth_confidence_", depth_confidence_);
