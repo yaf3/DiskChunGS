@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -72,8 +73,10 @@ class ChunkManager {
                const GaussianOptimizationParams& opt_params,
                std::filesystem::path chunk_save_dir,
                float chunk_size = 50.0f,
+               float cameras_extent = 1.0f,
                int max_chunks = 50,
-               int num_io_threads = 32);
+               int num_io_threads = 32,
+               size_t max_vram_budget_mb = 8192);
 
   ~ChunkManager();
 
@@ -194,6 +197,22 @@ class ChunkManager {
   std::vector<ChunkCoord> getExistingChunkCoords();
 
   void transferGaussiansAcrossChunks();
+  void processBatch(const std::vector<std::tuple<ChunkCoord,
+                                                 torch::Tensor,
+                                                 torch::Tensor,
+                                                 torch::Tensor,
+                                                 torch::Tensor,
+                                                 torch::Tensor,
+                                                 torch::Tensor,
+                                                 torch::Tensor>>& batch);
+  void applyTransferToDestination(const ChunkCoord& dest_coord,
+                                  torch::Tensor& points,
+                                  torch::Tensor& features_dc,
+                                  torch::Tensor& features_rest,
+                                  torch::Tensor& opacities,
+                                  torch::Tensor& scaling,
+                                  torch::Tensor& rotation,
+                                  torch::Tensor& exist_since);
 
   int getChunkLocalIteration(const ChunkCoord& coord) {
     auto chunk = getChunkAt(coord);
@@ -202,6 +221,8 @@ class ChunkManager {
     }
     return 0;
   }
+
+  void updateVramEstimateFromCurrentState();
 
   // ChunkStats for debugging/monitoring
   struct ChunkStats {
@@ -242,9 +263,37 @@ class ChunkManager {
   // Settings
   std::filesystem::path chunk_save_dir_;
   float chunk_size_;
+  float cameras_extent_;
   int max_chunks_in_memory_;
   std::chrono::milliseconds min_retention_time_{
       0};  // Minimum time to keep a chunk after loading
+
+  // VRAM-based chunk management
+  size_t max_vram_budget_mb_;
+  float estimated_chunk_vram_mb_;
+  const float vram_estimate_alpha_ = 0.1f;  // Exponential moving average factor
+  const int min_chunks_limit_ = 10;         // Minimum chunks to always allow
+  const int max_chunks_limit_ = 200;        // Maximum chunks to ever allow
+  std::chrono::steady_clock::time_point last_vram_check_ =
+      std::chrono::steady_clock::now();
+  size_t last_measured_vram_ = 0;
+  int last_chunk_count_ = 0;
+  static constexpr auto vram_check_interval_ = std::chrono::seconds(5);
+  std::chrono::steady_clock::time_point last_eviction_time_;
+  static constexpr auto MIN_EVICTION_INTERVAL = std::chrono::seconds(5);
+
+  // VRAM thresholds (as percentages of budget)
+  static constexpr float VRAM_NORMAL_THRESHOLD = 0.70f;  // Below this: all good
+  static constexpr float VRAM_EVICTION_THRESHOLD =
+      0.80f;  // Above this: start evicting
+  static constexpr float VRAM_AGGRESSIVE_THRESHOLD =
+      0.90f;  // Above this: aggressive eviction
+  static constexpr float VRAM_EMERGENCY_THRESHOLD =
+      0.95f;  // Above this: block new loads
+
+  // Eviction targets (what we aim for after eviction)
+  static constexpr float VRAM_TARGET_AFTER_EVICTION = 0.65f;
+  static constexpr float VRAM_TARGET_AFTER_AGGRESSIVE = 0.60f;
 
   // Statistics
   mutable std::mutex stats_mutex_;
@@ -297,6 +346,11 @@ class ChunkManager {
     visibility_cache_.clear();
   }
 
+  bool waitForVramAvailable(
+      float max_usage_ratio = 0.80f,
+      std::chrono::milliseconds timeout = std::chrono::seconds(10),
+      const std::string& operation_name = "operation");
+
  private:
   std::thread lru_eviction_thread_;
   std::atomic<bool> stop_lru_thread_{false};
@@ -307,6 +361,12 @@ class ChunkManager {
   void lruEvictionThreadFunction();
   void updateLastUsedTime(const ChunkCoord& coord);
   void updateLastUsedTimeForChunks(const std::vector<ChunkCoord>& coords);
+
+  bool shouldEvictChunks();
+  bool shouldBlockNewLoads();
+  int calculateEvictionCount();
+  float getCurrentVramUsageRatio() const;
+  std::string getVramStatus();
 
  public:
   void triggerLruCheck();

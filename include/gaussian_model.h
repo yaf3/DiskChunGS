@@ -86,7 +86,9 @@ class GaussianModel {
   void createFromPcd(const torch::Tensor& fused_point_cloud,
                      const torch::Tensor& color,
                      const torch::Tensor& new_scales,
-                     const torch::Tensor& new_opacities);
+                     const torch::Tensor& new_opacities,
+                     const int iteration,
+                     const float spatial_lr_scale);
 
   void increasePcd(const torch::Tensor& new_point_cloud,
                    const torch::Tensor& new_colors,
@@ -102,7 +104,7 @@ class GaussianModel {
                                    torch::Tensor& new_scaling);
 
   void scaledTransformVisiblePointsOfKeyframe(
-      torch::Tensor& point_not_transformed_flags,
+      torch::Tensor& point_transformed_flags,
       torch::Tensor& diff_pose,
       torch::Tensor& kf_world_view_transform,
       torch::Tensor& kf_full_proj_transform,
@@ -180,7 +182,8 @@ class GaussianModel {
       torch::Tensor& scaling,
       torch::Tensor& rotation,
       torch::Tensor& exist_since_iter,
-      const GaussianOptimizationParams& training_args);
+      const GaussianOptimizationParams& training_args,
+      const float spatial_lr_scale);
 
  protected:
   float exponLrFunc(int step);
@@ -207,6 +210,7 @@ class GaussianModel {
 
   std::shared_ptr<SparseGaussianAdam> optimizer_;
   float percent_dense_;
+  float spatial_lr_scale_;
 
  protected:
   int local_iteration_;

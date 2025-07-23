@@ -104,9 +104,6 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   // Initialize scene
   scene_ = std::make_shared<GaussianScene>(model_params_);
 
-  // Initialize chunk manager
-  initializeChunkManagement();
-
   keyframe_queue_ = std::make_shared<KeyframeQueue>(
       scene_, 40, keyframe_similarity_threshold_, opt_params_.auto_distribute_,
       &kfs_loss_);
@@ -339,9 +336,6 @@ GaussianMapper::GaussianMapper(const SystemSensorType sensor_type,
 
   // Initialize scene
   scene_ = std::make_shared<GaussianScene>(model_params_);
-
-  // Initialize chunk manager
-  initializeChunkManagement();
 
   keyframe_queue_ = std::make_shared<KeyframeQueue>(
       scene_, 40, keyframe_similarity_threshold_, opt_params_.auto_distribute_,
@@ -664,6 +658,14 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
 
   chunk_size_ = settings_file["Chunking.chunk_size"].operator float();
   max_chunks_in_memory_ = settings_file["Chunking.max_chunks"].operator int();
+
+  // VRAM budget with fallback for backwards compatibility
+  if (settings_file["Chunking.max_vram_budget_mb"].isNone()) {
+    max_vram_budget_mb_ = 8192;  // Default 8GB
+  } else {
+    max_vram_budget_mb_ =
+        settings_file["Chunking.max_vram_budget_mb"].operator int();
+  }
 }
 
 void GaussianMapper::run() {
@@ -765,6 +767,9 @@ void GaussianMapper::run() {
         if (!initial_mapped_) {
           std::unique_lock<std::mutex> lock_render(mutex_render_);
           scene_->cameras_extent_ = std::get<1>(scene_->getNerfppNorm());
+          // Initialize chunk manager
+          initializeChunkManagement();
+          std::cout << "Extent: " << scene_->cameras_extent_ << std::endl;
           std::cout << "Inital mapped!\n";
           initial_mapped_ = true;
         }
@@ -859,6 +864,13 @@ void GaussianMapper::run() {
          isKeepingTraining()) {
     trainForOneIteration();
   }
+
+  // while (getIteration() < 50000) {
+  //   trainForOneIteration();
+  // }
+
+  // testTransferGaussiansAcrossChunks();
+  // chunk_manager_->transferGaussiansAcrossChunks();
 
   if (render_fly_through_) {
     auto video_dir = result_dir_ / "flythrough";
@@ -1437,8 +1449,9 @@ void GaussianMapper::trainForOneIteration() {
 
   // auto timer_evictUnusedChunks =
   // ProfilingUtils::Timer("evictUnusedChunks"); Periodically cull gaussians
-  // outside of borders & evict unused chunks if (getIteration() % 200 == 0) {
-  // chunk_manager_->transferGaussiansAcrossChunks();
+  // outside of borders & evict unused chunks
+  // if (getIteration() % 1000 == 0) {
+  //   chunk_manager_->transferGaussiansAcrossChunks();
   // chunk_manager_->cullGaussiansOutsideChunkBorders();
   // chunk_manager_->evictUnusedChunks();
   // }
@@ -1449,10 +1462,10 @@ void GaussianMapper::trainForOneIteration() {
   chunk_manager_->releaseChunksFromOptimization(visible_chunks);
   timer_releaseChunksFromOptimization.stop();
   timer_trainForOneIteration.stop();
-  if (getIteration() % 500 == 0) {
-    ProfilingUtils::getInstance().printStats();
-    ProfilingUtils::getInstance().reset();
-  }
+  // if (getIteration() % 500 == 0) {
+  //   ProfilingUtils::getInstance().printStats();
+  //   ProfilingUtils::getInstance().reset();
+  // }
 }
 
 bool GaussianMapper::isStopped() {
@@ -1604,8 +1617,20 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
 
   // Instead of tracking processed chunks as a set
   std::unordered_map<ChunkCoord, torch::Tensor, ChunkCoordHash>
-      chunk_transformed_flags;
+      points_transformed_flags;
 
+  // First pass: Handle all new keyframes (this modifies chunks)
+  for (auto& kf : associated_kfs) {
+    auto kfid = std::get<0>(kf);
+    std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
+
+    if (!pkf) {
+      std::cout << "New frame in loop-closure" << std::endl;
+      handleNewKeyframe(kf);  // This modifies chunks!
+    }
+  }
+
+  // Second pass: Process existing keyframes with stable chunk sizes
   for (auto& kf : associated_kfs) {
     auto kfid = std::get<0>(kf);
     std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
@@ -1625,15 +1650,8 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
         std::cout << "[Gaussian Mapper]Large loop correction detected for kf "
                   << kfid << std::endl;
 
-        while (chunk_manager_->getActiveChunks().size() >
-               max_chunks_in_memory_) {
-          std::cout << "[Gaussian Mapper]Too many chunks in memory: "
-                    << chunk_manager_->getActiveChunks().size()
-                    << ", waiting for chunks to be released" << std::endl;
-          chunk_manager_->triggerLruCheck();
-
-          std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        }
+        chunk_manager_->waitForVramAvailable(0.85f, std::chrono::seconds(10),
+                                             "loop closure");
 
         // Get chunks visible from this keyframe
         std::vector<std::shared_ptr<Chunk>> visible_chunks =
@@ -1646,9 +1664,9 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
         }
 
         // Calculate the transformation
-        diff_pose.translation() -= inv_pose.translation();
-        diff_pose.translation() *= loop_kf_scale;
-        diff_pose.translation() += inv_pose.translation();
+        // diff_pose.translation() -= inv_pose.translation();
+        // diff_pose.translation() *= loop_kf_scale;
+        // diff_pose.translation() += inv_pose.translation();
 
         torch::Tensor diff_pose_tensor = tensor_utils::EigenMatrix2TorchTensor(
                                              diff_pose.matrix(), device_type_)
@@ -1660,42 +1678,31 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
           }
 
           auto gaussians = chunk->getGaussians();
+          // std::cout << gaussians->xyz_.size(0) << " points in chunk "
+          //           << chunk->getCoord().x << " " << chunk->getCoord().y << "
+          //           "
+          //           << chunk->getCoord().z << std::endl;
           auto chunk_coord = chunk->getCoord();
 
           // Get or create the transformed flags for this chunk
-          auto it = chunk_transformed_flags.find(chunk_coord);
-          torch::Tensor chunk_point_flags;
+          torch::Tensor current_chunk_points_transformed_flags;
+          auto it = points_transformed_flags.find(chunk_coord);
 
-          if (it == chunk_transformed_flags.end()) {
+          if (it == points_transformed_flags.end()) {
             // First time seeing this chunk, initialize all flags to
             // "not transformed"
             std::cout << "First time seeing this chunk, set all flags to "
                          "not transformed"
                       << std::endl;
-            chunk_point_flags = torch::full({gaussians->xyz_.size(0)}, true,
-                                            torch::TensorOptions()
-                                                .device(device_type_)
-                                                .dtype(torch::kBool));
-            chunk_transformed_flags[chunk_coord] = chunk_point_flags;
+            points_transformed_flags[chunk_coord] =
+                torch::full({gaussians->xyz_.size(0)}, false,
+                            torch::TensorOptions()
+                                .device(device_type_)
+                                .dtype(torch::kBool));
+            current_chunk_points_transformed_flags =
+                points_transformed_flags[chunk_coord];
           } else {
-            chunk_point_flags = it->second;
-            // If chunk size has changed (new points added), resize the
-            // flags tensor
-            if (chunk_point_flags.size(0) != gaussians->xyz_.size(0)) {
-              // std::cout << "[DEBUG] Resizing flags tensor from "
-              //           << chunk_point_flags.size(0) << " to "
-              //           << gaussians->xyz_.size(0) << std::endl;
-              int64_t num_new_points =
-                  gaussians->xyz_.size(0) - chunk_point_flags.size(0);
-              if (num_new_points > 0) {
-                chunk_point_flags =
-                    torch::cat({chunk_point_flags,
-                                torch::full({num_new_points}, true,
-                                            chunk_point_flags.options())},
-                               /*dim=*/0);
-                chunk_transformed_flags[chunk_coord] = chunk_point_flags;
-              }
-            }
+            current_chunk_points_transformed_flags = it->second;
           }
 
           // std::cout << "[DEBUG] Before transform - xyz: "
@@ -1711,14 +1718,18 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
                  "Chunk should be in optimizing state");
 
           std::cout << "[DEBUG] Chunk flags - true count: "
-                    << chunk_point_flags.sum().item<int>() << " out of "
-                    << chunk_point_flags.size(0) << std::endl;
+                    << current_chunk_points_transformed_flags.sum().item<int>()
+                    << " out of "
+                    << current_chunk_points_transformed_flags.size(0)
+                    << std::endl;
           gaussians->scaledTransformVisiblePointsOfKeyframe(
-              chunk_point_flags, diff_pose_tensor, pkf->world_view_transform_,
-              pkf->full_proj_transform_, pkf->creation_iter_,
-              stableNumIterExistence(), chunk_transformed, loop_kf_scale);
+              current_chunk_points_transformed_flags, diff_pose_tensor,
+              pkf->world_view_transform_, pkf->full_proj_transform_,
+              pkf->creation_iter_, stableNumIterExistence(), chunk_transformed,
+              1.0f);
 
-          chunk_transformed_flags[chunk_coord] = chunk_point_flags;
+          points_transformed_flags[chunk_coord] =
+              current_chunk_points_transformed_flags;
 
           std::cout << "[DEBUG] Transformed " << chunk_transformed
                     << " points successfully" << std::endl;
@@ -1737,9 +1748,6 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
       pkf->setPose(pose.unit_quaternion().cast<double>(),
                    pose.translation().cast<double>());
       pkf->computeTransformTensors();
-    } else {
-      std::cout << "Actually new keyframe in LC" << std::endl;
-      handleNewKeyframe(kf);
     }
   }
 
@@ -1795,10 +1803,25 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
 
   chunk_manager_->releaseAllChunksFromOptimization();
 
+  // Print summary of transformations per chunk
+  std::cout << "[LOOP CLOSURE SUMMARY] Transformation counts per chunk:"
+            << std::endl;
+  for (const auto& entry : points_transformed_flags) {
+    const auto& coord = entry.first;
+    const auto& flags = entry.second;
+    int transformed_count = flags.sum().item<int>();
+    int total_count = flags.size(0);
+    std::cout << "[SUMMARY] Chunk (" << coord.x << "," << coord.y << ","
+              << coord.z << "): " << transformed_count << "/" << total_count
+              << " points transformed" << std::endl;
+  }
+  std::cout << "[SUMMARY] Total points transformed across all chunks: "
+            << num_transformed << std::endl;
+
   // Gaussians will be all over the place, transfer them to their
   // respective chunks
   std::cout << "Transferring gaussians across chunks" << std::endl;
-  // chunk_manager_->transferGaussiansAcrossChunks();
+  chunk_manager_->transferGaussiansAcrossChunks();
 
   chunk_manager_->releaseAllChunksFromOptimization();
 
@@ -1885,9 +1908,11 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
                                                   std::string>& kf) {
   std::shared_ptr<GaussianKeyframe> pkf = std::make_shared<GaussianKeyframe>(
       std::get<0>(kf), getIteration(), keyframe_save_dir_);
-  pkf->zfar_ = z_far_;
-  pkf->znear_ = z_near_;
-  // Pose
+  pkf->zfar_ = z_far_ * scene_->cameras_extent_;
+  pkf->znear_ = z_near_ * scene_->cameras_extent_;
+
+  // std::cout << "Zfar: " << pkf->zfar_ << " Znear: " << pkf->znear_ <<
+  // std::endl; Pose
   auto& pose = std::get<2>(kf);
   pkf->setPose(pose.unit_quaternion().cast<double>(),
                pose.translation().cast<double>());
@@ -2511,7 +2536,8 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   // Apply confidence filtering exactly like Python
   torch::Tensor sampled_confidence = sampleConf(
       depth_confidence, sampled_uv, pkf->image_width_, pkf->image_height_);
-  torch::Tensor valid_mask = (depth > 1e-6) & (sampled_confidence > 0.5);
+  torch::Tensor valid_mask =
+      (depth > 1e-6) & (sampled_confidence > 0.5) & (depth < 100.0f);
 
   // std::cout << "Valid mask count: " << valid_mask.sum().item<int>()
   //           << std::endl;
@@ -2941,8 +2967,8 @@ std::tuple<cv::Mat, cv::Mat> GaussianMapper::renderFromPose(
     return std::make_tuple(empty_rgb, empty_depth);
   }
   std::shared_ptr<GaussianKeyframe> pkf = std::make_shared<GaussianKeyframe>();
-  pkf->zfar_ = z_far_;
-  pkf->znear_ = z_near_;
+  pkf->zfar_ = z_far_ * scene_->cameras_extent_;
+  pkf->znear_ = z_near_ * scene_->cameras_extent_;
   // Pose
   pkf->setPose(Tcw.unit_quaternion().cast<double>(),
                Tcw.translation().cast<double>());
@@ -3709,10 +3735,12 @@ GaussianMapper::selectRandomModelSubset(
 }
 
 void GaussianMapper::initializeChunkManagement() {
+  float chunk_size = chunk_size_ * scene_->cameras_extent_;
+  std::cout << "Scaled chunk size: " << chunk_size << std::endl;
   // Create the chunk manager with direct model parameters
-  chunk_manager_ = std::make_shared<ChunkManager>(model_params_, opt_params_,
-                                                  chunk_save_dir_, chunk_size_,
-                                                  max_chunks_in_memory_);
+  chunk_manager_ = std::make_shared<ChunkManager>(
+      model_params_, opt_params_, chunk_save_dir_, chunk_size,
+      scene_->cameras_extent_, max_chunks_in_memory_, 32, max_vram_budget_mb_);
 }
 
 void GaussianMapper::addPoints(const torch::Tensor& points,
@@ -4110,6 +4138,23 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
   // Save a manifest of all chunks on disk
   saveChunkManifest(scene_dir);
 
+  std::filesystem::path cameras_exent_path = scene_dir / "cameras_extent.json";
+
+  Json::Value json_root;
+  Json::StreamWriterBuilder builder;
+  const std::unique_ptr<Json::StreamWriter> writer(builder.newStreamWriter());
+
+  json_root[0] = Json::Value(scene_->cameras_extent_);
+
+  // Write to file
+  std::ofstream out_stream(cameras_exent_path);
+  if (!out_stream.is_open()) {
+    throw std::runtime_error("Cannot open cameras_extent file at " +
+                             cameras_exent_path.string());
+  }
+  writer->write(json_root, &out_stream);
+  out_stream.close();
+
   // Save config used to train the model
   try {
     std::filesystem::copy_file(
@@ -4158,6 +4203,30 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
 // Implementation for loadScene in gaussian_mapper.cpp
 bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
                                std::filesystem::path optional_camera_path) {
+  std::filesystem::path cameras_exent_path = scene_dir / "cameras_extent.json";
+
+  if (!std::filesystem::exists(cameras_exent_path)) {
+    throw std::runtime_error("cameras_extent JSON not found at " +
+                             cameras_exent_path.string());
+  }
+
+  // Parse the cameras_extent JSON file
+  std::ifstream file(cameras_exent_path);
+  Json::Value root;
+  Json::CharReaderBuilder builder;
+  JSONCPP_STRING errs;
+
+  if (!Json::parseFromStream(builder, file, &root, &errs)) {
+    throw std::runtime_error("Error parsing cameras_extent JSON: " + errs);
+  }
+  scene_->cameras_extent_ = root[0].asFloat();
+  std::cout << "Loaded cameras extent: " << scene_->cameras_extent_
+            << std::endl;
+
+  if (!chunk_manager_) {
+    initializeChunkManagement();
+  }
+
   if (!std::filesystem::exists(scene_dir)) {
     throw std::runtime_error("Scene directory does not exist: " +
                              scene_dir.string());
@@ -5608,4 +5677,67 @@ torch::Tensor GaussianMapper::sampleConf(const torch::Tensor& mono_depth_conf,
 
   // Return flattened result [N]
   return sampled[0][0][0];  // Remove batch and channel dimensions
+}
+
+void GaussianMapper::testTransferGaussiansAcrossChunks() {
+  std::cout << "=== Starting Transfer Gaussians Test ===" << std::endl;
+
+  if (!chunk_manager_) {
+    std::cerr << "Error: chunk_manager_ is null" << std::endl;
+    return;
+  }
+
+  std::vector<ChunkCoord> all_chunks = chunk_manager_->getExistingChunkCoords();
+  std::cout << "Found " << all_chunks.size() << " existing chunks" << std::endl;
+
+  std::cout << "Applying translation to all gaussians..." << std::endl;
+
+  // Create a simple translation matrix (translate by [1.0, 0.5, 0.2])
+  Eigen::Matrix4f translation_matrix = Eigen::Matrix4f::Identity();
+  translation_matrix.block<3, 1>(0, 3) = Eigen::Vector3f(10.0f, 10.0f, 0.0f);
+
+  torch::Tensor transform_tensor =
+      tensor_utils::EigenMatrix2TorchTensor(translation_matrix, device_type_)
+          .transpose(0, 1);
+
+  for (size_t i = 0; i < all_chunks.size(); i++) {
+    const auto& coord = all_chunks[i];
+
+    if (!chunk_manager_->chunkExists(coord)) continue;
+
+    if (!chunk_manager_->loadChunkSync(coord, true, false)) {
+      throw std::runtime_error("Failed to load gaussian for chunk");
+      continue;
+    }
+
+    auto chunk = chunk_manager_->getChunkAt(coord);
+    if (!chunk || !chunk->getGaussians()) {
+      throw std::runtime_error("Chunk or Gaussians not found for coord");
+      chunk_manager_->releaseChunksFromOptimization({coord});
+      continue;
+    }
+
+    auto gaussians = chunk->getGaussians();
+    torch::Tensor positions = gaussians->getXYZ();
+
+    // Apply translation using the existing transformPoints function
+    transformPoints(positions, transform_tensor);
+
+    torch::Tensor optimizable_xyz =
+        gaussians->replaceTensorToOptimizer(positions, 0);
+    gaussians->xyz_ = optimizable_xyz;
+    gaussians->Tensor_vec_xyz_ = {gaussians->xyz_};
+
+    std::cout << "Applied translation to chunk " << coord.x << "," << coord.y
+              << "," << coord.z << std::endl;
+
+    // Save the chunk back to disk
+    chunk_manager_->releaseChunksFromOptimization({coord});
+  }
+
+  // Step 4: Now test the transferGaussiansAcrossChunks function
+  std::cout << "Testing transferGaussiansAcrossChunks..." << std::endl;
+  chunk_manager_->transferGaussiansAcrossChunks();
+
+  std::cout << "Test completed." << std::endl;
 }

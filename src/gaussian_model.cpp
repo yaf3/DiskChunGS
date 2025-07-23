@@ -20,6 +20,7 @@
 
 GaussianModel::GaussianModel(const int sh_degree)
     : sh_degree_(0),
+      spatial_lr_scale_(0.0),
       position_lr_init_(0.00005),
       position_lr_decay_(0.99998),
       local_iteration_(0) {
@@ -36,6 +37,7 @@ GaussianModel::GaussianModel(const int sh_degree)
 
 GaussianModel::GaussianModel(const GaussianModelParams& model_params)
     : sh_degree_(0),
+      spatial_lr_scale_(0.0),
       position_lr_init_(0.00005),
       position_lr_decay_(0.99998),
       local_iteration_(0) {
@@ -92,7 +94,10 @@ torch::Tensor GaussianModel::getCovarianceActivation(int scaling_modifier) {
 void GaussianModel::createFromPcd(const torch::Tensor& fused_point_cloud,
                                   const torch::Tensor& color,
                                   const torch::Tensor& new_scales,
-                                  const torch::Tensor& new_opacities) {
+                                  const torch::Tensor& new_opacities,
+                                  const int iteration,
+                                  const float spatial_lr_scale) {
+  this->spatial_lr_scale_ = spatial_lr_scale;
   int num_points = static_cast<int>(fused_point_cloud.sizes()[0]);
 
   torch::Tensor fused_color = sh_utils::RGB2SH(color);
@@ -129,8 +134,8 @@ void GaussianModel::createFromPcd(const torch::Tensor& fused_point_cloud,
 
   torch::Tensor opacities = new_opacities;
 
-  this->exist_since_iter_ = torch::zeros(
-      {fused_point_cloud.size(0)},
+  this->exist_since_iter_ = torch::full(
+      {fused_point_cloud.size(0)}, iteration,
       torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
 
   this->xyz_ = fused_point_cloud.requires_grad_();
@@ -272,7 +277,7 @@ void GaussianModel::scaledTransformationPostfix(torch::Tensor& new_xyz,
 }
 
 void GaussianModel::scaledTransformVisiblePointsOfKeyframe(
-    torch::Tensor& point_not_transformed_flags,
+    torch::Tensor& point_transformed_flags,
     torch::Tensor& diff_pose,
     torch::Tensor& kf_world_view_transform,
     torch::Tensor& kf_full_proj_transform,
@@ -292,19 +297,31 @@ void GaussianModel::scaledTransformVisiblePointsOfKeyframe(
   // std::cout << "[DEBUG-STPV] Got points and rotations" << std::endl;
   // torch::Tensor scales = this->scaling_;// * scale;
 
+  int n_elements = 3;
+  std::cout << "First " << n_elements << " exist_since_iter_ elements: ";
+  for (int i = 0; i < std::min(n_elements, (int)exist_since_iter_.size(0));
+       i++) {
+    std::cout << exist_since_iter_[i].item<float>() << " ";
+  }
+  std::cout << std::endl;
+
+  std::cout << "Creation iter: " << kf_creation_iter << std::endl;
+
   torch::Tensor point_unstable_flags =
       torch::where(torch::abs(this->exist_since_iter_ - kf_creation_iter) <
                        stable_num_iter_existence,
                    true, false);
+
+  std::cout << "[DEBUG] Points unstable mask true count: "
+            << point_unstable_flags.sum().item<int>() << std::endl;
 
   std::cout << "[DEBUG-STPV] Created unstable flags" << std::endl;
 
   std::cout << "[DEBUG-STPV] Calling transform function" << std::endl;
 
   scaleAndTransformThenMarkVisiblePoints(
-      points, rots, point_not_transformed_flags, point_unstable_flags,
-      diff_pose, kf_world_view_transform, kf_full_proj_transform,
-      num_transformed, scale);
+      points, rots, point_transformed_flags, point_unstable_flags, diff_pose,
+      kf_world_view_transform, kf_full_proj_transform, num_transformed, scale);
 
   // std::cout << "[DEBUG-STPV] Transform complete, transformed "
   //           << num_transformed << " points" << std::endl;
@@ -363,17 +380,16 @@ void GaussianModel::trainingSetup(
   this->denom_ = torch::zeros({this->getXYZ().size(0), 1},
                               torch::TensorOptions().device(device_type_));
 
-  position_lr_init_ = training_args.position_lr_init_;
+  position_lr_init_ = training_args.position_lr_init_ * this->spatial_lr_scale_;
   position_lr_decay_ = training_args.position_lr_decay_;
-  position_lr_min_ = position_lr_init_ * 0.1f;
+  position_lr_min_ = position_lr_init_ * 0.1f * this->spatial_lr_scale_;
 
   torch::optim::AdamOptions adam_options;
   adam_options.set_lr(0.0);  // We'll set individual LRs below
   adam_options.eps() = 1e-15;
 
   this->optimizer_.reset(new SparseGaussianAdam(Tensor_vec_xyz_, adam_options));
-  optimizer_->param_groups()[0].options().set_lr(
-      training_args.position_lr_init_);
+  optimizer_->param_groups()[0].options().set_lr(position_lr_init_);
 
   // For per-primitive learning rates, create tensor-based LRs
   int num_gaussians = this->getXYZ().size(0);
@@ -514,17 +530,18 @@ void GaussianModel::resetOpacity() {
 
 torch::Tensor GaussianModel::replaceTensorToOptimizer(torch::Tensor& tensor,
                                                       int tensor_idx) {
-  std::cout
-      << "[DEBUG-Optimizer] Starting replaceTensorToOptimizer for tensor_idx: "
-      << tensor_idx << std::endl;
+  // std::cout
+  //     << "[DEBUG-Optimizer] Starting replaceTensorToOptimizer for tensor_idx:
+  //     "
+  //     << tensor_idx << std::endl;
 
   if (!this->optimizer_) {
     std::cerr << "ERROR: Optimizer is null!" << std::endl;
     throw std::runtime_error("Null optimizer in replaceTensorToOptimizer");
   }
 
-  std::cout << "[DEBUG-Optimizer] Param groups size: "
-            << this->optimizer_->param_groups().size() << std::endl;
+  // std::cout << "[DEBUG-Optimizer] Param groups size: "
+  //           << this->optimizer_->param_groups().size() << std::endl;
 
   if (tensor_idx >= this->optimizer_->param_groups().size()) {
     std::cerr << "ERROR: tensor_idx " << tensor_idx << " out of bounds!"
@@ -542,7 +559,7 @@ torch::Tensor GaussianModel::replaceTensorToOptimizer(torch::Tensor& tensor,
   auto& state = optimizer_->state();
   auto key = param.unsafeGetTensorImpl();
 
-  std::cout << "[DEBUG-Optimizer] Checking state for key..." << std::endl;
+  // std::cout << "[DEBUG-Optimizer] Checking state for key..." << std::endl;
   if (state.find(key) == state.end()) {
     std::cerr << "WARNING: No optimizer state found for tensor_idx "
               << tensor_idx << std::endl;
@@ -552,36 +569,36 @@ torch::Tensor GaussianModel::replaceTensorToOptimizer(torch::Tensor& tensor,
     new_state->exp_avg(torch::zeros_like(tensor));
     new_state->exp_avg_sq(torch::zeros_like(tensor));
     state[key] = std::move(new_state);
-    std::cout << "[DEBUG-Optimizer] Created new state" << std::endl;
+    // std::cout << "[DEBUG-Optimizer] Created new state" << std::endl;
   }
 
   try {
     auto& stored_state =
         static_cast<torch::optim::AdamParamState&>(*state[key]);
-    std::cout << "[DEBUG-Optimizer] Got stored state with step: "
-              << stored_state.step() << std::endl;
+    // std::cout << "[DEBUG-Optimizer] Got stored state with step: "
+    //           << stored_state.step() << std::endl;
 
     auto new_state = std::make_unique<torch::optim::AdamParamState>();
     new_state->step(stored_state.step());
 
-    std::cout << "[DEBUG-Optimizer] Creating exp_avg and exp_avg_sq..."
-              << std::endl;
+    // std::cout << "[DEBUG-Optimizer] Creating exp_avg and exp_avg_sq..."
+    //           << std::endl;
     new_state->exp_avg(torch::zeros_like(tensor));
     new_state->exp_avg_sq(torch::zeros_like(tensor));
 
-    std::cout << "[DEBUG-Optimizer] Erasing old state..." << std::endl;
+    // std::cout << "[DEBUG-Optimizer] Erasing old state..." << std::endl;
     state.erase(key);
 
-    std::cout << "[DEBUG-Optimizer] Setting requires_grad..." << std::endl;
+    // std::cout << "[DEBUG-Optimizer] Setting requires_grad..." << std::endl;
     param = tensor.requires_grad_();
     key = param.unsafeGetTensorImpl();
 
-    std::cout << "[DEBUG-Optimizer] Storing new state..." << std::endl;
+    // std::cout << "[DEBUG-Optimizer] Storing new state..." << std::endl;
     state[key] = std::move(new_state);
 
-    std::cout << "[DEBUG-Optimizer] Completed replaceTensorToOptimizer for "
-                 "tensor_idx: "
-              << tensor_idx << std::endl;
+    // std::cout << "[DEBUG-Optimizer] Completed replaceTensorToOptimizer for "
+    //              "tensor_idx: "
+    //           << tensor_idx << std::endl;
     return param;
   } catch (const std::exception& e) {
     std::cerr << "ERROR in replaceTensorToOptimizer: " << e.what() << std::endl;
@@ -1780,7 +1797,8 @@ void GaussianModel::initializeFromExistingGaussians(
     torch::Tensor& scaling,
     torch::Tensor& rotation,
     torch::Tensor& exist_since_iter,
-    const GaussianOptimizationParams& training_args) {
+    const GaussianOptimizationParams& training_args,
+    const float spatial_lr_scale) {
   // Initialize tensors with explicit cloning to ensure independent storage
   this->xyz_ = points.detach().clone().requires_grad_();
   this->features_dc_ = features_dc.detach().clone().requires_grad_();
@@ -1804,9 +1822,9 @@ void GaussianModel::initializeFromExistingGaussians(
   this->denom_ = torch::zeros({this->getXYZ().size(0), 1},
                               torch::TensorOptions().device(device_type_));
 
-  position_lr_init_ = training_args.position_lr_init_;
+  position_lr_init_ = training_args.position_lr_init_ * spatial_lr_scale;
   position_lr_decay_ = training_args.position_lr_decay_;
-  position_lr_min_ = position_lr_init_ * 0.1f;
+  position_lr_min_ = position_lr_init_ * 0.1f * spatial_lr_scale;
 
   torch::optim::AdamOptions adam_options;
   adam_options.set_lr(0.0);  // We'll set individual LRs below
@@ -1814,7 +1832,8 @@ void GaussianModel::initializeFromExistingGaussians(
 
   this->optimizer_.reset(new SparseGaussianAdam(Tensor_vec_xyz_, adam_options));
   optimizer_->param_groups()[0].options().set_lr(
-      training_args.position_lr_init_);
+      position_lr_init_);  // This one shouldn't be used (since per primitive
+                           // LRs are set below)
 
   // For per-primitive learning rates, create tensor-based LRs
   int num_gaussians = this->getXYZ().size(0);

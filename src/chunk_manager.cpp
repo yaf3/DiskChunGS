@@ -39,14 +39,19 @@ ChunkManager::ChunkManager(const GaussianModelParams& model_params,
                            const GaussianOptimizationParams& opt_params,
                            std::filesystem::path chunk_save_dir,
                            float chunk_size,
+                           float cameras_extent,
                            int max_chunks,
-                           int num_io_threads)
+                           int num_io_threads,
+                           size_t max_vram_budget_mb)
     : model_params_(model_params),
       opt_params_(opt_params),
       chunk_save_dir_(chunk_save_dir),
       chunk_size_(chunk_size),
+      cameras_extent_(cameras_extent),
       max_chunks_in_memory_(max_chunks),
-      should_terminate_(false) {
+      should_terminate_(false),
+      max_vram_budget_mb_(max_vram_budget_mb),
+      estimated_chunk_vram_mb_(100.0f) {  // Initial estimate of 100MB per chunk
   // Create save directory if it doesn't exist
   if (!chunk_save_dir_.empty() && !std::filesystem::exists(chunk_save_dir_)) {
     std::filesystem::create_directories(chunk_save_dir_);
@@ -453,6 +458,9 @@ bool ChunkManager::processLoadOperation(const ChunkCoord& coord,
   // std::cout << "Called processLoadOperation" << std::endl;
   auto start_time = std::chrono::steady_clock::now();
 
+  // Track VRAM usage before loading
+  // size_t vram_before = getGPUMemoryUsage();
+
   bool is_active = false;
   {
     std::unique_lock<std::mutex> lock(active_chunks_mutex_);
@@ -541,6 +549,13 @@ bool ChunkManager::processLoadOperation(const ChunkCoord& coord,
   incrementStat(stats_.active_chunks);
   incrementStat(stats_.disk_loads);
 
+  // Track VRAM usage after loading and update estimate
+  // size_t vram_after = getGPUMemoryUsage();
+  // if (!is_active) {  // Only update estimate if we actually loaded a new
+  // chunk
+  //   updateChunkVramEstimate(vram_before, vram_after, 1);
+  // }
+
   // logMemoryUsage("After Load chunk " + std::to_string(coord.x) + "," +
   //                std::to_string(coord.y) + "," + std::to_string(coord.z));
 
@@ -564,6 +579,9 @@ bool ChunkManager::processSaveOperation(const ChunkCoord& coord) {
   auto start_time = std::chrono::steady_clock::now();
   // std::chrono::milliseconds time_spend_waiting_for_mutex(0);
 
+  // Track VRAM usage before saving
+  // size_t vram_before = getGPUMemoryUsage();
+
   try {
     std::shared_ptr<Chunk> chunk;
 
@@ -572,7 +590,7 @@ bool ChunkManager::processSaveOperation(const ChunkCoord& coord) {
       std::unique_lock<std::mutex> lock(active_chunks_mutex_);
       auto it = active_chunks_.find(coord);
       if (it == active_chunks_.end() || !it->second) {
-        std::cout << "Warning: Tried to save null chunk!" << std::endl;
+        throw std::runtime_error("Warning: Tried to save null chunk!");
         transitionChunkState(coord, ChunkState::SAVING, ChunkState::INACTIVE);
         return false;
       }
@@ -580,7 +598,7 @@ bool ChunkManager::processSaveOperation(const ChunkCoord& coord) {
     }
 
     if (!chunk->getGaussians()) {
-      std::cerr << "Null gaussians in save operation" << std::endl;
+      throw std::runtime_error("Null gaussians in save operation");
       transitionChunkState(coord, ChunkState::SAVING, ChunkState::INACTIVE);
       return false;
     }
@@ -624,8 +642,13 @@ bool ChunkManager::processSaveOperation(const ChunkCoord& coord) {
     // // Clear CUDA cache after saving to free memory
     // c10::cuda::CUDACachingAllocator::emptyCache();
 
-    logMemoryUsage("After Save chunk " + std::to_string(coord.x) + "," +
-                   std::to_string(coord.y) + "," + std::to_string(coord.z));
+    // Track VRAM usage after saving (should be lower) and update estimate
+    // size_t vram_after = getGPUMemoryUsage();
+    // updateChunkVramEstimate(vram_before, vram_after,
+    //                         -1);  // Negative because chunk was removed
+
+    // logMemoryUsage("After Save chunk " + std::to_string(coord.x) + "," +
+    //                std::to_string(coord.y) + "," + std::to_string(coord.z));
 
     // std::cout << "IO Thread: Save operation successful for: " << coord.x <<
     // "
@@ -1338,6 +1361,11 @@ void ChunkManager::addPointsToChunks(const torch::Tensor& points,
         // std::cout << "Chunk is in OPTIMIZING state, adding points" <<
         // std::endl;
 
+        // std::cout << "Iter: " << getCurrentIteration()
+        //           << ", adding points to chunk: " << coord.x << "," <<
+        //           coord.y
+        //           << "," << coord.z << std::endl;
+
         // Add points to existing chunk
         if (chunk_scales.defined() && chunk_scales.size(0) > 0) {
           chunk->getGaussians()->increasePcd(chunk_points, chunk_colors,
@@ -1384,11 +1412,13 @@ void ChunkManager::addPointsToChunks(const torch::Tensor& points,
 
       // Initialize the Gaussian model
       if (chunk_scales.defined() && chunk_scales.size(0) > 0) {
-        chunk->getGaussians()->createFromPcd(chunk_points, chunk_colors,
-                                             chunk_scales, chunk_opacities);
+        chunk->getGaussians()->createFromPcd(
+            chunk_points, chunk_colors, chunk_scales, chunk_opacities,
+            getCurrentIteration(), cameras_extent_);
       } else {
-        chunk->getGaussians()->createFromPcd(chunk_points, chunk_colors,
-                                             torch::Tensor(), chunk_opacities);
+        chunk->getGaussians()->createFromPcd(
+            chunk_points, chunk_colors, torch::Tensor(), chunk_opacities,
+            getCurrentIteration(), cameras_extent_);
       }
       chunk->getGaussians()->trainingSetup(opt_params_);
     }
@@ -1620,31 +1650,24 @@ void ChunkManager::transferGaussiansAcrossChunks() {
 
   // Get all existing chunk coordinates
   std::vector<ChunkCoord> all_chunks = getExistingChunkCoords();
-
   std::cout << "Transferring Gaussians across " << all_chunks.size()
-            << std::endl;
+            << " chunks" << std::endl;
 
-  // Process chunks in batches to manage memory
-  const int batch_size = 5;  // Adjust based on memory constraints
+  // Configuration for batched processing
+  const size_t MAX_BATCH_SIZE = 5000;         // Adjust based on available RAM
+  const size_t MAX_POINTS_PER_BATCH = 50000;  // Total points limit per batch
 
-  // First pass: Load chunks, identify and extract Gaussians that need
-  // transfer
+  // Batch storage - much smaller than before
   std::vector<
       std::tuple<ChunkCoord, torch::Tensor, torch::Tensor, torch::Tensor,
-                 torch::Tensor, torch::Tensor, torch::Tensor,
-                 torch::Tensor>>
-      transfers;  // Source chunk, points, features_dc, features_rest,
-                  // opacity, scaling, rotation, exist_since
+                 torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>>
+      current_batch;
 
-  // Track which chunks need to be loaded
-  std::unordered_map<ChunkCoord, std::future<bool>, ChunkCoordHash>
-      load_futures;
+  size_t current_batch_points = 0;
 
-  // Process all chunks to find points that need transfer
+  // Process chunks and handle transfers in batches
   for (size_t i = 0; i < all_chunks.size(); i++) {
     const ChunkCoord& coord = all_chunks[i];
-    // Get chunk (either already active or freshly loaded)
-    std::shared_ptr<Chunk> chunk;
 
     if (!chunkExists(coord)) {
       std::cout << "Chunk no longer exists, skipping: " << coord.x << ","
@@ -1652,16 +1675,19 @@ void ChunkManager::transferGaussiansAcrossChunks() {
       continue;
     }
 
+    std::cout << getVramStatus() << std::endl;
+    waitForVramAvailable(0.85f, std::chrono::seconds(10), "gaussian transfer");
+
     if (!loadChunkSync(coord, true, false)) {
       std::cout << "Skipping chunk, can't load" << std::endl;
       releaseChunksFromOptimization({coord});
       continue;
     }
 
-    chunk = getChunkAt(coord);
-
+    auto chunk = getChunkAt(coord);
     if (!chunk || !chunk->getGaussians()) {
-      throw std::runtime_error("Gaussians/Chunk invalid");
+      std::cerr << "Gaussians/Chunk invalid for coord: " << coord.x << ","
+                << coord.y << "," << coord.z << std::endl;
       releaseChunksFromOptimization({coord});
       continue;
     }
@@ -1669,17 +1695,14 @@ void ChunkManager::transferGaussiansAcrossChunks() {
     auto gaussians = chunk->getGaussians();
     auto points = gaussians->getXYZ();
 
-    // Skip if no points
     if (points.size(0) == 0) {
       std::cout << "Skipping chunk, no points in it" << std::endl;
       releaseChunksFromOptimization({coord});
       continue;
     }
 
-    // Get AABB for this chunk
+    // Get AABB and find outside points
     AABB chunk_aabb = getChunkAABB(coord);
-
-    // Create mask for points outside this chunk
     torch::Tensor outside_mask =
         ((points.index({torch::indexing::Slice(), 0}) < chunk_aabb.min.x()) |
          (points.index({torch::indexing::Slice(), 0}) > chunk_aabb.max.x()) |
@@ -1688,15 +1711,17 @@ void ChunkManager::transferGaussiansAcrossChunks() {
          (points.index({torch::indexing::Slice(), 2}) < chunk_aabb.min.z()) |
          (points.index({torch::indexing::Slice(), 2}) > chunk_aabb.max.z()));
 
-    // If no points outside, skip
     int num_outside = outside_mask.sum().item<int>();
     if (num_outside == 0) {
-      std::cout << "Skipping chunk, no points outside of it" << std::endl;
       releaseChunksFromOptimization({coord});
       continue;
     }
 
-    // Extract properties of outside points with explicit cloning
+    std::cout << "Found " << num_outside << " points to transfer from chunk ("
+              << coord.x << "," << coord.y << "," << coord.z << ")"
+              << std::endl;
+
+    // Extract outside points
     torch::Tensor outside_points =
         points.index({outside_mask}).detach().clone();
     torch::Tensor outside_features_dc =
@@ -1712,35 +1737,45 @@ void ChunkManager::transferGaussiansAcrossChunks() {
     torch::Tensor outside_exist_since =
         gaussians->exist_since_iter_.index({outside_mask}).detach().clone();
 
-    // Remove migrated points from the source chunk
+    // Remove points from source chunk
     gaussians->prunePoints(outside_mask);
 
-    // Save properties and target chunk info for second pass
+    // Group points by destination chunk
     auto [unique_dest_chunks, inverse_indices, points_per_chunk] =
         groupPointsByChunk(outside_points);
 
-    // For each destination chunk, prepare the transfer data
+    // Process each destination chunk for this source
     for (int k = 0; k < unique_dest_chunks.size(0); k++) {
       ChunkCoord dest_coord{unique_dest_chunks[k][0].item<int64_t>(),
                             unique_dest_chunks[k][1].item<int64_t>(),
                             unique_dest_chunks[k][2].item<int64_t>()};
 
-      // Skip if destination is the same as source (shouldn't happen)
-      if (dest_coord == coord) {
-        continue;
-      }
+      if (dest_coord == coord) continue;  // Skip self-transfer
 
-      // Mask for points going to this chunk
       torch::Tensor chunk_mask = (inverse_indices == k);
-
-      // Minimum number of points to bother transferring
       const int MIN_TRANSFER_THRESHOLD = 30;
-      if (chunk_mask.sum().item<int>() < MIN_TRANSFER_THRESHOLD) {
-        continue;
+      int points_to_transfer = chunk_mask.sum().item<int>();
+
+      if (points_to_transfer < MIN_TRANSFER_THRESHOLD) continue;
+
+      // Check if adding this transfer would exceed batch limits
+      if ((current_batch.size() >= MAX_BATCH_SIZE) ||
+          (current_batch_points + points_to_transfer > MAX_POINTS_PER_BATCH)) {
+        // Process current batch before adding more
+        std::cout << "Processing batch with " << current_batch.size()
+                  << " transfers and " << current_batch_points << " points"
+                  << std::endl;
+        processBatch(current_batch);
+
+        // Clear batch
+        current_batch.clear();
+        current_batch_points = 0;
+
+        // Force garbage collection of tensors
+        c10::cuda::CUDACachingAllocator::emptyCache();
       }
 
-      // Extract properties of points going to this chunk with explicit
-      // cloning
+      // Extract properties for this destination
       torch::Tensor chunk_points = outside_points.index({chunk_mask}).clone();
       torch::Tensor chunk_features_dc =
           outside_features_dc.index({chunk_mask}).clone();
@@ -1754,139 +1789,160 @@ void ChunkManager::transferGaussiansAcrossChunks() {
       torch::Tensor chunk_exist_since =
           outside_exist_since.index({chunk_mask}).clone();
 
-      // Add to transfers list
-      transfers.push_back(std::make_tuple(
+      // Add to current batch
+      current_batch.push_back(std::make_tuple(
           dest_coord, chunk_points, chunk_features_dc, chunk_features_rest,
           chunk_opacities, chunk_scaling, chunk_rotation, chunk_exist_since));
+
+      current_batch_points += points_to_transfer;
     }
 
-    // Save and unload
+    // Save and unload source chunk
     releaseChunksFromOptimization({coord});
-
     triggerLruCheck();
   }
 
-  // Second pass: Apply the transfers to destination chunks
-  std::unordered_set<ChunkCoord, ChunkCoordHash> dest_chunks;
-  std::unordered_map<ChunkCoord, std::future<bool>, ChunkCoordHash>
-      dest_load_futures;
+  // Process any remaining transfers in the final batch
+  if (!current_batch.empty()) {
+    std::cout << "Processing final batch with " << current_batch.size()
+              << " transfers and " << current_batch_points << " points"
+              << std::endl;
+    processBatch(current_batch);
+  }
 
-  for (const auto& transfer : transfers) {
-    ChunkCoord dest_coord = std::get<0>(transfer);
+  std::cout << "Gaussian transfer completed" << std::endl;
+}
 
-    // Get all transfers for this destination
-    std::vector<
-        std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
-                   torch::Tensor, torch::Tensor, torch::Tensor>>
-        chunk_transfers;
+void ChunkManager::processBatch(
+    const std::vector<std::tuple<ChunkCoord,
+                                 torch::Tensor,
+                                 torch::Tensor,
+                                 torch::Tensor,
+                                 torch::Tensor,
+                                 torch::Tensor,
+                                 torch::Tensor,
+                                 torch::Tensor>>& batch) {
+  // Group transfers by destination chunk
+  std::unordered_map<ChunkCoord, std::vector<size_t>, ChunkCoordHash>
+      dest_to_transfers;
 
-    for (const auto& t : transfers) {
-      ChunkCoord tc = std::get<0>(t);
-      if (tc == dest_coord) {
-        chunk_transfers.push_back(std::make_tuple(
-            std::get<1>(t), std::get<2>(t), std::get<3>(t), std::get<4>(t),
-            std::get<5>(t), std::get<6>(t), std::get<7>(t)));
-      }
+  for (size_t i = 0; i < batch.size(); i++) {
+    ChunkCoord dest_coord = std::get<0>(batch[i]);
+    dest_to_transfers[dest_coord].push_back(i);
+  }
+
+  // Process each destination chunk
+  for (const auto& [dest_coord, transfer_indices] : dest_to_transfers) {
+    // Collect all transfers for this destination
+    std::vector<torch::Tensor> all_points, all_features_dc, all_features_rest;
+    std::vector<torch::Tensor> all_opacities, all_scaling, all_rotation,
+        all_exist_since;
+
+    for (size_t idx : transfer_indices) {
+      const auto& transfer = batch[idx];
+      all_points.push_back(std::get<1>(transfer));
+      all_features_dc.push_back(std::get<2>(transfer));
+      all_features_rest.push_back(std::get<3>(transfer));
+      all_opacities.push_back(std::get<4>(transfer));
+      all_scaling.push_back(std::get<5>(transfer));
+      all_rotation.push_back(std::get<6>(transfer));
+      all_exist_since.push_back(std::get<7>(transfer));
     }
 
-    // Skip if no transfers to this chunk (shouldn't happen)
-    if (chunk_transfers.empty()) {
-      continue;
-    }
+    // Concatenate all transfers for this destination
+    torch::Tensor combined_points = torch::cat(all_points, 0);
+    torch::Tensor combined_features_dc = torch::cat(all_features_dc, 0);
+    torch::Tensor combined_features_rest = torch::cat(all_features_rest, 0);
+    torch::Tensor combined_opacities = torch::cat(all_opacities, 0);
+    torch::Tensor combined_scaling = torch::cat(all_scaling, 0);
+    torch::Tensor combined_rotation = torch::cat(all_rotation, 0);
+    torch::Tensor combined_exist_since = torch::cat(all_exist_since, 0);
 
-    // Combine all transfers for this destination
-    torch::Tensor all_points = std::get<0>(chunk_transfers[0]);
-    torch::Tensor all_features_dc = std::get<1>(chunk_transfers[0]);
-    torch::Tensor all_features_rest = std::get<2>(chunk_transfers[0]);
-    torch::Tensor all_opacities = std::get<3>(chunk_transfers[0]);
-    torch::Tensor all_scaling = std::get<4>(chunk_transfers[0]);
-    torch::Tensor all_rotation = std::get<5>(chunk_transfers[0]);
-    torch::Tensor all_exist_since = std::get<6>(chunk_transfers[0]);
+    std::cout << "Applying " << combined_points.size(0) << " points to chunk ("
+              << dest_coord.x << "," << dest_coord.y << "," << dest_coord.z
+              << ")" << std::endl;
 
-    for (size_t i = 1; i < chunk_transfers.size(); i++) {
-      all_points = torch::cat({all_points, std::get<0>(chunk_transfers[i])}, 0);
-      all_features_dc =
-          torch::cat({all_features_dc, std::get<1>(chunk_transfers[i])}, 0);
-      all_features_rest =
-          torch::cat({all_features_rest, std::get<2>(chunk_transfers[i])}, 0);
-      all_opacities =
-          torch::cat({all_opacities, std::get<3>(chunk_transfers[i])}, 0);
-      all_scaling =
-          torch::cat({all_scaling, std::get<4>(chunk_transfers[i])}, 0);
-      all_rotation =
-          torch::cat({all_rotation, std::get<5>(chunk_transfers[i])}, 0);
-      all_exist_since =
-          torch::cat({all_exist_since, std::get<6>(chunk_transfers[i])}, 0);
-    }
-
-    // Get or initialize chunk
-    std::shared_ptr<Chunk> dest_chunk;
-    bool chunk_exists = chunkExists(dest_coord);
-
-    if (chunk_exists) {
-      loadChunkSync(dest_coord, true, false);
-      dest_chunk = getChunkAt(dest_coord);
-    } else {
-      dest_chunk = std::make_shared<Chunk>(model_params_, dest_coord);
-
-      // Add to active chunks
-      {
-        std::unique_lock<std::mutex> lock(active_chunks_mutex_);
-        active_chunks_[dest_coord] = dest_chunk;
-      }
-
-      // Update metadata
-      {
-        std::unique_lock<std::mutex> lock(metadata_mutex_);
-        auto& meta = chunk_metadata_[dest_coord];
-        meta.load_time = std::chrono::steady_clock::now();
-        meta.last_used = meta.load_time;
-        meta.usage_count = 0;
-        meta.state.store(ChunkState::OPTIMIZING);
-      }
-
-      // Update cache
-      {
-        std::unique_lock<std::mutex> lock(chunk_exists_cache_mutex_);
-        chunk_exists_cache_[dest_coord] = true;
-      }
-
-      incrementStat(stats_.active_chunks);
-      incrementStat(stats_.existing_chunks);
-    }
-
-    if (!dest_chunk || !dest_chunk->getGaussians()) {
-      throw std::runtime_error("Null destination chunk or gaussians");
-    }
-
-    // Apply the transfer data
-    auto gaussians = dest_chunk->getGaussians();
-
+    // Apply to destination chunk
     try {
-      // Initialize or add points to the chunk
-      if (chunk_exists) {
-        // For existing chunks, add new points
-        dest_chunk->getGaussians()->densificationPostfix(
-            all_points, all_features_dc, all_features_rest, all_opacities,
-            all_scaling, all_rotation, all_exist_since);
-      } else {
-        // Initialize directly with the existing gaussians
-        dest_chunk->getGaussians()->initializeFromExistingGaussians(
-            all_points, all_features_dc, all_features_rest, all_opacities,
-            all_scaling, all_rotation, all_exist_since, opt_params_);
-      }
+      applyTransferToDestination(dest_coord, combined_points,
+                                 combined_features_dc, combined_features_rest,
+                                 combined_opacities, combined_scaling,
+                                 combined_rotation, combined_exist_since);
     } catch (const std::exception& e) {
-      std::cerr << "Error applying transfer data: " << e.what() << std::endl;
-      releaseChunksFromOptimization({dest_coord});
-      triggerLruCheck();
-      continue;
+      std::cerr << "Error applying batch transfer to destination chunk ("
+                << dest_coord.x << "," << dest_coord.y << "," << dest_coord.z
+                << "): " << e.what() << std::endl;
+    }
+  }
+}
+
+void ChunkManager::applyTransferToDestination(const ChunkCoord& dest_coord,
+                                              torch::Tensor& points,
+                                              torch::Tensor& features_dc,
+                                              torch::Tensor& features_rest,
+                                              torch::Tensor& opacities,
+                                              torch::Tensor& scaling,
+                                              torch::Tensor& rotation,
+                                              torch::Tensor& exist_since) {
+  std::shared_ptr<Chunk> dest_chunk;
+  bool chunk_exists = chunkExists(dest_coord);
+
+  if (chunk_exists) {
+    waitForVramAvailable(0.85f, std::chrono::seconds(10), "gaussian transfer");
+    if (!loadChunkSync(dest_coord, true, false)) {
+      throw std::runtime_error("Failed to load existing destination chunk");
+    }
+    dest_chunk = getChunkAt(dest_coord);
+  } else {
+    // Create new chunk
+    dest_chunk = std::make_shared<Chunk>(model_params_, dest_coord);
+
+    // Add to active chunks
+    {
+      std::unique_lock<std::mutex> lock(active_chunks_mutex_);
+      active_chunks_[dest_coord] = dest_chunk;
     }
 
-    releaseChunksFromOptimization({dest_coord});
-    triggerLruCheck();
+    // Update metadata
+    {
+      std::unique_lock<std::mutex> lock(metadata_mutex_);
+      auto& meta = chunk_metadata_[dest_coord];
+      meta.load_time = std::chrono::steady_clock::now();
+      meta.last_used = meta.load_time;
+      meta.usage_count = 0;
+      meta.state.store(ChunkState::OPTIMIZING);
+    }
+
+    // Update cache
+    {
+      std::unique_lock<std::mutex> lock(chunk_exists_cache_mutex_);
+      chunk_exists_cache_[dest_coord] = true;
+    }
+
+    incrementStat(stats_.active_chunks);
+    incrementStat(stats_.existing_chunks);
   }
-  // Clear CUDA cache after processing
-  // c10::cuda::CUDACachingAllocator::emptyCache();
+
+  if (!dest_chunk || !dest_chunk->getGaussians()) {
+    throw std::runtime_error("Null destination chunk or gaussians");
+  }
+
+  auto gaussians = dest_chunk->getGaussians();
+
+  if (chunk_exists) {
+    // Add to existing gaussians
+    gaussians->densificationPostfix(points, features_dc, features_rest,
+                                    opacities, scaling, rotation, exist_since);
+  } else {
+    // Initialize new chunk with gaussians
+    gaussians->initializeFromExistingGaussians(
+        points, features_dc, features_rest, opacities, scaling, rotation,
+        exist_since, opt_params_, cameras_extent_);
+  }
+
+  // Clean up
+  releaseChunksFromOptimization({dest_coord});
+  triggerLruCheck();
 }
 
 void ChunkManager::releaseChunksFromOptimization(
@@ -1943,47 +1999,28 @@ void ChunkManager::releaseAllChunksFromOptimization() {
 }
 
 void ChunkManager::lruEvictionThreadFunction() {
-  std::cout << "Starting LRU eviction thread" << std::endl;
-
-  // Add a small buffer to avoid thrashing at the limit
-  const int BUFFER_CHUNKS = 2;
+  std::cout << "Starting VRAM-based LRU eviction thread" << std::endl;
 
   while (!stop_lru_thread_) {
-    // Wait for the interval or until explicitly woken up
+    // Wait for trigger or periodic check
     {
       std::unique_lock<std::mutex> lock(lru_mutex_);
       lru_cv_.wait_for(lock, lru_check_interval_,
                        [this]() { return stop_lru_thread_.load(); });
 
-      // Exit if we're shutting down
-      if (stop_lru_thread_) {
-        break;
-      }
+      if (stop_lru_thread_) break;
     }
 
-    // Check if we need to evict chunks
-    int active_count = 0;
-    {
-      std::unique_lock<std::mutex> lock(active_chunks_mutex_);
-      active_count = active_chunks_.size();
+    // Simple check: do we need to evict?
+    if (!shouldEvictChunks()) {
+      continue;  // VRAM usage is fine
     }
 
-    // If we're under the limit (with buffer), nothing to do
-    if (active_count <= max_chunks_in_memory_ - BUFFER_CHUNKS) {
-      continue;
-    }
-
-    // Calculate how many chunks to evict (including buffer to prevent
-    // thrashing)
-    int to_evict = active_count - (max_chunks_in_memory_ - BUFFER_CHUNKS);
-
-    // Only log if we're actually going to evict
-    if (to_evict > 0) {
-      std::cout << "LRU Eviction: Need to evict " << to_evict
-                << " chunks (current: " << active_count
-                << ", max: " << max_chunks_in_memory_
-                << ", buffer: " << BUFFER_CHUNKS << ")" << std::endl;
-    } else {
+    // Calculate how many chunks to evict
+    int to_evict = calculateEvictionCount();
+    if (to_evict <= 0) {
+      std::cout << "LRU Eviction: Need to evict " << to_evict << " chunks "
+                << std::endl;
       continue;  // Nothing to evict
     }
 
@@ -2053,16 +2090,16 @@ void ChunkManager::lruEvictionThreadFunction() {
 
     // Schedule saves for the oldest chunks
     int evicted = 0;
-    std::vector<std::future<bool>> save_futures;
-
     for (size_t i = 0; i < candidates.size() && evicted < to_evict; ++i) {
       const ChunkCoord& coord = candidates[i].first;
-      saveChunkAsync(coord, 10);
+      saveChunkAsync(coord, 10);  // High priority save
       evicted++;
     }
 
-    std::cout << "LRU Eviction: Scheduled " << evicted
-              << " chunks for eviction " << std::endl;
+    size_t current_mb = getGPUMemoryUsage() / (1024 * 1024);
+    std::cout << "VRAM eviction: " << current_mb << "MB/" << max_vram_budget_mb_
+              << "MB, evicted " << evicted << " chunks" << std::endl;
+
     std::cout << "LRU Eviction: Skipped: Inactive: " << chunk_inactive_count
               << ", Optimizing: " << chunk_optimizing_count
               << ", Loading: " << chunk_loading_count
@@ -2071,8 +2108,8 @@ void ChunkManager::lruEvictionThreadFunction() {
               << chunks_skipped_since_too_recently_loaded << std::endl;
   }
 
-  std::cout << "LRU eviction thread terminating" << std::endl;
-}
+  std::cout << "VRAM-based LRU eviction thread terminating" << std::endl;
+};
 
 void ChunkManager::updateLastUsedTime(const ChunkCoord& coord) {
   std::unique_lock<std::mutex> lock(metadata_mutex_);
@@ -2209,4 +2246,130 @@ void ChunkManager::testMemoryUsagePattern() {
             << std::endl;
   std::cout << "Chunks saved: " << saved_count << std::endl;
   std::cout << "Chunks reloaded: " << loaded_count << std::endl;
+}
+
+bool ChunkManager::shouldEvictChunks() {
+  auto now = std::chrono::steady_clock::now();
+  if (now - last_eviction_time_ < MIN_EVICTION_INTERVAL) {
+    return false;
+  }
+
+  size_t current_vram_bytes = getGPUMemoryUsage();
+  size_t budget_bytes = max_vram_budget_mb_ * 1024 * 1024;
+  float vram_ratio = static_cast<float>(current_vram_bytes) / budget_bytes;
+
+  return vram_ratio > VRAM_EVICTION_THRESHOLD;
+}
+
+bool ChunkManager::shouldBlockNewLoads() {
+  size_t current_vram_bytes = getGPUMemoryUsage();
+  size_t budget_bytes = max_vram_budget_mb_ * 1024 * 1024;
+  float vram_ratio = static_cast<float>(current_vram_bytes) / budget_bytes;
+
+  return vram_ratio > VRAM_EMERGENCY_THRESHOLD;
+}
+
+// Calculate how many chunks to evict based on VRAM pressure int
+int ChunkManager::calculateEvictionCount() {
+  size_t current_vram_bytes = getGPUMemoryUsage();
+  size_t budget_bytes = max_vram_budget_mb_ * 1024 * 1024;
+  float vram_ratio = static_cast<float>(current_vram_bytes) / budget_bytes;
+
+  int current_chunks = 0;
+  {
+    std::unique_lock<std::mutex> lock(active_chunks_mutex_);
+    current_chunks = active_chunks_.size();
+  }
+
+  if (current_chunks == 0) return 0;
+
+  // Calculate target VRAM after eviction
+  float target_ratio = (vram_ratio > VRAM_AGGRESSIVE_THRESHOLD)
+                           ? VRAM_TARGET_AFTER_AGGRESSIVE
+                           : VRAM_TARGET_AFTER_EVICTION;
+
+  size_t target_vram_bytes = static_cast<size_t>(budget_bytes * target_ratio);
+
+  // How much VRAM do we need to free?
+  if (current_vram_bytes <= target_vram_bytes) {
+    return 0;  // Shouldn't happen, but safety check
+  }
+
+  size_t vram_to_free = current_vram_bytes - target_vram_bytes;
+
+  // Estimate VRAM per chunk from current state
+  float current_vram_per_chunk =
+      static_cast<float>(current_vram_bytes) / current_chunks;
+
+  // Calculate chunks to evict
+  int chunks_to_evict =
+      static_cast<int>(std::ceil(vram_to_free / current_vram_per_chunk));
+
+  // Safety bounds
+  chunks_to_evict = std::max(1, chunks_to_evict);  // At least 1
+  chunks_to_evict =
+      std::min(chunks_to_evict, current_chunks / 2);  // At most half
+
+  // Log the decision
+  float current_vram_mb = current_vram_bytes / (1024.0f * 1024.0f);
+  float target_vram_mb = target_vram_bytes / (1024.0f * 1024.0f);
+  float vram_per_chunk_mb = current_vram_per_chunk / (1024.0f * 1024.0f);
+
+  std::cout << "VRAM Eviction: " << current_vram_mb << "MB/"
+            << max_vram_budget_mb_ << "MB (" << (vram_ratio * 100.0f)
+            << "%) -> target " << target_vram_mb << "MB, ~" << vram_per_chunk_mb
+            << "MB/chunk, evicting " << chunks_to_evict << "/" << current_chunks
+            << " chunks" << std::endl;
+
+  return chunks_to_evict;
+}
+
+float ChunkManager::getCurrentVramUsageRatio() const {
+  size_t current_vram_bytes = getGPUMemoryUsage();
+  size_t budget_bytes = max_vram_budget_mb_ * 1024 * 1024;
+  return static_cast<float>(current_vram_bytes) / budget_bytes;
+}
+
+std::string ChunkManager::getVramStatus() {
+  float ratio = getCurrentVramUsageRatio();
+  size_t current_mb = getGPUMemoryUsage() / (1024 * 1024);
+
+  int active_chunks = 0;
+  {
+    std::unique_lock<std::mutex> lock(active_chunks_mutex_);
+    active_chunks = active_chunks_.size();
+  }
+
+  return "VRAM: " + std::to_string(current_mb) + "MB/" +
+         std::to_string(max_vram_budget_mb_) + "MB (" +
+         std::to_string(ratio * 100.0f) + "%), " +
+         std::to_string(active_chunks) + " chunks active";
+}
+
+bool ChunkManager::waitForVramAvailable(float max_usage_ratio,
+                                        std::chrono::milliseconds timeout,
+                                        const std::string& operation_name) {
+  auto start_time = std::chrono::steady_clock::now();
+
+  while (getCurrentVramUsageRatio() > max_usage_ratio) {
+    // Check timeout
+    if (std::chrono::steady_clock::now() - start_time > timeout) {
+      std::cout << "[Gaussian Mapper] VRAM wait timeout for " << operation_name
+                << "! Current usage: " << (getCurrentVramUsageRatio() * 100.0f)
+                << "%" << std::endl;
+      return false;
+    }
+
+    // Log current status
+    size_t current_vram_mb = getGPUMemoryUsage() / (1024 * 1024);
+    std::cout << "[Gaussian Mapper] Waiting for VRAM for " << operation_name
+              << ": " << current_vram_mb << "MB/" << max_vram_budget_mb_
+              << "MB (" << (getCurrentVramUsageRatio() * 100.0f) << "%)"
+              << std::endl;
+
+    triggerLruCheck();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+
+  return true;  // Success
 }

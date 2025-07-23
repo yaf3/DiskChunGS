@@ -188,6 +188,8 @@ class GaussianMapper {
   void loadPly(std::filesystem::path ply_path,
                std::filesystem::path camera_path = "");
 
+  void testTransferGaussiansAcrossChunks();
+
  protected:
   bool hasMetInitialMappingConditions();
   bool hasMetIncrementalMappingConditions();
@@ -370,6 +372,7 @@ class GaussianMapper {
 
   float chunk_size_ = 50.0;
   int max_chunks_in_memory_ = 50;
+  size_t max_vram_budget_mb_ = 8192;  // 8GB default VRAM budget for chunks
   std::filesystem::path chunk_save_dir_;
   std::filesystem::path keyframe_save_dir_;
 

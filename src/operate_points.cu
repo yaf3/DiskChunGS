@@ -90,7 +90,7 @@ void transformPoints(torch::Tensor& points, torch::Tensor& transformmatrix) {
 void scaleAndTransformThenMarkVisiblePoints(
     torch::Tensor& points,
     torch::Tensor& rots,
-    torch::Tensor& point_not_transformed_mask,
+    torch::Tensor& point_transformed_mask,
     torch::Tensor& point_unstable_mask,
     torch::Tensor& transformmatrix,
     torch::Tensor& viewmatrix,
@@ -98,7 +98,7 @@ void scaleAndTransformThenMarkVisiblePoints(
     int& num_transformed,
     const float scale) {
   if (points.ndimension() != 2 || points.size(1) != 3) {
-    AT_ERROR("points must have dimensions (num_points, 3)");
+    TORCH_CHECK(false, "points must have dimensions (num_points, 3)");
   }
 
   torch::Tensor present = markVisible(points, viewmatrix, projmatrix);
@@ -107,16 +107,24 @@ void scaleAndTransformThenMarkVisiblePoints(
             << " out of " << present.size(0) << std::endl;
 
   auto num_points = present.size(0);
-  if (point_not_transformed_mask.size(0) != num_points ||
+  if (point_transformed_mask.size(0) != num_points ||
       point_unstable_mask.size(0) != num_points) {
-    AT_ERROR("points_mask must have dimensions (num_points)");
+    std::cout << "[DEBUG] point_transformed_mask size: "
+              << point_transformed_mask.size(0)
+              << ", point_unstable_mask size: " << point_unstable_mask.size(0)
+              << std::endl;
+    TORCH_CHECK(false, "points_mask must have dimensions (num_points)");
   }
-  torch::Tensor final_mask =
-      torch::logical_and(point_not_transformed_mask, point_unstable_mask);
+
+  std::cout << "[DEBUG] Points unstable mask true count: "
+            << point_unstable_mask.sum().item<int>() << std::endl;
+  torch::Tensor final_mask = torch::logical_and(
+      torch::logical_not(point_transformed_mask), point_unstable_mask);
   final_mask = torch::logical_and(final_mask, present);
 
   std::cout << "[DEBUG] Not transformed mask true count: "
-            << point_not_transformed_mask.sum().item<int>() << std::endl;
+            << torch::logical_not(point_transformed_mask).sum().item<int>()
+            << std::endl;
 
   std::cout << "[DEBUG] Final mask (intersection) true count: "
             << final_mask.sum().item<int>() << std::endl;
@@ -134,13 +142,13 @@ void scaleAndTransformThenMarkVisiblePoints(
         transformmatrix.contiguous().data_ptr<float>(),
         final_mask.contiguous().data_ptr<bool>(),
         transformed_points.contiguous().data_ptr<float>(),
-        transformed_rots.contiguous().data_ptr<float>());
+        transformed_rots.contiguous()
+            .data_ptr<float>());  // FIXED: Output scales
 
     points.index_put_({final_mask}, transformed_points.index({final_mask}));
     rots.index_put_({final_mask}, transformed_rots.index({final_mask}));
-    point_not_transformed_mask.index_put_(
-        {final_mask},
-        torch::full({P}, false, point_not_transformed_mask.options())
-            .index({final_mask}));
+    point_transformed_mask.index_put_(
+        {final_mask}, torch::full({P}, true, point_transformed_mask.options())
+                          .index({final_mask}));
   }
 }
