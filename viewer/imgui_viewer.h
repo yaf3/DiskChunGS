@@ -119,7 +119,7 @@ class ImGuiViewer {
   float mouse_left_sensitivity_ = 0.05 * M_PI;
   float mouse_right_sensitivity_ = 0.2 * M_PI;
   float mouse_middle_sensitivity_ = 0.2;
-  float keyboard_velocity_ = 0.2;
+  float keyboard_velocity_ = 0.4;
   float keyboard_anglular_velocity_ = 0.05;
 
   bool reset_main_to_init_ = false;

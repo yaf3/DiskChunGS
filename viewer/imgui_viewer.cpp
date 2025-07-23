@@ -576,12 +576,18 @@ void ImGuiViewer::run() {
 
         ImGui::Text("Iteration: %d", current_iteration);
         ImGui::Text("Speed: %.1f iter/s", iterations_per_second_);
-        ImGui::Text("Active Chunks: %d",
-                    pGausMapper_->chunk_manager_->getStats().active_chunks);
-        ImGui::Text("Total Chunks: %d",
-                    pGausMapper_->chunk_manager_->getStats().existing_chunks);
-        ImGui::Text("Chunk Operations Pending: %d",
-                    pGausMapper_->chunk_manager_->getOperationQueueSize());
+        if (pGausMapper_->chunk_manager_) {
+          ImGui::Text("Active Chunks: %d",
+                      pGausMapper_->chunk_manager_->getStats().active_chunks);
+          ImGui::Text("Total Chunks: %d",
+                      pGausMapper_->chunk_manager_->getStats().existing_chunks);
+          ImGui::Text("Chunk Operations Pending: %d",
+                      pGausMapper_->chunk_manager_->getOperationQueueSize());
+        } else {
+          ImGui::Text("Active Chunks: Not initialized");
+          ImGui::Text("Total Chunks: Not initialized");
+          ImGui::Text("Chunk Operations Pending: Not initialized");
+        }
 
         ImGui::Checkbox("Densify with inactive geometries",
                         &do_inactive_geo_densify_);
@@ -820,8 +826,9 @@ void ImGuiViewer::keyboardEvent() {
   if (ImGui::IsKeyDown(ImGuiKey_A)) translating.x() -= 1.0f;
   // D: rightward
   if (ImGui::IsKeyDown(ImGuiKey_D)) translating.x() += 1.0f;
-  // Velocity
+  // Velocity (scale with scene extent)
   translating *= keyboard_velocity_;
+  translating *= keyboard_velocity_ * pGausMapper_->scene_->cameras_extent_;
   //-------------
 
   //---Rotation---
