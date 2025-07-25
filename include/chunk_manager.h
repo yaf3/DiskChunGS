@@ -60,6 +60,7 @@ struct ChunkOperationComparator {
 // Enhanced metadata for chunks
 struct ChunkMetadata {
   std::atomic<ChunkState> state{ChunkState::INACTIVE};
+  std::shared_ptr<Chunk> chunk;
   std::chrono::steady_clock::time_point load_time;
   std::chrono::steady_clock::time_point last_used;
   int usage_count = 0;
@@ -75,7 +76,7 @@ class ChunkManager {
                float chunk_size = 50.0f,
                float cameras_extent = 1.0f,
                int max_chunks = 50,
-               int num_io_threads = 32,
+               int num_io_threads = 4,
                size_t max_vram_budget_mb = 8192);
 
   ~ChunkManager();
@@ -197,22 +198,13 @@ class ChunkManager {
   std::vector<ChunkCoord> getExistingChunkCoords();
 
   void transferGaussiansAcrossChunks();
-  void processBatch(const std::vector<std::tuple<ChunkCoord,
-                                                 torch::Tensor,
-                                                 torch::Tensor,
-                                                 torch::Tensor,
-                                                 torch::Tensor,
-                                                 torch::Tensor,
-                                                 torch::Tensor,
-                                                 torch::Tensor>>& batch);
-  void applyTransferToDestination(const ChunkCoord& dest_coord,
-                                  torch::Tensor& points,
-                                  torch::Tensor& features_dc,
-                                  torch::Tensor& features_rest,
-                                  torch::Tensor& opacities,
-                                  torch::Tensor& scaling,
-                                  torch::Tensor& rotation,
-                                  torch::Tensor& exist_since);
+  void processBatchWithStates(
+      const std::vector<std::tuple<ChunkCoord, GaussianTransferData>>& batch);
+  GaussianTransferData combineTransferData(
+      const std::vector<GaussianTransferData>& transfers);
+  void applyTransferToDestinationWithStates(
+      const ChunkCoord& dest_coord,
+      const GaussianTransferData& transfer_data);
 
   int getChunkLocalIteration(const ChunkCoord& coord) {
     auto chunk = getChunkAt(coord);
@@ -333,11 +325,16 @@ class ChunkManager {
       100};  // Adjust based on expected number of keyframes
 
   // Helper to compare poses for cache validity
-  bool pose_nearly_equal(const Sophus::SE3d& a,
-                         const Sophus::SE3d& b,
-                         double tol = 1e-6) {
-    return (a.translation() - b.translation()).norm() < tol &&
-           a.unit_quaternion().angularDistance(b.unit_quaternion()) < tol;
+  bool pose_nearly_equal(const Sophus::SE3d& a, const Sophus::SE3d& b) {
+    // Translation tolerance: small fraction of chunk size
+    const double translation_tol = chunk_size_ * 0.05;  // 5% of chunk size
+
+    // Rotation tolerance: a few degrees
+    const double rotation_tol = 0.05;  // ~3 degrees in radians
+
+    return (a.translation() - b.translation()).norm() < translation_tol &&
+           a.unit_quaternion().angularDistance(b.unit_quaternion()) <
+               rotation_tol;
   }
 
  public:
@@ -375,4 +372,80 @@ class ChunkManager {
     return operation_queue_.size();
   }
   void testMemoryUsagePattern();
+};
+
+// RAII guard for automatic chunk optimization release
+// Ensures chunks are released from optimization state on any function exit
+class ChunkOptimizationGuard {
+ public:
+  // Constructor taking const reference to chunks
+  ChunkOptimizationGuard(ChunkManager* manager,
+                         const std::vector<std::shared_ptr<Chunk>>& chunks)
+      : chunk_manager_(manager), chunks_(chunks) {
+    std::cout << "[ChunkOptimizationGuard] Created guard for " << chunks_.size()
+              << " chunks" << std::endl;
+  }
+
+  // Constructor taking chunks by move
+  ChunkOptimizationGuard(ChunkManager* manager,
+                         std::vector<std::shared_ptr<Chunk>>&& chunks)
+      : chunk_manager_(manager), chunks_(std::move(chunks)) {
+    std::cout << "[ChunkOptimizationGuard] Created guard for " << chunks_.size()
+              << " chunks (move)" << std::endl;
+  }
+
+  // Constructor taking non-const reference (for compatibility)
+  ChunkOptimizationGuard(ChunkManager* manager,
+                         std::vector<std::shared_ptr<Chunk>>& chunks)
+      : chunk_manager_(manager), chunks_(chunks) {
+    std::cout << "[ChunkOptimizationGuard] Created guard for " << chunks_.size()
+              << " chunks (ref)" << std::endl;
+  }
+
+  // Non-copyable, movable
+  ChunkOptimizationGuard(const ChunkOptimizationGuard&) = delete;
+  ChunkOptimizationGuard& operator=(const ChunkOptimizationGuard&) = delete;
+
+  ChunkOptimizationGuard(ChunkOptimizationGuard&& other) noexcept
+      : chunk_manager_(other.chunk_manager_),
+        chunks_(std::move(other.chunks_)) {
+    other.chunk_manager_ = nullptr;
+  }
+
+  ChunkOptimizationGuard& operator=(ChunkOptimizationGuard&& other) noexcept {
+    if (this != &other) {
+      release();  // Release current chunks if any
+      chunk_manager_ = other.chunk_manager_;
+      chunks_ = std::move(other.chunks_);
+      other.chunk_manager_ = nullptr;
+    }
+    return *this;
+  }
+
+  ~ChunkOptimizationGuard() {
+    std::cout << "[ChunkOptimizationGuard] Destructor called, releasing chunks"
+              << std::endl;
+    release();
+  }
+
+  void release() {
+    if (chunk_manager_ && !chunks_.empty()) {
+      std::cout << "[ChunkOptimizationGuard] Releasing " << chunks_.size()
+                << " chunks from optimization" << std::endl;
+      chunk_manager_->releaseChunksFromOptimization(chunks_);
+      chunks_.clear();
+      std::cout << "[ChunkOptimizationGuard] Released chunks successfully"
+                << std::endl;
+    }
+  }
+
+  // Allow manual early release
+  void releaseEarly() {
+    release();
+    chunk_manager_ = nullptr;
+  }
+
+ private:
+  ChunkManager* chunk_manager_;
+  std::vector<std::shared_ptr<Chunk>> chunks_;
 };

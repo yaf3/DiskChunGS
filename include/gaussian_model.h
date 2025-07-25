@@ -67,6 +67,28 @@ class SparseGaussianAdam;
   this->denom_ = torch::empty(0, torch::TensorOptions().device(device_type)); \
   GAUSSIAN_MODEL_TENSORS_TO_VEC
 
+// Enhanced transfer structures to include optimizer states
+struct GaussianTransferData {
+  torch::Tensor points;
+  torch::Tensor features_dc;
+  torch::Tensor features_rest;
+  torch::Tensor opacities;
+  torch::Tensor scaling;
+  torch::Tensor rotation;
+  torch::Tensor exist_since;
+
+  // Optimizer states
+  torch::Tensor position_lrs;
+  torch::Tensor xyz_gradient_accum;
+  torch::Tensor denom;
+  torch::Tensor max_radii2D;
+
+  // Adam optimizer states for each parameter group
+  std::vector<torch::Tensor> exp_avg_states;     // 6 parameter groups
+  std::vector<torch::Tensor> exp_avg_sq_states;  // 6 parameter groups
+  std::vector<torch::Tensor> step_states;        // 6 parameter groups
+};
+
 class GaussianModel {
  public:
   explicit GaussianModel(const int sh_degree);
@@ -174,14 +196,11 @@ class GaussianModel {
       bool normalize_quaternions = true,
       bool clear_cache_after_load = true);
 
-  void initializeFromExistingGaussians(
-      torch::Tensor& points,
-      torch::Tensor& features_dc,
-      torch::Tensor& features_rest,
-      torch::Tensor& opacities,
-      torch::Tensor& scaling,
-      torch::Tensor& rotation,
-      torch::Tensor& exist_since_iter,
+  // New methods for optimizer state transfer
+  GaussianTransferData extractGaussiansWithStates(const torch::Tensor& mask);
+  void addGaussiansWithStates(const GaussianTransferData& transfer_data);
+  void initializeFromTransferData(
+      const GaussianTransferData& transfer_data,
       const GaussianOptimizationParams& training_args,
       const float spatial_lr_scale);
 

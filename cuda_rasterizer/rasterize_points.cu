@@ -270,7 +270,7 @@ torch::Tensor markVisible(torch::Tensor& means3D,
 }
 
 void adamUpdate(torch::Tensor& param,
-                torch::Tensor& param_grad,
+                const torch::Tensor& param_grad,
                 torch::Tensor& exp_avg,
                 torch::Tensor& exp_avg_sq,
                 torch::Tensor& visible,
@@ -288,7 +288,7 @@ void adamUpdate(torch::Tensor& param,
 }
 
 void adamUpdateBasic(torch::Tensor& param,
-                     torch::Tensor& param_grad,
+                     const torch::Tensor& param_grad,
                      torch::Tensor& exp_avg,
                      torch::Tensor& exp_avg_sq,
                      const float lr,

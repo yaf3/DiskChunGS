@@ -837,6 +837,10 @@ void GaussianMapper::run() {
     }
 
     if (SLAM_ended_) break;
+
+    // if (getIteration() == 3000) {
+    //   testTransferGaussiansAcrossChunks();
+    // }
   }
 
   // Third loop: After SLAM stopped, keep training
@@ -1054,11 +1058,12 @@ void GaussianMapper::trainForOneIteration() {
 
   std::shared_ptr<GaussianKeyframe> viewpoint_cam;
   switch (keyframe_selection_strategy_) {
-    // Random sliding window keyframe
+    // Random sliding window keyframe (all keyframes so far possible, none are
+    // saved)
     case 0: {
       viewpoint_cam = useOneRandomSlidingWindowKeyframe();
     } break;
-    // Recent k
+    // Recent k keyframes (old ones get saved to disk)
     case 1: {
       viewpoint_cam = keyframe_queue_->getNextKeyframe();
     } break;
@@ -1121,6 +1126,10 @@ void GaussianMapper::trainForOneIteration() {
   std::vector<std::shared_ptr<Chunk>> visible_chunks =
       chunk_manager_->loadVisibleChunks(viewpoint_cam, true);
   timer_loadVisibleChunks.stop();
+
+  // RAII guard ensures chunks are released from optimization on any function
+  // exit
+  ChunkOptimizationGuard chunk_guard(chunk_manager_.get(), visible_chunks);
 
   auto timer_misc_updates = ProfilingUtils::Timer("ITER/LR/SH Updates");
 
@@ -1457,15 +1466,12 @@ void GaussianMapper::trainForOneIteration() {
   // }
   // timer_evictUnusedChunks.stop();
 
-  auto timer_releaseChunksFromOptimization =
-      ProfilingUtils::Timer("releaseChunksFromOptimization");
-  chunk_manager_->releaseChunksFromOptimization(visible_chunks);
-  timer_releaseChunksFromOptimization.stop();
+  // Chunks automatically released by ChunkOptimizationGuard destructor
   timer_trainForOneIteration.stop();
-  // if (getIteration() % 500 == 0) {
-  //   ProfilingUtils::getInstance().printStats();
-  //   ProfilingUtils::getInstance().reset();
-  // }
+  if (getIteration() % 500 == 0) {
+    ProfilingUtils::getInstance().printStats();
+    ProfilingUtils::getInstance().reset();
+  }
 }
 
 bool GaussianMapper::isStopped() {
@@ -1657,6 +1663,10 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
         std::vector<std::shared_ptr<Chunk>> visible_chunks =
             chunk_manager_->loadVisibleChunks(pkf);
 
+        // RAII guard ensures chunks are released from optimization on any exit
+        ChunkOptimizationGuard chunk_guard(chunk_manager_.get(),
+                                           visible_chunks);
+
         for (const auto& chunk : visible_chunks) {
           std::cout << "Now processing: " << chunk->getCoord().x << " "
                     << chunk->getCoord().y << " " << chunk->getCoord().z
@@ -1740,7 +1750,7 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
         // Give loop keyframes times of use
         increaseKeyframeTimesOfUse(pkf, loop_closure_increased_times_of_use_);
 
-        chunk_manager_->releaseChunksFromOptimization(visible_chunks);
+        // Chunks automatically released by ChunkOptimizationGuard destructor
         chunk_manager_->triggerLruCheck();
       }
 
@@ -1859,9 +1869,12 @@ void GaussianMapper::processScaleRefinement(ORB_SLAM3::MappingOperation& opr) {
         for (size_t j = i; j < end; j++) {
           const auto& coord = all_chunks[j];
           if (chunk_manager_->loadChunkSync(coord, true)) {
-            std::shared_ptr<Chunk> chunk = chunk_manager_->getChunkAt(coord);
-            chunk->getGaussians()->applyScaledTransformation(s, T);
-            chunk_manager_->releaseChunksFromOptimization({chunk});
+            {
+              std::shared_ptr<Chunk> chunk = chunk_manager_->getChunkAt(coord);
+              std::vector<std::shared_ptr<Chunk>> chunks = {chunk};
+              ChunkOptimizationGuard guard(chunk_manager_.get(), chunks);
+              chunk->getGaussians()->applyScaledTransformation(s, T);
+            } // Guard automatically releases here
             chunk_manager_->saveChunkAsync(coord);
           }
         }
@@ -2441,9 +2454,18 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   std::vector<int> model_sizes;
   bool has_rendered_depth = false;
 
+  // Function-scope RAII guard - only created if chunks are loaded
+  std::unique_ptr<ChunkOptimizationGuard> chunk_guard;
+
   if (initial_mapped_) {
     std::unique_lock<std::mutex> lock_render(mutex_render_);
     visible_chunks = chunk_manager_->loadVisibleChunks(pkf, true);
+
+    // Create guard only if we loaded chunks - lives for entire function
+    if (!visible_chunks.empty()) {
+      chunk_guard = std::make_unique<ChunkOptimizationGuard>(
+          chunk_manager_.get(), visible_chunks);
+    }
 
     if (!visible_chunks.empty()) {
       for (const auto& chunk : visible_chunks) {
@@ -2676,8 +2698,7 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
     //           << std::endl;
   }
 
-  // Release chunks from optimization
-  chunk_manager_->releaseChunksFromOptimization(visible_chunks);
+  // Chunks automatically released by ChunkOptimizationGuard destructor
 
   // Early exit if no samples remain
   if (depth.size(0) == 0) {
@@ -3000,6 +3021,11 @@ std::tuple<cv::Mat, cv::Mat> GaussianMapper::renderFromPose(
   // Get visible chunks using ChunkManager instead of updateActiveChunks
   std::vector<std::shared_ptr<Chunk>> visible_chunks =
       chunk_manager_->loadVisibleChunks(pkf, false);
+
+  // RAII guard ensures chunks are released from optimization on any function
+  // exit
+  ChunkOptimizationGuard chunk_guard(chunk_manager_.get(), visible_chunks);
+
   std::vector<std::shared_ptr<GaussianModel>> models;
   models.reserve(visible_chunks.size());
   for (const auto& chunk : visible_chunks) {
@@ -3036,7 +3062,7 @@ std::tuple<cv::Mat, cv::Mat> GaussianMapper::renderFromPose(
   // Check if we have any valid models to render
   if (models.empty()) {
     std::cout << "[renderFromPose] No valid models to render" << std::endl;
-    chunk_manager_->releaseChunksFromOptimization(visible_chunks);
+    // Chunks automatically released by ChunkOptimizationGuard destructor
     cv::Mat black_image = cv::Mat::zeros(height, width, CV_32FC3);
     cv::Mat empty_depth = cv::Mat::zeros(height, width, CV_32FC1);
     return std::make_tuple(black_image,
@@ -3051,7 +3077,7 @@ std::tuple<cv::Mat, cv::Mat> GaussianMapper::renderFromPose(
       pkf->projection_matrix_);
 
   // Return rendered image and depth
-  chunk_manager_->releaseChunksFromOptimization(visible_chunks);
+  // Chunks automatically released by ChunkOptimizationGuard destructor
   cv::Mat rendered_rgb =
       tensor_utils::torchTensor2CvMat_Float32(std::get<1>(render_pkg));
 
@@ -3096,6 +3122,10 @@ void GaussianMapper::renderAndRecordKeyframe(
   std::vector<std::shared_ptr<Chunk>> visible_chunks =
       chunk_manager_->loadVisibleChunks(pkf, false);
 
+  // RAII guard ensures chunks are released from optimization on any function
+  // exit
+  ChunkOptimizationGuard chunk_guard(chunk_manager_.get(), visible_chunks);
+
   // Extract models from chunks
   std::vector<std::shared_ptr<GaussianModel>> models;
   models.reserve(visible_chunks.size());
@@ -3108,7 +3138,7 @@ void GaussianMapper::renderAndRecordKeyframe(
 
   if (models.empty()) {
     std::cout << "[renderFromPose] No valid models to render" << std::endl;
-    chunk_manager_->releaseChunksFromOptimization(visible_chunks);
+    // Chunks automatically released by ChunkOptimizationGuard destructor
     return;  // Early return if no valid models
   }
 
@@ -3118,7 +3148,7 @@ void GaussianMapper::renderAndRecordKeyframe(
       background_, override_color_, 1.0f, false, pkf->FoVx_, pkf->FoVy_,
       view_matrix, pkf->projection_matrix_);
 
-  chunk_manager_->releaseChunksFromOptimization(visible_chunks);
+  // Chunks automatically released by ChunkOptimizationGuard destructor
   auto rendered_image = std::get<1>(render_pkg);
   torch::cuda::synchronize();
   auto end_timing = std::chrono::steady_clock::now();
@@ -3740,7 +3770,7 @@ void GaussianMapper::initializeChunkManagement() {
   // Create the chunk manager with direct model parameters
   chunk_manager_ = std::make_shared<ChunkManager>(
       model_params_, opt_params_, chunk_save_dir_, chunk_size,
-      scene_->cameras_extent_, max_chunks_in_memory_, 32, max_vram_budget_mb_);
+      scene_->cameras_extent_, max_chunks_in_memory_, 4, max_vram_budget_mb_);
 }
 
 void GaussianMapper::addPoints(const torch::Tensor& points,
@@ -4353,17 +4383,19 @@ void GaussianMapper::saveChunkManifest(std::filesystem::path scene_dir) {
     bool success = chunk_manager_->loadChunkSync(chunk_coords[i], true, false);
     if (!success) continue;
 
-    auto chunk = chunk_manager_->getChunkAt(chunk_coords[i]);
-    if (!chunk || !chunk->getGaussians()) continue;
-
-    chunk_entry["num_gaussians"] =
-        Json::Value::Int64(chunk->getGaussians()->getXYZ().size(0));
-    chunk_entry["local_iteration"] =
-        Json::Value::Int64(chunk->getGaussians()->getLocalIteration());
-    chunk_entry["sh_degree"] =
-        Json::Value::Int64(chunk->getGaussians()->sh_degree_);
-
-    chunk_manager_->releaseChunksFromOptimization({chunk_coords[i]});
+    {
+      auto chunk = chunk_manager_->getChunkAt(chunk_coords[i]);
+      if (!chunk || !chunk->getGaussians()) continue;
+      
+      std::vector<std::shared_ptr<Chunk>> chunks = {chunk};
+      ChunkOptimizationGuard guard(chunk_manager_.get(), chunks);
+      chunk_entry["num_gaussians"] =
+          Json::Value::Int64(chunk->getGaussians()->getXYZ().size(0));
+      chunk_entry["local_iteration"] =
+          Json::Value::Int64(chunk->getGaussians()->getLocalIteration());
+      chunk_entry["sh_degree"] =
+          Json::Value::Int64(chunk->getGaussians()->sh_degree_);
+    } // Guard automatically releases here
     chunk_manager_->saveChunkSync(chunk_coords[i]);
 
     json_root[static_cast<int>(i)] = chunk_entry;
@@ -4585,26 +4617,22 @@ void GaussianMapper::saveTotalGaussians(std::string name_suffix) {
   for (size_t i = 0; i < allChunkCoords.size(); i++) {
     ChunkCoord coord = allChunkCoords[i];
     if (!chunk_manager_->loadChunkSync(coord, true, false)) {
-      std::cout << "Skipping chunk, can't load" << std::endl;
-      chunk_manager_->releaseChunksFromOptimization({coord});
-      chunk_manager_->triggerLruCheck();
-      continue;
+      throw std::runtime_error("Failed to load chunk for Gaussian counting");
     }
 
-    std::shared_ptr<Chunk> chunk = chunk_manager_->getChunkAt(coord);
+    {
+      std::shared_ptr<Chunk> chunk = chunk_manager_->getChunkAt(coord);
 
-    if (!chunk || !chunk->getGaussians()) {
-      throw std::runtime_error("Gaussians/Chunk invalid");
-      chunk_manager_->releaseChunksFromOptimization({coord});
-      chunk_manager_->triggerLruCheck();
-      continue;
-    }
+      if (!chunk || !chunk->getGaussians()) {
+        throw std::runtime_error("Gaussians/Chunk invalid");
+      }
 
-    auto gaussians = chunk->getGaussians();
-    auto num_points = gaussians->getXYZ().size(0);
-    totalGaussians += num_points;
-
-    chunk_manager_->releaseChunksFromOptimization({coord});
+      std::vector<std::shared_ptr<Chunk>> chunks = {chunk};
+      ChunkOptimizationGuard guard(chunk_manager_.get(), chunks);
+      auto gaussians = chunk->getGaussians();
+      auto num_points = gaussians->getXYZ().size(0);
+      totalGaussians += num_points;
+    } // Guard automatically releases here
     chunk_manager_->triggerLruCheck();
   }
 
@@ -5694,7 +5722,7 @@ void GaussianMapper::testTransferGaussiansAcrossChunks() {
 
   // Create a simple translation matrix (translate by [1.0, 0.5, 0.2])
   Eigen::Matrix4f translation_matrix = Eigen::Matrix4f::Identity();
-  translation_matrix.block<3, 1>(0, 3) = Eigen::Vector3f(10.0f, 10.0f, 0.0f);
+  translation_matrix.block<3, 1>(0, 3) = Eigen::Vector3f(10.0f, 0.0f, 0.0f);
 
   torch::Tensor transform_tensor =
       tensor_utils::EigenMatrix2TorchTensor(translation_matrix, device_type_)
@@ -5707,32 +5735,81 @@ void GaussianMapper::testTransferGaussiansAcrossChunks() {
 
     if (!chunk_manager_->loadChunkSync(coord, true, false)) {
       throw std::runtime_error("Failed to load gaussian for chunk");
-      continue;
     }
 
-    auto chunk = chunk_manager_->getChunkAt(coord);
-    if (!chunk || !chunk->getGaussians()) {
-      throw std::runtime_error("Chunk or Gaussians not found for coord");
-      chunk_manager_->releaseChunksFromOptimization({coord});
-      continue;
+    {
+      auto chunk = chunk_manager_->getChunkAt(coord);
+      if (!chunk || !chunk->getGaussians()) {
+        throw std::runtime_error("Chunk or Gaussians not found for coord");
+      }
+
+      std::vector<std::shared_ptr<Chunk>> chunks = {chunk};
+      ChunkOptimizationGuard guard(chunk_manager_.get(), chunks);
+      
+      auto gaussians = chunk->getGaussians();
+      torch::Tensor positions = gaussians->getXYZ();
+
+      // Apply translation using the existing transformPoints function
+      transformPoints(positions, transform_tensor);
+
+      torch::Tensor optimizable_xyz =
+          gaussians->replaceTensorToOptimizer(positions, 0);
+      gaussians->xyz_ = optimizable_xyz;
+      gaussians->Tensor_vec_xyz_ = {gaussians->xyz_};
+
+      std::cout << "Applied translation to chunk " << coord.x << "," << coord.y
+                << "," << coord.z << std::endl;
+    } // Guard automatically releases here
+  }
+
+  // Step 4: Now test the transferGaussiansAcrossChunks function
+  std::cout << "Testing transferGaussiansAcrossChunks..." << std::endl;
+  chunk_manager_->transferGaussiansAcrossChunks();
+
+  all_chunks = chunk_manager_->getExistingChunkCoords();
+
+  // Create a simple translation matrix (translate by [1.0, 0.5, 0.2])
+  Eigen::Matrix4f translation_back_matrix = Eigen::Matrix4f::Identity();
+  translation_back_matrix.block<3, 1>(0, 3) =
+      Eigen::Vector3f(-10.0f, 0.0f, 0.0f);
+
+  torch::Tensor transform_back_tensor =
+      tensor_utils::EigenMatrix2TorchTensor(translation_back_matrix,
+                                            device_type_)
+          .transpose(0, 1);
+
+  for (size_t i = 0; i < all_chunks.size(); i++) {
+    const auto& coord = all_chunks[i];
+
+    if (!chunk_manager_->chunkExists(coord)) continue;
+
+    if (!chunk_manager_->loadChunkSync(coord, true, false)) {
+      throw std::runtime_error("Failed to load gaussian for chunk");
     }
 
-    auto gaussians = chunk->getGaussians();
-    torch::Tensor positions = gaussians->getXYZ();
+    {
+      auto chunk = chunk_manager_->getChunkAt(coord);
+      if (!chunk || !chunk->getGaussians()) {
+        throw std::runtime_error("Chunk or Gaussians not found for coord");
+      }
 
-    // Apply translation using the existing transformPoints function
-    transformPoints(positions, transform_tensor);
+      std::vector<std::shared_ptr<Chunk>> chunks = {chunk};
+      ChunkOptimizationGuard guard(chunk_manager_.get(), chunks);
+      
+      auto gaussians = chunk->getGaussians();
+      torch::Tensor positions = gaussians->getXYZ();
 
-    torch::Tensor optimizable_xyz =
-        gaussians->replaceTensorToOptimizer(positions, 0);
-    gaussians->xyz_ = optimizable_xyz;
-    gaussians->Tensor_vec_xyz_ = {gaussians->xyz_};
+      // Apply translation using the existing transformPoints function
+      transformPoints(positions, transform_back_tensor);
 
-    std::cout << "Applied translation to chunk " << coord.x << "," << coord.y
-              << "," << coord.z << std::endl;
+      torch::Tensor optimizable_xyz =
+          gaussians->replaceTensorToOptimizer(positions, 0);
+      gaussians->xyz_ = optimizable_xyz;
+      gaussians->Tensor_vec_xyz_ = {gaussians->xyz_};
 
-    // Save the chunk back to disk
-    chunk_manager_->releaseChunksFromOptimization({coord});
+      std::cout << "Applied translation to chunk " << coord.x << "," << coord.y
+                << "," << coord.z << std::endl;
+    } // Guard automatically releases here
   }
 
   // Step 4: Now test the transferGaussiansAcrossChunks function

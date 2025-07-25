@@ -196,10 +196,12 @@ bool ChunkManager::transitionChunkState(const ChunkCoord& coord,
   }
 
   if (current != expected) {
-    std::cout << "Failed state transition for " << coord.x << "," << coord.y
-              << "," << coord.z << ": expected=" << static_cast<int>(expected)
-              << ", actual=" << static_cast<int>(current)
-              << ", target=" << static_cast<int>(new_state) << std::endl;
+    std::ostringstream oss;
+    oss << "Failed state transition for " << coord.x << "," << coord.y << ","
+        << coord.z << ": expected=" << static_cast<int>(expected)
+        << ", actual=" << static_cast<int>(current)
+        << ", target=" << static_cast<int>(new_state);
+    throw std::runtime_error(oss.str());
     return false;  // State already changed
   }
 
@@ -382,11 +384,11 @@ std::future<bool> ChunkManager::loadChunkAsync(const ChunkCoord& coord,
   } else {
     // Failed to transition state - show current state
     ChunkState actual_state = getChunkState(coord);
-    std::cout
-        << "Failed to transition from INACTIVE to LOADING. Current state is: "
-        << static_cast<int>(actual_state) << " for chunk " << coord.x << ","
-        << coord.y << "," << coord.z << std::endl;
-
+    std::ostringstream oss;
+    oss << "Failed to transition chunk " << coord.x << "," << coord.y << ","
+        << coord.z << " from INACTIVE to LOADING. Current state is: "
+        << static_cast<int>(actual_state);
+    throw std::runtime_error(oss.str());
     std::promise<bool> promise;
     promise.set_exception(std::make_exception_ptr(
         std::runtime_error("Failed to queue load operation")));
@@ -400,8 +402,11 @@ std::future<bool> ChunkManager::saveChunkAsync(const ChunkCoord& coord,
   // std::cout << "Called saveChunkAsync" << std::endl;
   // Replace the assertion with a check and early return
   if (!chunkExists(coord)) {
-    std::cout << "Warning: Tried to save non-existent chunk: " << coord.x << ","
-              << coord.y << "," << coord.z << std::endl;
+    std::ostringstream oss;
+    oss << "Warning: Tried to save non-existent chunk: " << coord.x << ","
+        << coord.y << "," << coord.z;
+    std::cerr << oss.str() << std::endl;
+    throw std::runtime_error(oss.str());
     std::promise<bool> promise;
     promise.set_value(false);
     return promise.get_future();
@@ -417,13 +422,21 @@ std::future<bool> ChunkManager::saveChunkAsync(const ChunkCoord& coord,
     } else if (current_state == ChunkState::OPTIMIZING) {
       // If being optimized, reject the request or queue it for later
       promise.set_value(false);  // Can't save chunks being optimized
-      std::cout << "Warning: Can't save chunk in OPTIMIZING state: " << coord.x
-                << "," << coord.y << "," << coord.z << std::endl;
+      std::ostringstream oss;
+      oss << "Warning: Can't save chunk in OPTIMIZING state: " << coord.x << ","
+          << coord.y << "," << coord.z;
+      std::cerr << oss.str() << std::endl;
+      throw std::runtime_error(oss.str());
+      // std::cout << "Warning: Can't save chunk in OPTIMIZING state: " <<
+      // coord.x
+      //           << "," << coord.y << "," << coord.z << std::endl;
       return promise.get_future();
     } else {
-      std::cout << "Warning: Can't save chunk in state "
-                << static_cast<int>(current_state) << ": " << coord.x << ","
-                << coord.y << "," << coord.z << std::endl;
+      std::ostringstream oss;
+      oss << "Warning: Can't save chunk in state "
+          << static_cast<int>(current_state) << ": " << coord.x << ","
+          << coord.y << "," << coord.z;
+      throw std::runtime_error(oss.str());
       promise.set_value(false);  // Can't save non-active chunks
       return promise.get_future();
     }
@@ -473,8 +486,7 @@ bool ChunkManager::processLoadOperation(const ChunkCoord& coord,
   if (!is_active) {
     try {
       if (!chunkExists(coord)) {
-        std::cout << "Warning: Tried to load coord that doesn't exist!"
-                  << std::endl;
+        throw std::runtime_error("Tried to load coord that doesn't exist!");
         transitionChunkState(coord, ChunkState::LOADING, ChunkState::INACTIVE);
         return false;
       }
@@ -484,7 +496,7 @@ bool ChunkManager::processLoadOperation(const ChunkCoord& coord,
       // Create new chunk with model parameters
       auto chunk = std::make_shared<Chunk>(model_params_, coord);
       if (!chunk || !chunk->getGaussians()) {
-        std::cerr << "Failed to create chunk object" << std::endl;
+        throw std::runtime_error("Failed to create chunk object");
         transitionChunkState(coord, ChunkState::LOADING, ChunkState::INACTIVE);
         return false;
       }
@@ -521,19 +533,14 @@ bool ChunkManager::processLoadOperation(const ChunkCoord& coord,
     }
 
     catch (const std::exception& e) {
-      std::cerr << "Exception in load operation: " << e.what() << std::endl;
+      std::ostringstream oss;
+      oss << "Failed to load chunk " << coord.x << "," << coord.y << ","
+          << coord.z << ": " << e.what();
+      throw std::runtime_error(oss.str());
       // Handle failure, revert to INACTIVE state
       transitionChunkState(coord, ChunkState::LOADING, ChunkState::INACTIVE);
       return false;
     }
-  }
-
-  // Transition to ACTIVE state
-  if (load_for_optimization) {
-    transitionChunkState(coord, ChunkState::LOADING, ChunkState::OPTIMIZING);
-
-  } else {
-    transitionChunkState(coord, ChunkState::LOADING, ChunkState::ACTIVE);
   }
 
   // Notify any waiting threads
@@ -663,7 +670,10 @@ bool ChunkManager::processSaveOperation(const ChunkCoord& coord) {
 
     return true;
   } catch (const std::exception& e) {
-    std::cerr << "Exception in save operation: " << e.what() << std::endl;
+    std::ostringstream oss;
+    oss << "Failed to save chunk " << coord.x << "," << coord.y << ","
+        << coord.z << ": " << e.what();
+    throw std::runtime_error(oss.str());
     transitionChunkState(coord, ChunkState::SAVING, ChunkState::INACTIVE);
     return false;
   }
@@ -679,6 +689,10 @@ bool ChunkManager::loadChunkSync(const ChunkCoord& coord,
   try {
     return future.get();  // Wait for completion
   } catch (const std::exception& e) {
+    std::ostringstream oss;
+    oss << "Sync load failed for chunk " << coord.x << "," << coord.y << ","
+        << coord.z << ": " << e.what();
+    throw std::runtime_error(oss.str());
     std::cerr << "Sync load failed: " << e.what() << std::endl;
     return false;
   }
@@ -691,7 +705,10 @@ bool ChunkManager::saveChunkSync(const ChunkCoord& coord) {
   try {
     return future.get();  // Wait for completion
   } catch (const std::exception& e) {
-    std::cerr << "Sync save failed: " << e.what() << std::endl;
+    std::ostringstream oss;
+    oss << "Sync save failed for chunk " << coord.x << "," << coord.y << ","
+        << coord.z << ": " << e.what();
+    throw std::runtime_error(oss.str());
     return false;
   }
 }
@@ -717,13 +734,20 @@ void ChunkManager::processOperation(std::shared_ptr<ChunkOperation> operation) {
         break;
     }
   } catch (const std::exception& e) {
-    std::cerr << "Exception in chunk operation: " << e.what() << std::endl;
+    std::ostringstream oss;
+    oss << "Error processing operation on chunk " << operation->coord.x << ","
+        << operation->coord.y << "," << operation->coord.z << ": " << e.what();
+    throw std::runtime_error(oss.str());
   }
 
   try {
     operation->completion_promise.set_value(success);
   } catch (const std::exception& e) {
-    std::cerr << "Error setting promise value: " << e.what() << std::endl;
+    std::ostringstream oss;
+    oss << "Error setting promise value for operation on chunk "
+        << operation->coord.x << "," << operation->coord.y << ","
+        << operation->coord.z << ": " << e.what();
+    throw std::runtime_error(oss.str());
   }
 }
 
@@ -790,8 +814,11 @@ std::future<bool> ChunkManager::deleteChunkAsync(const ChunkCoord& coord,
   // std::cout << "Called deleteChunkAsync" << std::endl;
   // Replace the assertion with a check and early return
   if (!chunkExists(coord)) {
-    std::cout << "Warning: Tried to delete non-existent chunk: " << coord.x
-              << "," << coord.y << "," << coord.z << std::endl;
+    std::ostringstream oss;
+    oss << "Warning: Tried to delete non-existent chunk: " << coord.x << ","
+        << coord.y << "," << coord.z;
+    throw std::runtime_error(oss.str());
+
     std::promise<bool> promise;
     promise.set_value(false);
     return promise.get_future();
@@ -918,7 +945,11 @@ bool ChunkManager::processDeleteOperation(const ChunkCoord& coord) {
 
     return success;
   } catch (const std::exception& e) {
-    std::cerr << "Exception in delete operation: " << e.what() << std::endl;
+    std::ostringstream oss;
+    oss << "Failed to delete chunk " << coord.x << "," << coord.y << ","
+        << coord.z << ": " << e.what();
+    throw std::runtime_error(oss.str());
+    // std::cerr << "Exception in delete operation: " << e.what() << std::endl;
 
     // Handle error case
     {
@@ -942,7 +973,10 @@ bool ChunkManager::deleteChunkSync(const ChunkCoord& coord) {
   try {
     return future.get();  // Wait for completion
   } catch (const std::exception& e) {
-    std::cerr << "Sync delete failed: " << e.what() << std::endl;
+    std::ostringstream oss;
+    oss << "Sync delete failed for chunk " << coord.x << "," << coord.y << ","
+        << coord.z << ": " << e.what();
+    throw std::runtime_error(oss.str());
     return false;
   }
 }
@@ -1004,9 +1038,7 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::loadVisibleChunks(
   auto timer = ProfilingUtils::Timer("ChunkManager::loadVisibleChunks");
 
   if (!keyframe) {
-    std::cerr << "Error: Null keyframe passed to loadVisibleChunks"
-              << std::endl;
-    return {};
+    throw std::invalid_argument("Null keyframe passed to loadVisibleChunks");
   }
 
   triggerLruCheck();
@@ -1073,14 +1105,17 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::loadVisibleChunks(
         if (chunk && chunk->getGaussians()) {
           result_chunks.push_back(chunk);
         } else {
-          std::cout << "Warning: Loaded chunk is null or invalid: " << coord.x
-                    << "," << coord.y << "," << coord.z << std::endl;
+          std::ostringstream oss;
+          oss << "Warning: Loaded chunk is null or invalid: " << coord.x << ","
+              << coord.y << "," << coord.z;
+          throw std::runtime_error(oss.str());
         }
       }
     } else {
-      std::cout << "Warning: Chunk load timed out for: " << load_coords[i].x
-                << "," << load_coords[i].y << "," << load_coords[i].z
-                << std::endl;
+      std::ostringstream oss;
+      oss << "Timeout while loading chunk: " << load_coords[i].x << ","
+          << load_coords[i].y << "," << load_coords[i].z;
+      throw std::runtime_error(oss.str());
       // Handle timeout case if needed
     }
   }
@@ -1336,8 +1371,10 @@ void ChunkManager::addPointsToChunks(const torch::Tensor& points,
         // Load the chunk synchronously
         loaded = loadChunkSync(coord, 10, true);
         if (!loaded) {
-          std::cout << "Failed to load chunk, skipping" << std::endl;
-          continue;  // Skip to next chunk
+          std::ostringstream oss;
+          oss << "Failed to load chunk: " << coord.x << "," << coord.y << ","
+              << coord.z;
+          throw std::runtime_error(oss.str());
         }
       } else if (state == ChunkState::ACTIVE) {
         // std::cout << "Chunk is active, no loading needed" << std::endl;
@@ -1347,87 +1384,93 @@ void ChunkManager::addPointsToChunks(const torch::Tensor& points,
     }
 
     // Process the chunk
-    std::shared_ptr<Chunk> chunk;
+    {
+      std::shared_ptr<Chunk> chunk;
 
-    if (chunkExists(coord)) {
-      // For existing chunks
-      ChunkState state = getChunkState(coord);
-      if (state == ChunkState::OPTIMIZING) {
-        chunk = getChunkAt(coord);
-        if (!chunk || !chunk->getGaussians()) {
-          std::cout << "Invalid chunk, skipping" << std::endl;
-          continue;
-        }
-        // std::cout << "Chunk is in OPTIMIZING state, adding points" <<
-        // std::endl;
+      if (chunkExists(coord)) {
+        // For existing chunks
+        ChunkState state = getChunkState(coord);
+        if (state == ChunkState::OPTIMIZING) {
+          chunk = getChunkAt(coord);
+          if (!chunk || !chunk->getGaussians()) {
+            std::ostringstream oss;
+            oss << "Chunk is null or has no Gaussians: " << coord.x << ","
+                << coord.y << "," << coord.z;
+            throw std::runtime_error(oss.str());
+          }
+          // std::cout << "Chunk is in OPTIMIZING state, adding points" <<
+          // std::endl;
 
-        // std::cout << "Iter: " << getCurrentIteration()
-        //           << ", adding points to chunk: " << coord.x << "," <<
-        //           coord.y
-        //           << "," << coord.z << std::endl;
+          std::vector<std::shared_ptr<Chunk>> chunks = {chunk};
+          ChunkOptimizationGuard guard(this, chunks);
 
-        // Add points to existing chunk
-        if (chunk_scales.defined() && chunk_scales.size(0) > 0) {
-          chunk->getGaussians()->increasePcd(chunk_points, chunk_colors,
-                                             chunk_scales, chunk_opacities,
-                                             getCurrentIteration());
+          // std::cout << "Iter: " << getCurrentIteration()
+          //           << ", adding points to chunk: " << coord.x << "," <<
+          //           coord.y
+          //           << "," << coord.z << std::endl;
+
+          // Add points to existing chunk
+          if (chunk_scales.defined() && chunk_scales.size(0) > 0) {
+            chunk->getGaussians()->increasePcd(chunk_points, chunk_colors,
+                                               chunk_scales, chunk_opacities,
+                                               getCurrentIteration());
+          } else {
+            chunk->getGaussians()->increasePcd(chunk_points, chunk_colors,
+                                               torch::Tensor(), chunk_opacities,
+                                               getCurrentIteration());
+          }
         } else {
-          chunk->getGaussians()->increasePcd(chunk_points, chunk_colors,
-                                             torch::Tensor(), chunk_opacities,
-                                             getCurrentIteration());
+          std::ostringstream oss;
+          oss << "Can't add points to chunk in state: "
+              << static_cast<int>(state) << " for chunk: " << coord.x << ","
+              << coord.y << "," << coord.z;
+          throw std::runtime_error(oss.str());
         }
       } else {
-        std::cout << "Can't add points chunk is in state: "
-                  << static_cast<int>(state) << std::endl;
-        continue;  // Skip to next chunk
+        // Create new chunk
+        // std::cout << "Creating new chunk" << std::endl;
+        chunk = std::make_shared<Chunk>(model_params_, coord);
+
+        // Update data structures (with proper locking)
+        {
+          std::unique_lock<std::mutex> lock(active_chunks_mutex_);
+          active_chunks_[coord] = chunk;
+        }
+
+        // std::cout << "Chunk created, updating metadata" << std::endl;
+        {
+          std::unique_lock<std::mutex> lock(metadata_mutex_);
+          auto& meta = chunk_metadata_[coord];
+          meta.load_time = std::chrono::steady_clock::now();
+          meta.last_used = meta.load_time;
+          meta.usage_count = 0;
+          meta.state.store(ChunkState::OPTIMIZING);
+        }
+
+        {
+          std::unique_lock<std::mutex> lock(chunk_exists_cache_mutex_);
+          chunk_exists_cache_[coord] = true;
+        }
+
+        incrementStat(stats_.active_chunks);
+        incrementStat(stats_.existing_chunks);
+
+        std::vector<std::shared_ptr<Chunk>> chunks = {chunk};
+        ChunkOptimizationGuard guard(this, chunks);
+
+        // Initialize the Gaussian model
+        if (chunk_scales.defined() && chunk_scales.size(0) > 0) {
+          chunk->getGaussians()->createFromPcd(
+              chunk_points, chunk_colors, chunk_scales, chunk_opacities,
+              getCurrentIteration(), cameras_extent_);
+        } else {
+          chunk->getGaussians()->createFromPcd(
+              chunk_points, chunk_colors, torch::Tensor(), chunk_opacities,
+              getCurrentIteration(), cameras_extent_);
+        }
+        chunk->getGaussians()->trainingSetup(opt_params_);
       }
-    } else {
-      // Create new chunk
-      // std::cout << "Creating new chunk" << std::endl;
-      chunk = std::make_shared<Chunk>(model_params_, coord);
-
-      // Update data structures (with proper locking)
-      {
-        std::unique_lock<std::mutex> lock(active_chunks_mutex_);
-        active_chunks_[coord] = chunk;
-      }
-
-      // std::cout << "Chunk created, updating metadata" << std::endl;
-      {
-        std::unique_lock<std::mutex> lock(metadata_mutex_);
-        auto& meta = chunk_metadata_[coord];
-        meta.load_time = std::chrono::steady_clock::now();
-        meta.last_used = meta.load_time;
-        meta.usage_count = 0;
-        meta.state.store(ChunkState::OPTIMIZING);
-      }
-
-      {
-        std::unique_lock<std::mutex> lock(chunk_exists_cache_mutex_);
-        chunk_exists_cache_[coord] = true;
-      }
-
-      incrementStat(stats_.active_chunks);
-      incrementStat(stats_.existing_chunks);
-
-      // Initialize the Gaussian model
-      if (chunk_scales.defined() && chunk_scales.size(0) > 0) {
-        chunk->getGaussians()->createFromPcd(
-            chunk_points, chunk_colors, chunk_scales, chunk_opacities,
-            getCurrentIteration(), cameras_extent_);
-      } else {
-        chunk->getGaussians()->createFromPcd(
-            chunk_points, chunk_colors, torch::Tensor(), chunk_opacities,
-            getCurrentIteration(), cameras_extent_);
-      }
-      chunk->getGaussians()->trainingSetup(opt_params_);
-    }
-
-    // Release the chunk from optimization
-    releaseChunksFromOptimization({coord});
-    if (loaded) {
-      saveChunkAsync(coord, 10);
-    }
+    }  // Guard automatically releases here
     triggerLruCheck();
   }
 
@@ -1553,73 +1596,6 @@ bool ChunkManager::cullSparseChunks(int min_points_threshold,
   return any_culled;
 }
 
-// void ChunkManager::cullGaussiansOutsideChunkBorders() {
-//   for (const auto& [coord, chunk] : active_chunks_) {
-//     if (!chunk || !chunk->getGaussians()) {
-//       continue;  // No chunk or no gaussians
-//     }
-
-//     auto meta_it = chunk_metadata_.find(coord);
-
-//     // Get the AABB for the chunk
-//     AABB aabb = getChunkAABB(coord);
-
-//     // Get the gaussians from the chunk
-//     auto gaussians = chunk->getGaussians();
-//     auto points = gaussians->getXYZ();
-
-//     int num_points = points.size(0);
-//     if (num_points == 0) {
-//       continue;  // No points to cull
-//     }
-
-//     // Create a mask for points that are outside the AABB
-//     torch::Tensor outside_mask =
-//         ((points.index({torch::indexing::Slice(), 0}) < aabb.min.x()) |
-//          (points.index({torch::indexing::Slice(), 0}) > aabb.max.x()) |
-//          (points.index({torch::indexing::Slice(), 1}) < aabb.min.y()) |
-//          (points.index({torch::indexing::Slice(), 1}) > aabb.max.y()) |
-//          (points.index({torch::indexing::Slice(), 2}) < aabb.min.z()) |
-//          (points.index({torch::indexing::Slice(), 2}) > aabb.max.z()));
-
-//     int num_outside = outside_mask.sum().item<int>();
-
-//     // If no points are outside, no culling needed
-//     if (num_outside == 0) {
-//       continue;
-//     }
-
-//     // If all points are outside, remove the chunk entirely
-//     if (num_outside == num_points) {
-//       // Remove from active chunks
-//       active_chunks_.erase(coord);
-//       decrementStat(stats_.active_chunks);
-
-//       // Update disk cache to prevent reloading
-//       chunk_exists_cache_[coord] = false;
-
-//       deleteChunk(coord);
-
-//     } else {
-//       // Otherwise, prune the outside points
-//       try {
-//         gaussians->prunePoints(outside_mask);
-
-//         // Mark the chunk as dirty
-//         if (meta_it != chunk_metadata_.end()) {
-//           meta_it->second.dirty = true;
-//         }
-//       } catch (const std::exception& e) {
-//         std::cerr << "Error pruning gaussians for chunk " << coord.x <<
-//         ","
-//                   << coord.y << "," << coord.z << ": " << e.what() <<
-//                   std::endl;
-//         continue;
-//       }
-//     }
-//   }
-// }
-
 void ChunkManager::updateChunkExistenceCache(
     const std::vector<ChunkCoord>& coords,
     bool exists) {
@@ -1645,7 +1621,9 @@ std::vector<ChunkCoord> ChunkManager::getExistingChunkCoords() {
 }
 
 void ChunkManager::transferGaussiansAcrossChunks() {
-  std::cout << "Called transferGaussiansAcrossChunks" << std::endl;
+  std::cout
+      << "Called transferGaussiansAcrossChunks with optimizer state transfer"
+      << std::endl;
   torch::NoGradGuard no_grad;
 
   // Get all existing chunk coordinates
@@ -1654,14 +1632,10 @@ void ChunkManager::transferGaussiansAcrossChunks() {
             << " chunks" << std::endl;
 
   // Configuration for batched processing
-  const size_t MAX_BATCH_SIZE = 5000;         // Adjust based on available RAM
-  const size_t MAX_POINTS_PER_BATCH = 50000;  // Total points limit per batch
+  const size_t MAX_BATCH_SIZE = 3000;  // Reduced due to additional state data
+  const size_t MAX_POINTS_PER_BATCH = 30000;  // Reduced due to memory overhead
 
-  // Batch storage - much smaller than before
-  std::vector<
-      std::tuple<ChunkCoord, torch::Tensor, torch::Tensor, torch::Tensor,
-                 torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>>
-      current_batch;
+  std::vector<std::tuple<ChunkCoord, GaussianTransferData>> current_batch;
 
   size_t current_batch_points = 0;
 
@@ -1676,129 +1650,143 @@ void ChunkManager::transferGaussiansAcrossChunks() {
     }
 
     std::cout << getVramStatus() << std::endl;
-    waitForVramAvailable(0.85f, std::chrono::seconds(10), "gaussian transfer");
+    waitForVramAvailable(0.80f, std::chrono::seconds(10), "gaussian transfer");
 
     if (!loadChunkSync(coord, true, false)) {
-      std::cout << "Skipping chunk, can't load" << std::endl;
-      releaseChunksFromOptimization({coord});
-      continue;
+      throw std::runtime_error("Can't load chunk");
     }
 
-    auto chunk = getChunkAt(coord);
-    if (!chunk || !chunk->getGaussians()) {
-      std::cerr << "Gaussians/Chunk invalid for coord: " << coord.x << ","
-                << coord.y << "," << coord.z << std::endl;
-      releaseChunksFromOptimization({coord});
-      continue;
-    }
-
-    auto gaussians = chunk->getGaussians();
-    auto points = gaussians->getXYZ();
-
-    if (points.size(0) == 0) {
-      std::cout << "Skipping chunk, no points in it" << std::endl;
-      releaseChunksFromOptimization({coord});
-      continue;
-    }
-
-    // Get AABB and find outside points
-    AABB chunk_aabb = getChunkAABB(coord);
-    torch::Tensor outside_mask =
-        ((points.index({torch::indexing::Slice(), 0}) < chunk_aabb.min.x()) |
-         (points.index({torch::indexing::Slice(), 0}) > chunk_aabb.max.x()) |
-         (points.index({torch::indexing::Slice(), 1}) < chunk_aabb.min.y()) |
-         (points.index({torch::indexing::Slice(), 1}) > chunk_aabb.max.y()) |
-         (points.index({torch::indexing::Slice(), 2}) < chunk_aabb.min.z()) |
-         (points.index({torch::indexing::Slice(), 2}) > chunk_aabb.max.z()));
-
-    int num_outside = outside_mask.sum().item<int>();
-    if (num_outside == 0) {
-      releaseChunksFromOptimization({coord});
-      continue;
-    }
-
-    std::cout << "Found " << num_outside << " points to transfer from chunk ("
-              << coord.x << "," << coord.y << "," << coord.z << ")"
-              << std::endl;
-
-    // Extract outside points
-    torch::Tensor outside_points =
-        points.index({outside_mask}).detach().clone();
-    torch::Tensor outside_features_dc =
-        gaussians->features_dc_.index({outside_mask}).detach().clone();
-    torch::Tensor outside_features_rest =
-        gaussians->features_rest_.index({outside_mask}).detach().clone();
-    torch::Tensor outside_opacities =
-        gaussians->opacity_.index({outside_mask}).detach().clone();
-    torch::Tensor outside_scaling =
-        gaussians->scaling_.index({outside_mask}).detach().clone();
-    torch::Tensor outside_rotation =
-        gaussians->rotation_.index({outside_mask}).detach().clone();
-    torch::Tensor outside_exist_since =
-        gaussians->exist_since_iter_.index({outside_mask}).detach().clone();
-
-    // Remove points from source chunk
-    gaussians->prunePoints(outside_mask);
-
-    // Group points by destination chunk
-    auto [unique_dest_chunks, inverse_indices, points_per_chunk] =
-        groupPointsByChunk(outside_points);
-
-    // Process each destination chunk for this source
-    for (int k = 0; k < unique_dest_chunks.size(0); k++) {
-      ChunkCoord dest_coord{unique_dest_chunks[k][0].item<int64_t>(),
-                            unique_dest_chunks[k][1].item<int64_t>(),
-                            unique_dest_chunks[k][2].item<int64_t>()};
-
-      if (dest_coord == coord) continue;  // Skip self-transfer
-
-      torch::Tensor chunk_mask = (inverse_indices == k);
-      const int MIN_TRANSFER_THRESHOLD = 30;
-      int points_to_transfer = chunk_mask.sum().item<int>();
-
-      if (points_to_transfer < MIN_TRANSFER_THRESHOLD) continue;
-
-      // Check if adding this transfer would exceed batch limits
-      if ((current_batch.size() >= MAX_BATCH_SIZE) ||
-          (current_batch_points + points_to_transfer > MAX_POINTS_PER_BATCH)) {
-        // Process current batch before adding more
-        std::cout << "Processing batch with " << current_batch.size()
-                  << " transfers and " << current_batch_points << " points"
-                  << std::endl;
-        processBatch(current_batch);
-
-        // Clear batch
-        current_batch.clear();
-        current_batch_points = 0;
-
-        // Force garbage collection of tensors
-        c10::cuda::CUDACachingAllocator::emptyCache();
+    {
+      auto chunk = getChunkAt(coord);
+      if (!chunk || !chunk->getGaussians()) {
+        std::ostringstream oss;
+        oss << "Gaussians/Chunk invalid for coord: " << coord.x << ","
+            << coord.y << "," << coord.z;
+        throw std::runtime_error(oss.str());
       }
 
-      // Extract properties for this destination
-      torch::Tensor chunk_points = outside_points.index({chunk_mask}).clone();
-      torch::Tensor chunk_features_dc =
-          outside_features_dc.index({chunk_mask}).clone();
-      torch::Tensor chunk_features_rest =
-          outside_features_rest.index({chunk_mask}).clone();
-      torch::Tensor chunk_opacities =
-          outside_opacities.index({chunk_mask}).clone();
-      torch::Tensor chunk_scaling = outside_scaling.index({chunk_mask}).clone();
-      torch::Tensor chunk_rotation =
-          outside_rotation.index({chunk_mask}).clone();
-      torch::Tensor chunk_exist_since =
-          outside_exist_since.index({chunk_mask}).clone();
+      std::vector<std::shared_ptr<Chunk>> chunks = {chunk};
+      ChunkOptimizationGuard guard(this, chunks);
 
-      // Add to current batch
-      current_batch.push_back(std::make_tuple(
-          dest_coord, chunk_points, chunk_features_dc, chunk_features_rest,
-          chunk_opacities, chunk_scaling, chunk_rotation, chunk_exist_since));
+      auto gaussians = chunk->getGaussians();
+      auto points = gaussians->getXYZ();
 
-      current_batch_points += points_to_transfer;
-    }
+      if (points.size(0) == 0) {
+        std::cout << "Skipping chunk, no points in it" << std::endl;
+        continue;  // Guard will automatically release
+      }
 
-    // Save and unload source chunk
-    releaseChunksFromOptimization({coord});
+      // Get AABB and find outside points
+      AABB chunk_aabb = getChunkAABB(coord);
+      torch::Tensor outside_mask =
+          ((points.index({torch::indexing::Slice(), 0}) < chunk_aabb.min.x()) |
+           (points.index({torch::indexing::Slice(), 0}) > chunk_aabb.max.x()) |
+           (points.index({torch::indexing::Slice(), 1}) < chunk_aabb.min.y()) |
+           (points.index({torch::indexing::Slice(), 1}) > chunk_aabb.max.y()) |
+           (points.index({torch::indexing::Slice(), 2}) < chunk_aabb.min.z()) |
+           (points.index({torch::indexing::Slice(), 2}) > chunk_aabb.max.z()));
+
+      int num_outside = outside_mask.sum().item<int>();
+      if (num_outside == 0) {
+        continue;  // Guard will automatically release
+      }
+
+      std::cout << "Found " << num_outside << " points to transfer from chunk ("
+                << coord.x << "," << coord.y << "," << coord.z << ")"
+                << std::endl;
+
+      // Extract outside points WITH their optimizer states
+      GaussianTransferData outside_data =
+          gaussians->extractGaussiansWithStates(outside_mask);
+
+      // Remove points from source chunk
+      gaussians->prunePoints(outside_mask);
+
+      // Group points by destination chunk
+      auto [unique_dest_chunks, inverse_indices, points_per_chunk] =
+          groupPointsByChunk(outside_data.points);
+
+      // Process each destination chunk for this source
+      for (int k = 0; k < unique_dest_chunks.size(0); k++) {
+        ChunkCoord dest_coord{unique_dest_chunks[k][0].item<int64_t>(),
+                              unique_dest_chunks[k][1].item<int64_t>(),
+                              unique_dest_chunks[k][2].item<int64_t>()};
+
+        if (dest_coord == coord) continue;  // Skip self-transfer
+
+        torch::Tensor chunk_mask = (inverse_indices == k);
+        const int MIN_TRANSFER_THRESHOLD = 30;
+        int points_to_transfer = chunk_mask.sum().item<int>();
+
+        if (points_to_transfer < MIN_TRANSFER_THRESHOLD) continue;
+
+        // Check if adding this transfer would exceed batch limits
+        if ((current_batch.size() >= MAX_BATCH_SIZE) ||
+            (current_batch_points + points_to_transfer >
+             MAX_POINTS_PER_BATCH)) {
+          // Process current batch before adding more
+          std::cout << "Processing batch with " << current_batch.size()
+                    << " transfers and " << current_batch_points << " points"
+                    << std::endl;
+          processBatchWithStates(current_batch);
+
+          // Clear batch
+          current_batch.clear();
+          current_batch_points = 0;
+
+          // Force garbage collection of tensors
+          c10::cuda::CUDACachingAllocator::emptyCache();
+        }
+
+        // Extract data for this destination chunk
+        GaussianTransferData chunk_data;
+        chunk_data.points = outside_data.points.index({chunk_mask}).clone();
+        chunk_data.features_dc =
+            outside_data.features_dc.index({chunk_mask}).clone();
+        chunk_data.features_rest =
+            outside_data.features_rest.index({chunk_mask}).clone();
+        chunk_data.opacities =
+            outside_data.opacities.index({chunk_mask}).clone();
+        chunk_data.scaling = outside_data.scaling.index({chunk_mask}).clone();
+        chunk_data.rotation = outside_data.rotation.index({chunk_mask}).clone();
+        chunk_data.exist_since =
+            outside_data.exist_since.index({chunk_mask}).clone();
+
+        // Extract auxiliary states
+        chunk_data.position_lrs =
+            outside_data.position_lrs.index({chunk_mask}).clone();
+        chunk_data.xyz_gradient_accum =
+            outside_data.xyz_gradient_accum.index({chunk_mask}).clone();
+        chunk_data.denom = outside_data.denom.index({chunk_mask}).clone();
+        chunk_data.max_radii2D =
+            outside_data.max_radii2D.index({chunk_mask}).clone();
+
+        // Extract optimizer states
+        chunk_data.exp_avg_states.resize(6);
+        chunk_data.exp_avg_sq_states.resize(6);
+        chunk_data.step_states.resize(6);
+
+        for (int group_idx = 0; group_idx < 6; ++group_idx) {
+          if (outside_data.exp_avg_states[group_idx].defined()) {
+            chunk_data.exp_avg_states[group_idx] =
+                outside_data.exp_avg_states[group_idx]
+                    .index({chunk_mask})
+                    .clone();
+            chunk_data.exp_avg_sq_states[group_idx] =
+                outside_data.exp_avg_sq_states[group_idx]
+                    .index({chunk_mask})
+                    .clone();
+            chunk_data.step_states[group_idx] =
+                outside_data.step_states[group_idx].index({chunk_mask}).clone();
+          }
+        }
+
+        current_batch.push_back(
+            std::make_tuple(dest_coord, std::move(chunk_data)));
+
+        current_batch_points += points_to_transfer;
+      }
+    }  // Guard automatically releases here
     triggerLruCheck();
   }
 
@@ -1807,22 +1795,15 @@ void ChunkManager::transferGaussiansAcrossChunks() {
     std::cout << "Processing final batch with " << current_batch.size()
               << " transfers and " << current_batch_points << " points"
               << std::endl;
-    processBatch(current_batch);
+    processBatchWithStates(current_batch);
   }
 
-  std::cout << "Gaussian transfer completed" << std::endl;
+  std::cout << "Gaussian transfer with optimizer states completed" << std::endl;
 }
 
-void ChunkManager::processBatch(
-    const std::vector<std::tuple<ChunkCoord,
-                                 torch::Tensor,
-                                 torch::Tensor,
-                                 torch::Tensor,
-                                 torch::Tensor,
-                                 torch::Tensor,
-                                 torch::Tensor,
-                                 torch::Tensor>>& batch) {
-  // Group transfers by destination chunk
+void ChunkManager::processBatchWithStates(
+    const std::vector<std::tuple<ChunkCoord, GaussianTransferData>>& batch) {
+  // Group by destination
   std::unordered_map<ChunkCoord, std::vector<size_t>, ChunkCoordHash>
       dest_to_transfers;
 
@@ -1831,64 +1812,101 @@ void ChunkManager::processBatch(
     dest_to_transfers[dest_coord].push_back(i);
   }
 
-  // Process each destination chunk
+  // Process each destination
   for (const auto& [dest_coord, transfer_indices] : dest_to_transfers) {
-    // Collect all transfers for this destination
-    std::vector<torch::Tensor> all_points, all_features_dc, all_features_rest;
-    std::vector<torch::Tensor> all_opacities, all_scaling, all_rotation,
-        all_exist_since;
-
+    // Combine all transfers for this destination
+    std::vector<GaussianTransferData> transfers_for_dest;
     for (size_t idx : transfer_indices) {
-      const auto& transfer = batch[idx];
-      all_points.push_back(std::get<1>(transfer));
-      all_features_dc.push_back(std::get<2>(transfer));
-      all_features_rest.push_back(std::get<3>(transfer));
-      all_opacities.push_back(std::get<4>(transfer));
-      all_scaling.push_back(std::get<5>(transfer));
-      all_rotation.push_back(std::get<6>(transfer));
-      all_exist_since.push_back(std::get<7>(transfer));
+      transfers_for_dest.push_back(std::get<1>(batch[idx]));
     }
 
-    // Concatenate all transfers for this destination
-    torch::Tensor combined_points = torch::cat(all_points, 0);
-    torch::Tensor combined_features_dc = torch::cat(all_features_dc, 0);
-    torch::Tensor combined_features_rest = torch::cat(all_features_rest, 0);
-    torch::Tensor combined_opacities = torch::cat(all_opacities, 0);
-    torch::Tensor combined_scaling = torch::cat(all_scaling, 0);
-    torch::Tensor combined_rotation = torch::cat(all_rotation, 0);
-    torch::Tensor combined_exist_since = torch::cat(all_exist_since, 0);
+    GaussianTransferData combined_data =
+        combineTransferData(transfers_for_dest);
 
-    std::cout << "Applying " << combined_points.size(0) << " points to chunk ("
-              << dest_coord.x << "," << dest_coord.y << "," << dest_coord.z
-              << ")" << std::endl;
+    std::cout << "Applying " << combined_data.points.size(0)
+              << " points with states to chunk (" << dest_coord.x << ","
+              << dest_coord.y << "," << dest_coord.z << ")" << std::endl;
 
-    // Apply to destination chunk
     try {
-      applyTransferToDestination(dest_coord, combined_points,
-                                 combined_features_dc, combined_features_rest,
-                                 combined_opacities, combined_scaling,
-                                 combined_rotation, combined_exist_since);
+      applyTransferToDestinationWithStates(dest_coord, combined_data);
     } catch (const std::exception& e) {
-      std::cerr << "Error applying batch transfer to destination chunk ("
-                << dest_coord.x << "," << dest_coord.y << "," << dest_coord.z
-                << "): " << e.what() << std::endl;
+      std::cerr << "Error applying batch transfer: " << e.what() << std::endl;
     }
   }
 }
 
-void ChunkManager::applyTransferToDestination(const ChunkCoord& dest_coord,
-                                              torch::Tensor& points,
-                                              torch::Tensor& features_dc,
-                                              torch::Tensor& features_rest,
-                                              torch::Tensor& opacities,
-                                              torch::Tensor& scaling,
-                                              torch::Tensor& rotation,
-                                              torch::Tensor& exist_since) {
+// Helper to combine multiple transfer data
+GaussianTransferData ChunkManager::combineTransferData(
+    const std::vector<GaussianTransferData>& transfers) {
+  GaussianTransferData combined;
+
+  std::vector<torch::Tensor> points_list, features_dc_list, features_rest_list;
+  std::vector<torch::Tensor> opacities_list, scaling_list, rotation_list,
+      exist_since_list;
+  std::vector<torch::Tensor> position_lrs_list, xyz_grad_list, denom_list,
+      radii_list;
+
+  std::vector<std::vector<torch::Tensor>> exp_avg_lists(6), exp_avg_sq_lists(6),
+      step_lists(6);
+
+  for (const auto& transfer : transfers) {
+    points_list.push_back(transfer.points);
+    features_dc_list.push_back(transfer.features_dc);
+    features_rest_list.push_back(transfer.features_rest);
+    opacities_list.push_back(transfer.opacities);
+    scaling_list.push_back(transfer.scaling);
+    rotation_list.push_back(transfer.rotation);
+    exist_since_list.push_back(transfer.exist_since);
+    position_lrs_list.push_back(transfer.position_lrs);
+    xyz_grad_list.push_back(transfer.xyz_gradient_accum);
+    denom_list.push_back(transfer.denom);
+    radii_list.push_back(transfer.max_radii2D);
+
+    for (int i = 0; i < 6; ++i) {
+      if (transfer.exp_avg_states[i].defined()) {
+        exp_avg_lists[i].push_back(transfer.exp_avg_states[i]);
+        exp_avg_sq_lists[i].push_back(transfer.exp_avg_sq_states[i]);
+        step_lists[i].push_back(transfer.step_states[i]);
+      }
+    }
+  }
+
+  // Concatenate all tensors
+  combined.points = torch::cat(points_list, 0);
+  combined.features_dc = torch::cat(features_dc_list, 0);
+  combined.features_rest = torch::cat(features_rest_list, 0);
+  combined.opacities = torch::cat(opacities_list, 0);
+  combined.scaling = torch::cat(scaling_list, 0);
+  combined.rotation = torch::cat(rotation_list, 0);
+  combined.exist_since = torch::cat(exist_since_list, 0);
+  combined.position_lrs = torch::cat(position_lrs_list, 0);
+  combined.xyz_gradient_accum = torch::cat(xyz_grad_list, 0);
+  combined.denom = torch::cat(denom_list, 0);
+  combined.max_radii2D = torch::cat(radii_list, 0);
+
+  combined.exp_avg_states.resize(6);
+  combined.exp_avg_sq_states.resize(6);
+  combined.step_states.resize(6);
+
+  for (int i = 0; i < 6; ++i) {
+    if (!exp_avg_lists[i].empty()) {
+      combined.exp_avg_states[i] = torch::cat(exp_avg_lists[i], 0);
+      combined.exp_avg_sq_states[i] = torch::cat(exp_avg_sq_lists[i], 0);
+      combined.step_states[i] = torch::cat(step_lists[i], 0);
+    }
+  }
+
+  return combined;
+}
+
+void ChunkManager::applyTransferToDestinationWithStates(
+    const ChunkCoord& dest_coord,
+    const GaussianTransferData& transfer_data) {
   std::shared_ptr<Chunk> dest_chunk;
   bool chunk_exists = chunkExists(dest_coord);
 
   if (chunk_exists) {
-    waitForVramAvailable(0.85f, std::chrono::seconds(10), "gaussian transfer");
+    waitForVramAvailable(0.80f, std::chrono::seconds(10), "gaussian transfer");
     if (!loadChunkSync(dest_coord, true, false)) {
       throw std::runtime_error("Failed to load existing destination chunk");
     }
@@ -1897,13 +1915,11 @@ void ChunkManager::applyTransferToDestination(const ChunkCoord& dest_coord,
     // Create new chunk
     dest_chunk = std::make_shared<Chunk>(model_params_, dest_coord);
 
-    // Add to active chunks
     {
       std::unique_lock<std::mutex> lock(active_chunks_mutex_);
       active_chunks_[dest_coord] = dest_chunk;
     }
 
-    // Update metadata
     {
       std::unique_lock<std::mutex> lock(metadata_mutex_);
       auto& meta = chunk_metadata_[dest_coord];
@@ -1913,7 +1929,6 @@ void ChunkManager::applyTransferToDestination(const ChunkCoord& dest_coord,
       meta.state.store(ChunkState::OPTIMIZING);
     }
 
-    // Update cache
     {
       std::unique_lock<std::mutex> lock(chunk_exists_cache_mutex_);
       chunk_exists_cache_[dest_coord] = true;
@@ -1923,25 +1938,25 @@ void ChunkManager::applyTransferToDestination(const ChunkCoord& dest_coord,
     incrementStat(stats_.existing_chunks);
   }
 
-  if (!dest_chunk || !dest_chunk->getGaussians()) {
-    throw std::runtime_error("Null destination chunk or gaussians");
-  }
+  {
+    if (!dest_chunk || !dest_chunk->getGaussians()) {
+      throw std::runtime_error("Null destination chunk or gaussians");
+    }
 
-  auto gaussians = dest_chunk->getGaussians();
+    std::vector<std::shared_ptr<Chunk>> chunks = {dest_chunk};
+    ChunkOptimizationGuard guard(this, chunks);
 
-  if (chunk_exists) {
-    // Add to existing gaussians
-    gaussians->densificationPostfix(points, features_dc, features_rest,
-                                    opacities, scaling, rotation, exist_since);
-  } else {
-    // Initialize new chunk with gaussians
-    gaussians->initializeFromExistingGaussians(
-        points, features_dc, features_rest, opacities, scaling, rotation,
-        exist_since, opt_params_, cameras_extent_);
-  }
+    auto gaussians = dest_chunk->getGaussians();
 
-  // Clean up
-  releaseChunksFromOptimization({dest_coord});
+    if (chunk_exists) {
+      // Add to existing gaussians WITH optimizer states
+      gaussians->addGaussiansWithStates(transfer_data);
+    } else {
+      // Initialize new chunk with transfer data
+      gaussians->initializeFromTransferData(transfer_data, opt_params_,
+                                            cameras_extent_);
+    }
+  }  // Guard automatically releases here
   triggerLruCheck();
 }
 
@@ -1964,6 +1979,8 @@ void ChunkManager::releaseChunksFromOptimization(
 
 void ChunkManager::releaseChunksFromOptimization(
     const std::vector<std::shared_ptr<Chunk>>& chunks) {
+  // std::cout << "[ChunkManager] releaseChunksFromOptimization called for "
+  //           << chunks.size() << " chunks" << std::endl;
   for (const auto& chunk : chunks) {
     if (chunk && chunk->getGaussians()) {
       const ChunkCoord& coord = chunk->getCoord();
@@ -1972,12 +1989,29 @@ void ChunkManager::releaseChunksFromOptimization(
       if (meta_it != chunk_metadata_.end() &&
           meta_it->second.state.load() == ChunkState::OPTIMIZING) {
         // Transition back to ACTIVE
+        // std::cout << "[ChunkManager] Transitioning chunk (" << coord.x << ","
+        //           << coord.y << "," << coord.z << ") from OPTIMIZING to
+        //           ACTIVE"
+        //           << std::endl;
         meta_it->second.state.store(ChunkState::ACTIVE);
 
         // Notify any waiting threads
         std::unique_lock<std::mutex> op_lock(meta_it->second.operation_mutex);
         meta_it->second.operation_cv.notify_all();
+      } else if (meta_it != chunk_metadata_.end()) {
+        std::cout << "[ChunkManager] WARNING: Chunk (" << coord.x << ","
+                  << coord.y << "," << coord.z << ") is in state "
+                  << static_cast<int>(meta_it->second.state.load())
+                  << " instead of OPTIMIZING" << std::endl;
+      } else {
+        std::cout << "[ChunkManager] WARNING: Chunk (" << coord.x << ","
+                  << coord.y << "," << coord.z << ") not found in metadata"
+                  << std::endl;
       }
+    } else {
+      std::cout << "[ChunkManager] WARNING: Invalid chunk or gaussians in "
+                   "releaseChunksFromOptimization"
+                << std::endl;
     }
   }
 }

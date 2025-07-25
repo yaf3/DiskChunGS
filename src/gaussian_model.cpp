@@ -389,7 +389,8 @@ void GaussianModel::trainingSetup(
   adam_options.eps() = 1e-15;
 
   this->optimizer_.reset(new SparseGaussianAdam(Tensor_vec_xyz_, adam_options));
-  optimizer_->param_groups()[0].options().set_lr(position_lr_init_);
+  // We don't use the pytorch lr for group 0
+  optimizer_->param_groups()[0].options().set_lr(0.0f);
 
   // For per-primitive learning rates, create tensor-based LRs
   int num_gaussians = this->getXYZ().size(0);
@@ -466,30 +467,27 @@ void GaussianModel::optimizerStep(torch::Tensor& visibility, const uint32_t N) {
     }
 
     auto& param_state = static_cast<torch::optim::AdamParamState&>(*state[key]);
-
-    // Learning rate handling per parameter type
-    torch::Tensor lr_tensor;
-    if (group_idx == 0) {
-      // GROUP 0: Positions - use per-primitive learning rates
-      lr_tensor = position_lrs_;
-    } else {
-      // ALL OTHER GROUPS: Use fixed scalar learning rates
-      float scalar_lr = group.options().get_lr();
-      lr_tensor = torch::tensor(scalar_lr,
-                                torch::TensorOptions().device(param.device()));
-    }
-
-    const uint32_t M = param.numel() / N;
     auto options = static_cast<torch::optim::AdamOptions&>(group.options());
-    auto exp_avg = param_state.exp_avg();
-    auto exp_avg_sq = param_state.exp_avg_sq();
-    auto grad = param.grad();
-    auto eps = options.eps();
 
-    // Adam update
-    adamUpdate(param, grad, exp_avg, exp_avg_sq, visibility, lr_tensor,
-               std::get<0>(options.betas()), std::get<1>(options.betas()), eps,
-               N, M);
+    if (group_idx == 0) {
+      // GROUP 0: Positions - use sparse optimizer with per-primitive learning
+      // rates
+      const uint32_t M =
+          param.numel() / N;  // Parameters per Gaussian (3 for xyz)
+
+      adamUpdate(param, param.grad(), param_state.exp_avg(),
+                 param_state.exp_avg_sq(), visibility, position_lrs_,
+                 std::get<0>(options.betas()), std::get<1>(options.betas()),
+                 options.eps(), N, M);
+    } else {
+      // ALL OTHER GROUPS: Use basic optimizer with scalar learning rates
+      float scalar_lr = group.options().get_lr();
+
+      adamUpdateBasic(param, param.grad(), param_state.exp_avg(),
+                      param_state.exp_avg_sq(), scalar_lr,
+                      std::get<0>(options.betas()),
+                      std::get<1>(options.betas()), options.eps());
+    }
   }
 
   // Update learning rates AFTER Adam step
@@ -1227,7 +1225,7 @@ void GaussianModel::save_checkpoint(const std::string& path) {
       float lr = optimizer_->param_groups()[i].options().get_lr();
 
       // Safety check for NaN or inf learning rates
-      if (std::isnan(lr) || std::isinf(lr) || lr <= 0.0f || lr > 1.0f) {
+      if (std::isnan(lr) || std::isinf(lr) || lr < 0.0f || lr > 1.0f) {
         std::cerr << "ERROR: Found invalid learning rate (" << lr
                   << ") for group " << i << std::endl;
         throw std::runtime_error("Invalid LR to save");
@@ -1424,9 +1422,12 @@ void GaussianModel::load_checkpoint_incremental(
 
   // Define default learning rates
   std::vector<float> default_learning_rates = {
-      training_args.position_lr_init_,   training_args.feature_lr_,
-      training_args.feature_lr_ / 20.0f, training_args.opacity_lr_,
-      training_args.scaling_lr_,         training_args.rotation_lr_};
+      0.0f,
+      training_args.feature_lr_,
+      training_args.feature_lr_ / 20.0f,
+      training_args.opacity_lr_,
+      training_args.scaling_lr_,
+      training_args.rotation_lr_};
 
   if (std::filesystem::exists(path + "/config.pt")) {
     try {
@@ -1446,7 +1447,7 @@ void GaussianModel::load_checkpoint_incremental(
 
           // Validate the loaded learning rate
           if (!std::isnan(loaded_lr) && !std::isinf(loaded_lr) &&
-              loaded_lr > 0.0f && loaded_lr < 1.0f) {
+              loaded_lr >= 0.0f && loaded_lr < 1.0f) {
             lr = loaded_lr;
           } else {
             std::cerr << "WARNING: Invalid learning rate (" << loaded_lr
@@ -1478,7 +1479,7 @@ void GaussianModel::load_checkpoint_incremental(
   adam_options.eps() = 1e-15;
 
   this->optimizer_.reset(new SparseGaussianAdam(Tensor_vec_xyz_, adam_options));
-  optimizer_->param_groups()[0].options().set_lr(learning_rates[0]);
+  optimizer_->param_groups()[0].options().set_lr(0.0f);
 
   optimizer_->add_param_group(Tensor_vec_feature_dc_);
   optimizer_->param_groups()[1].options().set_lr(learning_rates[1]);
@@ -1789,62 +1790,196 @@ void GaussianModel::load_checkpoint_incremental(
   // std::cout << "Checkpoint loaded from " << path << std::endl;
 }
 
-void GaussianModel::initializeFromExistingGaussians(
-    torch::Tensor& points,
-    torch::Tensor& features_dc,
-    torch::Tensor& features_rest,
-    torch::Tensor& opacities,
-    torch::Tensor& scaling,
-    torch::Tensor& rotation,
-    torch::Tensor& exist_since_iter,
+GaussianTransferData GaussianModel::extractGaussiansWithStates(
+    const torch::Tensor& mask) {
+  torch::NoGradGuard no_grad;
+
+  GaussianTransferData transfer_data;
+
+  // Extract basic tensors
+  transfer_data.points = this->xyz_.index({mask}).detach().clone();
+  transfer_data.features_dc = this->features_dc_.index({mask}).detach().clone();
+  transfer_data.features_rest =
+      this->features_rest_.index({mask}).detach().clone();
+  transfer_data.opacities = this->opacity_.index({mask}).detach().clone();
+  transfer_data.scaling = this->scaling_.index({mask}).detach().clone();
+  transfer_data.rotation = this->rotation_.index({mask}).detach().clone();
+  transfer_data.exist_since =
+      this->exist_since_iter_.index({mask}).detach().clone();
+
+  // Extract auxiliary states
+  transfer_data.position_lrs =
+      this->position_lrs_.index({mask}).detach().clone();
+  transfer_data.xyz_gradient_accum =
+      this->xyz_gradient_accum_.index({mask}).detach().clone();
+  transfer_data.denom = this->denom_.index({mask}).detach().clone();
+  transfer_data.max_radii2D = this->max_radii2D_.index({mask}).detach().clone();
+
+  // Extract optimizer states for each parameter group
+  transfer_data.exp_avg_states.resize(6);
+  transfer_data.exp_avg_sq_states.resize(6);
+  transfer_data.step_states.resize(6);
+
+  if (this->optimizer_) {
+    auto& param_groups = this->optimizer_->param_groups();
+    auto& state = this->optimizer_->state();
+
+    for (int group_idx = 0; group_idx < 6; ++group_idx) {
+      auto& param = param_groups[group_idx].params()[0];
+      auto key = param.unsafeGetTensorImpl();
+
+      if (state.find(key) != state.end()) {
+        auto& param_state =
+            static_cast<torch::optim::AdamParamState&>(*state[key]);
+
+        // Extract states for the masked indices
+        transfer_data.exp_avg_states[group_idx] =
+            param_state.exp_avg().index({mask}).detach().clone();
+        transfer_data.exp_avg_sq_states[group_idx] =
+            param_state.exp_avg_sq().index({mask}).detach().clone();
+
+        // Step is scalar per parameter, so we replicate it
+        int64_t step_value = param_state.step();
+        transfer_data.step_states[group_idx] = torch::full(
+            {mask.sum().item<int>()}, step_value,
+            torch::TensorOptions().dtype(torch::kInt64).device(mask.device()));
+      } else {
+        // Create zero states if no state exists
+        int num_points = mask.sum().item<int>();
+        auto tensor_shape = param.index({mask}).sizes().vec();
+
+        transfer_data.exp_avg_states[group_idx] = torch::zeros(
+            tensor_shape, torch::TensorOptions().device(param.device()));
+        transfer_data.exp_avg_sq_states[group_idx] = torch::zeros(
+            tensor_shape, torch::TensorOptions().device(param.device()));
+        transfer_data.step_states[group_idx] = torch::zeros(
+            {num_points},
+            torch::TensorOptions().dtype(torch::kInt64).device(param.device()));
+      }
+    }
+  }
+
+  return transfer_data;
+}
+
+// Enhanced method to add Gaussians with their optimizer states
+void GaussianModel::addGaussiansWithStates(
+    const GaussianTransferData& transfer_data) {
+  // First, add the basic tensors using existing method
+  auto old_size = this->getXYZ().size(0);
+  auto new_points = transfer_data.points.clone();
+  auto new_features_dc = transfer_data.features_dc.clone();
+  auto new_features_rest = transfer_data.features_rest.clone();
+  auto new_opacities = transfer_data.opacities.clone();
+  auto new_scaling = transfer_data.scaling.clone();
+  auto new_rotation = transfer_data.rotation.clone();
+  auto new_exist_since = transfer_data.exist_since.clone();
+
+  this->densificationPostfix(new_points, new_features_dc, new_features_rest,
+                             new_opacities, new_scaling, new_rotation,
+                             new_exist_since);
+
+  // Now handle the auxiliary states - replace the automatically created ones
+  auto new_size = this->getXYZ().size(0);
+  auto num_new_points = new_size - old_size;
+
+  // Replace the newly added auxiliary states with transferred ones
+  if (transfer_data.position_lrs.defined()) {
+    this->position_lrs_.slice(0, old_size, new_size)
+        .copy_(transfer_data.position_lrs);
+  }
+
+  if (transfer_data.xyz_gradient_accum.defined()) {
+    this->xyz_gradient_accum_.slice(0, old_size, new_size)
+        .copy_(transfer_data.xyz_gradient_accum);
+  }
+
+  if (transfer_data.denom.defined()) {
+    this->denom_.slice(0, old_size, new_size).copy_(transfer_data.denom);
+  }
+
+  if (transfer_data.max_radii2D.defined()) {
+    this->max_radii2D_.slice(0, old_size, new_size)
+        .copy_(transfer_data.max_radii2D);
+  }
+
+  // Handle optimizer states
+  if (this->optimizer_ && !transfer_data.exp_avg_states.empty()) {
+    auto& param_groups = this->optimizer_->param_groups();
+    auto& state = this->optimizer_->state();
+
+    for (int group_idx = 0; group_idx < 6; ++group_idx) {
+      auto& param = param_groups[group_idx].params()[0];
+      auto key = param.unsafeGetTensorImpl();
+
+      if (state.find(key) != state.end() &&
+          transfer_data.exp_avg_states[group_idx].defined()) {
+        auto& param_state =
+            static_cast<torch::optim::AdamParamState&>(*state[key]);
+
+        // Get the shape for the new portion of the parameter
+        auto param_slice = param.slice(0, old_size, new_size);
+
+        // Replace the newly added optimizer states with transferred ones
+        param_state.exp_avg()
+            .slice(0, old_size, new_size)
+            .copy_(transfer_data.exp_avg_states[group_idx]);
+        param_state.exp_avg_sq()
+            .slice(0, old_size, new_size)
+            .copy_(transfer_data.exp_avg_sq_states[group_idx]);
+
+        // For step, we take the maximum of existing and transferred
+        // (since step is per-parameter, not per-primitive)
+        if (transfer_data.step_states[group_idx].defined() &&
+            transfer_data.step_states[group_idx].numel() > 0) {
+          int64_t transferred_step =
+              transfer_data.step_states[group_idx][0].item<int64_t>();
+          int64_t current_step = param_state.step();
+          param_state.step(std::max(current_step, transferred_step));
+        }
+      }
+    }
+  }
+}
+
+// Additional method needed in GaussianModel class
+void GaussianModel::initializeFromTransferData(
+    const GaussianTransferData& transfer_data,
     const GaussianOptimizationParams& training_args,
     const float spatial_lr_scale) {
-  // Initialize tensors with explicit cloning to ensure independent storage
-  this->xyz_ = points.detach().clone().requires_grad_();
-  this->features_dc_ = features_dc.detach().clone().requires_grad_();
-  this->features_rest_ = features_rest.detach().clone().requires_grad_();
-  this->opacity_ = opacities.detach().clone().requires_grad_();
-  this->scaling_ = scaling.detach().clone().requires_grad_();
-  this->rotation_ = rotation.detach().clone().requires_grad_();
-  this->exist_since_iter_ = exist_since_iter.detach().clone();
+  // Initialize tensors from transfer data
+  this->xyz_ = transfer_data.points.clone().requires_grad_();
+  this->features_dc_ = transfer_data.features_dc.clone().requires_grad_();
+  this->features_rest_ = transfer_data.features_rest.clone().requires_grad_();
+  this->opacity_ = transfer_data.opacities.clone().requires_grad_();
+  this->scaling_ = transfer_data.scaling.clone().requires_grad_();
+  this->rotation_ = transfer_data.rotation.clone().requires_grad_();
+  this->exist_since_iter_ = transfer_data.exist_since.clone();
+
+  // Initialize auxiliary states from transfer data
+  this->position_lrs_ = transfer_data.position_lrs.clone();
+  this->xyz_gradient_accum_ = transfer_data.xyz_gradient_accum.clone();
+  this->denom_ = transfer_data.denom.clone();
+  this->max_radii2D_ = transfer_data.max_radii2D.clone();
 
   // Initialize tensor vectors
   GAUSSIAN_MODEL_TENSORS_TO_VEC
 
-  // Initialize tracking variables
-  this->max_radii2D_ = torch::zeros(
-      {this->getXYZ().size(0)}, torch::TensorOptions().device(device_type_));
-
-  // Setup optimizer
+  // Setup optimizer with preserved learning rates
   setPercentDense(training_args.percent_dense_);
-  this->xyz_gradient_accum_ = torch::zeros(
-      {this->getXYZ().size(0), 1}, torch::TensorOptions().device(device_type_));
-  this->denom_ = torch::zeros({this->getXYZ().size(0), 1},
-                              torch::TensorOptions().device(device_type_));
 
   position_lr_init_ = training_args.position_lr_init_ * spatial_lr_scale;
   position_lr_decay_ = training_args.position_lr_decay_;
   position_lr_min_ = position_lr_init_ * 0.1f * spatial_lr_scale;
 
   torch::optim::AdamOptions adam_options;
-  adam_options.set_lr(0.0);  // We'll set individual LRs below
+  adam_options.set_lr(0.0);
   adam_options.eps() = 1e-15;
 
   this->optimizer_.reset(new SparseGaussianAdam(Tensor_vec_xyz_, adam_options));
-  optimizer_->param_groups()[0].options().set_lr(
-      position_lr_init_);  // This one shouldn't be used (since per primitive
-                           // LRs are set below)
+  optimizer_->param_groups()[0].options().set_lr(0.0f);
 
-  // For per-primitive learning rates, create tensor-based LRs
-  int num_gaussians = this->getXYZ().size(0);
-
-  // Position learning rates (per-primitive for positions)
-  torch::Tensor position_lrs = torch::full(
-      {num_gaussians}, position_lr_init_,
-      torch::TensorOptions().dtype(torch::kFloat32).device(device_type_));
-  this->position_lrs_ = position_lrs;
-
-  // For other parameters, we can still use scalar learning rates
+  // Add other parameter groups
   optimizer_->add_param_group(Tensor_vec_feature_dc_);
   optimizer_->param_groups()[1].options().set_lr(training_args.feature_lr_);
 
@@ -1860,4 +1995,41 @@ void GaussianModel::initializeFromExistingGaussians(
 
   optimizer_->add_param_group(Tensor_vec_rotation_);
   optimizer_->param_groups()[5].options().set_lr(training_args.rotation_lr_);
+
+  // Restore optimizer states from transfer data
+  if (!transfer_data.exp_avg_states.empty()) {
+    auto& param_groups = this->optimizer_->param_groups();
+    auto& state = this->optimizer_->state();
+
+    for (int group_idx = 0; group_idx < 6; ++group_idx) {
+      auto& param = param_groups[group_idx].params()[0];
+      auto key = param.unsafeGetTensorImpl();
+
+      if (transfer_data.exp_avg_states[group_idx].defined()) {
+        auto new_state = std::make_unique<torch::optim::AdamParamState>();
+
+        // Use the step value from transfer data (take max if multiple)
+        int64_t step_value = 0;
+        if (transfer_data.step_states[group_idx].defined() &&
+            transfer_data.step_states[group_idx].numel() > 0) {
+          step_value =
+              transfer_data.step_states[group_idx].max().item<int64_t>();
+        }
+        new_state->step(step_value);
+
+        new_state->exp_avg(transfer_data.exp_avg_states[group_idx].clone());
+        new_state->exp_avg_sq(
+            transfer_data.exp_avg_sq_states[group_idx].clone());
+
+        state[key] = std::move(new_state);
+      } else {
+        // Create zero state if no transfer data available
+        auto new_state = std::make_unique<torch::optim::AdamParamState>();
+        new_state->step(0);
+        new_state->exp_avg(torch::zeros_like(param));
+        new_state->exp_avg_sq(torch::zeros_like(param));
+        state[key] = std::move(new_state);
+      }
+    }
+  }
 }
