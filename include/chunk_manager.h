@@ -34,7 +34,8 @@ enum class ChunkState {
   ACTIVE,      // In memory and usable
   OPTIMIZING,  // In memory and currently being optimized
   SAVING,      // Being saved to disk
-  DELETING     // Being deleted
+  DELETING,    // Being deleted
+  UNKNOWN      // State not known (e.g., metadata missing)
 };
 
 // Definition for chunk operations
@@ -121,9 +122,7 @@ class ChunkManager {
 
   // Enhanced tracking with thread-safety
   std::unordered_map<ChunkCoord, ChunkMetadata, ChunkCoordHash> chunk_metadata_;
-  std::mutex metadata_mutex_;
-  std::mutex active_chunks_mutex_;  // For active_chunks_ access
-  std::mutex chunk_exists_cache_mutex_;
+  std::mutex chunk_metadata_mutex_;
 
   // Thread pool methods
   void initializeThreadPool(int num_threads);
@@ -133,8 +132,7 @@ class ChunkManager {
   // Operation methods
   void enqueueOperation(std::shared_ptr<ChunkOperation> operation);
   void processOperation(std::shared_ptr<ChunkOperation> operation);
-  bool processLoadOperation(const ChunkCoord& coord,
-                            bool load_for_optimization = false);
+  bool processLoadOperation(const ChunkCoord& coord, bool load_for_opt);
   bool processSaveOperation(const ChunkCoord& coord);
   bool processDeleteOperation(const ChunkCoord& coord);
 
@@ -185,15 +183,7 @@ class ChunkManager {
   void preloadVisibleChunks(std::shared_ptr<GaussianKeyframe> keyframe,
                             bool use_cache = true);
 
-  std::unordered_map<ChunkCoord, std::shared_ptr<Chunk>, ChunkCoordHash>
-  getActiveChunks() const {
-    return active_chunks_;
-  }
-
   bool cullSparseChunks(int min_points_threshold, int min_chunk_iterations);
-
-  void updateChunkExistenceCache(const std::vector<ChunkCoord>& coords,
-                                 bool exists);
 
   std::vector<ChunkCoord> getExistingChunkCoords();
 
@@ -215,6 +205,7 @@ class ChunkManager {
   }
 
   void updateVramEstimateFromCurrentState();
+  bool saveAllChunksSync();
 
   // ChunkStats for debugging/monitoring
   struct ChunkStats {
@@ -241,13 +232,6 @@ class ChunkManager {
   GaussianModelParams model_params_;
   GaussianOptimizationParams opt_params_;
   int current_iteration_ = 0;
-
-  // Core data
-  std::unordered_map<ChunkCoord, std::shared_ptr<Chunk>, ChunkCoordHash>
-      active_chunks_;
-
-  // Cache of chunk existence to avoid repeated disk checks
-  std::unordered_map<ChunkCoord, bool, ChunkCoordHash> chunk_exists_cache_;
 
   // I/O thread and synchronization
   std::atomic<bool> should_terminate_;
@@ -314,7 +298,8 @@ class ChunkManager {
 
   // Cache mapping keyframe ID to visibility information
   std::unordered_map<size_t, VisibilityCacheEntry> visibility_cache_;
-  std::mutex cache_mutex_;  // Protect the cache during concurrent access
+  std::mutex
+      visibility_cache_mutex_;  // Protect the cache during concurrent access
 
   // Cache expiration time (in seconds)
   const std::chrono::seconds cache_expiry_time_{
@@ -339,7 +324,7 @@ class ChunkManager {
 
  public:
   void clearVisibilityCache() {
-    std::lock_guard<std::mutex> lock(cache_mutex_);
+    std::lock_guard<std::mutex> lock(visibility_cache_mutex_);
     visibility_cache_.clear();
   }
 
@@ -377,29 +362,94 @@ class ChunkManager {
 // RAII guard for automatic chunk optimization release
 // Ensures chunks are released from optimization state on any function exit
 class ChunkOptimizationGuard {
+ private:
+  ChunkManager* chunk_manager_;
+  std::vector<std::shared_ptr<Chunk>> chunks_;
+  static std::atomic<int> guard_counter_;
+  int guard_id_;  // Declare this AFTER the static counter
+
  public:
   // Constructor taking const reference to chunks
   ChunkOptimizationGuard(ChunkManager* manager,
                          const std::vector<std::shared_ptr<Chunk>>& chunks)
-      : chunk_manager_(manager), chunks_(chunks) {
-    std::cout << "[ChunkOptimizationGuard] Created guard for " << chunks_.size()
-              << " chunks" << std::endl;
+      : chunk_manager_(manager), chunks_(chunks), guard_id_(++guard_counter_) {
+    // std::cout << "[Guard " << guard_id_ << "] CREATED for chunks: ";
+    // for (const auto& chunk : chunks_) {
+    //   if (chunk) {
+    //     std::cout << "(" << chunk->getCoord().x << "," << chunk->getCoord().y
+    //               << "," << chunk->getCoord().z << ") ";
+    //   }
+    // }
+    // std::cout << std::endl;
+
+    if (!manager) return;
+    for (const auto& chunk : chunks) {
+      if (chunk &&
+          manager->getChunkState(chunk->getCoord()) != ChunkState::OPTIMIZING) {
+        std::cout << "[Guard " << guard_id_ << "] ERROR: Chunk ("
+                  << chunk->getCoord().x << "," << chunk->getCoord().y << ","
+                  << chunk->getCoord().z << ") is in state "
+                  << static_cast<int>(manager->getChunkState(chunk->getCoord()))
+                  << " instead of OPTIMIZING" << std::endl;
+        throw std::runtime_error("Chunk is not in OPTIMIZING state");
+      }
+    }
   }
 
   // Constructor taking chunks by move
   ChunkOptimizationGuard(ChunkManager* manager,
                          std::vector<std::shared_ptr<Chunk>>&& chunks)
-      : chunk_manager_(manager), chunks_(std::move(chunks)) {
-    std::cout << "[ChunkOptimizationGuard] Created guard for " << chunks_.size()
-              << " chunks (move)" << std::endl;
+      : chunk_manager_(manager),
+        chunks_(std::move(chunks)),
+        guard_id_(++guard_counter_) {
+    // std::cout << "[Guard " << guard_id_ << "] CREATED for chunks: ";
+    // for (const auto& chunk : chunks_) {
+    //   if (chunk) {
+    //     std::cout << "(" << chunk->getCoord().x << "," << chunk->getCoord().y
+    //               << "," << chunk->getCoord().z << ") ";
+    //   }
+    // }
+    // std::cout << std::endl;
+
+    if (!manager) return;
+    for (const auto& chunk : chunks_) {  // Use chunks_ here since we moved
+      if (chunk &&
+          manager->getChunkState(chunk->getCoord()) != ChunkState::OPTIMIZING) {
+        std::cout << "[Guard " << guard_id_ << "] ERROR: Chunk ("
+                  << chunk->getCoord().x << "," << chunk->getCoord().y << ","
+                  << chunk->getCoord().z << ") is in state "
+                  << static_cast<int>(manager->getChunkState(chunk->getCoord()))
+                  << " instead of OPTIMIZING" << std::endl;
+        throw std::runtime_error("Chunk is not in OPTIMIZING state");
+      }
+    }
   }
 
   // Constructor taking non-const reference (for compatibility)
   ChunkOptimizationGuard(ChunkManager* manager,
                          std::vector<std::shared_ptr<Chunk>>& chunks)
-      : chunk_manager_(manager), chunks_(chunks) {
-    std::cout << "[ChunkOptimizationGuard] Created guard for " << chunks_.size()
-              << " chunks (ref)" << std::endl;
+      : chunk_manager_(manager), chunks_(chunks), guard_id_(++guard_counter_) {
+    // std::cout << "[Guard " << guard_id_ << "] CREATED for chunks: ";
+    // for (const auto& chunk : chunks_) {
+    //   if (chunk) {
+    //     std::cout << "(" << chunk->getCoord().x << "," << chunk->getCoord().y
+    //               << "," << chunk->getCoord().z << ") ";
+    //   }
+    // }
+    // std::cout << std::endl;
+
+    if (!manager) return;
+    for (const auto& chunk : chunks) {
+      if (chunk &&
+          manager->getChunkState(chunk->getCoord()) != ChunkState::OPTIMIZING) {
+        std::cout << "[Guard " << guard_id_ << "] ERROR: Chunk ("
+                  << chunk->getCoord().x << "," << chunk->getCoord().y << ","
+                  << chunk->getCoord().z << ") is in state "
+                  << static_cast<int>(manager->getChunkState(chunk->getCoord()))
+                  << " instead of OPTIMIZING" << std::endl;
+        throw std::runtime_error("Chunk is not in OPTIMIZING state");
+      }
+    }
   }
 
   // Non-copyable, movable
@@ -408,8 +458,13 @@ class ChunkOptimizationGuard {
 
   ChunkOptimizationGuard(ChunkOptimizationGuard&& other) noexcept
       : chunk_manager_(other.chunk_manager_),
-        chunks_(std::move(other.chunks_)) {
+        chunks_(std::move(other.chunks_)),
+        guard_id_(other.guard_id_) {  // <-- COPY the guard_id from other
+
+    std::cout << "[Guard " << guard_id_ << "] MOVED from Guard "
+              << other.guard_id_ << std::endl;
     other.chunk_manager_ = nullptr;
+    other.guard_id_ = -1;  // Mark the moved-from object
   }
 
   ChunkOptimizationGuard& operator=(ChunkOptimizationGuard&& other) noexcept {
@@ -417,25 +472,34 @@ class ChunkOptimizationGuard {
       release();  // Release current chunks if any
       chunk_manager_ = other.chunk_manager_;
       chunks_ = std::move(other.chunks_);
+      guard_id_ = other.guard_id_;  // <-- COPY the guard_id
+
+      std::cout << "[Guard " << guard_id_ << "] MOVE-ASSIGNED from Guard "
+                << other.guard_id_ << std::endl;
       other.chunk_manager_ = nullptr;
+      other.guard_id_ = -1;  // Mark the moved-from object
     }
     return *this;
   }
 
   ~ChunkOptimizationGuard() {
-    std::cout << "[ChunkOptimizationGuard] Destructor called, releasing chunks"
-              << std::endl;
+    // std::cout << "[Guard " << guard_id_ << "] DESTROYING for chunks: ";
+    // for (const auto& chunk : chunks_) {
+    //   if (chunk) {
+    //     std::cout << "(" << chunk->getCoord().x << "," << chunk->getCoord().y
+    //               << "," << chunk->getCoord().z << ") ";
+    //   }
+    // }
+    // std::cout << std::endl;
     release();
   }
 
   void release() {
     if (chunk_manager_ && !chunks_.empty()) {
-      std::cout << "[ChunkOptimizationGuard] Releasing " << chunks_.size()
-                << " chunks from optimization" << std::endl;
+      // std::cout << "[Guard " << guard_id_ << "] RELEASING " << chunks_.size()
+      //           << " chunks from optimization" << std::endl;
       chunk_manager_->releaseChunksFromOptimization(chunks_);
       chunks_.clear();
-      std::cout << "[ChunkOptimizationGuard] Released chunks successfully"
-                << std::endl;
     }
   }
 
@@ -444,8 +508,4 @@ class ChunkOptimizationGuard {
     release();
     chunk_manager_ = nullptr;
   }
-
- private:
-  ChunkManager* chunk_manager_;
-  std::vector<std::shared_ptr<Chunk>> chunks_;
 };

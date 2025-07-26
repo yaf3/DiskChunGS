@@ -1811,7 +1811,7 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
   //                                     torch::Tensor(), opacities_tensor);
   // }
 
-  chunk_manager_->releaseAllChunksFromOptimization();
+  // chunk_manager_->releaseAllChunksFromOptimization();
 
   // Print summary of transformations per chunk
   std::cout << "[LOOP CLOSURE SUMMARY] Transformation counts per chunk:"
@@ -1833,7 +1833,7 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
   std::cout << "Transferring gaussians across chunks" << std::endl;
   chunk_manager_->transferGaussiansAcrossChunks();
 
-  chunk_manager_->releaseAllChunksFromOptimization();
+  // chunk_manager_->releaseAllChunksFromOptimization();
 
   // Mark this iteration
   loop_closure_iteration_ = true;
@@ -1871,10 +1871,9 @@ void GaussianMapper::processScaleRefinement(ORB_SLAM3::MappingOperation& opr) {
           if (chunk_manager_->loadChunkSync(coord, true)) {
             {
               std::shared_ptr<Chunk> chunk = chunk_manager_->getChunkAt(coord);
-              std::vector<std::shared_ptr<Chunk>> chunks = {chunk};
-              ChunkOptimizationGuard guard(chunk_manager_.get(), chunks);
+              ChunkOptimizationGuard guard(chunk_manager_.get(), {chunk});
               chunk->getGaussians()->applyScaledTransformation(s, T);
-            } // Guard automatically releases here
+            }  // Guard automatically releases here
             chunk_manager_->saveChunkAsync(coord);
           }
         }
@@ -2413,6 +2412,7 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
 
 void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   torch::NoGradGuard no_grad;
+  auto start_time = std::chrono::steady_clock::now();
 
   Sophus::SE3f Twc = pkf->getPosef().inverse();
 
@@ -2934,7 +2934,14 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   // Convert opacities using inverse sigmoid (like Python)
   torch::Tensor final_opacities = general_utils::inverse_sigmoid(all_opacities);
 
+  chunk_guard.reset();
+
   addPoints(all_points3D, all_colors, all_scales, final_opacities);
+  auto end_time = std::chrono::steady_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+      end_time - start_time);
+  // std::cout << "sampleGaussians completed in " << duration.count() << "ms"
+  //           << std::endl;
 }
 
 void GaussianMapper::recordKeyframeRendered(
@@ -3770,7 +3777,7 @@ void GaussianMapper::initializeChunkManagement() {
   // Create the chunk manager with direct model parameters
   chunk_manager_ = std::make_shared<ChunkManager>(
       model_params_, opt_params_, chunk_save_dir_, chunk_size,
-      scene_->cameras_extent_, max_chunks_in_memory_, 4, max_vram_budget_mb_);
+      scene_->cameras_extent_, max_chunks_in_memory_, 32, max_vram_budget_mb_);
 }
 
 void GaussianMapper::addPoints(const torch::Tensor& points,
@@ -4196,27 +4203,10 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
   }
 
   // Save all active chunks
-  chunk_manager_->releaseAllChunksFromOptimization();
-  auto active_chunks = chunk_manager_->getActiveChunks();
+  // chunk_manager_->releaseAllChunksFromOptimization();
   bool all_saved = true;
 
-  std::cout << active_chunks.size() << " active chunks to save" << std::endl;
-
-  for (const auto& [coord, chunk] : active_chunks) {
-    if (chunk_manager_->getChunkState(coord) == ChunkState::ACTIVE) {
-      if (!chunk_manager_->saveChunkSync(coord)) {
-        throw std::runtime_error(
-            "Failed to save chunk: " + std::to_string(coord.x) + "," +
-            std::to_string(coord.y) + "," + std::to_string(coord.z));
-        all_saved = false;
-      }
-    } else {
-      throw std::runtime_error(
-          "Chunk state is not ACTIVE, cannot save chunk: " +
-          std::to_string(coord.x) + "," + std::to_string(coord.y) + "," +
-          std::to_string(coord.z));
-    }
-  }
+  all_saved = chunk_manager_->saveAllChunksSync();
 
   std::cout << "Copying chunk data to save dir" << std::endl;
   // Copy chunks over to scene dir
@@ -4386,16 +4376,15 @@ void GaussianMapper::saveChunkManifest(std::filesystem::path scene_dir) {
     {
       auto chunk = chunk_manager_->getChunkAt(chunk_coords[i]);
       if (!chunk || !chunk->getGaussians()) continue;
-      
-      std::vector<std::shared_ptr<Chunk>> chunks = {chunk};
-      ChunkOptimizationGuard guard(chunk_manager_.get(), chunks);
+
+      ChunkOptimizationGuard guard(chunk_manager_.get(), {chunk});
       chunk_entry["num_gaussians"] =
           Json::Value::Int64(chunk->getGaussians()->getXYZ().size(0));
       chunk_entry["local_iteration"] =
           Json::Value::Int64(chunk->getGaussians()->getLocalIteration());
       chunk_entry["sh_degree"] =
           Json::Value::Int64(chunk->getGaussians()->sh_degree_);
-    } // Guard automatically releases here
+    }  // Guard automatically releases here
     chunk_manager_->saveChunkSync(chunk_coords[i]);
 
     json_root[static_cast<int>(i)] = chunk_entry;
@@ -4439,7 +4428,6 @@ void GaussianMapper::loadChunkManifest(std::filesystem::path scene_dir) {
     int64_t z = chunk_entry["z"].asInt64();
 
     ChunkCoord coord{x, y, z};
-    chunk_manager_->updateChunkExistenceCache({coord}, true);
     chunk_manager_->initializeMetaData(coord);
   }
 }
@@ -4632,7 +4620,7 @@ void GaussianMapper::saveTotalGaussians(std::string name_suffix) {
       auto gaussians = chunk->getGaussians();
       auto num_points = gaussians->getXYZ().size(0);
       totalGaussians += num_points;
-    } // Guard automatically releases here
+    }  // Guard automatically releases here
     chunk_manager_->triggerLruCheck();
   }
 
@@ -5742,10 +5730,8 @@ void GaussianMapper::testTransferGaussiansAcrossChunks() {
       if (!chunk || !chunk->getGaussians()) {
         throw std::runtime_error("Chunk or Gaussians not found for coord");
       }
+      ChunkOptimizationGuard guard(chunk_manager_.get(), {chunk});
 
-      std::vector<std::shared_ptr<Chunk>> chunks = {chunk};
-      ChunkOptimizationGuard guard(chunk_manager_.get(), chunks);
-      
       auto gaussians = chunk->getGaussians();
       torch::Tensor positions = gaussians->getXYZ();
 
@@ -5759,7 +5745,7 @@ void GaussianMapper::testTransferGaussiansAcrossChunks() {
 
       std::cout << "Applied translation to chunk " << coord.x << "," << coord.y
                 << "," << coord.z << std::endl;
-    } // Guard automatically releases here
+    }  // Guard automatically releases here
   }
 
   // Step 4: Now test the transferGaussiansAcrossChunks function
@@ -5793,9 +5779,8 @@ void GaussianMapper::testTransferGaussiansAcrossChunks() {
         throw std::runtime_error("Chunk or Gaussians not found for coord");
       }
 
-      std::vector<std::shared_ptr<Chunk>> chunks = {chunk};
-      ChunkOptimizationGuard guard(chunk_manager_.get(), chunks);
-      
+      ChunkOptimizationGuard guard(chunk_manager_.get(), {chunk});
+
       auto gaussians = chunk->getGaussians();
       torch::Tensor positions = gaussians->getXYZ();
 
@@ -5809,7 +5794,7 @@ void GaussianMapper::testTransferGaussiansAcrossChunks() {
 
       std::cout << "Applied translation to chunk " << coord.x << "," << coord.y
                 << "," << coord.z << std::endl;
-    } // Guard automatically releases here
+    }  // Guard automatically releases here
   }
 
   // Step 4: Now test the transferGaussiansAcrossChunks function
