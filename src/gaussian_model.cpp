@@ -278,7 +278,7 @@ void GaussianModel::scaledTransformationPostfix(torch::Tensor& new_xyz,
 
 void GaussianModel::scaledTransformVisiblePointsOfKeyframe(
     torch::Tensor& point_transformed_flags,
-    torch::Tensor& diff_pose,
+    const torch::Tensor& diff_pose,
     torch::Tensor& kf_world_view_transform,
     torch::Tensor& kf_full_proj_transform,
     const int kf_creation_iter,
@@ -1182,614 +1182,6 @@ void GaussianModel::setPercentDense(const float percent_dense) {
   percent_dense_ = percent_dense;
 }
 
-void GaussianModel::save_checkpoint(const std::string& path) {
-  // Create directory if it doesn't exist
-  std::filesystem::create_directories(std::filesystem::path(path));
-
-  // Save model tensors as before
-  torch::serialize::OutputArchive model_archive;
-  model_archive.write("xyz_", xyz_);
-  model_archive.write("features_dc_", features_dc_);
-  model_archive.write("features_rest_", features_rest_);
-  model_archive.write("scaling_", scaling_);
-  model_archive.write("rotation_", rotation_);
-  model_archive.write("opacity_", opacity_);
-  model_archive.write("max_radii2D_", max_radii2D_);
-  model_archive.write("xyz_gradient_accum_", xyz_gradient_accum_);
-  model_archive.write("denom_", denom_);
-  model_archive.write("exist_since_iter_", exist_since_iter_);
-  model_archive.write("position_lrs_", position_lrs_);
-  model_archive.save_to(path + "/model.pt");
-
-  assert(sh_degree_ <= 3);
-  assert(position_lr_init_ >= 0);
-  assert(position_lr_decay_ > 0);
-  assert(position_lr_min_ >= 0);
-  assert(local_iteration_ >= 0);
-
-  assert(percent_dense_ > 0 && percent_dense_ < 1);
-
-  // Save configuration as before
-  torch::serialize::OutputArchive config_archive;
-  config_archive.write("sh_degree_", torch::tensor(sh_degree_));
-  config_archive.write("position_lr_init_", torch::tensor(position_lr_init_));
-  config_archive.write("position_lr_decay_", torch::tensor(position_lr_decay_));
-  config_archive.write("position_lr_min_", torch::tensor(position_lr_min_));
-  config_archive.write("local_iteration_", torch::tensor(local_iteration_));
-  config_archive.write("percent_dense_", torch::tensor(percent_dense_));
-
-  // Manual learning rate saving
-  if (optimizer_) {
-    // std::cout << "Saving learning rates:" << std::endl;
-    for (size_t i = 0; i < optimizer_->param_groups().size(); ++i) {
-      float lr = optimizer_->param_groups()[i].options().get_lr();
-
-      // Safety check for NaN or inf learning rates
-      if (std::isnan(lr) || std::isinf(lr) || lr < 0.0f || lr > 1.0f) {
-        std::cerr << "ERROR: Found invalid learning rate (" << lr
-                  << ") for group " << i << std::endl;
-        throw std::runtime_error("Invalid LR to save");
-      }
-
-      std::string lr_name = "param_group_" + std::to_string(i) + "_lr";
-      config_archive.write(lr_name, torch::tensor(static_cast<float>(lr)));
-      // std::cout << "  Group " << i << " LR: " << lr << std::endl;
-    }
-  }
-  config_archive.save_to(path + "/config.pt");
-
-  // Manually save optimizer state
-  if (optimizer_) {
-    torch::serialize::OutputArchive opt_archive;
-
-    // Save number of param groups
-    opt_archive.write(
-        "num_param_groups",
-        torch::tensor(static_cast<int64_t>(optimizer_->param_groups().size())));
-
-    // For each parameter group and parameter, save the state
-    auto& state = optimizer_->state();
-    int param_idx = 0;
-
-    for (size_t group_idx = 0; group_idx < optimizer_->param_groups().size();
-         ++group_idx) {
-      auto& group = optimizer_->param_groups()[group_idx];
-
-      // Save parameter group size
-      opt_archive.write(
-          "group_" + std::to_string(group_idx) + "_size",
-          torch::tensor(static_cast<int64_t>(group.params().size())));
-
-      for (size_t j = 0; j < group.params().size(); ++j) {
-        auto& param = group.params()[j];
-        auto key = param.unsafeGetTensorImpl();
-
-        // Save shape information
-        std::vector<int64_t> sizes_vec;
-        for (int d = 0; d < param.dim(); ++d) {
-          sizes_vec.push_back(param.size(d));
-        }
-        opt_archive.write("param_" + std::to_string(param_idx) + "_shape",
-                          torch::tensor(sizes_vec));
-
-        if (state.find(key) != state.end()) {
-          auto& param_state =
-              static_cast<torch::optim::AdamParamState&>(*state[key]);
-
-          // Save state components
-          opt_archive.write(
-              "param_" + std::to_string(param_idx) + "_step",
-              torch::tensor(static_cast<int64_t>(param_state.step())));
-          opt_archive.write("param_" + std::to_string(param_idx) + "_exp_avg",
-                            param_state.exp_avg());
-          opt_archive.write(
-              "param_" + std::to_string(param_idx) + "_exp_avg_sq",
-              param_state.exp_avg_sq());
-        } else {
-          // Save placeholder for parameters without state
-          opt_archive.write("param_" + std::to_string(param_idx) + "_step",
-                            torch::tensor(static_cast<int64_t>(0)));
-          opt_archive.write("param_" + std::to_string(param_idx) + "_exp_avg",
-                            torch::zeros_like(param));
-          opt_archive.write(
-              "param_" + std::to_string(param_idx) + "_exp_avg_sq",
-              torch::zeros_like(param));
-        }
-
-        param_idx++;
-      }
-    }
-
-    opt_archive.save_to(path + "/optimizer_manual.pt");
-    // std::cout << "Optimizer state manually saved" << std::endl;
-  }
-
-  // std::cout << "Checkpoint saved to " << path << std::endl;
-}
-
-void GaussianModel::load_checkpoint_incremental(
-    const std::string& path,
-    const GaussianOptimizationParams& training_args,
-    bool load_auxiliary_tensors,
-    bool load_optimizer_state,
-    bool load_existence_info,
-    bool normalize_quaternions,
-    bool clear_cache_after_load) {
-  if (!std::filesystem::exists(path)) {
-    throw std::runtime_error("Checkpoint directory does not exist: " + path);
-  }
-
-  // 1. Load model tensors
-  torch::serialize::InputArchive model_archive;
-  if (std::filesystem::exists(path + "/model.pt")) {
-    try {
-      model_archive.load_from(path + "/model.pt");
-    } catch (const std::exception& e) {
-      throw std::runtime_error("Failed to load model: " +
-                               std::string(e.what()));
-    }
-  } else {
-    throw std::runtime_error("No model file found at " + path);
-  }
-
-  // Always load core tensors
-  model_archive.read("xyz_", xyz_);
-  model_archive.read("features_dc_", features_dc_);
-  model_archive.read("features_rest_", features_rest_);
-  model_archive.read("scaling_", scaling_);
-  model_archive.read("rotation_", rotation_);
-  model_archive.read("opacity_", opacity_);
-
-  // Load auxiliary tensors
-  try {
-    model_archive.read("max_radii2D_", max_radii2D_);
-    model_archive.read("xyz_gradient_accum_", xyz_gradient_accum_);
-    model_archive.read("denom_", denom_);
-    model_archive.read("exist_since_iter_", exist_since_iter_);
-    model_archive.read("position_lrs_", position_lrs_);
-  } catch (const std::exception& e) {
-    throw std::runtime_error(
-        "Warning: Failed to load auxiliary tensors info: " +
-        std::string(e.what()));
-  }
-
-  // Load model configuration
-  torch::serialize::InputArchive config_archive;
-  if (std::filesystem::exists(path + "/config.pt")) {
-    try {
-      config_archive.load_from(path + "/config.pt");
-    } catch (const std::exception& e) {
-      throw std::runtime_error("Failed to load chunk config: " +
-                               std::string(e.what()));
-    }
-  } else {
-    throw std::runtime_error("Warning: Chunk config not found at " + path +
-                             "/config.pt");
-  }
-
-  // Temporary tensors to hold the loaded scalar values
-  torch::Tensor sh_degree_tensor, local_iteration_tensor;
-  torch::Tensor percent_dense_tensor, position_lr_init_tensor,
-      position_lr_decay_tensor, position_lr_min_tensor;
-
-  config_archive.read("sh_degree_", sh_degree_tensor);
-  config_archive.read("local_iteration_", local_iteration_tensor);
-
-  // Load float values
-  config_archive.read("percent_dense_", percent_dense_tensor);
-  config_archive.read("position_lr_init_", position_lr_init_tensor);
-  config_archive.read("position_lr_decay_", position_lr_decay_tensor);
-  config_archive.read("position_lr_min_", position_lr_min_tensor);
-
-  // Convert tensors back to native types
-  sh_degree_ = sh_degree_tensor.item<int>();
-  assert(sh_degree_ <= 3);
-
-  local_iteration_ = local_iteration_tensor.item<int>();
-  assert(local_iteration_ >= 0);
-
-  percent_dense_ = percent_dense_tensor.item<float>();
-  assert(percent_dense_ > 0 && percent_dense_ < 1);
-  position_lr_init_ = position_lr_init_tensor.item<float>();
-  assert(position_lr_init_ > 0);
-  position_lr_decay_ = position_lr_decay_tensor.item<float>();
-  assert(position_lr_decay_ > 0);
-  position_lr_min_ = position_lr_min_tensor.item<float>();
-  assert(position_lr_min_ > 0);
-
-  // std::cout << "lr_init_tensor " << lr_init_tensor << std::endl;
-  // std::cout << "lr_init_ " << lr_init_ << std::endl;
-
-  // 3. Prepare tensors for optimizer (with optional normalization)
-  // if (normalize_quaternions) {
-  //   rotation_ = torch::nn::functional::normalize(
-  //       rotation_, torch::nn::functional::NormalizeFuncOptions().dim(-1));
-  // }
-
-  // Ensure all tensors require gradients
-  xyz_ = xyz_.requires_grad_(true);
-  features_dc_ = features_dc_.contiguous().requires_grad_(true);
-  features_rest_ = features_rest_.contiguous().requires_grad_(true);
-  scaling_ = scaling_.requires_grad_(true);
-  rotation_ = rotation_.requires_grad_(true);
-  opacity_ = opacity_.requires_grad_(true);
-
-  // Convert tensors to vectors
-  GAUSSIAN_MODEL_TENSORS_TO_VEC
-
-  // Load learning rates with strict validation
-  std::vector<float> learning_rates;
-
-  // Define default learning rates
-  std::vector<float> default_learning_rates = {
-      0.0f,
-      training_args.feature_lr_,
-      training_args.feature_lr_ / 20.0f,
-      training_args.opacity_lr_,
-      training_args.scaling_lr_,
-      training_args.rotation_lr_};
-
-  if (std::filesystem::exists(path + "/config.pt")) {
-    try {
-      config_archive.load_from(path + "/config.pt");
-
-      // Try to load individual learning rates with validation
-      torch::Tensor lr_tensor;
-      // std::cout << "Loading learning rates:" << std::endl;
-
-      for (int i = 0; i < 6; ++i) {  // We know there are 6 param groups
-        std::string lr_name = "param_group_" + std::to_string(i) + "_lr";
-        float lr = default_learning_rates[i];  // Default value
-
-        try {
-          config_archive.read(lr_name, lr_tensor);
-          float loaded_lr = lr_tensor.item<float>();
-
-          // Validate the loaded learning rate
-          if (!std::isnan(loaded_lr) && !std::isinf(loaded_lr) &&
-              loaded_lr >= 0.0f && loaded_lr < 1.0f) {
-            lr = loaded_lr;
-          } else {
-            std::cerr << "WARNING: Invalid learning rate (" << loaded_lr
-                      << ") for group " << i << ". Using default "
-                      << default_learning_rates[i] << " instead." << std::endl;
-          }
-        } catch (...) {
-          std::cout << "  Group " << i << " LR not found, using default: " << lr
-                    << std::endl;
-        }
-
-        learning_rates.push_back(lr);
-        // std::cout << "  Group " << i << " LR: " << lr << std::endl;
-      }
-    } catch (const std::exception& e) {
-      std::cerr << "Error loading config: " << e.what() << std::endl;
-      std::cerr << "Using default learning rates" << std::endl;
-      learning_rates = default_learning_rates;
-    }
-  } else {
-    std::cout << "No config file found, using default learning rates"
-              << std::endl;
-    learning_rates = default_learning_rates;
-  }
-
-  // 4. Create optimizer with properly set learning rates
-  torch::optim::AdamOptions adam_options;
-  adam_options.set_lr(learning_rates[0]);  // Set initial LR for first group
-  adam_options.eps() = 1e-15;
-
-  this->optimizer_.reset(new SparseGaussianAdam(Tensor_vec_xyz_, adam_options));
-  optimizer_->param_groups()[0].options().set_lr(0.0f);
-
-  optimizer_->add_param_group(Tensor_vec_feature_dc_);
-  optimizer_->param_groups()[1].options().set_lr(learning_rates[1]);
-
-  optimizer_->add_param_group(Tensor_vec_feature_rest_);
-  optimizer_->param_groups()[2].options().set_lr(learning_rates[2]);
-
-  optimizer_->add_param_group(Tensor_vec_opacity_);
-  optimizer_->param_groups()[3].options().set_lr(learning_rates[3]);
-
-  optimizer_->add_param_group(Tensor_vec_scaling_);
-  optimizer_->param_groups()[4].options().set_lr(learning_rates[4]);
-
-  optimizer_->add_param_group(Tensor_vec_rotation_);
-  optimizer_->param_groups()[5].options().set_lr(learning_rates[5]);
-
-  // std::cout << "Verifying optimizer learning rates:" << std::endl;
-  for (size_t i = 0; i < optimizer_->param_groups().size(); ++i) {
-    float actual_lr = optimizer_->param_groups()[i].options().get_lr();
-    // std::cout << "  Group " << i << " actual LR: " << actual_lr << std::endl;
-
-    // Double-check for NaN (this should never happen with our validation)
-    if (std::isnan(actual_lr)) {
-      std::cerr
-          << "CRITICAL: NaN learning rate detected after setting! Fixing..."
-          << std::endl;
-      optimizer_->param_groups()[i].options().set_lr(default_learning_rates[i]);
-    }
-  }
-
-  // 5. Manually load optimizer state
-  if (load_optimizer_state &&
-      std::filesystem::exists(path + "/optimizer_manual.pt")) {
-    try {
-      torch::serialize::InputArchive opt_archive;
-      opt_archive.load_from(path + "/optimizer_manual.pt");
-
-      torch::Tensor num_groups_tensor;
-      opt_archive.read("num_param_groups", num_groups_tensor);
-      int64_t num_groups = num_groups_tensor.item<int64_t>();
-
-      if (num_groups != optimizer_->param_groups().size()) {
-        std::cerr << "Warning: Saved optimizer had " << num_groups
-                  << " parameter groups, but current optimizer has "
-                  << optimizer_->param_groups().size() << std::endl;
-        throw std::runtime_error("Parameter group count mismatch");
-      }
-
-      int param_idx = 0;
-      auto& state = optimizer_->state();
-
-      for (size_t group_idx = 0; group_idx < optimizer_->param_groups().size();
-           ++group_idx) {
-        // Check group size
-        torch::Tensor group_size_tensor;
-        opt_archive.read("group_" + std::to_string(group_idx) + "_size",
-                         group_size_tensor);
-        int64_t group_size = group_size_tensor.item<int64_t>();
-
-        auto& group = optimizer_->param_groups()[group_idx];
-        if (group_size != group.params().size()) {
-          std::cerr << "Warning: Group " << group_idx
-                    << " size mismatch: saved=" << group_size
-                    << ", current=" << group.params().size() << std::endl;
-          throw std::runtime_error("Parameter count mismatch in group");
-        }
-
-        for (size_t j = 0; j < group.params().size(); ++j) {
-          auto& param = group.params()[j];
-          auto key = param.unsafeGetTensorImpl();
-
-          // Check parameter shape
-          torch::Tensor shape_tensor;
-          opt_archive.read("param_" + std::to_string(param_idx) + "_shape",
-                           shape_tensor);
-          std::vector<int64_t> shape;
-          for (int i = 0; i < shape_tensor.size(0); ++i) {
-            shape.push_back(shape_tensor[i].item<int64_t>());
-          }
-
-          // Create the parameter state
-          torch::Tensor step_tensor, exp_avg, exp_avg_sq;
-          opt_archive.read("param_" + std::to_string(param_idx) + "_step",
-                           step_tensor);
-          opt_archive.read("param_" + std::to_string(param_idx) + "_exp_avg",
-                           exp_avg);
-          opt_archive.read("param_" + std::to_string(param_idx) + "_exp_avg_sq",
-                           exp_avg_sq);
-
-          // Verify tensor size
-          bool sizes_match = true;
-          if (param.dim() != shape.size()) {
-            sizes_match = false;
-          } else {
-            for (int d = 0; d < param.dim(); ++d) {
-              if (param.size(d) != shape[d]) {
-                sizes_match = false;
-                break;
-              }
-            }
-          }
-
-          if (!sizes_match) {
-            // Print the expected shape from the archive
-            std::cerr << "Expected shape: [";
-            for (size_t d = 0; d < shape.size(); ++d) {
-              std::cerr << shape[d];
-              if (d < shape.size() - 1) std::cerr << ", ";
-            }
-            std::cerr << "]" << std::endl;
-
-            // Print the actual shape of the parameter
-            std::cerr << "Actual shape: [";
-            for (int d = 0; d < param.dim(); ++d) {
-              std::cerr << param.size(d);
-              if (d < param.dim() - 1) std::cerr << ", ";
-            }
-            std::cerr << "]" << std::endl;
-
-            std::cerr << "Warning: Parameter shape mismatch for param "
-                      << param_idx << std::endl;
-            throw std::runtime_error("Parameter shape mismatch");
-            // Create zero state instead of throwing
-            auto new_state = std::make_unique<torch::optim::AdamParamState>();
-            new_state->step(0);
-            new_state->exp_avg(torch::zeros_like(param));
-            new_state->exp_avg_sq(torch::zeros_like(param));
-            state[key] = std::move(new_state);
-          } else {
-            // Create state with loaded values
-            auto new_state = std::make_unique<torch::optim::AdamParamState>();
-            new_state->step(step_tensor.item<int64_t>());
-            new_state->exp_avg(exp_avg.to(param.device()));
-            new_state->exp_avg_sq(exp_avg_sq.to(param.device()));
-
-            // // Optional: clip extreme values
-            // if (new_state->exp_avg().abs().max().item<float>() > 1e3) {
-            //   std::cout << "Clipping extreme exp_avg values for param "
-            //             << param_idx << std::endl;
-            //   new_state->exp_avg().clamp_(-1e3, 1e3);
-            // }
-            // if (new_state->exp_avg_sq().max().item<float>() > 1e6) {
-            //   std::cout << "Clipping extreme exp_avg_sq values for param "
-            //             << param_idx << std::endl;
-            //   new_state->exp_avg_sq().clamp_(0, 1e6);
-            // }
-
-            state[key] = std::move(new_state);
-          }
-
-          param_idx++;
-        }
-      }
-
-      // std::cout << "Optimizer state manually loaded successfully" <<
-      // std::endl;
-
-      // Verify loaded state
-      bool state_ok = true;
-      for (auto& param_group : optimizer_->param_groups()) {
-        for (auto& param : param_group.params()) {
-          auto key = param.unsafeGetTensorImpl();
-          if (state.find(key) == state.end()) {
-            state_ok = false;
-            throw std::runtime_error(
-                "Error: Parameter missing from state after loading");
-          }
-        }
-      }
-
-      // if (state_ok) {
-      //   std::cout << "All parameters have state after loading" << std::endl;
-      // }
-
-      // Debug print the actual learning rates
-      // std::cout << "\n==== ACTUAL LEARNING RATES AFTER LOADING ====\n";
-      // for (size_t i = 0; i < optimizer_->param_groups().size(); ++i) {
-      //   std::cout << "Group " << i
-      //             << " LR: " <<
-      //             optimizer_->param_groups()[i].options().get_lr()
-      //             << std::endl;
-      // }
-
-      // {
-      //   std::cout << "Checking for high momentum values after loading..."
-      //             << std::endl;
-      //   auto& state = optimizer_->state();
-      //   int clipped_count = 0;
-
-      //   for (auto& param_group : optimizer_->param_groups()) {
-      //     for (auto& param : param_group.params()) {
-      //       auto key = param.unsafeGetTensorImpl();
-      //       if (state.find(key) != state.end()) {
-      //         auto& param_state =
-      //             static_cast<torch::optim::AdamParamState&>(*state[key]);
-
-      //         // Check for empty tensors before calling max()
-      //         if (param_state.exp_avg().numel() == 0 ||
-      //             param_state.exp_avg_sq().numel() == 0) {
-      //           std::cout << "Warning: Empty momentum tensor detected,
-      //           skipping"
-      //                     << std::endl;
-      //           continue;
-      //         }
-
-      //         // Check for extreme values (safely)
-      //         float max_exp_avg = 0.0f;
-      //         float max_exp_avg_sq = 0.0f;
-
-      //         try {
-      //           max_exp_avg =
-      //           param_state.exp_avg().abs().max().item<float>();
-      //         } catch (const std::exception& e) {
-      //           std::cout << "Warning: Error getting max of exp_avg: "
-      //                     << e.what() << std::endl;
-      //         }
-
-      //         try {
-      //           max_exp_avg_sq =
-      //           param_state.exp_avg_sq().max().item<float>();
-      //         } catch (const std::exception& e) {
-      //           std::cout << "Warning: Error getting max of exp_avg_sq: "
-      //                     << e.what() << std::endl;
-      //         }
-
-      //         // More conservative clipping
-      //         if (max_exp_avg > 10.0f || std::isnan(max_exp_avg)) {
-      //           clipped_count++;
-      //           // Scale down rather than hard clipping
-      //           param_state.exp_avg().mul_(10.0f / (max_exp_avg + 1e-6f));
-      //         }
-
-      //         if (max_exp_avg_sq > 100.0f || std::isnan(max_exp_avg_sq)) {
-      //           clipped_count++;
-      //           // Scale down squared values
-      //           param_state.exp_avg_sq().mul_(100.0f /
-      //                                         (max_exp_avg_sq + 1e-6f));
-      //         }
-
-      //         // Final check for NaN
-      //         if (param_state.exp_avg().isnan().any().item<bool>() ||
-      //             param_state.exp_avg_sq().isnan().any().item<bool>()) {
-      //           std::cout << "  Resetting NaN values in momentum" <<
-      //           std::endl; param_state.exp_avg().nan_to_num_();
-      //           param_state.exp_avg_sq().nan_to_num_();
-      //         }
-      //       }
-      //     }
-      //   }
-
-      //   std::cout << "  Clipped " << clipped_count << " momentum tensors"
-      //             << std::endl;
-      // }
-
-    } catch (const std::exception& e) {
-      std::cerr << "Warning: Failed to load optimizer state: " << e.what()
-                << std::endl;
-      throw std::runtime_error("Warning: Failed to load optimizer state");
-      std::cerr << "Continuing with newly initialized optimizer" << std::endl;
-
-      // Initialize fresh state
-      auto& state = optimizer_->state();
-      state.clear();
-      for (auto& param_group : optimizer_->param_groups()) {
-        for (auto& param : param_group.params()) {
-          auto key = param.unsafeGetTensorImpl();
-          auto new_state = std::make_unique<torch::optim::AdamParamState>();
-          new_state->step(0);
-          new_state->exp_avg(torch::zeros_like(param));
-          new_state->exp_avg_sq(torch::zeros_like(param));
-          state[key] = std::move(new_state);
-        }
-      }
-    }
-  } else if (load_optimizer_state) {
-    std::cout << "No optimizer state found at " << path + "/optimizer_manual.pt"
-              << std::endl;
-    throw std::runtime_error("Optimizer couldn't be loaded");
-    std::cout << "Initializing fresh optimizer state" << std::endl;
-
-    // Initialize fresh state
-    auto& state = optimizer_->state();
-    for (auto& param_group : optimizer_->param_groups()) {
-      for (auto& param : param_group.params()) {
-        auto key = param.unsafeGetTensorImpl();
-        auto new_state = std::make_unique<torch::optim::AdamParamState>();
-        new_state->step(0);
-        new_state->exp_avg(torch::zeros_like(param));
-        new_state->exp_avg_sq(torch::zeros_like(param));
-        state[key] = std::move(new_state);
-      }
-    }
-  }
-
-  // Force recompute covariances
-  // {
-  //   torch::NoGradGuard no_grad;
-  //   getCovarianceActivation();
-  // }
-
-  // Optional CUDA cache clear
-  // if (clear_cache_after_load) {
-  //   c10::cuda::CUDACachingAllocator::emptyCache();
-  // }
-
-  // std::cout << "Loaded " << xyz_.size(0) << " points from checkpoint"
-  //           << std::endl;
-  // std::cout << "Checkpoint loaded from " << path << std::endl;
-}
-
 GaussianTransferData GaussianModel::extractGaussiansWithStates(
     const torch::Tensor& mask) {
   torch::NoGradGuard no_grad;
@@ -2032,4 +1424,1055 @@ void GaussianModel::initializeFromTransferData(
       }
     }
   }
+}
+
+void GaussianModel::saveTensorBinary(const torch::Tensor& tensor,
+                                     std::ofstream& file) {
+  TensorHeader header = {};
+  header.dims = tensor.dim();
+
+  for (int i = 0; i < tensor.dim(); ++i) {
+    header.sizes[i] = static_cast<uint32_t>(tensor.size(i));
+  }
+  header.dtype = static_cast<uint32_t>(tensor.scalar_type());
+  header.data_size = tensor.nbytes();
+
+  // Write header
+  file.write(reinterpret_cast<const char*>(&header), sizeof(header));
+
+  // Move tensor to CPU if needed and write data
+  torch::Tensor cpu_tensor = tensor.is_cuda() ? tensor.cpu() : tensor;
+  file.write(reinterpret_cast<const char*>(cpu_tensor.data_ptr()),
+             header.data_size);
+}
+
+torch::Tensor GaussianModel::loadTensorBinary(std::ifstream& file) {
+  TensorHeader header;
+  file.read(reinterpret_cast<char*>(&header), sizeof(header));
+
+  // Reconstruct tensor sizes
+  std::vector<int64_t> sizes(header.dims);
+  for (uint32_t i = 0; i < header.dims; ++i) {
+    sizes[i] = header.sizes[i];
+  }
+
+  // Create tensor with correct type and device
+  torch::TensorOptions options =
+      torch::TensorOptions()
+          .dtype(static_cast<torch::ScalarType>(header.dtype))
+          .device(device_type_);
+
+  torch::Tensor tensor = torch::empty(sizes, options.device(torch::kCPU));
+
+  // Read data
+  file.read(reinterpret_cast<char*>(tensor.data_ptr()), header.data_size);
+
+  // Move to target device if needed
+  return tensor.to(device_type_);
+}
+
+void GaussianModel::save_checkpoint_fast(const std::string& path) {
+  std::ofstream file(path, std::ios::binary);
+  if (!file.is_open()) {
+    throw std::runtime_error("Cannot open file for writing: " + path);
+  }
+
+  // Write a simple magic number and version for validation
+  uint32_t magic = 0x47415553;  // "GAUS" in hex
+  uint32_t version = 2;         // Incremented for optimizer state support
+  file.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+  file.write(reinterpret_cast<const char*>(&version), sizeof(version));
+
+  // Validate model parameters before saving
+  assert(sh_degree_ <= 3);
+  assert(position_lr_init_ >= 0);
+  assert(position_lr_decay_ > 0);
+  assert(position_lr_min_ >= 0);
+  assert(local_iteration_ >= 0);
+  assert(percent_dense_ > 0 && percent_dense_ < 1);
+
+  // Write model metadata
+  file.write(reinterpret_cast<const char*>(&sh_degree_), sizeof(sh_degree_));
+  file.write(reinterpret_cast<const char*>(&local_iteration_),
+             sizeof(local_iteration_));
+  file.write(reinterpret_cast<const char*>(&percent_dense_),
+             sizeof(percent_dense_));
+  file.write(reinterpret_cast<const char*>(&spatial_lr_scale_),
+             sizeof(spatial_lr_scale_));
+  file.write(reinterpret_cast<const char*>(&position_lr_init_),
+             sizeof(position_lr_init_));
+  file.write(reinterpret_cast<const char*>(&position_lr_decay_),
+             sizeof(position_lr_decay_));
+  file.write(reinterpret_cast<const char*>(&position_lr_min_),
+             sizeof(position_lr_min_));
+
+  // Prepare optimizer header
+  OptimizerHeader opt_header = {};
+  opt_header.has_optimizer_state = (optimizer_ != nullptr) ? 1 : 0;
+
+  if (optimizer_) {
+    opt_header.num_param_groups =
+        static_cast<uint32_t>(optimizer_->param_groups().size());
+
+    // Save learning rates with validation
+    for (size_t i = 0; i < optimizer_->param_groups().size() && i < 6; ++i) {
+      float lr = optimizer_->param_groups()[i].options().get_lr();
+
+      // Safety check for NaN or inf learning rates
+      if (std::isnan(lr) || std::isinf(lr) || lr < 0.0f || lr > 1.0f) {
+        std::cerr << "ERROR: Found invalid learning rate (" << lr
+                  << ") for group " << i << std::endl;
+        throw std::runtime_error("Invalid LR to save");
+      }
+
+      opt_header.learning_rates[i] = lr;
+    }
+
+    // Count parameters per group
+    for (size_t i = 0; i < optimizer_->param_groups().size() && i < 6; ++i) {
+      opt_header.param_counts[i] =
+          static_cast<uint32_t>(optimizer_->param_groups()[i].params().size());
+    }
+
+    // Calculate total state data size (will be filled later)
+    opt_header.state_data_size = 0;
+  }
+
+  // Write optimizer header
+  file.write(reinterpret_cast<const char*>(&opt_header), sizeof(opt_header));
+
+  // Save main tensors in order
+  saveTensorBinary(xyz_, file);
+  saveTensorBinary(features_dc_, file);
+  saveTensorBinary(features_rest_, file);
+  saveTensorBinary(scaling_, file);
+  saveTensorBinary(rotation_, file);
+  saveTensorBinary(opacity_, file);
+  saveTensorBinary(max_radii2D_, file);
+  saveTensorBinary(xyz_gradient_accum_, file);
+  saveTensorBinary(denom_, file);
+  saveTensorBinary(exist_since_iter_, file);
+  saveTensorBinary(position_lrs_, file);
+
+  // Save optimizer state if available
+  if (optimizer_) {
+    auto& state = optimizer_->state();
+    int param_idx = 0;
+
+    for (size_t group_idx = 0; group_idx < optimizer_->param_groups().size();
+         ++group_idx) {
+      auto& group = optimizer_->param_groups()[group_idx];
+
+      for (size_t j = 0; j < group.params().size(); ++j) {
+        auto& param = group.params()[j];
+        auto key = param.unsafeGetTensorImpl();
+
+        if (state.find(key) != state.end()) {
+          auto& param_state =
+              static_cast<torch::optim::AdamParamState&>(*state[key]);
+
+          // Save step count
+          int64_t step = param_state.step();
+          file.write(reinterpret_cast<const char*>(&step), sizeof(step));
+
+          // Save momentum tensors
+          saveTensorBinary(param_state.exp_avg(), file);
+          saveTensorBinary(param_state.exp_avg_sq(), file);
+        } else {
+          // Save placeholder for parameters without state
+          int64_t step = 0;
+          file.write(reinterpret_cast<const char*>(&step), sizeof(step));
+          saveTensorBinary(torch::zeros_like(param), file);
+          saveTensorBinary(torch::zeros_like(param), file);
+        }
+
+        param_idx++;
+      }
+    }
+  }
+
+  file.close();
+}
+
+void GaussianModel::load_checkpoint_fast(
+    const std::string& path,
+    const GaussianOptimizationParams& training_args,
+    bool load_auxiliary_tensors,
+    bool load_optimizer_state,
+    bool load_existence_info,
+    bool normalize_quaternions) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file.is_open()) {
+    throw std::runtime_error("Cannot open file for reading: " + path);
+  }
+
+  // Validate magic number and version
+  uint32_t magic, version;
+  file.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+  file.read(reinterpret_cast<char*>(&version), sizeof(version));
+
+  if (magic != 0x47415553) {
+    throw std::runtime_error("Invalid checkpoint file format");
+  }
+
+  bool has_optimizer_data = (version >= 2);
+
+  // Read model metadata
+  file.read(reinterpret_cast<char*>(&sh_degree_), sizeof(sh_degree_));
+  file.read(reinterpret_cast<char*>(&local_iteration_),
+            sizeof(local_iteration_));
+  file.read(reinterpret_cast<char*>(&percent_dense_), sizeof(percent_dense_));
+  file.read(reinterpret_cast<char*>(&spatial_lr_scale_),
+            sizeof(spatial_lr_scale_));
+  file.read(reinterpret_cast<char*>(&position_lr_init_),
+            sizeof(position_lr_init_));
+  file.read(reinterpret_cast<char*>(&position_lr_decay_),
+            sizeof(position_lr_decay_));
+  file.read(reinterpret_cast<char*>(&position_lr_min_),
+            sizeof(position_lr_min_));
+
+  // Validate loaded parameters
+  assert(sh_degree_ <= 3);
+  assert(local_iteration_ >= 0);
+  assert(percent_dense_ > 0 && percent_dense_ < 1);
+  assert(position_lr_init_ > 0);
+  assert(position_lr_decay_ > 0);
+  assert(position_lr_min_ > 0);
+
+  // Read optimizer header if available
+  OptimizerHeader opt_header = {};
+  std::vector<float> learning_rates;
+  std::vector<float> default_learning_rates = {
+      0.0f,
+      training_args.feature_lr_,
+      training_args.feature_lr_ / 20.0f,
+      training_args.opacity_lr_,
+      training_args.scaling_lr_,
+      training_args.rotation_lr_};
+
+  if (has_optimizer_data) {
+    file.read(reinterpret_cast<char*>(&opt_header), sizeof(opt_header));
+
+    // Load learning rates with validation
+    for (int i = 0; i < 6; ++i) {
+      float lr = default_learning_rates[i];
+
+      if (i < opt_header.num_param_groups) {
+        float loaded_lr = opt_header.learning_rates[i];
+
+        // Validate the loaded learning rate
+        if (!std::isnan(loaded_lr) && !std::isinf(loaded_lr) &&
+            loaded_lr >= 0.0f && loaded_lr < 1.0f) {
+          lr = loaded_lr;
+        } else {
+          std::cerr << "WARNING: Invalid learning rate (" << loaded_lr
+                    << ") for group " << i << ". Using default "
+                    << default_learning_rates[i] << " instead." << std::endl;
+        }
+      }
+
+      learning_rates.push_back(lr);
+    }
+  } else {
+    learning_rates = default_learning_rates;
+  }
+
+  // Load main tensors in same order as saved
+  xyz_ = loadTensorBinary(file);
+  features_dc_ = loadTensorBinary(file);
+  features_rest_ = loadTensorBinary(file);
+  scaling_ = loadTensorBinary(file);
+  rotation_ = loadTensorBinary(file);
+  opacity_ = loadTensorBinary(file);
+
+  if (load_auxiliary_tensors) {
+    max_radii2D_ = loadTensorBinary(file);
+    xyz_gradient_accum_ = loadTensorBinary(file);
+    denom_ = loadTensorBinary(file);
+  } else {
+    // Skip these tensors by reading headers and seeking past data
+    for (int i = 0; i < 3; ++i) {
+      TensorHeader header;
+      file.read(reinterpret_cast<char*>(&header), sizeof(header));
+      file.seekg(header.data_size, std::ios::cur);
+    }
+    // Initialize with empty tensors
+    max_radii2D_ = torch::empty(0, torch::TensorOptions().device(device_type_));
+    xyz_gradient_accum_ =
+        torch::empty(0, torch::TensorOptions().device(device_type_));
+    denom_ = torch::empty(0, torch::TensorOptions().device(device_type_));
+  }
+
+  if (load_existence_info) {
+    exist_since_iter_ = loadTensorBinary(file);
+  } else {
+    // Skip tensor
+    TensorHeader header;
+    file.read(reinterpret_cast<char*>(&header), sizeof(header));
+    file.seekg(header.data_size, std::ios::cur);
+    exist_since_iter_ =
+        torch::empty(0, torch::TensorOptions().device(device_type_));
+  }
+
+  // Always load position_lrs for optimizer setup
+  position_lrs_ = loadTensorBinary(file);
+
+  // Normalize quaternions if requested
+  if (normalize_quaternions) {
+    rotation_ = torch::nn::functional::normalize(
+        rotation_, torch::nn::functional::NormalizeFuncOptions().dim(1));
+  }
+
+  // Ensure all tensors require gradients
+  xyz_ = xyz_.requires_grad_(true);
+  features_dc_ = features_dc_.contiguous().requires_grad_(true);
+  features_rest_ = features_rest_.contiguous().requires_grad_(true);
+  scaling_ = scaling_.requires_grad_(true);
+  rotation_ = rotation_.requires_grad_(true);
+  opacity_ = opacity_.requires_grad_(true);
+
+  // Update tensor vectors
+  GAUSSIAN_MODEL_TENSORS_TO_VEC
+
+  // Setup optimizer with proper learning rates
+  torch::optim::AdamOptions adam_options;
+  adam_options.set_lr(learning_rates[0]);
+  adam_options.eps() = 1e-15;
+
+  this->optimizer_.reset(new SparseGaussianAdam(Tensor_vec_xyz_, adam_options));
+  optimizer_->param_groups()[0].options().set_lr(0.0f);
+
+  optimizer_->add_param_group(Tensor_vec_feature_dc_);
+  optimizer_->param_groups()[1].options().set_lr(learning_rates[1]);
+
+  optimizer_->add_param_group(Tensor_vec_feature_rest_);
+  optimizer_->param_groups()[2].options().set_lr(learning_rates[2]);
+
+  optimizer_->add_param_group(Tensor_vec_opacity_);
+  optimizer_->param_groups()[3].options().set_lr(learning_rates[3]);
+
+  optimizer_->add_param_group(Tensor_vec_scaling_);
+  optimizer_->param_groups()[4].options().set_lr(learning_rates[4]);
+
+  optimizer_->add_param_group(Tensor_vec_rotation_);
+  optimizer_->param_groups()[5].options().set_lr(learning_rates[5]);
+
+  // Verify optimizer learning rates
+  for (size_t i = 0; i < optimizer_->param_groups().size(); ++i) {
+    float actual_lr = optimizer_->param_groups()[i].options().get_lr();
+
+    // Double-check for NaN (this should never happen with our validation)
+    if (std::isnan(actual_lr)) {
+      std::cerr
+          << "CRITICAL: NaN learning rate detected after setting! Fixing..."
+          << std::endl;
+      optimizer_->param_groups()[i].options().set_lr(default_learning_rates[i]);
+    }
+  }
+
+  // Load optimizer state if requested and available
+  if (load_optimizer_state && has_optimizer_data &&
+      opt_header.has_optimizer_state) {
+    try {
+      auto& state = optimizer_->state();
+      int param_idx = 0;
+
+      for (size_t group_idx = 0; group_idx < optimizer_->param_groups().size();
+           ++group_idx) {
+        auto& group = optimizer_->param_groups()[group_idx];
+
+        // Verify parameter count matches
+        if (group_idx < 6 &&
+            group.params().size() != opt_header.param_counts[group_idx]) {
+          std::cerr << "Warning: Group " << group_idx
+                    << " size mismatch: saved="
+                    << opt_header.param_counts[group_idx]
+                    << ", current=" << group.params().size() << std::endl;
+          throw std::runtime_error("Parameter count mismatch in group");
+        }
+
+        for (size_t j = 0; j < group.params().size(); ++j) {
+          auto& param = group.params()[j];
+          auto key = param.unsafeGetTensorImpl();
+
+          // Load step count
+          int64_t step;
+          file.read(reinterpret_cast<char*>(&step), sizeof(step));
+
+          // Load momentum tensors
+          torch::Tensor exp_avg = loadTensorBinary(file);
+          torch::Tensor exp_avg_sq = loadTensorBinary(file);
+
+          // Verify tensor shapes match current parameter
+          bool sizes_match = true;
+          if (param.dim() != exp_avg.dim() || param.dim() != exp_avg_sq.dim()) {
+            sizes_match = false;
+          } else {
+            for (int d = 0; d < param.dim(); ++d) {
+              if (param.size(d) != exp_avg.size(d) ||
+                  param.size(d) != exp_avg_sq.size(d)) {
+                sizes_match = false;
+                break;
+              }
+            }
+          }
+
+          if (!sizes_match) {
+            std::cerr << "Warning: Parameter shape mismatch for param "
+                      << param_idx << std::endl;
+            // Create zero state instead of using mismatched tensors
+            auto new_state = std::make_unique<torch::optim::AdamParamState>();
+            new_state->step(0);
+            new_state->exp_avg(torch::zeros_like(param));
+            new_state->exp_avg_sq(torch::zeros_like(param));
+            state[key] = std::move(new_state);
+          } else {
+            // Create state with loaded values
+            auto new_state = std::make_unique<torch::optim::AdamParamState>();
+            new_state->step(step);
+            new_state->exp_avg(exp_avg.to(param.device()));
+            new_state->exp_avg_sq(exp_avg_sq.to(param.device()));
+
+            state[key] = std::move(new_state);
+          }
+
+          param_idx++;
+        }
+      }
+
+      // Verify loaded state
+      for (auto& param_group : optimizer_->param_groups()) {
+        for (auto& param : param_group.params()) {
+          auto key = param.unsafeGetTensorImpl();
+          if (state.find(key) == state.end()) {
+            throw std::runtime_error(
+                "Error: Parameter missing from state after loading");
+          }
+        }
+      }
+
+    } catch (const std::exception& e) {
+      std::cerr << "Warning: Failed to load optimizer state: " << e.what()
+                << std::endl;
+      std::cerr << "Continuing with newly initialized optimizer" << std::endl;
+
+      // Initialize fresh state
+      auto& state = optimizer_->state();
+      state.clear();
+      for (auto& param_group : optimizer_->param_groups()) {
+        for (auto& param : param_group.params()) {
+          auto key = param.unsafeGetTensorImpl();
+          auto new_state = std::make_unique<torch::optim::AdamParamState>();
+          new_state->step(0);
+          new_state->exp_avg(torch::zeros_like(param));
+          new_state->exp_avg_sq(torch::zeros_like(param));
+          state[key] = std::move(new_state);
+        }
+      }
+    }
+  } else if (load_optimizer_state) {
+    // Initialize fresh optimizer state if no saved state available
+    auto& state = optimizer_->state();
+    for (auto& param_group : optimizer_->param_groups()) {
+      for (auto& param : param_group.params()) {
+        auto key = param.unsafeGetTensorImpl();
+        auto new_state = std::make_unique<torch::optim::AdamParamState>();
+        new_state->step(0);
+        new_state->exp_avg(torch::zeros_like(param));
+        new_state->exp_avg_sq(torch::zeros_like(param));
+        state[key] = std::move(new_state);
+      }
+    }
+  }
+
+  file.close();
+
+  // Clear CUDA cache if on GPU
+  if (device_type_ == torch::kCUDA) {
+    c10::cuda::CUDACachingAllocator::emptyCache();
+  }
+}
+
+void GaussianModel::save_checkpoint_mmap(const std::string& path) {
+  auto start_time = std::chrono::high_resolution_clock::now();
+  torch::NoGradGuard no_grad;
+
+  auto num_points = getXYZ().size(0);
+  auto n_features_rest = features_rest_.size(1);
+
+  CompleteMMapHeader header = {};
+  header.num_points = static_cast<uint32_t>(num_points);
+  header.sh_degree = static_cast<uint32_t>(sh_degree_);
+  header.spatial_lr_scale = spatial_lr_scale_;
+  header.position_lr_init = position_lr_init_;
+  header.position_lr_decay = position_lr_decay_;
+  header.position_lr_min = position_lr_min_;
+  header.percent_dense = percent_dense_;
+  header.local_iteration = local_iteration_;
+
+  // Set tensor shapes
+  header.xyz_size[0] = num_points;
+  header.xyz_size[1] = 3;
+  header.features_dc_size[0] = num_points;
+  header.features_dc_size[1] = features_dc_.size(1);
+  header.features_dc_size[2] = features_dc_.size(2);
+  header.features_rest_size[0] = num_points;
+  header.features_rest_size[1] = n_features_rest;
+  header.features_rest_size[2] = features_rest_.size(2);
+  header.scaling_size[0] = num_points;
+  header.scaling_size[1] = 3;
+  header.rotation_size[0] = num_points;
+  header.rotation_size[1] = 4;
+  header.opacity_size[0] = num_points;
+  header.opacity_size[1] = 1;
+  header.max_radii2D_size[0] = num_points;
+  header.xyz_gradient_accum_size[0] = num_points;
+  header.xyz_gradient_accum_size[1] = 1;
+  header.denom_size[0] = num_points;
+  header.denom_size[1] = 1;
+  header.exist_since_iter_size[0] = num_points;
+  header.position_lrs_size[0] = num_points;
+
+  // Calculate offsets for main tensors
+  uint64_t offset = sizeof(CompleteMMapHeader);
+
+  header.xyz_offset = offset;
+  offset += xyz_.nbytes();
+
+  header.features_dc_offset = offset;
+  offset += features_dc_.nbytes();
+
+  header.features_rest_offset = offset;
+  offset += features_rest_.nbytes();
+
+  header.scaling_offset = offset;
+  offset += scaling_.nbytes();
+
+  header.rotation_offset = offset;
+  offset += rotation_.nbytes();
+
+  header.opacity_offset = offset;
+  offset += opacity_.nbytes();
+
+  header.max_radii2D_offset = offset;
+  offset += max_radii2D_.nbytes();
+
+  header.xyz_gradient_accum_offset = offset;
+  offset += xyz_gradient_accum_.nbytes();
+
+  header.denom_offset = offset;
+  offset += denom_.nbytes();
+
+  header.exist_since_iter_offset = offset;
+  offset += exist_since_iter_.nbytes();
+
+  header.position_lrs_offset = offset;
+  offset += position_lrs_.nbytes();
+
+  // Setup optimizer state information
+  header.optimizer_state_offset = offset;
+  header.has_optimizer_state = (optimizer_ != nullptr) ? 1 : 0;
+
+  OptimizerStateLayout opt_layout;
+  uint64_t optimizer_state_size = 0;
+
+  if (optimizer_) {
+    header.num_param_groups =
+        static_cast<uint32_t>(optimizer_->param_groups().size());
+
+    // Save learning rates
+    for (size_t i = 0; i < optimizer_->param_groups().size() && i < 6; ++i) {
+      float lr = optimizer_->param_groups()[i].options().get_lr();
+      if (std::isnan(lr) || std::isinf(lr) || lr < 0.0f || lr > 1.0f) {
+        throw std::runtime_error("Invalid learning rate detected during save");
+      }
+      header.learning_rates[i] = lr;
+      header.param_counts[i] =
+          static_cast<uint32_t>(optimizer_->param_groups()[i].params().size());
+    }
+
+    // Calculate optimizer state layout
+    auto& state = optimizer_->state();
+
+    // Step data offset (one int64_t per parameter group)
+    header.step_data_offset = offset;
+    offset += header.num_param_groups * sizeof(int64_t);
+
+    // Calculate offsets for each parameter group's optimizer tensors
+    for (size_t group_idx = 0; group_idx < optimizer_->param_groups().size();
+         ++group_idx) {
+      auto& group = optimizer_->param_groups()[group_idx];
+
+      if (!group.params().empty()) {
+        auto& param = group.params()[0];  // Assume one param per group
+
+        // Store parameter shape for validation during loading
+        auto param_shape = param.sizes().vec();
+        opt_layout.param_shapes.push_back(param_shape);
+
+        // exp_avg offset
+        header.exp_avg_offsets[group_idx] = offset;
+        offset += param.nbytes();
+
+        // exp_avg_sq offset
+        header.exp_avg_sq_offsets[group_idx] = offset;
+        offset += param.nbytes();
+      }
+    }
+
+    optimizer_state_size = offset - header.optimizer_state_offset;
+  }
+
+  header.optimizer_state_size = optimizer_state_size;
+  header.total_file_size = offset;
+
+  // Create file and memory map
+  int fd = open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC, 0644);
+  if (fd == -1) {
+    throw std::runtime_error("Failed to create file: " + path);
+  }
+
+  if (ftruncate(fd, header.total_file_size) == -1) {
+    close(fd);
+    throw std::runtime_error("Failed to set file size");
+  }
+
+  void* mapped = mmap(nullptr, header.total_file_size, PROT_READ | PROT_WRITE,
+                      MAP_SHARED, fd, 0);
+  if (mapped == MAP_FAILED) {
+    close(fd);
+    throw std::runtime_error("Failed to memory map file");
+  }
+
+  // Write header
+  std::memcpy(mapped, &header, sizeof(header));
+
+  // Helper to write tensor data
+  auto write_tensor = [&](const torch::Tensor& tensor, uint64_t offset) {
+    auto cpu_tensor =
+        tensor.is_cuda() ? tensor.detach().cpu() : tensor.detach();
+    std::memcpy(static_cast<char*>(mapped) + offset, cpu_tensor.data_ptr(),
+                cpu_tensor.nbytes());
+  };
+
+  // Write main tensor data
+  write_tensor(xyz_, header.xyz_offset);
+  write_tensor(features_dc_, header.features_dc_offset);
+  write_tensor(features_rest_, header.features_rest_offset);
+  write_tensor(scaling_, header.scaling_offset);
+  write_tensor(rotation_, header.rotation_offset);
+  write_tensor(opacity_, header.opacity_offset);
+  write_tensor(max_radii2D_, header.max_radii2D_offset);
+  write_tensor(xyz_gradient_accum_, header.xyz_gradient_accum_offset);
+  write_tensor(denom_, header.denom_offset);
+  write_tensor(exist_since_iter_, header.exist_since_iter_offset);
+  write_tensor(position_lrs_, header.position_lrs_offset);
+
+  // Write optimizer state if available
+  if (optimizer_) {
+    auto& state = optimizer_->state();
+
+    // Write step counts
+    std::vector<int64_t> step_counts(header.num_param_groups, 0);
+    for (size_t group_idx = 0; group_idx < optimizer_->param_groups().size();
+         ++group_idx) {
+      auto& group = optimizer_->param_groups()[group_idx];
+      if (!group.params().empty()) {
+        auto& param = group.params()[0];
+        auto key = param.unsafeGetTensorImpl();
+
+        if (state.find(key) != state.end()) {
+          auto& param_state =
+              static_cast<torch::optim::AdamParamState&>(*state[key]);
+          step_counts[group_idx] = param_state.step();
+        }
+      }
+    }
+
+    std::memcpy(static_cast<char*>(mapped) + header.step_data_offset,
+                step_counts.data(), step_counts.size() * sizeof(int64_t));
+
+    // Write exp_avg and exp_avg_sq tensors for each group
+    for (size_t group_idx = 0; group_idx < optimizer_->param_groups().size();
+         ++group_idx) {
+      auto& group = optimizer_->param_groups()[group_idx];
+
+      if (!group.params().empty()) {
+        auto& param = group.params()[0];
+        auto key = param.unsafeGetTensorImpl();
+
+        if (state.find(key) != state.end()) {
+          auto& param_state =
+              static_cast<torch::optim::AdamParamState&>(*state[key]);
+
+          // Write exp_avg
+          write_tensor(param_state.exp_avg(),
+                       header.exp_avg_offsets[group_idx]);
+
+          // Write exp_avg_sq
+          write_tensor(param_state.exp_avg_sq(),
+                       header.exp_avg_sq_offsets[group_idx]);
+        } else {
+          // Write zero tensors for missing state
+          auto zero_tensor = torch::zeros_like(param);
+          write_tensor(zero_tensor, header.exp_avg_offsets[group_idx]);
+          write_tensor(zero_tensor, header.exp_avg_sq_offsets[group_idx]);
+        }
+      }
+    }
+  }
+
+  // Force write to disk
+  msync(mapped, header.total_file_size, MS_SYNC);
+
+  // Cleanup
+  munmap(mapped, header.total_file_size);
+  close(fd);
+
+  auto end_time = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+      end_time - start_time);
+  std::cout << "Complete memory-mapped save with optimizer state completed in "
+            << duration.count() << "ms" << std::endl;
+}
+
+void GaussianModel::load_checkpoint_mmap(
+    const std::string& path,
+    const GaussianOptimizationParams& training_args,
+    bool load_auxiliary_tensors,
+    bool load_optimizer_state,
+    bool load_existence_info,
+    bool normalize_quaternions) {
+  auto start_time = std::chrono::high_resolution_clock::now();
+
+  // Open and map file
+  int fd = open(path.c_str(), O_RDONLY);
+  if (fd == -1) {
+    throw std::runtime_error("Failed to open file: " + path);
+  }
+
+  struct stat sb;
+  if (fstat(fd, &sb) == -1) {
+    close(fd);
+    throw std::runtime_error("Failed to get file size");
+  }
+
+  void* mapped = mmap(nullptr, sb.st_size, PROT_READ, MAP_SHARED, fd, 0);
+  if (mapped == MAP_FAILED) {
+    close(fd);
+    throw std::runtime_error("Failed to memory map file");
+  }
+
+  // Read and validate header
+  const CompleteMMapHeader* header =
+      static_cast<const CompleteMMapHeader*>(mapped);
+  if (header->magic != 0x474D4150 || header->version != 3) {
+    munmap(mapped, sb.st_size);
+    close(fd);
+    throw std::runtime_error("Invalid file format or version");
+  }
+
+  // Validate file size
+  if (sb.st_size < header->total_file_size) {
+    munmap(mapped, sb.st_size);
+    close(fd);
+    throw std::runtime_error("File size mismatch - file may be corrupted");
+  }
+
+  // Load model parameters
+  sh_degree_ = header->sh_degree;
+  spatial_lr_scale_ = header->spatial_lr_scale;
+  position_lr_init_ = header->position_lr_init;
+  position_lr_decay_ = header->position_lr_decay;
+  position_lr_min_ = header->position_lr_min;
+  percent_dense_ = header->percent_dense;
+  local_iteration_ = header->local_iteration;
+
+  // Validate loaded parameters
+  if (sh_degree_ > 3 || position_lr_init_ <= 0 || position_lr_decay_ <= 0 ||
+      position_lr_min_ <= 0 || percent_dense_ <= 0 || percent_dense_ >= 1) {
+    munmap(mapped, sb.st_size);
+    close(fd);
+    throw std::runtime_error("Invalid model parameters in checkpoint");
+  }
+
+  // Helper to create tensor from memory-mapped data
+  auto create_tensor = [&](uint64_t offset, const uint64_t* shape, int dims,
+                           torch::ScalarType dtype) -> torch::Tensor {
+    // Validate offset
+    if (offset >= sb.st_size) {
+      throw std::runtime_error("Invalid tensor offset in checkpoint");
+    }
+
+    std::vector<int64_t> sizes(dims);
+    size_t total_elements = 1;
+    for (int i = 0; i < dims; ++i) {
+      sizes[i] = static_cast<int64_t>(shape[i]);
+      total_elements *= sizes[i];
+    }
+
+    // Validate tensor size doesn't exceed file bounds
+    size_t tensor_bytes = total_elements * torch::elementSize(dtype);
+    if (offset + tensor_bytes > sb.st_size) {
+      throw std::runtime_error("Tensor data exceeds file bounds");
+    }
+
+    const void* data_ptr = static_cast<const char*>(mapped) + offset;
+
+    if (device_type_ == torch::kCUDA) {
+      torch::Tensor cpu_tensor = torch::from_blob(
+          const_cast<void*>(data_ptr), sizes,
+          torch::TensorOptions().dtype(dtype).device(torch::kCPU));
+      return cpu_tensor.to(device_type_, /*non_blocking=*/false).clone();
+    } else {
+      torch::Tensor result = torch::from_blob(
+          const_cast<void*>(data_ptr), sizes,
+          torch::TensorOptions().dtype(dtype).device(torch::kCPU));
+      return result.clone();
+    }
+  };
+
+  // Load main tensors
+  xyz_ =
+      create_tensor(header->xyz_offset, header->xyz_size, 2, torch::kFloat32);
+  features_dc_ = create_tensor(header->features_dc_offset,
+                               header->features_dc_size, 3, torch::kFloat32);
+  features_rest_ =
+      create_tensor(header->features_rest_offset, header->features_rest_size, 3,
+                    torch::kFloat32);
+  scaling_ = create_tensor(header->scaling_offset, header->scaling_size, 2,
+                           torch::kFloat32);
+  rotation_ = create_tensor(header->rotation_offset, header->rotation_size, 2,
+                            torch::kFloat32);
+  opacity_ = create_tensor(header->opacity_offset, header->opacity_size, 2,
+                           torch::kFloat32);
+
+  // Load auxiliary tensors conditionally
+  if (load_auxiliary_tensors) {
+    max_radii2D_ = create_tensor(header->max_radii2D_offset,
+                                 header->max_radii2D_size, 1, torch::kFloat32);
+    xyz_gradient_accum_ =
+        create_tensor(header->xyz_gradient_accum_offset,
+                      header->xyz_gradient_accum_size, 2, torch::kFloat32);
+    denom_ = create_tensor(header->denom_offset, header->denom_size, 2,
+                           torch::kFloat32);
+  } else {
+    max_radii2D_ = torch::zeros({header->num_points},
+                                torch::TensorOptions().device(device_type_));
+    xyz_gradient_accum_ = torch::zeros(
+        {header->num_points, 1}, torch::TensorOptions().device(device_type_));
+    denom_ = torch::zeros({header->num_points, 1},
+                          torch::TensorOptions().device(device_type_));
+  }
+
+  if (load_existence_info) {
+    exist_since_iter_ =
+        create_tensor(header->exist_since_iter_offset,
+                      header->exist_since_iter_size, 1, torch::kInt32);
+  } else {
+    exist_since_iter_ = torch::zeros(
+        {header->num_points},
+        torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
+  }
+
+  position_lrs_ = create_tensor(header->position_lrs_offset,
+                                header->position_lrs_size, 1, torch::kFloat32);
+
+  // Normalize quaternions if requested
+  if (normalize_quaternions) {
+    rotation_ = torch::nn::functional::normalize(
+        rotation_, torch::nn::functional::NormalizeFuncOptions().dim(1));
+  }
+
+  // Set requires_grad
+  xyz_ = xyz_.requires_grad_(true);
+  features_dc_ = features_dc_.contiguous().requires_grad_(true);
+  features_rest_ = features_rest_.contiguous().requires_grad_(true);
+  scaling_ = scaling_.requires_grad_(true);
+  rotation_ = rotation_.requires_grad_(true);
+  opacity_ = opacity_.requires_grad_(true);
+
+  // Update tensor vectors
+  GAUSSIAN_MODEL_TENSORS_TO_VEC
+
+  // Setup optimizer with proper learning rates
+  std::vector<float> learning_rates;
+  std::vector<float> default_learning_rates = {
+      0.0f,
+      training_args.feature_lr_,
+      training_args.feature_lr_ / 20.0f,
+      training_args.opacity_lr_,
+      training_args.scaling_lr_,
+      training_args.rotation_lr_};
+
+  // Use saved learning rates if available, otherwise use defaults
+  bool has_valid_optimizer_data =
+      (header->has_optimizer_state && header->num_param_groups <= 6);
+
+  for (int i = 0; i < 6; ++i) {
+    float lr = default_learning_rates[i];
+
+    if (has_valid_optimizer_data && i < header->num_param_groups) {
+      float loaded_lr = header->learning_rates[i];
+      if (!std::isnan(loaded_lr) && !std::isinf(loaded_lr) &&
+          loaded_lr >= 0.0f && loaded_lr < 1.0f) {
+        lr = loaded_lr;
+      } else {
+        std::cerr << "WARNING: Invalid learning rate (" << loaded_lr
+                  << ") for group " << i << ". Using default." << std::endl;
+      }
+    }
+    learning_rates.push_back(lr);
+  }
+
+  // Initialize optimizer
+  torch::optim::AdamOptions adam_options;
+  adam_options.set_lr(0.0f);
+  adam_options.eps() = 1e-15;
+
+  this->optimizer_.reset(new SparseGaussianAdam(Tensor_vec_xyz_, adam_options));
+  optimizer_->param_groups()[0].options().set_lr(0.0f);
+
+  optimizer_->add_param_group(Tensor_vec_feature_dc_);
+  optimizer_->param_groups()[1].options().set_lr(learning_rates[1]);
+
+  optimizer_->add_param_group(Tensor_vec_feature_rest_);
+  optimizer_->param_groups()[2].options().set_lr(learning_rates[2]);
+
+  optimizer_->add_param_group(Tensor_vec_opacity_);
+  optimizer_->param_groups()[3].options().set_lr(learning_rates[3]);
+
+  optimizer_->add_param_group(Tensor_vec_scaling_);
+  optimizer_->param_groups()[4].options().set_lr(learning_rates[4]);
+
+  optimizer_->add_param_group(Tensor_vec_rotation_);
+  optimizer_->param_groups()[5].options().set_lr(learning_rates[5]);
+
+  // Load optimizer state if requested and available
+  if (load_optimizer_state && has_valid_optimizer_data) {
+    try {
+      auto& state = optimizer_->state();
+
+      // Load step counts
+      const int64_t* step_data = reinterpret_cast<const int64_t*>(
+          static_cast<const char*>(mapped) + header->step_data_offset);
+
+      // Load optimizer state for each parameter group
+      for (size_t group_idx = 0;
+           group_idx < optimizer_->param_groups().size() &&
+           group_idx < header->num_param_groups;
+           ++group_idx) {
+        auto& group = optimizer_->param_groups()[group_idx];
+
+        if (!group.params().empty()) {
+          auto& param = group.params()[0];
+          auto key = param.unsafeGetTensorImpl();
+
+          // Validate that optimizer state data exists for this group
+          if (header->exp_avg_offsets[group_idx] >= sb.st_size ||
+              header->exp_avg_sq_offsets[group_idx] >= sb.st_size) {
+            std::cerr << "WARNING: Invalid optimizer state offset for group "
+                      << group_idx << ". Skipping." << std::endl;
+            continue;
+          }
+
+          // Create tensors for optimizer state
+          auto param_shape = param.sizes().vec();
+
+          torch::Tensor exp_avg = create_tensor(
+              header->exp_avg_offsets[group_idx],
+              reinterpret_cast<const uint64_t*>(param_shape.data()),
+              param_shape.size(), torch::kFloat32);
+
+          torch::Tensor exp_avg_sq = create_tensor(
+              header->exp_avg_sq_offsets[group_idx],
+              reinterpret_cast<const uint64_t*>(param_shape.data()),
+              param_shape.size(), torch::kFloat32);
+
+          // Validate tensor shapes match
+          bool shapes_match =
+              (param.dim() == exp_avg.dim() && param.dim() == exp_avg_sq.dim());
+          if (shapes_match) {
+            for (int d = 0; d < param.dim(); ++d) {
+              if (param.size(d) != exp_avg.size(d) ||
+                  param.size(d) != exp_avg_sq.size(d)) {
+                shapes_match = false;
+                break;
+              }
+            }
+          }
+
+          if (shapes_match) {
+            // Create and store optimizer state
+            auto new_state = std::make_unique<torch::optim::AdamParamState>();
+            new_state->step(step_data[group_idx]);
+            new_state->exp_avg(exp_avg.to(param.device()));
+            new_state->exp_avg_sq(exp_avg_sq.to(param.device()));
+            state[key] = std::move(new_state);
+          } else {
+            std::cerr << "WARNING: Optimizer state shape mismatch for group "
+                      << group_idx << ". Creating zero state." << std::endl;
+
+            auto new_state = std::make_unique<torch::optim::AdamParamState>();
+            new_state->step(0);
+            new_state->exp_avg(torch::zeros_like(param));
+            new_state->exp_avg_sq(torch::zeros_like(param));
+            state[key] = std::move(new_state);
+          }
+        }
+      }
+
+      std::cout << "Successfully loaded optimizer state for "
+                << std::min(optimizer_->param_groups().size(),
+                            (size_t)header->num_param_groups)
+                << " parameter groups." << std::endl;
+
+    } catch (const std::exception& e) {
+      std::cerr << "WARNING: Failed to load optimizer state: " << e.what()
+                << std::endl;
+      std::cerr << "Initializing fresh optimizer state." << std::endl;
+
+      // Fall back to fresh state
+      auto& state = optimizer_->state();
+      state.clear();
+      for (auto& param_group : optimizer_->param_groups()) {
+        for (auto& param : param_group.params()) {
+          auto key = param.unsafeGetTensorImpl();
+          auto new_state = std::make_unique<torch::optim::AdamParamState>();
+          new_state->step(0);
+          new_state->exp_avg(torch::zeros_like(param));
+          new_state->exp_avg_sq(torch::zeros_like(param));
+          state[key] = std::move(new_state);
+        }
+      }
+    }
+  } else {
+    // Initialize fresh optimizer state
+    auto& state = optimizer_->state();
+    for (auto& param_group : optimizer_->param_groups()) {
+      for (auto& param : param_group.params()) {
+        auto key = param.unsafeGetTensorImpl();
+        auto new_state = std::make_unique<torch::optim::AdamParamState>();
+        new_state->step(0);
+        new_state->exp_avg(torch::zeros_like(param));
+        new_state->exp_avg_sq(torch::zeros_like(param));
+        state[key] = std::move(new_state);
+      }
+    }
+  }
+
+  // Cleanup
+  munmap(mapped, sb.st_size);
+  close(fd);
+
+  // Clear CUDA cache
+  if (device_type_ == torch::kCUDA) {
+    c10::cuda::CUDACachingAllocator::emptyCache();
+  }
+
+  auto end_time = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+      end_time - start_time);
+  std::cout << "Complete memory-mapped load with optimizer state completed in "
+            << duration.count() << "ms" << std::endl;
 }

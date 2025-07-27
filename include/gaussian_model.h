@@ -16,7 +16,11 @@
 #pragma once
 
 #include <c10/cuda/CUDACachingAllocator.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <torch/torch.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -127,7 +131,7 @@ class GaussianModel {
 
   void scaledTransformVisiblePointsOfKeyframe(
       torch::Tensor& point_transformed_flags,
-      torch::Tensor& diff_pose,
+      const torch::Tensor& diff_pose,
       torch::Tensor& kf_world_view_transform,
       torch::Tensor& kf_full_proj_transform,
       const int kf_creation_iter,
@@ -185,8 +189,6 @@ class GaussianModel {
   void setPercentDense(const float percent_dense);
 
   void save_checkpoint(const std::string& path);
-  void load_checkpoint(const std::string& path,
-                       const GaussianOptimizationParams& training_args);
   void load_checkpoint_incremental(
       const std::string& path,
       const GaussianOptimizationParams& training_args,
@@ -203,6 +205,115 @@ class GaussianModel {
       const GaussianTransferData& transfer_data,
       const GaussianOptimizationParams& training_args,
       const float spatial_lr_scale);
+
+  struct TensorHeader {
+    uint32_t dims;
+    uint32_t sizes[8];   // Support up to 8D tensors
+    uint32_t dtype;      // torch::ScalarType as uint32_t
+    uint64_t data_size;  // Size in bytes
+  };
+
+  struct OptimizerHeader {
+    uint32_t num_param_groups;
+    uint32_t param_counts[6];      // Number of parameters per group
+    float learning_rates[6];       // LR for each group
+    uint64_t state_data_size;      // Total size of state data
+    uint32_t has_optimizer_state;  // 1 if state is saved, 0 if not
+  };
+
+  // Memory-mapped file format structures
+  struct CompleteMMapHeader {
+    uint32_t magic = 0x474D4150;  // "GMAP" in hex
+    uint32_t version = 3;         // Incremented for complete optimizer support
+
+    // Model metadata
+    uint32_t num_points;
+    uint32_t sh_degree;
+    float spatial_lr_scale;
+    float position_lr_init;
+    float position_lr_decay;
+    float position_lr_min;
+    float percent_dense;
+    uint32_t local_iteration;
+
+    // Optimizer metadata
+    uint32_t has_optimizer_state;
+    uint32_t num_param_groups;
+    float learning_rates[6];
+    uint32_t param_counts[6];
+    uint64_t optimizer_state_size;
+
+    // Tensor shapes and offsets
+    uint64_t xyz_size[2];
+    uint64_t xyz_offset;
+
+    uint64_t features_dc_size[3];
+    uint64_t features_dc_offset;
+
+    uint64_t features_rest_size[3];
+    uint64_t features_rest_offset;
+
+    uint64_t scaling_size[2];
+    uint64_t scaling_offset;
+
+    uint64_t rotation_size[2];
+    uint64_t rotation_offset;
+
+    uint64_t opacity_size[2];
+    uint64_t opacity_offset;
+
+    uint64_t max_radii2D_size[1];
+    uint64_t max_radii2D_offset;
+
+    uint64_t xyz_gradient_accum_size[2];
+    uint64_t xyz_gradient_accum_offset;
+
+    uint64_t denom_size[2];
+    uint64_t denom_offset;
+
+    uint64_t exist_since_iter_size[1];
+    uint64_t exist_since_iter_offset;
+
+    uint64_t position_lrs_size[1];
+    uint64_t position_lrs_offset;
+
+    // Optimizer state offsets
+    uint64_t optimizer_state_offset;
+    uint64_t step_data_offset;
+    uint64_t exp_avg_offsets[6];
+    uint64_t exp_avg_sq_offsets[6];
+
+    uint64_t total_file_size;
+
+    // Reserved space for future extensions
+    uint64_t reserved[32];
+  };
+
+  struct OptimizerStateLayout {
+    std::vector<uint64_t> step_offsets;
+    std::vector<uint64_t> exp_avg_offsets;
+    std::vector<uint64_t> exp_avg_sq_offsets;
+    std::vector<std::vector<int64_t>> param_shapes;
+  };
+
+  void saveTensorBinary(const torch::Tensor& tensor, std::ofstream& file);
+  torch::Tensor loadTensorBinary(std::ifstream& file);
+  void save_checkpoint_fast(const std::string& path);
+  void load_checkpoint_fast(const std::string& path,
+                            const GaussianOptimizationParams& training_args,
+                            bool load_auxiliary_tensors = false,
+                            bool load_optimizer_state = false,
+                            bool load_existence_info = false,
+                            bool normalize_quaternions = true);
+
+  // Memory-mapped checkpoint functions for Ubuntu
+  void save_checkpoint_mmap(const std::string& path);
+  void load_checkpoint_mmap(const std::string& path,
+                            const GaussianOptimizationParams& training_args,
+                            bool load_auxiliary_tensors = true,
+                            bool load_optimizer_state = true,
+                            bool load_existence_info = true,
+                            bool normalize_quaternions = true);
 
  protected:
   float exponLrFunc(int step);

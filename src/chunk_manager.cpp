@@ -477,8 +477,8 @@ bool ChunkManager::processLoadOperation(const ChunkCoord& coord,
   auto chunk = std::make_shared<Chunk>(model_params_, coord);
 
   // Load from file
-  chunk->getGaussians()->load_checkpoint_incremental(
-      chunk_filename.string(), opt_params_, true, true, true);
+  chunk->getGaussians()->load_checkpoint_fast(chunk_filename.string(),
+                                              opt_params_, true, true, true);
 
   assert(chunk->getGaussians()->getXYZ().numel() >= 0 &&
          "Failed to load chunk with no gaussians!");
@@ -538,6 +538,9 @@ bool ChunkManager::processSaveOperation(const ChunkCoord& coord) {
                  std::to_string(coord.y) + "," + std::to_string(coord.z));
   // std::cout << "Called processSaveOperation" << std::endl;
   auto start_time = std::chrono::steady_clock::now();
+  // std::cout << "Starting save for chunk " << coord.x << "," << coord.y << ","
+  //           << coord.z << " at " << start_time.time_since_epoch().count()
+  //           << std::endl;
   // std::chrono::milliseconds time_spend_waiting_for_mutex(0);
 
   // Track VRAM usage before saving
@@ -570,7 +573,7 @@ bool ChunkManager::processSaveOperation(const ChunkCoord& coord) {
   auto chunk_filename = getChunkFilename(coord);
 
   // Save to file
-  chunk->getGaussians()->save_checkpoint(chunk_filename.string());
+  chunk->getGaussians()->save_checkpoint_fast(chunk_filename.string());
 
   // Increment save counter
   incrementStat(stats_.disk_saves);
@@ -886,7 +889,8 @@ std::filesystem::path ChunkManager::getChunkFilename(const ChunkCoord& coord) {
   auto y_str = (coord.y >= 0 ? "p" : "n") + std::to_string(std::abs(coord.y));
   auto z_str = (coord.z >= 0 ? "p" : "n") + std::to_string(std::abs(coord.z));
 
-  return chunk_save_dir_ / (x_str + "_" + y_str + "_" + z_str);
+  // Add .bin extension for the new binary format
+  return chunk_save_dir_ / (x_str + "_" + y_str + "_" + z_str + ".bin");
 }
 
 // Get chunk at specific coordinate
@@ -959,7 +963,7 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::loadVisibleChunks(
   }
 
   // Wait for critical chunks to load (with timeout)
-  const auto timeout = std::chrono::milliseconds(2000);
+  const auto timeout = std::chrono::milliseconds(10000);
   for (size_t i = 0; i < load_futures.size(); ++i) {
     if (load_futures[i].wait_for(timeout) == std::future_status::ready) {
       if (load_futures[i].get()) {
@@ -1206,9 +1210,17 @@ void ChunkManager::addPointsToChunks(const torch::Tensor& points,
   if (scales.defined() && scales.size(0) > 0)
     scales_cuda = scales.to(torch::kCUDA);
 
+  auto start_time_grouping = std::chrono::steady_clock::now();
   // Group points by chunk
   auto [unique_chunks, inverse_indices, points_per_chunk] =
       groupPointsByChunk(points_cuda);
+  auto end_time_grouping = std::chrono::steady_clock::now();
+  auto duration_grouping =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          end_time_grouping - start_time_grouping);
+  // std::cout << "groupPointsByChunk completed in " <<
+  // duration_grouping.count()
+  //           << "ms" << std::endl;
 
   // std::cout << "Adding points to " << unique_chunks.size(0) << " chunks"
   //           << std::endl;
@@ -1301,6 +1313,7 @@ void ChunkManager::addPointsToChunks(const torch::Tensor& points,
       oss << "Can't add points to chunk in state: " << static_cast<int>(state)
           << " for chunk: " << coord.x << "," << coord.y << "," << coord.z;
       std::cerr << oss.str() << std::endl;
+      continue;  // Skip this chunk!
     }
 
     std::shared_ptr<Chunk> chunk = getChunkAt(coord);
