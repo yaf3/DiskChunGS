@@ -33,7 +33,7 @@ void scaleAndTransformThenMarkVisiblePoints(
     torch::Tensor& rots,
     torch::Tensor& point_not_transformed_mask,
     torch::Tensor& point_unstable_mask,
-    torch::Tensor& transformmatrix,
+    const torch::Tensor& transformmatrix,
     torch::Tensor& viewmatrix,
     torch::Tensor& projmatrix,
     int& num_transformed,
