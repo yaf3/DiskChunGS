@@ -100,7 +100,8 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   override_color_ =
       torch::empty(0, torch::TensorOptions().device(device_type_));
 
-  gaussians_ = std::make_shared<GaussianModel>(model_params_);
+  gaussians_ =
+      std::make_shared<GaussianModel>(model_params_, chunk_save_dir_.string());
   // Initialize scene
   scene_ = std::make_shared<GaussianScene>(model_params_);
 
@@ -841,17 +842,16 @@ void GaussianMapper::run() {
     // if (getIteration() == 3000) {
     //   testTransferGaussiansAcrossChunks();
     // }
+
+    if (getIteration() % 800 == 0) {
+      gaussians_->testSaveLoadEvictCycle();
+    }
   }
 
   // Third loop: After SLAM stopped, keep training
   while (!isStopped()) {
     // Invoke training once
     trainForOneIteration();
-
-    // if (getIteration() % 2000 == 0) {
-    //   keyframe_queue_->visualizeClusters(
-    //       "/workspaces/large_scale_gaussian_slam/cluster_visualization.svg");
-    // }
 
     if (getIteration() >= opt_params_.iterations_) break;
   }

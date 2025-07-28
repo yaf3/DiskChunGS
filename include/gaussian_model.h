@@ -76,7 +76,8 @@ class SparseGaussianAdam;
 class GaussianModel {
  public:
   explicit GaussianModel(const int sh_degree);
-  explicit GaussianModel(const GaussianModelParams& model_params);
+  explicit GaussianModel(const GaussianModelParams& model_params,
+                         std::string storage_base_path = "");
 
   torch::Tensor getScalingActivation();
   torch::Tensor getRotationActivation();
@@ -117,7 +118,8 @@ class GaussianModel {
                             torch::Tensor& new_opacities,
                             torch::Tensor& new_scaling,
                             torch::Tensor& new_rotation,
-                            torch::Tensor& new_exist_since_iter);
+                            torch::Tensor& new_exist_since_iter,
+                            torch::Tensor& new_position_lrs);
 
  protected:
   float exponLrFunc(int step);
@@ -158,7 +160,7 @@ class GaussianModel {
   std::mutex mutex_settings_;
 
  public:
-  float chunk_size_ = 50.0f;
+  float chunk_size_ = 30.0f;
 
   std::vector<ChunkCoord> frustumCullChunks(
       std::shared_ptr<GaussianKeyframe> keyframe,
@@ -194,6 +196,52 @@ class GaussianModel {
                     const torch::Tensor& new_scales,
                     const torch::Tensor& new_opacities,
                     int iteration);
+
+  // Storage tracking
+  std::unordered_set<int64_t> chunks_in_memory_;
+  std::unordered_set<int64_t> chunks_on_disk_;
+
+  // For chunk-based save/load operations
+  std::string storage_base_path_;
+
+  // Memory management
+  float max_memory_gb_ = 8.0f;  // Configurable
+  std::chrono::steady_clock::time_point last_memory_check_;
+
+  size_t getCurrentGPUMemoryUsage() const;
+
+  struct ChunkData {
+    torch::Tensor xyz, features_dc, features_rest;
+    torch::Tensor scaling, rotation, opacity;
+    torch::Tensor exist_since, position_lrs, chunk_ids;
+    int num_points;
+  };
+
+  struct TensorHeader {
+    uint32_t dims;
+    uint32_t sizes[8];   // Support up to 8D tensors
+    uint32_t dtype;      // torch::ScalarType as uint32_t
+    uint64_t data_size;  // Size in bytes
+  };
+
+  void saveTensorBinary(const torch::Tensor& tensor, std::ofstream& file);
+  torch::Tensor loadTensorBinary(std::ifstream& file);
+
+  std::string getChunkFilename(const ChunkCoord& coord);
+
+  void updateChunksInMemory();
+
+  void loadChunks(const std::vector<int64_t>& chunk_ids_to_load);
+  void saveSingleChunkToDisk(int64_t chunk_id, const ChunkData& chunk_data);
+  std::optional<ChunkData> loadSingleChunkFromDisk(int64_t chunk_id);
+  void appendLoadedChunks(const std::vector<ChunkData>& chunks_data,
+                          const std::vector<int64_t>& chunk_ids);
+  void saveChunks(const std::vector<int64_t>& chunk_ids_to_save);
+  ChunkData extractChunkData(const torch::Tensor& chunk_mask);
+  void saveAndEvictChunks(const std::vector<int64_t>& chunk_ids);
+
+  void checkMemoryPressure();
+  void testSaveLoadEvictCycle();
 
   // Cache for keyframe visibility results
   struct VisibilityCacheEntry {

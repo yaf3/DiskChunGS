@@ -35,8 +35,10 @@ GaussianModel::GaussianModel(const int sh_degree)
   GAUSSIAN_MODEL_INIT_TENSORS(this->device_type_)
 }
 
-GaussianModel::GaussianModel(const GaussianModelParams& model_params)
-    : sh_degree_(0),
+GaussianModel::GaussianModel(const GaussianModelParams& model_params,
+                             std::string storage_base_path)
+    : storage_base_path_(storage_base_path),
+      sh_degree_(0),
       spatial_lr_scale_(0.0),
       position_lr_init_(0.00005),
       position_lr_decay_(0.99998),
@@ -493,6 +495,8 @@ void GaussianModel::prunePoints(torch::Tensor& mask) {
   this->position_lrs_ = this->position_lrs_.index({valid_points_mask});
   this->gaussian_chunk_ids_ =
       this->gaussian_chunk_ids_.index({valid_points_mask});
+
+  updateChunksInMemory();
 }
 
 void GaussianModel::densificationPostfix(torch::Tensor& new_xyz,
@@ -501,7 +505,8 @@ void GaussianModel::densificationPostfix(torch::Tensor& new_xyz,
                                          torch::Tensor& new_opacities,
                                          torch::Tensor& new_scaling,
                                          torch::Tensor& new_rotation,
-                                         torch::Tensor& new_exist_since_iter) {
+                                         torch::Tensor& new_exist_since_iter,
+                                         torch::Tensor& new_position_lrs) {
   auto old_max_radii2D = this->max_radii2D_.clone();
   // cat_tensors_to_optimizer
   std::vector<torch::Tensor> optimizable_tensors(6);
@@ -572,13 +577,12 @@ void GaussianModel::densificationPostfix(torch::Tensor& new_xyz,
       torch::cat({old_max_radii2D, new_max_radii2D_extension}, /*dim=*/0);
 
   int num_new_primitives = new_xyz.size(0);
-  torch::Tensor new_position_lrs =
-      torch::full({num_new_primitives}, position_lr_init_,
-                  torch::TensorOptions().device(device_type_));
   position_lrs_ = torch::cat({position_lrs_, new_position_lrs}, 0);
   torch::Tensor new_chunk_ids = computeChunkIds(new_xyz);
   gaussian_chunk_ids_ =
       torch::cat({gaussian_chunk_ids_, new_chunk_ids}, /*dim=*/0);
+
+  updateChunksInMemory();
 }
 
 std::vector<ChunkCoord> GaussianModel::frustumCullChunks(
@@ -899,6 +903,8 @@ void GaussianModel::initializeFromPoints(const torch::Tensor& initial_xyz,
   this->max_radii2D_ = torch::zeros(
       {this->getXYZ().size(0)}, torch::TensorOptions().device(device_type_));
 
+  updateChunksInMemory();
+
   is_initialized_ = true;
 }
 
@@ -967,7 +973,507 @@ void GaussianModel::appendPoints(const torch::Tensor& new_xyzs,
   // std::cout << "increasePcd(tensor) preparation time: " << time << " ms"
   // <<std::endl;
 
+  torch::Tensor new_position_lrs =
+      torch::full({num_new_points}, position_lr_init_,
+                  torch::TensorOptions().device(device_type_));
+
   densificationPostfix(new_xyz, new_features_dc, new_features_rest,
                        new_opacities_tensor, new_scaling, new_rotation,
-                       new_exist_since_iter);
+                       new_exist_since_iter, new_position_lrs);
+}
+
+std::string GaussianModel::getChunkFilename(const ChunkCoord& coord) {
+  // Using 'p' for positive and 'n' for negative prefixes
+  auto x_str = (coord.x >= 0 ? "p" : "n") + std::to_string(std::abs(coord.x));
+  auto y_str = (coord.y >= 0 ? "p" : "n") + std::to_string(std::abs(coord.y));
+  auto z_str = (coord.z >= 0 ? "p" : "n") + std::to_string(std::abs(coord.z));
+
+  // Add .bin extension for the new binary format
+  std::string filename = x_str + "_" + y_str + "_" + z_str + ".bin";
+
+  // Use string concatenation with proper path separator
+  return storage_base_path_ + "/" + filename;
+}
+
+void GaussianModel::saveTensorBinary(const torch::Tensor& tensor,
+                                     std::ofstream& file) {
+  TensorHeader header = {};
+  header.dims = tensor.dim();
+
+  for (int i = 0; i < tensor.dim(); ++i) {
+    header.sizes[i] = static_cast<uint32_t>(tensor.size(i));
+  }
+  header.dtype = static_cast<uint32_t>(tensor.scalar_type());
+  header.data_size = tensor.nbytes();
+
+  // Write header
+  file.write(reinterpret_cast<const char*>(&header), sizeof(header));
+
+  // Move tensor to CPU if needed and write data
+  torch::Tensor cpu_tensor = tensor.is_cuda() ? tensor.cpu() : tensor;
+  file.write(reinterpret_cast<const char*>(cpu_tensor.data_ptr()),
+             header.data_size);
+}
+
+torch::Tensor GaussianModel::loadTensorBinary(std::ifstream& file) {
+  TensorHeader header;
+  file.read(reinterpret_cast<char*>(&header), sizeof(header));
+
+  // Reconstruct tensor sizes
+  std::vector<int64_t> sizes(header.dims);
+  for (uint32_t i = 0; i < header.dims; ++i) {
+    sizes[i] = header.sizes[i];
+  }
+
+  // Create tensor with correct type and device
+  torch::TensorOptions options =
+      torch::TensorOptions()
+          .dtype(static_cast<torch::ScalarType>(header.dtype))
+          .device(device_type_);
+
+  torch::Tensor tensor = torch::empty(sizes, options.device(torch::kCPU));
+
+  // Read data
+  file.read(reinterpret_cast<char*>(tensor.data_ptr()), header.data_size);
+
+  // Move to target device if needed
+  return tensor.to(device_type_);
+}
+
+void GaussianModel::updateChunksInMemory() {
+  // Get unique chunk IDs first (GPU operation)
+  auto unique_result = torch::_unique2(gaussian_chunk_ids_,
+                                       /*sorted=*/false,
+                                       /*return_inverse=*/false,
+                                       /*return_counts=*/false);
+  torch::Tensor unique_chunk_ids = std::get<0>(unique_result);
+  auto unique_cpu = unique_chunk_ids.cpu();
+  auto accessor = unique_cpu.accessor<int64_t, 1>();
+
+  chunks_in_memory_.clear();  // Fresh start
+  for (int i = 0; i < unique_cpu.size(0); ++i) {
+    chunks_in_memory_.insert(accessor[i]);
+  }
+}
+
+void GaussianModel::loadChunks(const std::vector<int64_t>& chunk_ids_to_load) {
+  if (chunk_ids_to_load.empty()) return;
+
+  std::vector<GaussianModel::ChunkData> chunks_to_append;
+  std::vector<int64_t> loaded_chunk_ids;
+
+  // Load each chunk from disk (can be parallelized)
+  for (int64_t chunk_id : chunk_ids_to_load) {
+    if (chunks_in_memory_.count(chunk_id)) {
+      continue;  // Already in memory
+    }
+
+    auto chunk_data = loadSingleChunkFromDisk(chunk_id);
+    if (chunk_data.has_value()) {
+      chunks_to_append.push_back(chunk_data.value());
+      loaded_chunk_ids.push_back(chunk_id);
+    }
+  }
+
+  if (!chunks_to_append.empty()) {
+    // Batch append all loaded chunks at once
+    appendLoadedChunks(chunks_to_append, loaded_chunk_ids);
+
+    // Update tracking
+    for (int64_t chunk_id : loaded_chunk_ids) {
+      chunks_in_memory_.insert(chunk_id);
+    }
+  }
+}
+
+void GaussianModel::saveSingleChunkToDisk(int64_t chunk_id,
+                                          const ChunkData& chunk_data) {
+  std::string chunk_filename = getChunkFilename(decodeChunkCoord(chunk_id));
+
+  // Create directory if it doesn't exist
+  std::filesystem::path chunk_path(chunk_filename);
+  std::filesystem::create_directories(chunk_path.parent_path());
+
+  std::ofstream file(chunk_filename, std::ios::binary);
+  if (!file.is_open()) {
+    throw std::runtime_error("Cannot open file for writing: " + chunk_filename);
+  }
+
+  try {
+    // Write magic number and version for validation
+    uint32_t magic = 0x43484E4B;  // "CHNK" in hex
+    uint32_t version = 1;
+    file.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+    file.write(reinterpret_cast<const char*>(&version), sizeof(version));
+
+    // Write chunk metadata
+    file.write(reinterpret_cast<const char*>(&chunk_id), sizeof(chunk_id));
+    uint32_t num_points = static_cast<uint32_t>(chunk_data.num_points);
+    file.write(reinterpret_cast<const char*>(&num_points), sizeof(num_points));
+
+    // Save tensors in same order as loading
+    saveTensorBinary(chunk_data.xyz, file);
+    saveTensorBinary(chunk_data.features_dc, file);
+    saveTensorBinary(chunk_data.features_rest, file);
+    saveTensorBinary(chunk_data.scaling, file);
+    saveTensorBinary(chunk_data.rotation, file);
+    saveTensorBinary(chunk_data.opacity, file);
+    saveTensorBinary(chunk_data.exist_since, file);
+    saveTensorBinary(chunk_data.position_lrs, file);
+
+    file.close();
+    std::cout << "Saved chunk " << chunk_id << " with " << num_points
+              << " points to " << chunk_filename << std::endl;
+
+  } catch (const std::exception& e) {
+    file.close();
+    std::filesystem::remove(chunk_filename);  // Clean up partial file
+    throw std::runtime_error("Failed to save chunk " +
+                             std::to_string(chunk_id) + ": " + e.what());
+  }
+}
+
+std::optional<GaussianModel::ChunkData> GaussianModel::loadSingleChunkFromDisk(
+    int64_t chunk_id) {
+  std::string chunk_filename = getChunkFilename(decodeChunkCoord(chunk_id));
+
+  if (!std::filesystem::exists(chunk_filename)) {
+    return std::nullopt;
+  }
+
+  // Use your existing memory-mapped loading
+  std::ifstream file(chunk_filename, std::ios::binary);
+  if (!file.is_open()) {
+    return std::nullopt;
+  }
+
+  // Validate magic number and version
+  uint32_t magic, version;
+  file.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+  file.read(reinterpret_cast<char*>(&version), sizeof(version));
+
+  if (magic != 0x43484E4B) {
+    throw std::runtime_error("Invalid checkpoint file format");
+  }
+
+  int64_t stored_chunk_id;
+  uint32_t stored_num_points;
+
+  file.read(reinterpret_cast<char*>(&stored_chunk_id), sizeof(stored_chunk_id));
+  file.read(reinterpret_cast<char*>(&stored_num_points),
+            sizeof(stored_num_points));
+
+  if (stored_chunk_id != chunk_id) {
+    throw std::runtime_error("Saved chunk ID does not match requested ID");
+  }
+
+  ChunkData data;
+  try {
+    // Load tensors in the same order as saved
+    data.xyz = loadTensorBinary(file);
+    data.features_dc = loadTensorBinary(file);
+    data.features_rest = loadTensorBinary(file);
+    data.scaling = loadTensorBinary(file);
+    data.rotation = loadTensorBinary(file);
+    data.opacity = loadTensorBinary(file);
+    data.exist_since = loadTensorBinary(file);
+    data.position_lrs = loadTensorBinary(file);
+
+    file.close();
+
+    data.num_points = data.xyz.size(0);
+
+    // Validate loaded data
+    if (data.num_points != static_cast<int>(stored_num_points)) {
+      std::cerr << "Point count mismatch in chunk file: " << chunk_filename
+                << std::endl;
+      return std::nullopt;
+    }
+
+    // Create chunk IDs tensor (all points belong to this chunk)
+    data.chunk_ids = torch::full(
+        {data.num_points}, chunk_id,
+        torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
+
+    std::cout << "Loaded chunk " << chunk_id << " with " << data.num_points
+              << " points from " << chunk_filename << std::endl;
+
+    return data;
+  } catch (const std::exception& e) {
+    std::cerr << "Failed to load chunk " << chunk_id << ": " << e.what()
+              << std::endl;
+    return std::nullopt;
+  }
+}
+
+void GaussianModel::appendLoadedChunks(
+    const std::vector<ChunkData>& chunks_data,
+    const std::vector<int64_t>& chunk_ids) {
+  if (chunks_data.empty()) return;
+
+  // Concatenate all chunk data
+  std::vector<torch::Tensor> all_xyz, all_features_dc, all_features_rest;
+  std::vector<torch::Tensor> all_scaling, all_rotation, all_opacity;
+  std::vector<torch::Tensor> all_exist_since, all_position_lrs, all_chunk_ids;
+
+  for (const auto& chunk : chunks_data) {
+    all_xyz.push_back(chunk.xyz);
+    all_features_dc.push_back(chunk.features_dc);
+    all_features_rest.push_back(chunk.features_rest);
+    all_scaling.push_back(chunk.scaling);
+    all_rotation.push_back(chunk.rotation);
+    all_opacity.push_back(chunk.opacity);
+    all_exist_since.push_back(chunk.exist_since);
+    all_position_lrs.push_back(chunk.position_lrs);
+    all_chunk_ids.push_back(chunk.chunk_ids);
+  }
+
+  // Single concatenation operations
+  torch::Tensor batch_xyz = torch::cat(all_xyz, 0);
+  torch::Tensor batch_features_dc = torch::cat(all_features_dc, 0);
+  torch::Tensor batch_features_rest = torch::cat(all_features_rest, 0);
+  torch::Tensor batch_scaling = torch::cat(all_scaling, 0);
+  torch::Tensor batch_rotation = torch::cat(all_rotation, 0);
+  torch::Tensor batch_opacity = torch::cat(all_opacity, 0);
+  torch::Tensor batch_exist_since = torch::cat(all_exist_since, 0);
+  torch::Tensor batch_position_lrs = torch::cat(all_position_lrs, 0);
+  torch::Tensor batch_chunk_ids = torch::cat(all_chunk_ids, 0);
+
+  // Use existing densificationPostfix to append everything at once
+  densificationPostfix(batch_xyz, batch_features_dc, batch_features_rest,
+                       batch_opacity, batch_scaling, batch_rotation,
+                       batch_exist_since, batch_position_lrs);
+
+  std::cout << "Loaded " << batch_xyz.size(0) << " gaussians from "
+            << chunks_data.size() << " chunks" << std::endl;
+}
+
+void GaussianModel::saveChunks(const std::vector<int64_t>& chunk_ids_to_save) {
+  if (chunk_ids_to_save.empty()) return;
+
+  for (int64_t chunk_id : chunk_ids_to_save) {
+    if (!chunks_in_memory_.count(chunk_id)) {
+      continue;  // Not in memory, skip
+    }
+
+    // Extract gaussians belonging to this chunk
+    torch::Tensor chunk_mask = (gaussian_chunk_ids_ == chunk_id);
+    int num_chunk_gaussians = chunk_mask.sum().item<int>();
+
+    if (num_chunk_gaussians == 0) {
+      continue;  // No gaussians in this chunk
+    }
+
+    ChunkData chunk_data = extractChunkData(chunk_mask);
+    saveSingleChunkToDisk(chunk_id, chunk_data);
+
+    // Update tracking
+    chunks_on_disk_.insert(chunk_id);
+  }
+}
+
+GaussianModel::ChunkData GaussianModel::extractChunkData(
+    const torch::Tensor& chunk_mask) {
+  ChunkData data;
+
+  data.xyz = xyz_.index({chunk_mask}).detach().clone();
+  data.features_dc = features_dc_.index({chunk_mask}).detach().clone();
+  data.features_rest = features_rest_.index({chunk_mask}).detach().clone();
+  data.scaling = scaling_.index({chunk_mask}).detach().clone();
+  data.rotation = rotation_.index({chunk_mask}).detach().clone();
+  data.opacity = opacity_.index({chunk_mask}).detach().clone();
+  data.exist_since = exist_since_iter_.index({chunk_mask}).detach().clone();
+  data.position_lrs = position_lrs_.index({chunk_mask}).detach().clone();
+  data.num_points = data.xyz.size(0);
+
+  return data;
+}
+
+void GaussianModel::saveAndEvictChunks(const std::vector<int64_t>& chunk_ids) {
+  if (chunk_ids.empty()) return;
+
+  std::cout << "Saving and evicting " << chunk_ids.size() << " chunks..."
+            << std::endl;
+
+  // Step 1: Save chunks to disk
+  saveChunks(chunk_ids);
+
+  // Step 2: Create mask of gaussians to REMOVE (opposite of keep)
+  torch::Tensor remove_mask = torch::zeros(
+      {xyz_.size(0)},
+      torch::TensorOptions().dtype(torch::kBool).device(device_type_));
+
+  int total_gaussians_to_remove = 0;
+  for (int64_t chunk_id : chunk_ids) {
+    torch::Tensor chunk_mask = (gaussian_chunk_ids_ == chunk_id);
+    remove_mask = remove_mask | chunk_mask;  // OR operation to combine masks
+    total_gaussians_to_remove += chunk_mask.sum().item<int>();
+
+    // Update tracking
+    chunks_in_memory_.erase(chunk_id);
+  }
+
+  std::cout << "Removing " << total_gaussians_to_remove
+            << " gaussians from unified model" << std::endl;
+
+  // Step 3: Actually remove the gaussians (this shrinks all tensors)
+  if (total_gaussians_to_remove > 0) {
+    prunePoints(
+        remove_mask);  // This updates ALL tensors including gaussian_chunk_ids_
+
+    std::cout << "Unified model now has " << xyz_.size(0) << " gaussians"
+              << std::endl;
+  }
+}
+
+size_t GaussianModel::getCurrentGPUMemoryUsage() const {
+  if (torch::cuda::is_available()) {
+    namespace c10Alloc = c10::cuda::CUDACachingAllocator;
+    c10Alloc::DeviceStats mem_stats = c10Alloc::getDeviceStats(0);
+
+    // Get current allocated bytes (this is what we want to track for chunks)
+    c10Alloc::Stat alloc_bytes =
+        mem_stats
+            .allocated_bytes[static_cast<int>(c10Alloc::StatType::AGGREGATE)];
+    return alloc_bytes.current;
+  }
+  return 0;
+}
+
+// void GaussianModel::checkMemoryPressure() {
+//   auto now = std::chrono::steady_clock::now();
+//   if (now - last_memory_check_ < std::chrono::seconds(5)) {
+//     return;  // Check every 5 seconds
+//   }
+//   last_memory_check_ = now;
+
+//   size_t current_memory_mb = getCurrentGPUMemoryUsage() / (1024 * 1024);
+//   size_t target_memory_mb = static_cast<size_t>(max_memory_gb_ * 1024);
+
+//   if (current_memory_mb > target_memory_mb) {
+//     // Find least recently used chunks to save
+//     std::vector<int64_t> chunks_to_save =
+//         findLRUChunks(current_memory_mb - target_memory_mb);
+
+//     // Save and remove from memory
+//     saveAndEvictChunks(chunks_to_save);
+//   }
+// }
+
+void GaussianModel::testSaveLoadEvictCycle() {
+  std::cout << "\n=== STARTING SAVE/LOAD/EVICT CYCLE TEST ===" << std::endl;
+
+  if (!is_initialized_) {
+    std::cout << "ERROR: Model not initialized, cannot run test" << std::endl;
+    return;
+  }
+
+  auto test_start = std::chrono::steady_clock::now();
+
+  // Step 1: Record initial state
+  int initial_gaussians = xyz_.size(0);
+  size_t initial_memory_mb = getCurrentGPUMemoryUsage() / (1024 * 1024);
+
+  std::cout << "INITIAL STATE:" << std::endl;
+  std::cout << "  Gaussians: " << initial_gaussians << std::endl;
+  std::cout << "  Memory: " << initial_memory_mb << "MB" << std::endl;
+  std::cout << "  Chunks in memory: " << chunks_in_memory_.size() << std::endl;
+
+  // Step 2: Get all unique chunks currently in memory
+  std::unordered_set<int64_t> all_chunk_ids_set;
+  {
+    auto chunk_ids_cpu = gaussian_chunk_ids_.cpu();
+    auto accessor = chunk_ids_cpu.accessor<int64_t, 1>();
+    for (int i = 0; i < chunk_ids_cpu.size(0); ++i) {
+      all_chunk_ids_set.insert(accessor[i]);
+    }
+  }
+
+  std::vector<int64_t> all_chunk_ids(all_chunk_ids_set.begin(),
+                                     all_chunk_ids_set.end());
+  std::cout << "  Unique chunks: " << all_chunk_ids.size() << std::endl;
+
+  if (all_chunk_ids.empty()) {
+    std::cout << "ERROR: No chunks found in model" << std::endl;
+    return;
+  }
+
+  // Step 5: Evict all chunks from memory
+  std::cout << "\nEVICTING ALL CHUNKS..." << std::endl;
+  auto evict_start = std::chrono::steady_clock::now();
+
+  try {
+    // Force evict all chunks (bypass LRU logic)
+    saveAndEvictChunks(all_chunk_ids);
+
+    auto evict_end = std::chrono::steady_clock::now();
+    auto evict_duration_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(evict_end -
+                                                              evict_start)
+            .count();
+
+    int remaining_gaussians = xyz_.size(0);
+    size_t remaining_memory_mb = getCurrentGPUMemoryUsage() / (1024 * 1024);
+
+    std::cout << "  Eviction completed in " << evict_duration_ms << "ms"
+              << std::endl;
+    std::cout << "  Remaining gaussians: " << remaining_gaussians << std::endl;
+    std::cout << "  Remaining memory: " << remaining_memory_mb << "MB"
+              << std::endl;
+    std::cout << "  Chunks in memory: " << chunks_in_memory_.size()
+              << std::endl;
+    std::cout << "  Memory freed: " << (initial_memory_mb - remaining_memory_mb)
+              << "MB" << std::endl;
+
+  } catch (const std::exception& e) {
+    std::cout << "ERROR during eviction: " << e.what() << std::endl;
+    return;
+  }
+
+  // Step 6: Reload all chunks from disk
+  std::cout << "\nRELOADING ALL CHUNKS..." << std::endl;
+  auto load_start = std::chrono::steady_clock::now();
+
+  try {
+    loadChunks(all_chunk_ids);
+
+    auto load_end = std::chrono::steady_clock::now();
+    auto load_duration_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(load_end -
+                                                              load_start)
+            .count();
+
+    int final_gaussians = xyz_.size(0);
+    size_t final_memory_mb = getCurrentGPUMemoryUsage() / (1024 * 1024);
+
+    std::cout << "  Load completed in " << load_duration_ms << "ms"
+              << std::endl;
+    std::cout << "  Final gaussians: " << final_gaussians << std::endl;
+    std::cout << "  Final memory: " << final_memory_mb << "MB" << std::endl;
+    std::cout << "  Chunks in memory: " << chunks_in_memory_.size()
+              << std::endl;
+
+  } catch (const std::exception& e) {
+    std::cout << "ERROR during load: " << e.what() << std::endl;
+    return;
+  }
+
+  // Step 8: Final summary
+  auto test_end = std::chrono::steady_clock::now();
+  auto total_duration_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(test_end -
+                                                            test_start)
+          .count();
+
+  std::cout << "\n=== TEST SUMMARY ===" << std::endl;
+  std::cout << "  Total time: " << total_duration_ms << "ms" << std::endl;
+  std::cout << "  Gaussians: " << initial_gaussians << " -> " << xyz_.size(0)
+            << " ("
+            << (xyz_.size(0) == initial_gaussians ? "MATCH" : "MISMATCH") << ")"
+            << std::endl;
+  std::cout << "  Memory: " << initial_memory_mb << "MB -> "
+            << (getCurrentGPUMemoryUsage() / (1024 * 1024)) << "MB"
+            << std::endl;
+
+  std::cout << "=== SAVE/LOAD/EVICT CYCLE TEST COMPLETE ===\n" << std::endl;
 }
