@@ -270,6 +270,14 @@ class GaussianModel {
   void updateChunkAccess(const std::vector<ChunkCoord>& accessed_chunks);
   void saveAllChunks();
   int64_t countAllGaussians();
+  std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+  filterPointsByChunkDensity(const torch::Tensor& xyz,
+                             const torch::Tensor& colors,
+                             const torch::Tensor& scales,
+                             const torch::Tensor& opacities,
+                             int min_gaussians_per_chunk);
+  void initializeEmpty(float spatial_lr_scale);
+  void evictSparseChunks(int min_gaussians_per_chunk);
 
   // Cache for keyframe visibility results
   struct VisibilityCacheEntry {

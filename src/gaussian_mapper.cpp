@@ -1099,6 +1099,11 @@ void GaussianMapper::trainForOneIteration() {
   std::unique_lock<std::mutex> lock_render(mutex_render_);
   timer_waitForMutex.stop();
 
+  auto timer_evictSparseChunks = ProfilingUtils::Timer("evictSparseChunks");
+  int min_gaussians_per_chunk = 100;
+  // gaussians_->evictSparseChunks(min_gaussians_per_chunk);
+  timer_evictSparseChunks.stop();
+
   size_t keyframe_lookahead = 3;
   // std::vector<std::shared_ptr<GaussianKeyframe>> upcoming_keyframes =
   //     getUpcomingKeyframes(keyframe_lookahead);
@@ -1127,9 +1132,9 @@ void GaussianMapper::trainForOneIteration() {
 
   timer_loadVisibleChunks.stop();
 
-  std::cout << "Rendering " << visible_gaussian_mask.sum().item<int>()
-            << " visible gaussians from " << visible_gaussian_mask.size(0)
-            << " total gaussians." << std::endl;
+  // std::cout << "Rendering " << visible_gaussian_mask.sum().item<int>()
+  //           << " visible gaussians from " << visible_gaussian_mask.size(0)
+  //           << " total gaussians." << std::endl;
 
   auto timer_misc_updates = ProfilingUtils::Timer("ITER/LR/SH Updates");
 
@@ -1393,6 +1398,7 @@ void GaussianMapper::processLocalMappingBABatch(
 }
 
 void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
+  return;
   // Existing loop closure code...
   // std::cout << "[Gaussian Mapper]Loop Closure Detected." << std::endl;
   std::cout << "[DEBUG] Starting loop closure with scale factor: "
@@ -3817,6 +3823,10 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
   keyframesToJson(scene_dir);
   saveModelParams(scene_dir);
 
+  // Need to save chunks before saving manifest since we need to update chunks
+  // in memory map
+  gaussians_->saveAllChunks();
+
   // Save a manifest of all chunks on disk
   saveChunkManifest(scene_dir);
 
@@ -3847,12 +3857,6 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
     std::cerr << "Error: " << e.what() << std::endl;
   }
 
-  // Save all active chunks
-  // chunk_manager_->releaseAllChunksFromOptimization();
-  bool all_saved = true;
-
-  gaussians_->saveAllChunks();
-
   std::cout << "Copying chunk data to save dir" << std::endl;
   // Copy chunks over to scene dir
   std::filesystem::path scene_chunk_dir = scene_dir / "chunks";
@@ -3862,7 +3866,7 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
   std::cout << "Done copying chunk data to save dir" << std::endl;
 
   std::cout << "Scene saved to " << scene_dir << std::endl;
-  return all_saved;
+  return true;
 }
 
 // Implementation for loadScene in gaussian_mapper.cpp
@@ -3896,8 +3900,21 @@ bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
   // // Load camera parameters
   loadCamerasFromJson(scene_dir / "cameras.json");
 
+  if (!gaussians_->is_initialized_) {
+    gaussians_->initializeEmpty(scene_->cameras_extent_);
+    gaussians_->trainingSetup(opt_params_);
+    std::cout << "Initialized empty Gaussian model for loading" << std::endl;
+  }
+
   // Load chunk information from the manifest
   loadChunkManifest(scene_dir);
+
+  std::cout << "Loaded " << gaussians_->chunks_on_disk_.size()
+            << " chunks from manifest" << std::endl;
+
+  std::vector<int64_t> all_chunk_ids(gaussians_->chunks_on_disk_.begin(),
+                                     gaussians_->chunks_on_disk_.end());
+  gaussians_->loadChunks(all_chunk_ids);
 
   // // Load a few chunks for initial visualization if desired
   // if (load_initial_chunks_ && !chunk_coords.empty()) {
