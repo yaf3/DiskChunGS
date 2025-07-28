@@ -175,6 +175,9 @@ class GaussianModel {
 
   torch::Tensor computeChunkIds(const torch::Tensor& positions);
 
+  // Recompute chunk IDs for gaussians after loop closure transformations
+  void recomputeChunkIdsAfterLoopClosure();
+
   bool is_initialized_ = false;
 
   void addPoints(const torch::Tensor& new_xyz,
@@ -208,13 +211,29 @@ class GaussianModel {
   float max_memory_gb_ = 8.0f;  // Configurable
   std::chrono::steady_clock::time_point last_memory_check_;
 
+  std::unordered_map<int64_t, std::chrono::steady_clock::time_point>
+      chunk_last_used_;
+  float memory_pressure_threshold_ = 0.85f;
+  size_t min_chunks_to_evict_ = 5;
+
   size_t getCurrentGPUMemoryUsage() const;
 
   struct ChunkData {
+    // Main tensors
     torch::Tensor xyz, features_dc, features_rest;
     torch::Tensor scaling, rotation, opacity;
     torch::Tensor exist_since, position_lrs, chunk_ids;
     int num_points;
+
+    // Auxiliary tensors
+    torch::Tensor xyz_gradient_accum;
+    torch::Tensor denom;
+    torch::Tensor max_radii2D;
+
+    // Optimizer states (6 parameter groups)
+    std::vector<torch::Tensor> exp_avg_states;     // [6] - momentum
+    std::vector<torch::Tensor> exp_avg_sq_states;  // [6] - squared momentum
+    std::vector<int64_t> step_counts;  // [6] - step counts per group
   };
 
   struct TensorHeader {
@@ -236,12 +255,21 @@ class GaussianModel {
   std::optional<ChunkData> loadSingleChunkFromDisk(int64_t chunk_id);
   void appendLoadedChunks(const std::vector<ChunkData>& chunks_data,
                           const std::vector<int64_t>& chunk_ids);
+  void restoreOptimizerStatesForRange(const std::vector<ChunkData>& chunks_data,
+                                      int start_idx,
+                                      int end_idx);
   void saveChunks(const std::vector<int64_t>& chunk_ids_to_save);
   ChunkData extractChunkData(const torch::Tensor& chunk_mask);
   void saveAndEvictChunks(const std::vector<int64_t>& chunk_ids);
 
+  std::vector<int64_t> findLRUChunks(size_t count);
+
   void checkMemoryPressure();
   void testSaveLoadEvictCycle();
+
+  void updateChunkAccess(const std::vector<ChunkCoord>& accessed_chunks);
+  void saveAllChunks();
+  int64_t countAllGaussians();
 
   // Cache for keyframe visibility results
   struct VisibilityCacheEntry {

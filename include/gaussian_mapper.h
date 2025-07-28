@@ -185,6 +185,12 @@ class GaussianMapper {
   void processLoopClosureBA(ORB_SLAM3::MappingOperation &opr);
   void processScaleRefinement(ORB_SLAM3::MappingOperation &opr);
 
+  void handleChunkRedistribution(int64_t original_chunk_id,
+                                 std::unordered_set<int64_t> &modified_chunks);
+  void handleChunkRedistributionWithMemoryManagement(
+      int64_t original_chunk_id,
+      std::unordered_set<int64_t> &modified_chunks);
+
   void handleNewKeyframe(std::tuple<unsigned long,
                                     unsigned long,
                                     Sophus::SE3f,
