@@ -5,7 +5,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include "chunk_manager.h"
 #include "gaussian_keyframe.h"
 #include "gaussian_scene.h"
 
@@ -19,7 +18,6 @@ class KeyframeQueue {
   ~KeyframeQueue();
 
   // Interface methods to match the original
-  void setChunkManager(std::shared_ptr<ChunkManager> chunk_manager);
   void generateVisibilityBasedClusters();
   void generateKfidRandomShuffle();
   void fillQueue();
@@ -44,7 +42,6 @@ class KeyframeQueue {
   std::shared_ptr<GaussianScene> scene_;
   size_t queue_size_;
   size_t recent_keyframes_count_;  // k most recent keyframes to select from
-  std::shared_ptr<ChunkManager> chunk_manager_;
 
   // Store the keyframe IDs in the order they were added
   std::vector<std::size_t> keyframe_ids_;

@@ -68,38 +68,6 @@ FrustumTestResult FrustumCuller::test_AABB(const Eigen::Matrix4f& MVP,
   return intersects ? FrustumTestResult::INTERSECT : FrustumTestResult::INSIDE;
 }
 
-// Helper functions for AABB calculations
-static AABB getChunkAABB(const ChunkCoord& coord, float chunk_size) {
-  float half_chunk = chunk_size * 0.5f;
-  Eigen::Vector3f center(coord.x * chunk_size, coord.y * chunk_size,
-                         coord.z * chunk_size);
-  Eigen::Vector3f min_corner = center - Eigen::Vector3f::Constant(half_chunk);
-  Eigen::Vector3f max_corner = center + Eigen::Vector3f::Constant(half_chunk);
-  return AABB(min_corner, max_corner);
-}
-
-static AABB getRegionAABB(const ChunkCoord& min_coord,
-                          const ChunkCoord& max_coord,
-                          float chunk_size) {
-  float half_chunk = chunk_size * 0.5f;
-
-  Eigen::Vector3f min_pos(min_coord.x * chunk_size - half_chunk,
-                          min_coord.y * chunk_size - half_chunk,
-                          min_coord.z * chunk_size - half_chunk);
-
-  Eigen::Vector3f max_pos((max_coord.x + 1) * chunk_size - half_chunk,
-                          (max_coord.y + 1) * chunk_size - half_chunk,
-                          (max_coord.z + 1) * chunk_size - half_chunk);
-
-  return AABB(min_pos, max_pos);
-}
-
-static Eigen::Vector3f getChunkCenter(const ChunkCoord& coord,
-                                      float chunk_size) {
-  return Eigen::Vector3f(coord.x * chunk_size, coord.y * chunk_size,
-                         coord.z * chunk_size);
-}
-
 std::vector<ChunkCoord> cullChunksHierarchical(
     const Eigen::Matrix4f& view_projection_matrix,
     const Eigen::Vector3f& camera_position,

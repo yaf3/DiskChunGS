@@ -47,7 +47,6 @@
 #include "ORB-SLAM3/Thirdparty/Sophus/sophus/se3.hpp"
 #include "ORB-SLAM3/include/MapDrawer.h"
 #include "ORB-SLAM3/include/System.h"
-#include "chunk_manager.h"
 #include "chunk_types.h"
 #include "gaussian_keyframe.h"
 #include "gaussian_scene.h"
@@ -88,7 +87,6 @@ struct VariableParameters {
   float opacity_lr;
   float scaling_lr;
   float rotation_lr;
-  float percent_dense;
   float lambda_dssim;
   int opacity_reset_interval;
   float densify_grad_th;
@@ -137,18 +135,11 @@ class GaussianMapper {
   int getIteration();
   void increaseIteration(const int inc = 1);
 
-  // Gaussian management
-  void addPoints(const torch::Tensor &points,
-                 const torch::Tensor &colors,
-                 const torch::Tensor &scales,
-                 const torch::Tensor &opacities);
-
   float positionLearningRateInit();
   float featureLearningRate();
   float opacityLearningRate();
   float scalingLearningRate();
   float rotationLearningRate();
-  float percentDense();
   float lambdaDssim();
   float lambdaDepth();
   int opacityResetInterval();
@@ -159,12 +150,6 @@ class GaussianMapper {
   bool isKeepingTraining();
   bool isdoingInactiveGeoDensify();
 
-  void setPositionLearningRateInit(const float lr);
-  void setFeatureLearningRate(const float lr);
-  void setOpacityLearningRate(const float lr);
-  void setScalingLearningRate(const float lr);
-  void setRotationLearningRate(const float lr);
-  void setPercentDense(const float percent_dense);
   void setLambdaDssim(const float lambda_dssim);
   void setOpacityResetInterval(const int interval);
   void setDensifyGradThreshold(const float th);
@@ -303,15 +288,6 @@ class GaussianMapper {
       std::shared_ptr<GaussianKeyframe> pkf) const;
   void updateORBSLAMPoses();
 
-  void createAndApplyGlobalRemovalMask(
-      const torch::Tensor &global_ids_to_remove,
-      const std::vector<std::shared_ptr<GaussianModel>> &models,
-      const std::vector<int> &model_sizes);
-
-  void pruneLowOpacityGaussians(
-      std::shared_ptr<GaussianKeyframe> pkf,
-      std::vector<std::shared_ptr<GaussianModel>> &models);
-
   torch::Tensor sampleConf(const torch::Tensor &mono_depth_conf,
                            const torch::Tensor &uv,
                            int width,
@@ -359,8 +335,7 @@ class GaussianMapper {
   // Parameters
   std::filesystem::path config_file_path_;
 
-  // Chunk manager for efficient memory handling
-  std::shared_ptr<ChunkManager> chunk_manager_;
+  std::shared_ptr<GaussianModel> gaussians_;
 
   // Scene
   std::shared_ptr<GaussianScene> scene_;

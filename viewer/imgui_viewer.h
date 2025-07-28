@@ -135,7 +135,6 @@ class ImGuiViewer {
   float opacity_lr_;
   float scaling_lr_;
   float rotation_lr_;
-  float percent_dense_;
   float lambda_dssim_;
   int opacity_reset_interval_;
   float densify_grad_th_;

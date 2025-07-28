@@ -81,12 +81,6 @@ void KeyframeQueue::queueForSaving(std::shared_ptr<GaussianKeyframe> keyframe) {
   save_cv_.notify_one();
 }
 
-// These methods are just stubs for compatibility with the original interface
-void KeyframeQueue::setChunkManager(
-    std::shared_ptr<ChunkManager> chunk_manager) {
-  chunk_manager_ = chunk_manager;
-}
-
 // Get next keyframe (randomly selected from k most recent)
 std::shared_ptr<GaussianKeyframe> KeyframeQueue::getNextKeyframe() {
   if (keyframe_ids_.empty()) return nullptr;

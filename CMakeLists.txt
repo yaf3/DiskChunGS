@@ -296,7 +296,6 @@ add_library(
     include/types.h
     include/profiling.h
     include/chunk_types.h
-    include/chunk_manager.h
     include/render_flythrough.h
     include/keyframe_selection.h
     include/nanoflann.hpp
@@ -312,7 +311,6 @@ add_library(
     src/gaussian_renderer.cpp
     src/gaussian_scene.cpp
     src/gaussian_mapper.cpp
-    src/chunk_manager.cpp
     src/render_flythrough.cpp
     src/keyframe_selection.cpp
     src/debugging_utils.cpp

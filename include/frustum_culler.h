@@ -4,15 +4,6 @@
 
 #include "include/chunk_types.h"
 
-struct AABB {
-  Eigen::Vector3f min;
-  Eigen::Vector3f max;
-
-  AABB() : min(Eigen::Vector3f::Zero()), max(Eigen::Vector3f::Zero()) {}
-  AABB(const Eigen::Vector3f& min_val, const Eigen::Vector3f& max_val)
-      : min(min_val), max(max_val) {}
-};
-
 enum FrustumTestResult { OUTSIDE = 0, INTERSECT = 1, INSIDE = 2 };
 
 class FrustumCuller {

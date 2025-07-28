@@ -132,7 +132,6 @@ void ImGuiViewer::readConfigFromFile(std::filesystem::path cfg_path) {
   opacity_lr_ = pGausMapper_->opacityLearningRate();
   scaling_lr_ = pGausMapper_->scalingLearningRate();
   rotation_lr_ = pGausMapper_->rotationLearningRate();
-  percent_dense_ = pGausMapper_->percentDense();
   lambda_dssim_ = pGausMapper_->lambdaDssim();
   opacity_reset_interval_ = pGausMapper_->opacityResetInterval();
   densify_grad_th_ = pGausMapper_->densifyGradThreshold();
@@ -519,7 +518,6 @@ void ImGuiViewer::run() {
     opacity_lr_ = params_in.opacity_lr;
     scaling_lr_ = params_in.scaling_lr;
     rotation_lr_ = params_in.rotation_lr;
-    percent_dense_ = params_in.percent_dense;
     lambda_dssim_ = params_in.lambda_dssim;
     opacity_reset_interval_ = params_in.opacity_reset_interval;
     densify_grad_th_ = params_in.densify_grad_th;
@@ -576,19 +574,6 @@ void ImGuiViewer::run() {
 
         ImGui::Text("Iteration: %d", current_iteration);
         ImGui::Text("Speed: %.1f iter/s", iterations_per_second_);
-        if (pGausMapper_->chunk_manager_) {
-          ImGui::Text("Active Chunks: %d",
-                      pGausMapper_->chunk_manager_->getStats().active_chunks);
-          ImGui::Text("Total Chunks: %d",
-                      pGausMapper_->chunk_manager_->getStats().existing_chunks);
-          ImGui::Text("Chunk Operations Pending: %d",
-                      pGausMapper_->chunk_manager_->getOperationQueueSize());
-        } else {
-          ImGui::Text("Active Chunks: Not initialized");
-          ImGui::Text("Total Chunks: Not initialized");
-          ImGui::Text("Chunk Operations Pending: Not initialized");
-        }
-
         ImGui::Checkbox("Densify with inactive geometries",
                         &do_inactive_geo_densify_);
         ImGui::Checkbox("Keep training after stop", &keep_training_);
@@ -602,8 +587,6 @@ void ImGuiViewer::run() {
                            "%.5f");
         ImGui::SliderFloat("Rotation l.r.", &rotation_lr_, 0.0001f, 0.0100f,
                            "%.5f");
-        ImGui::SliderFloat("Percent dense", &percent_dense_, 0.001f, 0.100f,
-                           "%.3f");
         ImGui::SliderFloat("Lambda dssim", &lambda_dssim_, 0.01f, 0.40f,
                            "%.2f");
         ImGui::SliderInt("Opacity reset", &opacity_reset_interval_, 0, 6000);
@@ -622,7 +605,6 @@ void ImGuiViewer::run() {
     params_out.opacity_lr = opacity_lr_;
     params_out.scaling_lr = scaling_lr_;
     params_out.rotation_lr = rotation_lr_;
-    params_out.percent_dense = percent_dense_;
     params_out.lambda_dssim = lambda_dssim_;
     params_out.opacity_reset_interval = opacity_reset_interval_;
     params_out.densify_grad_th = densify_grad_th_;
