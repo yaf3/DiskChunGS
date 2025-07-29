@@ -574,6 +574,18 @@ void ImGuiViewer::run() {
 
         ImGui::Text("Iteration: %d", current_iteration);
         ImGui::Text("Speed: %.1f iter/s", iterations_per_second_);
+        if (pGausMapper_->gaussians_ &&
+            pGausMapper_->gaussians_->is_initialized_) {
+          ImGui::Text("Active Chunks: %d",
+                      pGausMapper_->gaussians_->chunks_in_memory_.size());
+          ImGui::Text("Total Chunks: %d",
+                      pGausMapper_->gaussians_->chunks_on_disk_.size());
+
+        } else {
+          ImGui::Text("Active Chunks: Not initialized");
+          ImGui::Text("Total Chunks: Not initialized");
+        }
+
         ImGui::Checkbox("Densify with inactive geometries",
                         &do_inactive_geo_densify_);
         ImGui::Checkbox("Keep training after stop", &keep_training_);

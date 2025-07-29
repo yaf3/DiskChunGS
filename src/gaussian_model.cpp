@@ -1093,18 +1093,28 @@ torch::Tensor GaussianModel::loadTensorBinary(std::ifstream& file) {
 }
 
 void GaussianModel::updateChunksInMemory() {
-  // Get unique chunk IDs first (GPU operation)
-  auto unique_result = torch::_unique2(gaussian_chunk_ids_,
-                                       /*sorted=*/false,
-                                       /*return_inverse=*/false,
-                                       /*return_counts=*/false);
-  torch::Tensor unique_chunk_ids = std::get<0>(unique_result);
-  auto unique_cpu = unique_chunk_ids.cpu();
-  auto accessor = unique_cpu.accessor<int64_t, 1>();
+  // Get chunk counts instead of just unique IDs
+  auto [unique_chunk_ids, inverse_indices, counts] =
+      torch::_unique2(gaussian_chunk_ids_,
+                      /*sorted=*/false,
+                      /*return_inverse=*/false,
+                      /*return_counts=*/true);
 
-  chunks_in_memory_.clear();  // Fresh start
+  auto unique_cpu = unique_chunk_ids.cpu();
+  auto counts_cpu = counts.cpu();
+  auto chunk_accessor = unique_cpu.accessor<int64_t, 1>();
+  auto count_accessor = counts_cpu.accessor<int64_t, 1>();
+
+  chunks_in_memory_.clear();
+
   for (int i = 0; i < unique_cpu.size(0); ++i) {
-    chunks_in_memory_.insert(accessor[i]);
+    int64_t chunk_id = chunk_accessor[i];
+    int64_t gaussian_count = count_accessor[i];
+
+    // Only consider a chunk "loaded" if it has enough Gaussians
+    if (gaussian_count >= min_chunk_occupancy_for_loaded_) {
+      chunks_in_memory_.insert(chunk_id);
+    }
   }
 }
 
@@ -1114,10 +1124,12 @@ void GaussianModel::loadChunks(const std::vector<int64_t>& chunk_ids_to_load) {
   std::vector<GaussianModel::ChunkData> chunks_to_append;
   std::vector<int64_t> loaded_chunk_ids;
 
-  // Load each chunk from disk (can be parallelized)
   for (int64_t chunk_id : chunk_ids_to_load) {
-    if (chunks_in_memory_.count(chunk_id)) {
-      continue;  // Already in memory
+    // Check if chunk is meaningfully loaded (not just a few stray Gaussians)
+    bool meaningfully_loaded = chunks_in_memory_.count(chunk_id) > 0;
+
+    if (meaningfully_loaded) {
+      continue;  // Skip if already meaningfully loaded
     }
 
     auto chunk_data = loadSingleChunkFromDisk(chunk_id);
@@ -1131,13 +1143,8 @@ void GaussianModel::loadChunks(const std::vector<int64_t>& chunk_ids_to_load) {
   }
 
   if (!chunks_to_append.empty()) {
-    // Batch append all loaded chunks at once
     appendLoadedChunks(chunks_to_append, loaded_chunk_ids);
-
-    // Update tracking
-    for (int64_t chunk_id : loaded_chunk_ids) {
-      chunks_in_memory_.insert(chunk_id);
-    }
+    updateChunksInMemory();  // Recalculate which chunks are meaningfully loaded
   }
 }
 

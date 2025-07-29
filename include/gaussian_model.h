@@ -279,6 +279,8 @@ class GaussianModel {
   void initializeEmpty(float spatial_lr_scale);
   void evictSparseChunks(int min_gaussians_per_chunk);
 
+  int min_chunk_occupancy_for_loaded_ = 50;
+
   // Cache for keyframe visibility results
   struct VisibilityCacheEntry {
     Sophus::SE3d pose;  // Keyframe pose when visibility was calculated

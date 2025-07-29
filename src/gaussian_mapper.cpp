@@ -672,6 +672,9 @@ void GaussianMapper::run() {
   std::filesystem::remove_all(chunk_save_dir_);
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
 
+  std::filesystem::remove_all(keyframe_save_dir_);
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(keyframe_save_dir_)
+
   // First loop: Initial gaussian mapping
   while (!isStopped()) {
     // Check conditions for initial mapping
@@ -898,6 +901,9 @@ void GaussianMapper::run() {
   saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
             "data");
   writeKeyframeUsedTimes(result_dir_ / "used_times", "final");
+
+  std::filesystem::remove_all(chunk_save_dir_);
+  std::filesystem::remove_all(keyframe_save_dir_);
 
   signalStop();
 
