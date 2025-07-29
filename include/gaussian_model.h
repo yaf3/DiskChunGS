@@ -160,15 +160,16 @@ class GaussianModel {
   std::mutex mutex_settings_;
 
  public:
-  float chunk_size_ = 30.0f;
+  float chunk_size_ = 20.0f;
 
   std::vector<ChunkCoord> frustumCullChunks(
       std::shared_ptr<GaussianKeyframe> keyframe,
       bool use_cache);
   torch::Tensor cullVisibleGaussians(
       std::shared_ptr<GaussianKeyframe> keyframe);
+
   torch::Tensor createGaussianMaskFromChunks(
-      const std::vector<ChunkCoord>& visible_chunks);
+      const torch::Tensor& visible_chunk_ids);
 
   void pruneLowOpacityGaussians(std::shared_ptr<GaussianKeyframe> pkf,
                                 const torch::Tensor& visible_gaussian_mask);
@@ -201,8 +202,8 @@ class GaussianModel {
                     int iteration);
 
   // Storage tracking
-  std::unordered_set<int64_t> chunks_in_memory_;
-  std::unordered_set<int64_t> chunks_on_disk_;
+  torch::Tensor chunks_in_memory_;  // [N] - int64 tensor of chunk IDs in memory
+  torch::Tensor chunks_on_disk_;    // [M] - int64 tensor of chunk IDs on disk
 
   // For chunk-based save/load operations
   std::string storage_base_path_;
@@ -211,8 +212,11 @@ class GaussianModel {
   float max_memory_gb_ = 8.0f;  // Configurable
   std::chrono::steady_clock::time_point last_memory_check_;
 
-  std::unordered_map<int64_t, std::chrono::steady_clock::time_point>
-      chunk_last_used_;
+  torch::Tensor
+      chunk_last_used_;  // [N] - float tensor of timestamps (as float seconds)
+  torch::Tensor chunk_access_times_;  // [MAX_CHUNK_ENTRIES] - float timestamps
+  static constexpr int64_t MAX_CHUNK_ENTRIES =
+      1000000;  // Adjust based on your needs
   float memory_pressure_threshold_ = 0.85f;
   size_t min_chunks_to_evict_ = 5;
 
@@ -250,7 +254,7 @@ class GaussianModel {
 
   void updateChunksInMemory();
 
-  void loadChunks(const std::vector<int64_t>& chunk_ids_to_load);
+  void loadChunks(const torch::Tensor& chunk_ids_to_load);
   void saveSingleChunkToDisk(int64_t chunk_id, const ChunkData& chunk_data);
   std::optional<ChunkData> loadSingleChunkFromDisk(int64_t chunk_id);
   void appendLoadedChunks(const std::vector<ChunkData>& chunks_data,
@@ -258,16 +262,16 @@ class GaussianModel {
   void restoreOptimizerStatesForRange(const std::vector<ChunkData>& chunks_data,
                                       int start_idx,
                                       int end_idx);
-  void saveChunks(const std::vector<int64_t>& chunk_ids_to_save);
+  void saveChunks(const torch::Tensor& chunk_ids_to_save);
   ChunkData extractChunkData(const torch::Tensor& chunk_mask);
-  void saveAndEvictChunks(const std::vector<int64_t>& chunk_ids);
+  void saveAndEvictChunks(const torch::Tensor& chunk_ids);
 
-  std::vector<int64_t> findLRUChunks(size_t count);
+  torch::Tensor findLRUChunks(int count);
 
   void checkMemoryPressure();
   void testSaveLoadEvictCycle();
 
-  void updateChunkAccess(const std::vector<ChunkCoord>& accessed_chunks);
+  void updateChunkAccess(const torch::Tensor& accessed_chunk_ids);
   void saveAllChunks();
   int64_t countAllGaussians();
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
@@ -280,6 +284,15 @@ class GaussianModel {
   void evictSparseChunks(int min_gaussians_per_chunk);
 
   int min_chunk_occupancy_for_loaded_ = 50;
+
+  void consolidateChunksBeforeAdding(const torch::Tensor& new_xyz);
+  torch::Tensor identifyAffectedChunks(const torch::Tensor& xyz);
+
+  // Vectorized chunk operations
+  torch::Tensor computeChunkCoordsFromPositions(const torch::Tensor& positions);
+  torch::Tensor encodeChunkCoordsTensor(const torch::Tensor& chunk_coords);
+  torch::Tensor decodeChunkCoordsTensor(const torch::Tensor& encoded_ids);
+  torch::Tensor chunkCoordVectorToTensor(const std::vector<ChunkCoord>& coords);
 
   // Cache for keyframe visibility results
   struct VisibilityCacheEntry {

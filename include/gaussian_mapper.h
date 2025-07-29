@@ -186,10 +186,10 @@ class GaussianMapper {
   void processScaleRefinement(ORB_SLAM3::MappingOperation &opr);
 
   void handleChunkRedistribution(int64_t original_chunk_id,
-                                 std::unordered_set<int64_t> &modified_chunks);
-  void handleChunkRedistributionWithMemoryManagement(
-      int64_t original_chunk_id,
-      std::unordered_set<int64_t> &modified_chunks);
+                                 torch::Tensor &modified_chunks_tensor);
+  void logRedistributionDetails(const torch::Tensor &unique_destination_chunks,
+                                const torch::Tensor &inverse_indices,
+                                const torch::Tensor &counts);
 
   void handleNewKeyframe(std::tuple<unsigned long,
                                     unsigned long,

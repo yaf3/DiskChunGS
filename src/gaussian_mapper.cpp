@@ -1404,16 +1404,10 @@ void GaussianMapper::processLocalMappingBABatch(
 }
 
 void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
-  return;
-  // Existing loop closure code...
-  // std::cout << "[Gaussian Mapper]Loop Closure Detected." << std::endl;
   std::cout << "[DEBUG] Starting loop closure with scale factor: "
             << opr.mfScale << std::endl;
 
-  // Get the loop keyframe scale modification factor
   float loop_kf_scale = opr.mfScale;
-
-  // Get new keyframes (scaled transformation applied in ORB-SLAM3)
   auto& associated_kfs = opr.associatedKeyFrames();
 
   std::cout << "[DEBUG] Processing " << associated_kfs.size() << " keyframes"
@@ -1427,12 +1421,13 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
 
   int num_transformed = 0;
 
-  // Track transformed flags per chunk
+  // Track transformed flags per chunk (keep as-is since it's chunk-specific)
   std::unordered_map<ChunkCoord, torch::Tensor, ChunkCoordHash>
       points_transformed_flags;
 
-  // Track chunks that need final redistribution
-  std::unordered_set<int64_t> chunks_modified_during_loop;
+  // VECTORIZED: Track chunks that need final redistribution using tensor
+  torch::Tensor chunks_modified_during_loop = torch::empty(
+      {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
 
   // First pass: Handle all new keyframes (this modifies chunks)
   for (auto& kf : associated_kfs) {
@@ -1483,13 +1478,32 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
                                              diff_pose.matrix(), device_type_)
                                              .transpose(0, 1);
 
-        // Add this keyframe's transformation to each visible chunk
-        for (const auto& chunk_coord : visible_chunk_coords) {
-          auto chunk_id = encodeChunkCoord(chunk_coord);
+        // VECTORIZED: Convert chunk coords to IDs and filter existing chunks
+        torch::Tensor visible_chunk_coords_tensor =
+            gaussians_->chunkCoordVectorToTensor(visible_chunk_coords);
+        torch::Tensor visible_chunk_ids =
+            gaussians_->encodeChunkCoordsTensor(visible_chunk_coords_tensor);
 
-          // Only add if the chunk is in memory or on disk
-          if (gaussians_->chunks_in_memory_.count(chunk_id) ||
-              gaussians_->chunks_on_disk_.count(chunk_id)) {
+        // Filter to only chunks that exist (in memory or on disk)
+        torch::Tensor in_memory_mask =
+            torch::isin(visible_chunk_ids, gaussians_->chunks_in_memory_);
+        torch::Tensor on_disk_mask =
+            torch::isin(visible_chunk_ids, gaussians_->chunks_on_disk_);
+        torch::Tensor existing_mask = in_memory_mask | on_disk_mask;
+        torch::Tensor existing_chunk_ids =
+            visible_chunk_ids.index({existing_mask});
+
+        // Convert back to coordinates for the existing chunk processing loop
+        // (This part stays as loop since each chunk needs individual keyframe
+        // tracking)
+        if (existing_chunk_ids.size(0) > 0) {
+          auto existing_cpu = existing_chunk_ids.cpu();
+          auto accessor = existing_cpu.accessor<int64_t, 1>();
+
+          for (int i = 0; i < existing_cpu.size(0); ++i) {
+            int64_t chunk_id = accessor[i];
+            ChunkCoord chunk_coord = decodeChunkCoord(chunk_id);
+
             std::cout << "[DEBUG] Chunk (" << chunk_coord.x << ","
                       << chunk_coord.y << "," << chunk_coord.z
                       << ") affected by keyframe " << kfid << std::endl;
@@ -1522,13 +1536,21 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
               << affecting_keyframes.size() << " affecting keyframes"
               << std::endl;
 
-    gaussians_->checkMemoryPressure();
+    gaussians_->checkMemoryPressure();  // Use vectorized version
 
-    // Load the chunk if not already in memory
-    if (!gaussians_->chunks_in_memory_.count(chunk_id) &&
-        gaussians_->chunks_on_disk_.count(chunk_id)) {
-      // Load only this single chunk
-      gaussians_->loadChunks({chunk_id});
+    // VECTORIZED: Check if chunk needs loading
+    torch::Tensor single_chunk_tensor = torch::tensor(
+        {chunk_id},
+        torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
+
+    torch::Tensor in_memory_mask =
+        torch::isin(single_chunk_tensor, gaussians_->chunks_in_memory_);
+    torch::Tensor on_disk_mask =
+        torch::isin(single_chunk_tensor, gaussians_->chunks_on_disk_);
+    torch::Tensor need_loading_mask = on_disk_mask & (~in_memory_mask);
+
+    if (need_loading_mask.any().item<bool>()) {
+      gaussians_->loadChunks(single_chunk_tensor);  // Use vectorized loadChunks
     }
 
     // Initialize or retrieve transformation flags for this chunk
@@ -1547,7 +1569,8 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
       current_chunk_points_transformed_flags = flags_it->second;
     }
 
-    // Apply transformations from all affecting keyframes
+    // Apply transformations from all affecting keyframes (keep as-is -
+    // chunk-specific logic)
     int chunk_total_transformed = 0;
     for (const auto& kf_transform : affecting_keyframes) {
       std::size_t kfid = kf_transform.first;
@@ -1571,7 +1594,6 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
           chunk_transformed_by_this_kf, 1.0f);
 
       chunk_total_transformed += chunk_transformed_by_this_kf;
-
       std::cout << "[DEBUG] Keyframe " << kfid << " transformed "
                 << chunk_transformed_by_this_kf << " points in this chunk"
                 << std::endl;
@@ -1590,8 +1612,9 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
               << ") total transformed: " << chunk_total_transformed << " points"
               << std::endl;
 
-    // Handle redistribution immediately
-    handleChunkRedistribution(chunk_id, chunks_modified_during_loop);
+    // VECTORIZED: Handle redistribution and track modified chunks
+    handleChunkRedistribution(
+        chunk_id, chunks_modified_during_loop);  // Uses vectorized version
   }
 
   if (record_loop_ply_) {
@@ -1600,7 +1623,7 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
               "data");
   }
 
-  // Print summary of transformations per chunk
+  // Print summary of transformations per chunk (keep as-is for debugging)
   std::cout << "[LOOP CLOSURE SUMMARY] Transformation counts per chunk:"
             << std::endl;
   for (const auto& entry : points_transformed_flags) {
@@ -1615,13 +1638,18 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
   std::cout << "[SUMMARY] Total points transformed across all chunks: "
             << num_transformed << std::endl;
 
-  // *** REPLACE THE OLD TRANSFER COMMENT WITH THIS: Final cleanup ***
-  std::cout << "[Loop Closure] Saving " << chunks_modified_during_loop.size()
-            << " modified chunks to disk" << std::endl;
+  // VECTORIZED: Final cleanup - save all modified chunks
+  if (chunks_modified_during_loop.size(0) > 0) {
+    // Remove duplicates
+    chunks_modified_during_loop = std::get<0>(
+        torch::_unique2(chunks_modified_during_loop, /*sorted=*/true));
 
-  std::vector<int64_t> final_chunks_to_save(chunks_modified_during_loop.begin(),
-                                            chunks_modified_during_loop.end());
-  gaussians_->saveChunks(final_chunks_to_save);
+    std::cout << "[Loop Closure] Saving " << chunks_modified_during_loop.size(0)
+              << " modified chunks to disk" << std::endl;
+
+    gaussians_->saveChunks(
+        chunks_modified_during_loop);  // Use vectorized saveChunks
+  }
 
   // Mark this iteration
   loop_closure_iteration_ = true;
@@ -3915,12 +3943,8 @@ bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
   // Load chunk information from the manifest
   loadChunkManifest(scene_dir);
 
-  std::cout << "Loaded " << gaussians_->chunks_on_disk_.size()
+  std::cout << "Loaded " << gaussians_->chunks_on_disk_.size(0)
             << " chunks from manifest" << std::endl;
-
-  std::vector<int64_t> all_chunk_ids(gaussians_->chunks_on_disk_.begin(),
-                                     gaussians_->chunks_on_disk_.end());
-  gaussians_->loadChunks(all_chunk_ids);
 
   // // Load a few chunks for initial visualization if desired
   // if (load_initial_chunks_ && !chunk_coords.empty()) {
@@ -4027,7 +4051,11 @@ void GaussianMapper::saveChunkManifest(std::filesystem::path scene_dir) {
 
   // Save chunks_on_disk_ (std::unordered_set<int64_t>)
   Json::Value chunks_on_disk_array(Json::arrayValue);
-  for (const auto& chunk_id : gaussians_->chunks_on_disk_) {
+  auto chunks_cpu = gaussians_->chunks_on_disk_.cpu();
+  auto accessor = chunks_cpu.accessor<int64_t, 1>();
+
+  for (int i = 0; i < chunks_cpu.size(0); ++i) {
+    int64_t chunk_id = accessor[i];
     chunks_on_disk_array.append(
         Json::Value(static_cast<Json::Int64>(chunk_id)));
   }
@@ -4062,8 +4090,11 @@ void GaussianMapper::loadChunkManifest(std::filesystem::path scene_dir) {
   }
 
   // Clear existing sets before loading
-  gaussians_->chunks_in_memory_.clear();
-  gaussians_->chunks_on_disk_.clear();
+  gaussians_->chunks_on_disk_ = torch::empty(
+      {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
+
+  gaussians_->chunks_in_memory_ = torch::empty(
+      {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
 
   // // Load chunks_in_memory_ (std::unordered_set<int64_t>)
   // if (root.isMember("chunks_in_memory") &&
@@ -4079,10 +4110,30 @@ void GaussianMapper::loadChunkManifest(std::filesystem::path scene_dir) {
   // Load chunks_on_disk_ (std::unordered_set<int64_t>)
   if (root.isMember("chunks_on_disk") && root["chunks_on_disk"].isArray()) {
     const Json::Value& chunks_on_disk_array = root["chunks_on_disk"];
+
+    // Collect into vector first
+    std::vector<int64_t> chunks_on_disk_vec;
+    chunks_on_disk_vec.reserve(chunks_on_disk_array.size());
+
     for (const auto& chunk_value : chunks_on_disk_array) {
       if (chunk_value.isInt64()) {
-        gaussians_->chunks_on_disk_.insert(chunk_value.asInt64());
+        chunks_on_disk_vec.push_back(chunk_value.asInt64());
       }
+    }
+
+    // Convert to tensor
+    if (!chunks_on_disk_vec.empty()) {
+      gaussians_->chunks_on_disk_ =
+          torch::from_blob(chunks_on_disk_vec.data(),
+                           {static_cast<int64_t>(chunks_on_disk_vec.size())},
+                           torch::TensorOptions().dtype(torch::kInt64))
+              .clone()
+              .to(gaussians_->device_type_);
+    } else {
+      gaussians_->chunks_on_disk_ =
+          torch::empty({0}, torch::TensorOptions()
+                                .dtype(torch::kInt64)
+                                .device(gaussians_->device_type_));
     }
   }
 }
@@ -5315,7 +5366,8 @@ void GaussianMapper::testTransferGaussiansAcrossChunks() {
 
 void GaussianMapper::handleChunkRedistribution(
     int64_t original_chunk_id,
-    std::unordered_set<int64_t>& modified_chunks) {
+    torch::Tensor& modified_chunks_tensor) {  // Changed to tensor instead of
+                                              // std::unordered_set
   // Step 1: Extract gaussians from the original chunk
   torch::Tensor original_chunk_mask =
       (gaussians_->gaussian_chunk_ids_ == original_chunk_id);
@@ -5328,231 +5380,100 @@ void GaussianMapper::handleChunkRedistribution(
   std::cout << "[Chunk Redistribution] Processing " << num_gaussians_in_chunk
             << " gaussians from chunk " << original_chunk_id << std::endl;
 
-  // Step 2: Get positions of gaussians in this chunk and recompute their chunk
-  // IDs
+  // Step 2: Get positions and recompute chunk IDs (vectorized)
   torch::Tensor chunk_positions =
       gaussians_->getXYZ().index({original_chunk_mask});
   torch::Tensor new_chunk_ids = gaussians_->computeChunkIds(chunk_positions);
 
-  // Step 3: Find unique destination chunks
-  auto unique_result =
+  // Step 3: Find unique destination chunks (vectorized)
+  auto [unique_destination_chunks, inverse_indices, counts] =
       torch::_unique2(new_chunk_ids, /*sorted=*/false,
-                      /*return_inverse=*/true, /*return_counts=*/false);
-  torch::Tensor unique_destination_chunks = std::get<0>(unique_result);
-  torch::Tensor inverse_indices = std::get<1>(unique_result);
-
-  auto unique_cpu = unique_destination_chunks.cpu();
-  auto unique_accessor = unique_cpu.accessor<int64_t, 1>();
+                      /*return_inverse=*/true, /*return_counts=*/true);
 
   std::cout << "[Chunk Redistribution] Gaussians will be redistributed to "
-            << unique_cpu.size(0) << " chunks" << std::endl;
+            << unique_destination_chunks.size(0) << " chunks" << std::endl;
 
-  // Step 4: For each destination chunk, ensure it's loaded or track as new
-  std::vector<int64_t> chunks_to_load;
-  std::vector<int64_t> new_chunks_created;
+  // Step 4: Categorize destination chunks (vectorized)
 
-  for (int i = 0; i < unique_cpu.size(0); ++i) {
-    int64_t dest_chunk_id = unique_accessor[i];
+  // Check which destinations are same as original (vectorized)
+  torch::Tensor same_chunk_mask =
+      (unique_destination_chunks == original_chunk_id);
 
-    if (dest_chunk_id == original_chunk_id) {
-      // Staying in same chunk - no action needed
-      continue;
-    }
+  // Check which destinations are already in memory (vectorized)
+  torch::Tensor in_memory_mask =
+      torch::isin(unique_destination_chunks, gaussians_->chunks_in_memory_);
 
-    if (gaussians_->chunks_in_memory_.count(dest_chunk_id)) {
-      // Already in memory - no action needed
-      continue;
-    }
+  // Check which destinations exist on disk (vectorized)
+  torch::Tensor on_disk_mask =
+      torch::isin(unique_destination_chunks, gaussians_->chunks_on_disk_);
 
-    if (gaussians_->chunks_on_disk_.count(dest_chunk_id)) {
-      // Exists on disk - needs loading
-      chunks_to_load.push_back(dest_chunk_id);
-    } else {
-      // NEW CHUNK: doesn't exist anywhere yet
-      new_chunks_created.push_back(dest_chunk_id);
-      gaussians_->chunks_in_memory_.insert(dest_chunk_id);  // Mark as in memory
-      std::cout << "[Chunk Redistribution] Creating new chunk " << dest_chunk_id
-                << std::endl;
-    }
-  }
+  // Compute action masks (vectorized)
+  torch::Tensor no_action_mask =
+      same_chunk_mask | in_memory_mask;  // Stay same OR already in memory
+  torch::Tensor need_loading_mask =
+      (~no_action_mask) & on_disk_mask;  // Not handled AND on disk
+  torch::Tensor new_chunk_mask =
+      (~no_action_mask) & (~on_disk_mask);  // Not handled AND not on disk
 
-  if (!chunks_to_load.empty()) {
-    std::cout << "[Chunk Redistribution] Loading " << chunks_to_load.size()
+  // Extract chunks that need loading (vectorized)
+  torch::Tensor chunks_to_load =
+      unique_destination_chunks.index({need_loading_mask});
+
+  // Extract new chunks to create (vectorized)
+  torch::Tensor new_chunks_created =
+      unique_destination_chunks.index({new_chunk_mask});
+
+  // Step 5: Load existing chunks if needed
+  if (chunks_to_load.size(0) > 0) {
+    std::cout << "[Chunk Redistribution] Loading " << chunks_to_load.size(0)
               << " existing destination chunks from disk" << std::endl;
-    gaussians_->loadChunks(chunks_to_load);
+    gaussians_->loadChunks(chunks_to_load);  // Uses our vectorized loadChunks
   }
 
-  if (!new_chunks_created.empty()) {
-    std::cout << "[Chunk Redistribution] Created " << new_chunks_created.size()
+  // Step 6: Handle new chunk creation (vectorized)
+  if (new_chunks_created.size(0) > 0) {
+    std::cout << "[Chunk Redistribution] Creating "
+              << new_chunks_created.size(0)
               << " new chunks that didn't exist before" << std::endl;
+
+    // Add new chunks to chunks_in_memory_ (vectorized)
+    gaussians_->chunks_in_memory_ =
+        torch::cat({gaussians_->chunks_in_memory_, new_chunks_created}, 0);
+
+    // Remove duplicates and sort for efficiency
+    gaussians_->chunks_in_memory_ = std::get<0>(
+        torch::_unique2(gaussians_->chunks_in_memory_, /*sorted=*/true));
   }
 
-  // Step 5: Update the chunk IDs in the unified model
-  // Find the indices in the full model that correspond to this chunk
+  // Step 7: Update chunk IDs in the unified model (vectorized)
   torch::Tensor full_model_indices = torch::where(original_chunk_mask)[0];
-
-  // Update chunk IDs for these gaussians
   gaussians_->gaussian_chunk_ids_.index_put_({full_model_indices},
                                              new_chunk_ids);
 
-  // Step 6: Track all affected chunks for final saving
-  for (int i = 0; i < unique_cpu.size(0); ++i) {
-    int64_t dest_chunk_id = unique_accessor[i];
-    modified_chunks.insert(dest_chunk_id);
-  }
+  // Step 8: Add all destination chunks to modified_chunks_tensor (vectorized)
+  modified_chunks_tensor =
+      torch::cat({modified_chunks_tensor, unique_destination_chunks}, 0);
 
-  // Log redistribution details
-  auto inverse_cpu = inverse_indices.cpu();
-  auto inverse_accessor = inverse_cpu.accessor<int64_t, 1>();
+  // Step 9: Log redistribution details (vectorized computation, minimal CPU
+  // access)
+  logRedistributionDetails(unique_destination_chunks, inverse_indices, counts);
+}
 
-  for (int i = 0; i < unique_cpu.size(0); ++i) {
-    int64_t dest_chunk_id = unique_accessor[i];
-    torch::Tensor dest_mask = (inverse_indices == i);
-    int num_gaussians_to_dest = dest_mask.sum().item<int>();
+void GaussianMapper::logRedistributionDetails(
+    const torch::Tensor& unique_destination_chunks,
+    const torch::Tensor& inverse_indices,
+    const torch::Tensor& counts) {
+  // Move to CPU once for all logging
+  auto dest_cpu = unique_destination_chunks.cpu();
+  auto counts_cpu = counts.cpu();
+  auto dest_accessor = dest_cpu.accessor<int64_t, 1>();
+  auto counts_accessor = counts_cpu.accessor<int64_t, 1>();
+
+  for (int i = 0; i < dest_cpu.size(0); ++i) {
+    int64_t dest_chunk_id = dest_accessor[i];
+    int num_gaussians_to_dest = counts_accessor[i];
 
     std::cout << "[Chunk Redistribution] " << num_gaussians_to_dest
               << " gaussians -> chunk " << dest_chunk_id << std::endl;
-  }
-}
-
-// Enhanced version that handles memory pressure
-void GaussianMapper::handleChunkRedistributionWithMemoryManagement(
-    int64_t original_chunk_id,
-    std::unordered_set<int64_t>& modified_chunks) {
-  // Step 1: Extract gaussians from the original chunk
-  torch::Tensor original_chunk_mask =
-      (gaussians_->gaussian_chunk_ids_ == original_chunk_id);
-  int num_gaussians_in_chunk = original_chunk_mask.sum().item<int>();
-
-  if (num_gaussians_in_chunk == 0) {
-    return;
-  }
-
-  // Step 2: Recompute chunk IDs
-  torch::Tensor chunk_positions =
-      gaussians_->getXYZ().index({original_chunk_mask});
-  torch::Tensor new_chunk_ids = gaussians_->computeChunkIds(chunk_positions);
-
-  // Step 3: Find destination chunks
-  auto unique_result =
-      torch::_unique2(new_chunk_ids, /*sorted=*/false,
-                      /*return_inverse=*/true, /*return_counts=*/false);
-  torch::Tensor unique_destination_chunks = std::get<0>(unique_result);
-  torch::Tensor inverse_indices = std::get<1>(unique_result);
-
-  auto unique_cpu = unique_destination_chunks.cpu();
-  auto inverse_cpu = inverse_indices.cpu();
-  auto unique_accessor = unique_cpu.accessor<int64_t, 1>();
-  auto inverse_accessor = inverse_cpu.accessor<int64_t, 1>();
-
-  // Step 4: Smart loading with memory management
-  std::vector<int64_t> chunks_to_load;
-  std::vector<int64_t> new_chunks_created;
-
-  for (int i = 0; i < unique_cpu.size(0); ++i) {
-    int64_t dest_chunk_id = unique_accessor[i];
-
-    if (dest_chunk_id == original_chunk_id) {
-      // Staying in same chunk - no action needed
-      continue;
-    }
-
-    if (gaussians_->chunks_in_memory_.count(dest_chunk_id)) {
-      // Already in memory - no action needed
-      continue;
-    }
-
-    if (gaussians_->chunks_on_disk_.count(dest_chunk_id)) {
-      // Exists on disk - needs loading
-      chunks_to_load.push_back(dest_chunk_id);
-    } else {
-      // NEW CHUNK: doesn't exist anywhere yet
-      new_chunks_created.push_back(dest_chunk_id);
-      gaussians_->chunks_in_memory_.insert(dest_chunk_id);  // Mark as in memory
-      std::cout << "[Memory Management] Creating new chunk " << dest_chunk_id
-                << std::endl;
-    }
-  }
-
-  // Check memory pressure before loading
-  if (!chunks_to_load.empty()) {
-    // Estimate memory needed
-    size_t estimated_memory_needed =
-        chunks_to_load.size() * 50 * 1024 * 1024;  // ~50MB per chunk estimate
-    size_t current_memory = gaussians_->getCurrentGPUMemoryUsage();
-    size_t max_memory =
-        static_cast<size_t>(gaussians_->max_memory_gb_ * 1024 * 1024 * 1024);
-
-    if (current_memory + estimated_memory_needed > max_memory * 0.9) {
-      std::cout << "[Memory Management] Need to evict chunks before loading "
-                   "destinations"
-                << std::endl;
-
-      // Find chunks to evict (excluding chunks involved in current
-      // redistribution)
-      std::unordered_set<int64_t> protected_chunks = modified_chunks;
-      protected_chunks.insert(original_chunk_id);
-      for (int64_t chunk_id : chunks_to_load) {
-        protected_chunks.insert(chunk_id);
-      }
-      // Also protect newly created chunks
-      for (int64_t chunk_id : new_chunks_created) {
-        protected_chunks.insert(chunk_id);
-      }
-
-      std::vector<int64_t> evictable_chunks;
-      for (int64_t chunk_id : gaussians_->chunks_in_memory_) {
-        if (protected_chunks.find(chunk_id) == protected_chunks.end()) {
-          evictable_chunks.push_back(chunk_id);
-        }
-      }
-
-      // Evict oldest chunks
-      if (!evictable_chunks.empty()) {
-        size_t chunks_to_evict_count =
-            std::min(evictable_chunks.size(), chunks_to_load.size());
-        std::vector<int64_t> lru_chunks =
-            gaussians_->findLRUChunks(chunks_to_evict_count);
-
-        // Filter to only evictable chunks
-        std::vector<int64_t> final_evict_list;
-        for (int64_t chunk_id : lru_chunks) {
-          if (std::find(evictable_chunks.begin(), evictable_chunks.end(),
-                        chunk_id) != evictable_chunks.end()) {
-            final_evict_list.push_back(chunk_id);
-          }
-        }
-
-        if (!final_evict_list.empty()) {
-          gaussians_->saveAndEvictChunks(final_evict_list);
-        }
-      }
-    }
-
-    // Now load destination chunks
-    gaussians_->loadChunks(chunks_to_load);
-  }
-
-  if (!new_chunks_created.empty()) {
-    std::cout << "[Memory Management] Created " << new_chunks_created.size()
-              << " new chunks that didn't exist before" << std::endl;
-  }
-
-  // Step 5: Update chunk IDs in the model
-  torch::Tensor full_model_indices = torch::where(original_chunk_mask)[0];
-  gaussians_->gaussian_chunk_ids_.index_put_({full_model_indices},
-                                             new_chunk_ids);
-
-  // Step 6: Track modified chunks
-  for (int i = 0; i < unique_cpu.size(0); ++i) {
-    int64_t dest_chunk_id = unique_accessor[i];
-    modified_chunks.insert(dest_chunk_id);
-  }
-
-  // Update chunk access times (including new chunks)
-  auto now = std::chrono::steady_clock::now();
-  for (int i = 0; i < unique_cpu.size(0); ++i) {
-    int64_t dest_chunk_id = unique_accessor[i];
-    gaussians_->chunk_last_used_[dest_chunk_id] = now;
   }
 }
