@@ -288,7 +288,10 @@ class GaussianModel {
 
   torch::Tensor encodeChunkCoordsTensor(const torch::Tensor& chunk_coords);
   torch::Tensor decodeChunkCoordsTensor(const torch::Tensor& encoded_ids);
+  torch::Tensor computeHashIndices(const torch::Tensor& chunk_ids);
   torch::Tensor chunkCoordVectorToTensor(const std::vector<ChunkCoord>& coords);
+
+  void debugHashCollisions(const torch::Tensor& candidate_chunks);
 
   // Cache for keyframe visibility results
   struct VisibilityCacheEntry {

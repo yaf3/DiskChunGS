@@ -38,31 +38,9 @@ struct ChunkCoordHash {
   }
 };
 
-inline int64_t encodeChunkCoord(const ChunkCoord &coord) {
-  // Ensure coordinates are positive by adding offset
-  const int64_t OFFSET = 10000;  // Adjust based on your coordinate range
-  const int64_t STRIDE = 20000;  // Must be > 2*OFFSET
-
-  int64_t x = coord.x + OFFSET;
-  int64_t y = coord.y + OFFSET;
-  int64_t z = coord.z + OFFSET;
-
-  return x * STRIDE * STRIDE + y * STRIDE + z;
-}
-
-inline ChunkCoord decodeChunkCoord(int64_t encoded) {
-  const int64_t OFFSET = 10000;
-  const int64_t STRIDE = 20000;
-
-  int64_t z = (encoded % STRIDE) - OFFSET;
-  int64_t y = ((encoded / STRIDE) % STRIDE) - OFFSET;
-  int64_t x = (encoded / (STRIDE * STRIDE)) - OFFSET;
-
-  return ChunkCoord{x, y, z};
-}
-
 // Get chunk coordinate from 3D position
-inline ChunkCoord getChunkCoord(const Eigen::Vector3f &position, float chunk_size) {
+inline ChunkCoord getChunkCoord(const Eigen::Vector3f &position,
+                                float chunk_size) {
   float half_chunk = chunk_size * 0.5f;
   return ChunkCoord{static_cast<int64_t>(
                         std::floor((position.x() + half_chunk) / chunk_size)),
@@ -73,7 +51,8 @@ inline ChunkCoord getChunkCoord(const Eigen::Vector3f &position, float chunk_siz
 }
 
 // Get chunk center
-inline Eigen::Vector3f getChunkCenter(const ChunkCoord &coord, float chunk_size) {
+inline Eigen::Vector3f getChunkCenter(const ChunkCoord &coord,
+                                      float chunk_size) {
   return Eigen::Vector3f(coord.x * chunk_size, coord.y * chunk_size,
                          coord.z * chunk_size);
 }
@@ -89,8 +68,8 @@ inline AABB getChunkAABB(const ChunkCoord &coord, float chunk_size) {
 }
 
 inline AABB getRegionAABB(const ChunkCoord &min_coord,
-                           const ChunkCoord &max_coord,
-                           float chunk_size) {
+                          const ChunkCoord &max_coord,
+                          float chunk_size) {
   float half_chunk = chunk_size * 0.5f;
 
   Eigen::Vector3f min_pos(min_coord.x * chunk_size - half_chunk,
@@ -102,4 +81,26 @@ inline AABB getRegionAABB(const ChunkCoord &min_coord,
                           (max_coord.z + 1) * chunk_size - half_chunk);
 
   return AABB(min_pos, max_pos);
+}
+
+// Encode/decode single chunk coordinates
+inline int64_t encodeChunkCoord(const ChunkCoord& coord) {
+  const int32_t OFFSET = 2048;
+  
+  int64_t x = coord.x + OFFSET;
+  int64_t y = coord.y + OFFSET;
+  int64_t z = coord.z + OFFSET;
+  
+  // 12 bits per coordinate = 36 total bits
+  return x * (1 << 24) + y * (1 << 12) + z;
+}
+
+inline ChunkCoord decodeChunkCoord(int64_t chunk_id) {
+  const int32_t OFFSET = 2048;
+  
+  int64_t z = (chunk_id % (1 << 12)) - OFFSET;
+  int64_t y = ((chunk_id / (1 << 12)) % (1 << 12)) - OFFSET;
+  int64_t x = (chunk_id / (1 << 24)) - OFFSET;
+  
+  return ChunkCoord{x, y, z};
 }

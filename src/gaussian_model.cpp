@@ -709,9 +709,9 @@ torch::Tensor GaussianModel::cullVisibleGaussians(
   torch::Tensor gaussian_visibility_mask =
       createGaussianMaskFromChunks(visible_chunk_ids);
 
-  // std::cout << "[CullVisibleGaussians] " << "Gaussians visible: "
-  //           << gaussian_visibility_mask.sum().item<int>() << " / "
-  //           << xyz_.size(0) << std::endl;
+  std::cout << "[CullVisibleGaussians] " << "Gaussians visible: "
+            << gaussian_visibility_mask.sum().item<int>() << " / "
+            << xyz_.size(0) << std::endl;
 
   //  Update access times for all visible chunks
   updateChunkAccess(visible_chunk_ids);
@@ -800,23 +800,10 @@ torch::Tensor GaussianModel::computeChunkIds(const torch::Tensor& positions) {
 
   torch::Tensor shifted_positions = positions + half_chunk;
   torch::Tensor chunk_coords = torch::floor(shifted_positions / chunk_size_);
-
-  // Convert to int64 for encoding
   chunk_coords = chunk_coords.to(torch::kInt64);
 
-  // Convert (x,y,z) coordinates to single integers
-  auto x = chunk_coords.index({torch::indexing::Slice(), 0});
-  auto y = chunk_coords.index({torch::indexing::Slice(), 1});
-  auto z = chunk_coords.index({torch::indexing::Slice(), 2});
-
-  // Encode to single integer per chunk
-  const int64_t OFFSET = 10000;
-  const int64_t STRIDE = 20000;
-
-  torch::Tensor chunk_ids =
-      (x + OFFSET) * STRIDE * STRIDE + (y + OFFSET) * STRIDE + (z + OFFSET);
-
-  return chunk_ids;
+  // Use the SAME encoding as encodeChunkCoordsTensor
+  return encodeChunkCoordsTensor(chunk_coords);
 }
 
 void GaussianModel::addPoints(const torch::Tensor& new_xyz,
@@ -1705,8 +1692,11 @@ torch::Tensor GaussianModel::findLRUChunks(
         {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
   }
 
+  // DEBUG: Check for hash collisions first
+  // debugHashCollisions(candidate_chunks);
+
   // Get access times for candidate chunks using hash indices
-  torch::Tensor candidate_indices = candidate_chunks % MAX_CHUNK_ENTRIES;
+  torch::Tensor candidate_indices = computeHashIndices(candidate_chunks);
   torch::Tensor access_times = chunk_access_times_.index({candidate_indices});
 
   // DEBUG: Print access times before sorting
@@ -1727,8 +1717,18 @@ torch::Tensor GaussianModel::findLRUChunks(
   // Sort candidate chunks by their access times (oldest first)
   auto [sorted_times, sort_indices] = torch::sort(access_times);
 
+  // DEBUG: Show sorted results and time delta
+  auto sorted_times_cpu = sorted_times.cpu();
+  float oldest_time = sorted_times_cpu[0].item<float>();
+  float newest_time = sorted_times_cpu[sorted_times.size(0) - 1].item<float>();
+  float time_delta = newest_time - oldest_time;
+
+  std::cout << "[LRU DEBUG] After sorting (oldest first):" << std::endl;
+  std::cout << "[LRU DEBUG] Time range: oldest=" << oldest_time
+            << ", newest=" << newest_time << ", delta=" << time_delta << "ms"
+            << std::endl;
+
   // DEBUG: Show sorted results
-  // auto sorted_times_cpu = sorted_times.cpu();
   // std::cout << "[LRU DEBUG] After sorting (oldest first):" << std::endl;
   // for (int i = 0; i < std::min(count + 2, (int)sorted_times.size(0)); i++) {
   //   int original_idx = sort_indices[i].item<int>();
@@ -1923,7 +1923,7 @@ void GaussianModel::updateChunkAccess(const torch::Tensor& accessed_chunk_ids) {
 
   // Track access for all chunks - let eviction logic decide what to do with
   // them
-  torch::Tensor access_indices = accessed_chunk_ids % MAX_CHUNK_ENTRIES;
+  torch::Tensor access_indices = computeHashIndices(accessed_chunk_ids);
   chunk_access_times_.index_put_({access_indices}, current_time);
 }
 
@@ -2266,31 +2266,48 @@ void GaussianModel::deleteSparseChunks(int min_gaussians_per_chunk) {
 // Vectorized encoding - much faster than loop
 torch::Tensor GaussianModel::encodeChunkCoordsTensor(
     const torch::Tensor& chunk_coords) {
-  // chunk_coords: [N, 3]
-  const int64_t OFFSET = 10000;
-  const int64_t STRIDE = 20000;
+  // chunk_coords: [N, 3] with coordinates roughly in range [-500, 500]
+
+  // For 10km range with 20m chunks: 10000m ÷ 20m = 500 chunks per axis
+  // Use 12 bits per coordinate = 4096 range = [-2048, +2047] chunks
+  // That's 40km+ range per axis - plenty of headroom
+  const int32_t OFFSET = 2048;  // Supports [-2048, +2047] range
 
   auto x = chunk_coords.index({torch::indexing::Slice(), 0}) + OFFSET;
   auto y = chunk_coords.index({torch::indexing::Slice(), 1}) + OFFSET;
   auto z = chunk_coords.index({torch::indexing::Slice(), 2}) + OFFSET;
 
-  // Single vectorized computation instead of loop
-  torch::Tensor encoded = x * STRIDE * STRIDE + y * STRIDE + z;
-  return encoded;  // [N]
+  // 12 bits per coordinate = 36 total bits
+  torch::Tensor encoded = x * (1 << 24) + y * (1 << 12) + z;
+
+  return encoded;  // Max value: ~8 billion instead of 16 trillion
 }
 
 // Vectorized decoding
 torch::Tensor GaussianModel::decodeChunkCoordsTensor(
     const torch::Tensor& encoded_ids) {
-  // encoded_ids: [N]
-  const int64_t OFFSET = 10000;
-  const int64_t STRIDE = 20000;
+  const int32_t OFFSET = 2048;
 
-  torch::Tensor z = (encoded_ids % STRIDE) - OFFSET;
-  torch::Tensor y = ((encoded_ids / STRIDE) % STRIDE) - OFFSET;
-  torch::Tensor x = (encoded_ids / (STRIDE * STRIDE)) - OFFSET;
+  torch::Tensor z = (encoded_ids % (1 << 12)) - OFFSET;
+  torch::Tensor y = ((encoded_ids / (1 << 12)) % (1 << 12)) - OFFSET;
+  torch::Tensor x = (encoded_ids / (1 << 24)) - OFFSET;
 
-  return torch::stack({x, y, z}, /*dim=*/1);  // [N, 3]
+  return torch::stack({x, y, z}, /*dim=*/1);
+}
+
+torch::Tensor GaussianModel::computeHashIndices(
+    const torch::Tensor& chunk_ids) {
+  // Convert to int64 for consistent behavior
+  torch::Tensor hash = chunk_ids.to(torch::kInt64);
+
+  // Multiply by a large prime and use modulo
+  // This prime is chosen for good distribution properties
+  const int64_t HASH_PRIME = 1099511628211LL;
+
+  hash = hash * HASH_PRIME;
+
+  // Use torch::remainder to handle negative values
+  return torch::remainder(torch::abs(hash), MAX_CHUNK_ENTRIES).to(torch::kLong);
 }
 
 torch::Tensor GaussianModel::chunkCoordVectorToTensor(
@@ -2338,4 +2355,51 @@ void GaussianModel::deleteSparseChunkFiles(const torch::Tensor& chunk_ids) {
     std::cout << "[File Deletion] Deleted " << files_deleted
               << " chunk files from disk" << std::endl;
   }
+}
+
+void GaussianModel::debugHashCollisions(const torch::Tensor& candidate_chunks) {
+  if (candidate_chunks.size(0) == 0) return;
+
+  auto chunks_cpu = candidate_chunks.cpu();
+  std::map<int64_t, std::vector<int64_t>> hash_to_chunks;
+
+  // Group chunks by their hash index
+  for (int i = 0; i < chunks_cpu.size(0); i++) {
+    int64_t chunk_id = chunks_cpu[i].item<int64_t>();
+    int64_t hash_index = chunk_id % MAX_CHUNK_ENTRIES;
+    hash_to_chunks[hash_index].push_back(chunk_id);
+  }
+
+  // Find collisions
+  int collision_count = 0;
+  int total_colliding_chunks = 0;
+
+  for (const auto& [hash_index, chunk_list] : hash_to_chunks) {
+    if (chunk_list.size() > 1) {
+      collision_count++;
+      total_colliding_chunks += chunk_list.size();
+
+      std::cout << "[COLLISION] Hash index " << hash_index << " has "
+                << chunk_list.size() << " chunks: ";
+      for (size_t j = 0; j < std::min(chunk_list.size(), size_t(3)); j++) {
+        std::cout << chunk_list[j] << " ";
+      }
+      if (chunk_list.size() > 3) {
+        std::cout << "... (+" << (chunk_list.size() - 3) << " more)";
+      }
+      std::cout << std::endl;
+
+      // Show their access times
+      float access_time = chunk_access_times_[hash_index].item<float>();
+      std::cout << "[COLLISION] All these chunks share access time: "
+                << access_time << std::endl;
+    }
+  }
+
+  float collision_rate =
+      float(total_colliding_chunks) / candidate_chunks.size(0);
+  std::cout << "[COLLISION SUMMARY] " << collision_count
+            << " hash collisions affecting " << total_colliding_chunks << "/"
+            << candidate_chunks.size(0) << " chunks (" << (collision_rate * 100)
+            << "%)" << std::endl;
 }
