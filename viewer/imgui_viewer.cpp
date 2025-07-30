@@ -576,10 +576,13 @@ void ImGuiViewer::run() {
         ImGui::Text("Speed: %.1f iter/s", iterations_per_second_);
         if (pGausMapper_->gaussians_ &&
             pGausMapper_->gaussians_->is_initialized_) {
-          ImGui::Text("Chunks in memory: %d",
-                      pGausMapper_->gaussians_->chunks_in_memory_.size(0));
+          ImGui::Text(
+              "Chunks loaded: %d",
+              static_cast<int>(
+                  pGausMapper_->gaussians_->chunks_loaded_from_disk_.size(0)));
           ImGui::Text("Chunks on disk: %d",
-                      pGausMapper_->gaussians_->chunks_on_disk_.size(0));
+                      static_cast<int>(
+                          pGausMapper_->gaussians_->chunks_on_disk_.size(0)));
 
         } else {
           ImGui::Text("Active Chunks: Not initialized");
