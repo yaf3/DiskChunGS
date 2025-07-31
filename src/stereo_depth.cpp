@@ -5,11 +5,24 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <cassert>
 
 // StereoDepth implementation
 StereoDepth::StereoDepth(const std::string& model_path)
-    : env_(ORT_LOGGING_LEVEL_WARNING, "StereoDepth") {
+    : output_data_(nullptr) {
+  // Initialize CUDA stream
+  cudaStreamCreate(&stream_);
+  
+  // Initialize buffers to nullptr
+  for (int i = 0; i < 3; ++i) {
+    buffers_[i] = nullptr;
+  }
+  
   initialize_model(model_path);
+}
+
+StereoDepth::~StereoDepth() {
+  free_buffers();
 }
 
 void StereoDepth::initialize_model(const std::string& model_path) {
@@ -20,154 +33,190 @@ void StereoDepth::initialize_model(const std::string& model_path) {
   }
   file.close();
 
-  std::cout << "Loading ONNX model: " << model_path << std::endl;
+  std::cout << "Loading ONNX model for TensorRT: " << model_path << std::endl;
 
-  // Configure session options for optimal performance
-  session_options_.SetIntraOpNumThreads(
-      1);  // Single thread often performs better for GPU inference
-  session_options_.SetInterOpNumThreads(1);
-  session_options_.SetGraphOptimizationLevel(
-      GraphOptimizationLevel::ORT_ENABLE_ALL);
-
-  // Enable memory pattern optimization
-  session_options_.EnableMemPattern();
-  session_options_.EnableCpuMemArena();
-
-  // Try CUDA provider with optimized settings
-  try {
-    OrtCUDAProviderOptions cuda_options{};
-    cuda_options.device_id = 0;
-    cuda_options.arena_extend_strategy = 1;  // Extend by doubling
-    cuda_options.gpu_mem_limit = SIZE_MAX;   // No memory limit
-    cuda_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearchDefault;
-    cuda_options.do_copy_in_default_stream = 1;
-
-    session_options_.AppendExecutionProvider_CUDA(cuda_options);
-    std::cout << "CUDA provider enabled with optimizations" << std::endl;
-  } catch (const std::exception& e) {
-    std::cout << "CUDA provider not available, using CPU: " << e.what()
-              << std::endl;
-  }
+  // Generate engine cache path
+  engine_cache_path_ = model_path + ".trt";
 
   try {
-    // Create session
-    session_ = std::make_unique<Ort::Session>(env_, model_path.c_str(),
-                                              session_options_);
-    std::cout << "ONNX session created successfully" << std::endl;
+    // Try to load cached engine first
+    if (load_engine(engine_cache_path_)) {
+      std::cout << "Loaded cached TensorRT engine" << std::endl;
+    } else {
+      std::cout << "Building TensorRT engine from ONNX..." << std::endl;
+      build_engine(model_path);
+      save_engine(engine_cache_path_);
+      std::cout << "TensorRT engine saved to cache" << std::endl;
+    }
 
-    get_input_details();
-    get_output_details();
+    // Create execution context
+    context_.reset(engine_->createExecutionContext());
+    if (!context_) {
+      throw std::runtime_error("Failed to create execution context");
+    }
 
-    // Note: memory_info_ will be created as needed in inference methods
+    // Get model dimensions
+    get_model_info();
+    
+    // Allocate GPU memory buffers
+    allocate_buffers();
 
-    std::cout << "Model initialization completed" << std::endl;
+    std::cout << "TensorRT model initialization completed" << std::endl;
 
-  } catch (const Ort::Exception& e) {
-    throw std::runtime_error("ONNX Runtime error: " + std::string(e.what()));
   } catch (const std::exception& e) {
-    throw std::runtime_error("Failed to initialize model: " +
+    throw std::runtime_error("Failed to initialize TensorRT model: " +
                              std::string(e.what()));
   }
 }
 
-void StereoDepth::get_input_details() {
-  // Get input names
-  Ort::AllocatorWithDefaultOptions allocator;
-  size_t num_input_nodes = session_->GetInputCount();
-
-  std::cout << "Number of input nodes: " << num_input_nodes << std::endl;
-
-  input_names_.clear();
-  input_names_char_.clear();
-
-  for (size_t i = 0; i < num_input_nodes; i++) {
-    try {
-      auto input_name_ptr = session_->GetInputNameAllocated(i, allocator);
-      std::string input_name(input_name_ptr.get());
-
-      std::cout << "Input " << i << " name: '" << input_name << "'"
-                << std::endl;
-
-      if (input_name.empty()) {
-        throw std::runtime_error("Empty input name at index " +
-                                 std::to_string(i));
-      }
-
-      input_names_.push_back(input_name);
-
-    } catch (const std::exception& e) {
-      throw std::runtime_error("Failed to get input name for index " +
-                               std::to_string(i) + ": " + e.what());
-    }
+void StereoDepth::build_engine(const std::string& onnx_path) {
+  // Create builder
+  builder_.reset(nvinfer1::createInferBuilder(logger_));
+  if (!builder_) {
+    throw std::runtime_error("Failed to create TensorRT builder");
   }
 
-  // Convert to char pointers AFTER all strings are stored
-  for (const auto& name : input_names_) {
-    input_names_char_.push_back(name.c_str());
+  // Create network definition
+  const auto explicit_batch = 1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
+  network_.reset(builder_->createNetworkV2(explicit_batch));
+  if (!network_) {
+    throw std::runtime_error("Failed to create network definition");
   }
 
-  // Get input shape from the first input
-  if (num_input_nodes > 0) {
-    auto input_type_info = session_->GetInputTypeInfo(0);
-    auto input_tensor_info = input_type_info.GetTensorTypeAndShapeInfo();
-    input_shape_ = input_tensor_info.GetShape();
-
-    std::cout << "Input shape: [";
-    for (size_t i = 0; i < input_shape_.size(); ++i) {
-      std::cout << input_shape_[i];
-      if (i < input_shape_.size() - 1) std::cout << ", ";
-    }
-    std::cout << "]" << std::endl;
-
-    if (input_shape_.size() >= 4) {
-      input_height_ = input_shape_[2];
-      input_width_ = input_shape_[3];
-      input_size_ = 3 * input_height_ * input_width_;  // Pre-calculate size
-      std::cout << "Model input size: " << input_width_ << "x" << input_height_
-                << std::endl;
-    } else {
-      throw std::runtime_error("Unexpected input shape size: " +
-                               std::to_string(input_shape_.size()));
-    }
-  } else {
-    throw std::runtime_error("No input nodes found in the model");
+  // Create ONNX parser
+  auto parser = std::unique_ptr<nvonnxparser::IParser>(nvonnxparser::createParser(*network_, logger_));
+  if (!parser) {
+    throw std::runtime_error("Failed to create ONNX parser");
   }
+
+  // Parse ONNX model
+  if (!parser->parseFromFile(onnx_path.c_str(), static_cast<int32_t>(nvinfer1::ILogger::Severity::kWARNING))) {
+    std::string error_msg = "Failed to parse ONNX file: " + onnx_path + "\n";
+    for (int32_t i = 0; i < parser->getNbErrors(); ++i) {
+      error_msg += parser->getError(i)->desc();
+      error_msg += "\n";
+    }
+    throw std::runtime_error(error_msg);
+  }
+
+  // Create builder configuration
+  config_.reset(builder_->createBuilderConfig());
+  if (!config_) {
+    throw std::runtime_error("Failed to create builder config");
+  }
+
+  // Set memory pool limits
+  config_->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 1U << 30);  // 1GB
+
+  // Enable FP16 precision if available
+  if (builder_->platformHasFastFp16()) {
+    config_->setFlag(nvinfer1::BuilderFlag::kFP16);
+    std::cout << "FP16 precision enabled" << std::endl;
+  }
+
+  // Build serialized network
+  auto serialized_engine = std::unique_ptr<nvinfer1::IHostMemory>(builder_->buildSerializedNetwork(*network_, *config_));
+  if (!serialized_engine) {
+    throw std::runtime_error("Failed to build TensorRT engine");
+  }
+
+  // Create runtime and deserialize engine
+  runtime_.reset(nvinfer1::createInferRuntime(logger_));
+  if (!runtime_) {
+    throw std::runtime_error("Failed to create TensorRT runtime");
+  }
+
+  engine_.reset(runtime_->deserializeCudaEngine(serialized_engine->data(), serialized_engine->size()));
+  if (!engine_) {
+    throw std::runtime_error("Failed to deserialize TensorRT engine");
+  }
+
+  std::cout << "TensorRT engine built successfully" << std::endl;
 }
 
-void StereoDepth::get_output_details() {
-  // Get output names
-  Ort::AllocatorWithDefaultOptions allocator;
-  size_t num_output_nodes = session_->GetOutputCount();
-
-  std::cout << "Number of output nodes: " << num_output_nodes << std::endl;
-
-  output_names_.clear();
-  output_names_char_.clear();
-
-  for (size_t i = 0; i < num_output_nodes; i++) {
-    try {
-      auto output_name_ptr = session_->GetOutputNameAllocated(i, allocator);
-      std::string output_name(output_name_ptr.get());
-
-      std::cout << "Output " << i << " name: '" << output_name << "'"
-                << std::endl;
-
-      if (output_name.empty()) {
-        throw std::runtime_error("Empty output name at index " +
-                                 std::to_string(i));
-      }
-
-      output_names_.push_back(output_name);
-
-    } catch (const std::exception& e) {
-      throw std::runtime_error("Failed to get output name for index " +
-                               std::to_string(i) + ": " + e.what());
-    }
+bool StereoDepth::load_engine(const std::string& engine_path) {
+  std::ifstream engine_file(engine_path, std::ios::binary);
+  if (!engine_file.good()) {
+    return false;
   }
 
-  // Convert to char pointers AFTER all strings are stored
-  for (const auto& name : output_names_) {
-    output_names_char_.push_back(name.c_str());
+  engine_file.seekg(0, std::ios::end);
+  const size_t model_size = engine_file.tellg();
+  engine_file.seekg(0, std::ios::beg);
+
+  std::unique_ptr<char[]> engine_data(new char[model_size]);
+  engine_file.read(engine_data.get(), model_size);
+  engine_file.close();
+
+  runtime_.reset(nvinfer1::createInferRuntime(logger_));
+  if (!runtime_) {
+    return false;
+  }
+
+  engine_.reset(runtime_->deserializeCudaEngine(engine_data.get(), model_size));
+  return engine_ != nullptr;
+}
+
+bool StereoDepth::save_engine(const std::string& engine_path) {
+  if (!engine_) {
+    return false;
+  }
+
+  auto serialized_engine = std::unique_ptr<nvinfer1::IHostMemory>(engine_->serialize());
+  if (!serialized_engine) {
+    return false;
+  }
+
+  std::ofstream engine_file(engine_path, std::ios::binary);
+  if (!engine_file.good()) {
+    return false;
+  }
+
+  engine_file.write(static_cast<const char*>(serialized_engine->data()), serialized_engine->size());
+  engine_file.close();
+  return true;
+}
+
+void StereoDepth::get_model_info() {
+  // Get input dimensions from first input tensor
+  auto input_dims = engine_->getTensorShape(engine_->getIOTensorName(0));
+  input_height_ = input_dims.d[2];
+  input_width_ = input_dims.d[3];
+  input_size_ = 3 * input_height_ * input_width_;
+  
+  std::cout << "Model input size: " << input_width_ << "x" << input_height_ << std::endl;
+}
+
+void StereoDepth::allocate_buffers() {
+  const size_t input_size = input_size_ * sizeof(float);
+  const size_t output_size = input_height_ * input_width_ * sizeof(float);
+
+  // Allocate GPU memory for inputs and output
+  cudaMalloc(&buffers_[0], input_size);  // left input
+  cudaMalloc(&buffers_[1], input_size);  // right input
+  cudaMalloc(&buffers_[2], output_size); // output
+
+  // Allocate host memory for output
+  output_data_ = new float[input_height_ * input_width_];
+
+  std::cout << "GPU buffers allocated" << std::endl;
+}
+
+void StereoDepth::free_buffers() {
+  for (int i = 0; i < 3; ++i) {
+    if (buffers_[i]) {
+      cudaFree(buffers_[i]);
+      buffers_[i] = nullptr;
+    }
+  }
+  
+  if (output_data_) {
+    delete[] output_data_;
+    output_data_ = nullptr;
+  }
+  
+  if (stream_) {
+    cudaStreamDestroy(stream_);
   }
 }
 
@@ -214,50 +263,42 @@ std::vector<float> StereoDepth::prepare_input_optimized(const cv::Mat& img) {
   return input_data;
 }
 
-cv::Mat StereoDepth::inference_optimized(
+cv::Mat StereoDepth::inference_tensorrt(
     const std::vector<float>& left_input,
     const std::vector<float>& right_input) {
-  // Create input shape
-  std::vector<int64_t> input_shape = {1, 3, input_height_, input_width_};
-
-  // Create memory info for this inference
-  Ort::MemoryInfo memory_info =
-      Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
-
-  // Create input tensors directly from vectors
-  std::vector<Ort::Value> input_tensors;
-
-  input_tensors.push_back(Ort::Value::CreateTensor<float>(
-      memory_info, const_cast<float*>(left_input.data()), left_input.size(),
-      input_shape.data(), input_shape.size()));
-
-  input_tensors.push_back(Ort::Value::CreateTensor<float>(
-      memory_info, const_cast<float*>(right_input.data()), right_input.size(),
-      input_shape.data(), input_shape.size()));
-
   try {
+    const size_t input_size_bytes = left_input.size() * sizeof(float);
+
+    // Copy input data to GPU
+    cudaMemcpyAsync(buffers_[0], left_input.data(), input_size_bytes, 
+                   cudaMemcpyHostToDevice, stream_);
+    cudaMemcpyAsync(buffers_[1], right_input.data(), input_size_bytes, 
+                   cudaMemcpyHostToDevice, stream_);
+
+    // Set tensor addresses for the execution context
+    context_->setTensorAddress(engine_->getIOTensorName(0), buffers_[0]);  // left input
+    context_->setTensorAddress(engine_->getIOTensorName(1), buffers_[1]);  // right input
+    context_->setTensorAddress(engine_->getIOTensorName(2), buffers_[2]);  // output
+
     // Run inference
-    auto output_tensors =
-        session_->Run(Ort::RunOptions{nullptr}, input_names_char_.data(),
-                      input_tensors.data(), input_tensors.size(),
-                      output_names_char_.data(), output_names_char_.size());
+    if (!context_->enqueueV3(stream_)) {
+      throw std::runtime_error("TensorRT inference execution failed");
+    }
 
-    // Convert output back to cv::Mat
-    float* output_data = output_tensors[0].GetTensorMutableData<float>();
-    auto output_shape =
-        output_tensors[0].GetTensorTypeAndShapeInfo().GetShape();
+    // Copy output data back to host
+    const size_t output_size_bytes = input_height_ * input_width_ * sizeof(float);
+    cudaMemcpyAsync(output_data_, buffers_[2], output_size_bytes, 
+                   cudaMemcpyDeviceToHost, stream_);
 
-    // Create result matrix: output should be [1, 1, H, W] -> we want [H, W]
-    cv::Mat result(output_shape[2], output_shape[3], CV_32F, output_data);
+    // Synchronize stream to ensure completion
+    cudaStreamSynchronize(stream_);
 
-    return result
-        .clone();  // Make a copy since the original data will be destroyed
+    // Create result matrix
+    cv::Mat result(input_height_, input_width_, CV_32F, output_data_);
+    return result.clone();  // Return a copy
 
-  } catch (const Ort::Exception& e) {
-    throw std::runtime_error("ONNX Runtime inference error: " +
-                             std::string(e.what()));
   } catch (const std::exception& e) {
-    throw std::runtime_error("Inference error: " + std::string(e.what()));
+    throw std::runtime_error("TensorRT inference error: " + std::string(e.what()));
   }
 }
 
@@ -266,14 +307,14 @@ cv::Mat StereoDepth::estimate_depth(const cv::Mat& left_img,
   img_height_ = left_img.rows;
   img_width_ = left_img.cols;
 
-  // Use optimized preprocessing and inference
+  // Use optimized preprocessing and TensorRT inference
   auto start_prep = std::chrono::high_resolution_clock::now();
   std::vector<float> left_input = prepare_input_optimized(left_img);
   std::vector<float> right_input = prepare_input_optimized(right_img);
   auto end_prep = std::chrono::high_resolution_clock::now();
 
   auto start_inf = std::chrono::high_resolution_clock::now();
-  cv::Mat raw_disparity = inference_optimized(left_input, right_input);
+  cv::Mat raw_disparity = inference_tensorrt(left_input, right_input);
   auto end_inf = std::chrono::high_resolution_clock::now();
 
   // Optional: Print timing breakdown
@@ -287,84 +328,6 @@ cv::Mat StereoDepth::estimate_depth(const cv::Mat& left_img,
   return raw_disparity;
 }
 
-// Keep the old PyTorch-based method for backward compatibility
-torch::Tensor StereoDepth::prepare_input(const cv::Mat& img) {
-  // No BGR to RGB conversion needed since input is already RGB
-
-  // Resize
-  cv::Mat resized_img;
-  cv::resize(img, resized_img, cv::Size(input_width_, input_height_), 0, 0,
-             cv::INTER_AREA);
-
-  // Convert to float and normalize
-  resized_img.convertTo(resized_img, CV_32F, 1.0 / 255.0);
-
-  // ImageNet normalization
-  std::vector<float> mean = {0.485f, 0.456f, 0.406f};
-  std::vector<float> std = {0.229f, 0.224f, 0.225f};
-
-  std::vector<cv::Mat> channels;
-  cv::split(resized_img, channels);
-
-  for (int i = 0; i < 3; i++) {
-    channels[i] = (channels[i] - mean[i]) / std[i];
-  }
-
-  cv::merge(channels, resized_img);
-
-  // Convert to tensor and add batch dimension
-  torch::Tensor tensor = torch::from_blob(
-      resized_img.data, {1, input_height_, input_width_, 3}, torch::kFloat32);
-  tensor = tensor.permute({0, 3, 1, 2});  // NHWC to NCHW
-
-  return tensor.contiguous();
-}
-
-cv::Mat StereoDepth::inference(const torch::Tensor& left_input,
-                               const torch::Tensor& right_input) {
-  // Convert tensors to ONNX Runtime format
-  std::vector<int64_t> input_shape = {1, 3, input_height_, input_width_};
-
-  // Create memory info for this inference
-  Ort::MemoryInfo memory_info =
-      Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
-
-  std::vector<Ort::Value> input_tensors;
-
-  input_tensors.push_back(Ort::Value::CreateTensor<float>(
-      memory_info, const_cast<float*>(left_input.data_ptr<float>()),
-      left_input.numel(), input_shape.data(), input_shape.size()));
-
-  input_tensors.push_back(Ort::Value::CreateTensor<float>(
-      memory_info, const_cast<float*>(right_input.data_ptr<float>()),
-      right_input.numel(), input_shape.data(), input_shape.size()));
-
-  try {
-    // Run inference
-    auto output_tensors =
-        session_->Run(Ort::RunOptions{nullptr}, input_names_char_.data(),
-                      input_tensors.data(), input_tensors.size(),
-                      output_names_char_.data(), output_names_char_.size());
-
-    // Convert output back to cv::Mat
-    float* output_data = output_tensors[0].GetTensorMutableData<float>();
-    auto output_shape =
-        output_tensors[0].GetTensorTypeAndShapeInfo().GetShape();
-
-    // Create result matrix: output should be [1, 1, 480, 640] -> we want [480,
-    // 640]
-    cv::Mat result(output_shape[2], output_shape[3], CV_32F, output_data);
-
-    return result
-        .clone();  // Make a copy since the original data will be destroyed
-
-  } catch (const Ort::Exception& e) {
-    throw std::runtime_error("ONNX Runtime inference error: " +
-                             std::string(e.what()));
-  } catch (const std::exception& e) {
-    throw std::runtime_error("Inference error: " + std::string(e.what()));
-  }
-}
 
 /**
  * @brief Estimate depth from stereo images and convert to metric depth

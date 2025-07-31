@@ -1,7 +1,8 @@
 #pragma once
 
-#include <onnxruntime_cxx_api.h>
-#include <torch/torch.h>
+#include <NvInfer.h>
+#include <NvOnnxParser.h>
+#include <cuda_runtime.h>
 
 #include <memory>
 #include <opencv2/core/cuda.hpp>
@@ -13,12 +14,13 @@
 #include <string>
 #include <tuple>
 #include <vector>
+#include <fstream>
 
 /**
- * @brief Fast ACVNet depth estimation class using ONNX Runtime
+ * @brief Fast ACVNet depth estimation class using TensorRT
  *
  * This class provides stereo depth estimation using the Fast ACVNet model
- * with ONNX Runtime for inference and OpenCV for image processing.
+ * with TensorRT for inference and OpenCV for image processing.
  */
 class StereoDepth {
  public:
@@ -32,7 +34,7 @@ class StereoDepth {
   /**
    * @brief Destructor
    */
-  ~StereoDepth() = default;
+  ~StereoDepth();
 
   /**
    * @brief Estimate depth from stereo images
@@ -57,23 +59,38 @@ class StereoDepth {
                                 const float baseline);
 
  private:
-  // ONNX Runtime components
-  std::unique_ptr<Ort::Session> session_;
-  Ort::Env env_;
-  Ort::SessionOptions session_options_;
+  /**
+   * @brief TensorRT Logger class
+   */
+  class Logger : public nvinfer1::ILogger {
+   public:
+    void log(Severity severity, const char* msg) noexcept override {
+      if (severity <= Severity::kWARNING) {
+        std::cout << msg << std::endl;
+      }
+    }
+  };
+
+  // TensorRT components
+  Logger logger_;
+  std::unique_ptr<nvinfer1::IBuilder> builder_;
+  std::unique_ptr<nvinfer1::INetworkDefinition> network_;
+  std::unique_ptr<nvinfer1::IBuilderConfig> config_;
+  std::unique_ptr<nvinfer1::IRuntime> runtime_;
+  std::unique_ptr<nvinfer1::ICudaEngine> engine_;
+  std::unique_ptr<nvinfer1::IExecutionContext> context_;
 
   // Model information
-  std::vector<std::string> input_names_;
-  std::vector<std::string> output_names_;
-  std::vector<const char*> input_names_char_;
-  std::vector<const char*> output_names_char_;
-
-  std::vector<int64_t> input_shape_;
   int input_height_;
   int input_width_;
   int input_size_;  // Pre-calculated input size
   int img_height_;
   int img_width_;
+
+  // GPU memory buffers
+  void* buffers_[3];  // left_input, right_input, output
+  cudaStream_t stream_;
+  float* output_data_;
 
   // Results
   cv::Mat disparity_map_;
@@ -81,52 +98,60 @@ class StereoDepth {
 
   // Configuration
   float max_dist_;
+  std::string engine_cache_path_;
 
   /**
-   * @brief Initialize ONNX model
+   * @brief Initialize TensorRT model
    * @param model_path Path to ONNX model file
    */
   void initialize_model(const std::string& model_path);
 
   /**
-   * @brief Get input layer details from model
+   * @brief Build TensorRT engine from ONNX model
+   * @param onnx_path Path to ONNX model file
    */
-  void get_input_details();
+  void build_engine(const std::string& onnx_path);
 
   /**
-   * @brief Get output layer details from model
+   * @brief Load TensorRT engine from cache
+   * @param engine_path Path to engine cache file
    */
-  void get_output_details();
+  bool load_engine(const std::string& engine_path);
 
   /**
-   * @brief Prepare input image for inference (PyTorch version - legacy)
-   * @param img Input image
-   * @return Preprocessed tensor
+   * @brief Save TensorRT engine to cache
+   * @param engine_path Path to save engine cache
    */
-  torch::Tensor prepare_input(const cv::Mat& img);
+  bool save_engine(const std::string& engine_path);
 
   /**
-   * @brief Prepare input image for inference (Optimized version)
+   * @brief Allocate GPU memory buffers
+   */
+  void allocate_buffers();
+
+  /**
+   * @brief Free GPU memory buffers
+   */
+  void free_buffers();
+
+  /**
+   * @brief Get model input/output dimensions
+   */
+  void get_model_info();
+
+  /**
+   * @brief Prepare input image for inference
    * @param img Input image
    * @return Preprocessed data as vector
    */
   std::vector<float> prepare_input_optimized(const cv::Mat& img);
 
   /**
-   * @brief Run inference on input tensors (PyTorch version - legacy)
-   * @param left_input Left image tensor
-   * @param right_input Right image tensor
-   * @return Disparity map
-   */
-  cv::Mat inference(const torch::Tensor& left_input,
-                    const torch::Tensor& right_input);
-
-  /**
-   * @brief Run inference on input data (Optimized version)
+   * @brief Run TensorRT inference
    * @param left_input Left image data
    * @param right_input Right image data
    * @return Disparity map
    */
-  cv::Mat inference_optimized(const std::vector<float>& left_input,
-                              const std::vector<float>& right_input);
+  cv::Mat inference_tensorrt(const std::vector<float>& left_input,
+                             const std::vector<float>& right_input);
 };
