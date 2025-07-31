@@ -1203,7 +1203,7 @@ void GaussianMapper::trainForOneIteration() {
   timer_backwards.stop();
 
   auto timer_synchronize = ProfilingUtils::Timer("synchronize");
-  torch::cuda::synchronize();
+  // torch::cuda::synchronize();
   timer_synchronize.stop();
 
   auto timer_pose_exposure_step = ProfilingUtils::Timer("pose&exposure_step");
@@ -2750,8 +2750,8 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   auto end_time_prune = std::chrono::steady_clock::now();
   auto duration_prune = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_time_prune - start_time_prune);
-  std::cout << "pruneLowOpacityGaussians completed in "
-            << duration_prune.count() << "ms" << std::endl;
+  // std::cout << "pruneLowOpacityGaussians completed in "
+  //           << duration_prune.count() << "ms" << std::endl;
 
   // std::cout << "Adding " << all_points3D.size(0) << " total points to
   // scene("
@@ -2768,8 +2768,8 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   auto end_time = std::chrono::steady_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_time - start_time);
-  std::cout << "sampleGaussians completed in " << duration.count() << "ms"
-            << std::endl;
+  // std::cout << "sampleGaussians completed in " << duration.count() << "ms"
+  //           << std::endl;
 }
 
 void GaussianMapper::recordKeyframeRendered(
@@ -2914,7 +2914,7 @@ void GaussianMapper::renderAndRecordKeyframe(
 
   // Chunks automatically released by ChunkOptimizationGuard destructor
   auto rendered_image = std::get<1>(render_pkg);
-  torch::cuda::synchronize();
+  // torch::cuda::synchronize();
   auto end_timing = std::chrono::steady_clock::now();
   auto render_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                             end_timing - start_timing)
