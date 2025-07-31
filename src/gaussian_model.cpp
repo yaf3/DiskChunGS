@@ -1590,11 +1590,11 @@ size_t GaussianModel::getCurrentGPUMemoryUsage() const {
 }
 
 void GaussianModel::checkMemoryPressure() {
-  // auto now = std::chrono::steady_clock::now();
-  // if (now - last_memory_check_ < std::chrono::seconds(10)) {
-  //   return;
-  // }
-  // last_memory_check_ = now;
+  auto now = std::chrono::steady_clock::now();
+  if (now - last_memory_check_ < std::chrono::milliseconds(100)) {
+    return;
+  }
+  last_memory_check_ = now;
 
   size_t current_memory = getCurrentGPUMemoryUsage();
   size_t threshold_memory = static_cast<size_t>(
