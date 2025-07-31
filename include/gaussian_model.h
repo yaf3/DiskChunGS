@@ -17,17 +17,22 @@
 
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <fcntl.h>
+#include <linux/falloc.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <torch/torch.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <future>
+#include <iostream>
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "ORB-SLAM3/Thirdparty/Sophus/sophus/se3.hpp"
@@ -46,6 +51,36 @@ class SparseGaussianAdam;
 #include "tensor_utils.h"
 #include "types.h"
 
+// Ultra-fast memory-mapped chunk storage - replace saveSingleChunkToDisk &
+// loadSingleChunkFromDisk
+
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+// Fixed file layout for maximum speed
+struct ChunkFileHeader {
+  uint32_t magic = 0x43484E4B;  // "CHNK"
+  uint32_t version = 2;         // New format version
+  int64_t chunk_id;
+  int64_t num_points;
+
+  // Direct byte offsets to tensor data blocks
+  int64_t xyz_offset;
+  int64_t features_dc_offset;
+  int64_t features_rest_offset;
+  int64_t scaling_offset;
+  int64_t rotation_offset;
+  int64_t opacity_offset;
+  int64_t position_lrs_offset;
+  int64_t exist_since_offset;
+
+  // Pad to 128 bytes
+  char padding[40];
+};
+static_assert(sizeof(ChunkFileHeader) == 128, "Header must be 128 bytes");
+
 #define GAUSSIAN_MODEL_TENSORS_TO_VEC                      \
   this->Tensor_vec_xyz_ = {this->xyz_};                    \
   this->Tensor_vec_feature_dc_ = {this->features_dc_};     \
@@ -54,23 +89,18 @@ class SparseGaussianAdam;
   this->Tensor_vec_scaling_ = {this->scaling_};            \
   this->Tensor_vec_rotation_ = {this->rotation_};
 
-#define GAUSSIAN_MODEL_INIT_TENSORS(device_type)                              \
-  this->xyz_ = torch::empty(0, torch::TensorOptions().device(device_type));   \
-  this->features_dc_ =                                                        \
-      torch::empty(0, torch::TensorOptions().device(device_type));            \
-  this->features_rest_ =                                                      \
-      torch::empty(0, torch::TensorOptions().device(device_type));            \
-  this->scaling_ =                                                            \
-      torch::empty(0, torch::TensorOptions().device(device_type));            \
-  this->rotation_ =                                                           \
-      torch::empty(0, torch::TensorOptions().device(device_type));            \
-  this->opacity_ =                                                            \
-      torch::empty(0, torch::TensorOptions().device(device_type));            \
-  this->max_radii2D_ =                                                        \
-      torch::empty(0, torch::TensorOptions().device(device_type));            \
-  this->xyz_gradient_accum_ =                                                 \
-      torch::empty(0, torch::TensorOptions().device(device_type));            \
-  this->denom_ = torch::empty(0, torch::TensorOptions().device(device_type)); \
+#define GAUSSIAN_MODEL_INIT_TENSORS(device_type)                            \
+  this->xyz_ = torch::empty(0, torch::TensorOptions().device(device_type)); \
+  this->features_dc_ =                                                      \
+      torch::empty(0, torch::TensorOptions().device(device_type));          \
+  this->features_rest_ =                                                    \
+      torch::empty(0, torch::TensorOptions().device(device_type));          \
+  this->scaling_ =                                                          \
+      torch::empty(0, torch::TensorOptions().device(device_type));          \
+  this->rotation_ =                                                         \
+      torch::empty(0, torch::TensorOptions().device(device_type));          \
+  this->opacity_ =                                                          \
+      torch::empty(0, torch::TensorOptions().device(device_type));          \
   GAUSSIAN_MODEL_TENSORS_TO_VEC
 
 class GaussianModel {
@@ -79,6 +109,8 @@ class GaussianModel {
   explicit GaussianModel(const GaussianModelParams& model_params,
                          std::string storage_base_path = "",
                          float chunk_size = 20.0f);
+  ~GaussianModel();
+  void initializePinnedMemoryPool();
 
   torch::Tensor getScalingActivation();
   torch::Tensor getRotationActivation();
@@ -136,9 +168,6 @@ class GaussianModel {
   torch::Tensor scaling_;
   torch::Tensor rotation_;
   torch::Tensor opacity_;
-  torch::Tensor max_radii2D_;
-  torch::Tensor xyz_gradient_accum_;
-  torch::Tensor denom_;
   torch::Tensor exist_since_iter_;
   torch::Tensor gaussian_chunk_ids_;
 
@@ -210,7 +239,7 @@ class GaussianModel {
   std::string storage_base_path_;
 
   // Memory management
-  float max_memory_gb_ = 4.0f;  // Configurable
+  float max_memory_gb_ = 8.0f;  // Configurable
   std::chrono::steady_clock::time_point last_memory_check_;
 
   torch::Tensor
@@ -222,24 +251,17 @@ class GaussianModel {
   size_t min_chunks_to_evict_ = 5;
   int new_gaussian_chunk_density_ = 100;
 
+  static constexpr int MAX_IO_THREADS = 1;
+
   size_t getCurrentGPUMemoryUsage() const;
 
   struct ChunkData {
     // Main tensors
     torch::Tensor xyz, features_dc, features_rest;
     torch::Tensor scaling, rotation, opacity;
-    torch::Tensor exist_since, position_lrs, chunk_ids;
+    torch::Tensor exist_since, position_lrs;
     int num_points;
-
-    // Auxiliary tensors
-    torch::Tensor xyz_gradient_accum;
-    torch::Tensor denom;
-    torch::Tensor max_radii2D;
-
-    // Optimizer states (6 parameter groups)
-    std::vector<torch::Tensor> exp_avg_states;     // [6] - momentum
-    std::vector<torch::Tensor> exp_avg_sq_states;  // [6] - squared momentum
-    std::vector<int64_t> step_counts;  // [6] - step counts per group
+    int64_t chunk_id;
   };
 
   struct TensorHeader {
@@ -259,11 +281,8 @@ class GaussianModel {
   std::optional<ChunkData> loadSingleChunkFromDisk(int64_t chunk_id);
   void appendLoadedChunks(const std::vector<ChunkData>& chunks_data,
                           const std::vector<int64_t>& chunk_ids);
-  void restoreOptimizerStatesForRange(const std::vector<ChunkData>& chunks_data,
-                                      int start_idx,
-                                      int end_idx);
   void saveChunks(const torch::Tensor& chunk_ids_to_save);
-  ChunkData extractChunkData(const torch::Tensor& chunk_mask);
+  ChunkData extractChunkData(const torch::Tensor& chunk_mask, int64_t chunk_id);
   void saveAndEvictChunks(const torch::Tensor& chunk_ids);
 
   torch::Tensor findLRUChunks(const torch::Tensor& candidate_chunks, int count);
@@ -326,4 +345,33 @@ class GaussianModel {
            a.unit_quaternion().angularDistance(b.unit_quaternion()) <
                rotation_tol;
   }
+
+ public:
+  // Simple aligned buffer for O_DIRECT
+  struct AlignedBuffer {
+    void* data;
+    size_t size;
+
+    AlignedBuffer(size_t requested_size) {
+      // Round up to 4KB alignment
+      size = (requested_size + 4095) & ~4095ULL;
+      if (posix_memalign(&data, 4096, size) != 0) {
+        throw std::runtime_error("Failed to allocate aligned memory");
+      }
+    }
+
+    ~AlignedBuffer() { free(data); }
+  };
+
+  void serializeChunkToBuffer(const ChunkData& chunk_data,
+                              void* buffer,
+                              size_t buffer_size);
+  ChunkData deserializeChunkFromBuffer(void* buffer, int64_t chunk_id);
+
+  void* pinned_memory_pool_ = nullptr;
+  size_t pinned_pool_size_ = 0;
+  std::mutex pinned_memory_mutex_;  // For thread safety
+
+  static constexpr size_t MAX_CHUNK_SIZE_BYTES =
+      1000 * 1024 * 1024;  // 1000MB pool
 };
