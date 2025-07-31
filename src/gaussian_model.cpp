@@ -43,8 +43,6 @@ GaussianModel::GaussianModel(const int sh_degree)
 
   chunks_loaded_from_disk_ = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
-
-  initializePinnedMemoryPool();
 }
 
 GaussianModel::GaussianModel(const GaussianModelParams& model_params,
@@ -80,31 +78,6 @@ GaussianModel::GaussianModel(const GaussianModelParams& model_params,
   std::cout << "[GaussianModel] Initialized with storage path: "
             << storage_base_path_ << " and chunk size: " << chunk_size_
             << std::endl;
-
-  initializePinnedMemoryPool();
-}
-
-void GaussianModel::initializePinnedMemoryPool() {
-  pinned_pool_size_ = MAX_CHUNK_SIZE_BYTES;
-
-  if (cudaHostAlloc(&pinned_memory_pool_, pinned_pool_size_,
-                    cudaHostAllocDefault) != cudaSuccess) {
-    std::cerr << "Warning: Failed to allocate pinned memory pool, falling back "
-                 "to regular memory"
-              << std::endl;
-    pinned_memory_pool_ = nullptr;
-    pinned_pool_size_ = 0;
-  } else {
-    std::cout << "Allocated " << (pinned_pool_size_ / (1024 * 1024))
-              << "MB pinned memory pool" << std::endl;
-  }
-}
-
-// Add destructor
-GaussianModel::~GaussianModel() {
-  if (pinned_memory_pool_) {
-    cudaFreeHost(pinned_memory_pool_);
-  }
 }
 
 torch::Tensor GaussianModel::getScalingActivation() {
@@ -1030,51 +1003,6 @@ std::string GaussianModel::getChunkFilename(const ChunkCoord& coord) {
 
   // Use string concatenation with proper path separator
   return storage_base_path_ + "/" + filename;
-}
-
-void GaussianModel::saveTensorBinary(const torch::Tensor& tensor,
-                                     std::ofstream& file) {
-  TensorHeader header = {};
-  header.dims = tensor.dim();
-
-  for (int i = 0; i < tensor.dim(); ++i) {
-    header.sizes[i] = static_cast<uint32_t>(tensor.size(i));
-  }
-  header.dtype = static_cast<uint32_t>(tensor.scalar_type());
-  header.data_size = tensor.nbytes();
-
-  // Write header
-  file.write(reinterpret_cast<const char*>(&header), sizeof(header));
-
-  // Move tensor to CPU if needed and write data
-  torch::Tensor cpu_tensor = tensor.is_cuda() ? tensor.cpu() : tensor;
-  file.write(reinterpret_cast<const char*>(cpu_tensor.data_ptr()),
-             header.data_size);
-}
-
-torch::Tensor GaussianModel::loadTensorBinary(std::ifstream& file) {
-  TensorHeader header;
-  file.read(reinterpret_cast<char*>(&header), sizeof(header));
-
-  // Reconstruct tensor sizes
-  std::vector<int64_t> sizes(header.dims);
-  for (uint32_t i = 0; i < header.dims; ++i) {
-    sizes[i] = header.sizes[i];
-  }
-
-  // Create tensor with correct type and device
-  torch::TensorOptions options =
-      torch::TensorOptions()
-          .dtype(static_cast<torch::ScalarType>(header.dtype))
-          .device(device_type_);
-
-  torch::Tensor tensor = torch::empty(sizes, options.device(torch::kCPU));
-
-  // Read data
-  file.read(reinterpret_cast<char*>(tensor.data_ptr()), header.data_size);
-
-  // Move to target device if needed
-  return tensor.to(device_type_);
 }
 
 void GaussianModel::loadChunks(const torch::Tensor& chunk_ids_to_load) {

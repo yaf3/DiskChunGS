@@ -109,8 +109,6 @@ class GaussianModel {
   explicit GaussianModel(const GaussianModelParams& model_params,
                          std::string storage_base_path = "",
                          float chunk_size = 20.0f);
-  ~GaussianModel();
-  void initializePinnedMemoryPool();
 
   torch::Tensor getScalingActivation();
   torch::Tensor getRotationActivation();
@@ -264,16 +262,6 @@ class GaussianModel {
     int64_t chunk_id;
   };
 
-  struct TensorHeader {
-    uint32_t dims;
-    uint32_t sizes[8];   // Support up to 8D tensors
-    uint32_t dtype;      // torch::ScalarType as uint32_t
-    uint64_t data_size;  // Size in bytes
-  };
-
-  void saveTensorBinary(const torch::Tensor& tensor, std::ofstream& file);
-  torch::Tensor loadTensorBinary(std::ifstream& file);
-
   std::string getChunkFilename(const ChunkCoord& coord);
 
   void loadChunks(const torch::Tensor& chunk_ids_to_load);
@@ -347,31 +335,8 @@ class GaussianModel {
   }
 
  public:
-  // Simple aligned buffer for O_DIRECT
-  struct AlignedBuffer {
-    void* data;
-    size_t size;
-
-    AlignedBuffer(size_t requested_size) {
-      // Round up to 4KB alignment
-      size = (requested_size + 4095) & ~4095ULL;
-      if (posix_memalign(&data, 4096, size) != 0) {
-        throw std::runtime_error("Failed to allocate aligned memory");
-      }
-    }
-
-    ~AlignedBuffer() { free(data); }
-  };
-
   void serializeChunkToBuffer(const ChunkData& chunk_data,
                               void* buffer,
                               size_t buffer_size);
   ChunkData deserializeChunkFromBuffer(void* buffer, int64_t chunk_id);
-
-  void* pinned_memory_pool_ = nullptr;
-  size_t pinned_pool_size_ = 0;
-  std::mutex pinned_memory_mutex_;  // For thread safety
-
-  static constexpr size_t MAX_CHUNK_SIZE_BYTES =
-      1000 * 1024 * 1024;  // 1000MB pool
 };
