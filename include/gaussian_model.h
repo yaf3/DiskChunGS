@@ -151,6 +151,7 @@ class GaussianModel {
                             torch::Tensor& new_scaling,
                             torch::Tensor& new_rotation,
                             torch::Tensor& new_exist_since_iter,
+                            torch::Tensor& new_chunk_ids,
                             torch::Tensor& new_position_lrs,
                             torch::Tensor& new_lod_levels);
 
@@ -288,7 +289,8 @@ class GaussianModel {
   ChunkData extractChunkData(const torch::Tensor& chunk_mask, int64_t chunk_id);
   void saveAndEvictChunks(const torch::Tensor& chunk_ids);
 
-  torch::Tensor findLRUChunks(const torch::Tensor& candidate_chunks, int64_t target_gaussian_count);
+  torch::Tensor findLRUChunks(const torch::Tensor& candidate_chunks,
+                              int64_t target_gaussian_count);
 
   void checkMemoryPressure();
   void testSaveLoadEvictCycle();

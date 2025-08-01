@@ -527,6 +527,7 @@ void GaussianModel::densificationPostfix(torch::Tensor& new_xyz,
                                          torch::Tensor& new_scaling,
                                          torch::Tensor& new_rotation,
                                          torch::Tensor& new_exist_since_iter,
+                                         torch::Tensor& new_chunk_ids,
                                          torch::Tensor& new_position_lrs,
                                          torch::Tensor& new_lod_levels) {
   torch::NoGradGuard no_grad;
@@ -591,7 +592,6 @@ void GaussianModel::densificationPostfix(torch::Tensor& new_xyz,
 
   int num_new_primitives = new_xyz.size(0);
   position_lrs_ = torch::cat({position_lrs_, new_position_lrs}, 0);
-  torch::Tensor new_chunk_ids = computeChunkIds(new_xyz);
   gaussian_chunk_ids_ =
       torch::cat({gaussian_chunk_ids_, new_chunk_ids}, /*dim=*/0);
   // Append LoD levels
@@ -887,8 +887,6 @@ void GaussianModel::initializeFromPoints(const torch::Tensor& initial_xyz,
             << initial_xyz.sizes() << std::endl;
 
   this->spatial_lr_scale_ = spatial_lr_scale;
-  torch::Tensor initial_chunk_ids = computeChunkIds(initial_xyz);
-
   torch::Tensor fused_color = sh_utils::RGB2SH(initial_colors);
   auto temp = this->sh_degree_ + 1;
   torch::Tensor features = torch::zeros(
@@ -941,7 +939,7 @@ void GaussianModel::initializeFromPoints(const torch::Tensor& initial_xyz,
   this->rotation_ = rots.requires_grad_();
   this->opacity_ = opacities.requires_grad_();
 
-  gaussian_chunk_ids_ = initial_chunk_ids;
+  gaussian_chunk_ids_ = computeChunkIds(initial_xyz);
 
   // Assign LoD levels based on density (distance to nearest neighbors)
   torch::Tensor point_cloud_copy = initial_xyz.clone();
@@ -1045,9 +1043,12 @@ void GaussianModel::appendPoints(const torch::Tensor& new_xyzs,
   //           << " - " << nearest_distances.max().item<float>() << ")"
   //           << std::endl;
 
+  torch::Tensor new_chunk_ids = computeChunkIds(new_xyzs);
+
   densificationPostfix(new_xyz_tensor, new_features_dc, new_features_rest,
                        new_opacities_tensor, new_scaling, new_rotation,
-                       new_exist_since_iter, new_position_lrs, new_lod_levels);
+                       new_exist_since_iter, new_chunk_ids, new_position_lrs,
+                       new_lod_levels);
 
   c10::cuda::CUDACachingAllocator::emptyCache();
 }
@@ -1521,7 +1522,8 @@ void GaussianModel::appendLoadedChunks(
   // Concatenate all chunk data
   std::vector<torch::Tensor> all_xyz, all_features_dc, all_features_rest;
   std::vector<torch::Tensor> all_scaling, all_rotation, all_opacity;
-  std::vector<torch::Tensor> all_exist_since, all_position_lrs, all_lod_levels;
+  std::vector<torch::Tensor> all_exist_since, all_chunk_ids, all_position_lrs,
+      all_lod_levels;
 
   for (const auto& chunk : chunks_data) {
     all_xyz.push_back(chunk.xyz);
@@ -1533,6 +1535,11 @@ void GaussianModel::appendLoadedChunks(
     all_exist_since.push_back(chunk.exist_since);
     all_position_lrs.push_back(chunk.position_lrs);
     all_lod_levels.push_back(chunk.lod_levels);
+
+    torch::Tensor chunk_ids = torch::full(
+        {chunk.num_points}, chunk.chunk_id,
+        torch::TensorOptions().device(device_type_).dtype(torch::kInt64));
+    all_chunk_ids.push_back(chunk_ids);
   }
 
   // Single concatenation operations
@@ -1545,6 +1552,7 @@ void GaussianModel::appendLoadedChunks(
   torch::Tensor batch_exist_since = torch::cat(all_exist_since, 0);
   torch::Tensor batch_position_lrs = torch::cat(all_position_lrs, 0);
   torch::Tensor batch_lod_levels = torch::cat(all_lod_levels, 0);
+  torch::Tensor batch_chunk_ids = torch::cat(all_chunk_ids, 0);
 
   // Get starting index for new gaussians
   int old_size = xyz_.size(0);
@@ -1552,7 +1560,8 @@ void GaussianModel::appendLoadedChunks(
   // Use existing densificationPostfix to append everything at once
   densificationPostfix(batch_xyz, batch_features_dc, batch_features_rest,
                        batch_opacity, batch_scaling, batch_rotation,
-                       batch_exist_since, batch_position_lrs, batch_lod_levels);
+                       batch_exist_since, batch_chunk_ids, batch_position_lrs,
+                       batch_lod_levels);
 
   // std::cout << "Loaded " << batch_xyz.size(0) << " gaussians from "
   //           << chunks_data.size() << " chunks with full optimizer states"
