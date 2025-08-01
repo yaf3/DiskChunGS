@@ -1209,308 +1209,208 @@ void GaussianModel::loadChunks(const torch::Tensor& chunk_ids_to_load) {
 
 void GaussianModel::saveSingleChunkToDisk(int64_t chunk_id,
                                           const ChunkData& chunk_data) {
-  auto start = std::chrono::steady_clock::now();
+  std::string chunk_filename = getChunkFilename(decodeChunkCoord(chunk_id));
 
-  std::string filename = getChunkFilename(decodeChunkCoord(chunk_id));
-  std::filesystem::path chunk_path(filename);
+  // Create directory if it doesn't exist
+  std::filesystem::path chunk_path(chunk_filename);
   std::filesystem::create_directories(chunk_path.parent_path());
 
-  int num_points = chunk_data.num_points;
-  int sh_coeffs = (sh_degree_ + 1) * (sh_degree_ + 1) - 1;
-
-  // Calculate total size
-  size_t total_data_size =
-      sizeof(ChunkFileHeader) + num_points * 3 * sizeof(float) +  // xyz
-      num_points * 3 * sizeof(float) +                            // features_dc
-      num_points * sh_coeffs * 3 * sizeof(float) +  // features_rest
-      num_points * 3 * sizeof(float) +              // scaling
-      num_points * 4 * sizeof(float) +              // rotation
-      num_points * 1 * sizeof(float) +              // opacity
-      num_points * 1 * sizeof(float) +              // position_lrs
-      num_points * 1 * sizeof(int32_t) +            // exist_since
-      num_points * 1 * sizeof(int32_t);             // lod_levels - NEW!
-
-  // std::cout << "Chunk " << chunk_id << ": " << chunk_data.num_points
-  //           << " gaussians, " << (total_data_size / (1024 * 1024)) << "MB"
-  //           << std::endl;
-
-  // Create and allocate file
-  int fd = open(filename.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_DIRECT, 0644);
-  if (fd == -1) {
-    throw std::runtime_error("Cannot create file: " + filename);
+  std::ofstream file(chunk_filename, std::ios::binary);
+  if (!file.is_open()) {
+    throw std::runtime_error("Cannot open file for writing: " + chunk_filename);
   }
 
-  if (fallocate(fd, 0, 0, total_data_size) != 0) {
-    close(fd);
-    throw std::runtime_error("Failed to allocate file space: " + filename);
+  try {
+    // Write magic number and version for validation
+    uint32_t magic = 0x43484E4B;  // "CHNK" in hex
+    uint32_t version = 1;
+    file.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+    file.write(reinterpret_cast<const char*>(&version), sizeof(version));
+
+    // Write chunk metadata
+    file.write(reinterpret_cast<const char*>(&chunk_id), sizeof(chunk_id));
+    uint32_t num_points = static_cast<uint32_t>(chunk_data.num_points);
+    file.write(reinterpret_cast<const char*>(&num_points), sizeof(num_points));
+
+    // Save tensors in same order as loading
+    saveTensorBinary(chunk_data.xyz, file);
+    saveTensorBinary(chunk_data.features_dc, file);
+    saveTensorBinary(chunk_data.features_rest, file);
+    saveTensorBinary(chunk_data.scaling, file);
+    saveTensorBinary(chunk_data.rotation, file);
+    saveTensorBinary(chunk_data.opacity, file);
+    saveTensorBinary(chunk_data.exist_since, file);
+    saveTensorBinary(chunk_data.position_lrs, file);
+    saveTensorBinary(chunk_data.lod_levels, file);
+
+    // Save optimizer states
+    for (int group_idx = 0; group_idx < 6; ++group_idx) {
+      // Write step count
+      file.write(
+          reinterpret_cast<const char*>(&chunk_data.step_counts[group_idx]),
+          sizeof(int64_t));
+
+      // Save momentum tensors
+      if (chunk_data.exp_avg_states[group_idx].defined()) {
+        saveTensorBinary(chunk_data.exp_avg_states[group_idx], file);
+        saveTensorBinary(chunk_data.exp_avg_sq_states[group_idx], file);
+      } else {
+        // Save empty tensors as placeholders
+        torch::Tensor empty = torch::empty({0});
+        saveTensorBinary(empty, file);
+        saveTensorBinary(empty, file);
+      }
+    }
+
+    file.close();
+    std::cout << "Saved chunk " << chunk_id << " with " << num_points
+              << " points to " << chunk_filename << std::endl;
+
+  } catch (const std::exception& e) {
+    file.close();
+    std::filesystem::remove(chunk_filename);  // Clean up partial file
+    throw std::runtime_error("Failed to save chunk " +
+                             std::to_string(chunk_id) + ": " + e.what());
   }
-
-  // Memory map the file
-  void* mapped_memory = mmap(nullptr, total_data_size, PROT_WRITE,
-                             MAP_SHARED | MAP_POPULATE, fd, 0);
-  if (mapped_memory == MAP_FAILED) {
-    close(fd);
-    throw std::runtime_error("Failed to memory map file: " + filename);
-  }
-
-  auto end_setup = std::chrono::steady_clock::now();
-
-  // OPTIMIZED serialization using pinned pool
-  serializeChunkToBuffer(chunk_data, mapped_memory, total_data_size);
-
-  auto end_serialize = std::chrono::steady_clock::now();
-
-  // Cleanup
-  munmap(mapped_memory, total_data_size);
-  close(fd);
-
-  auto end_total = std::chrono::steady_clock::now();
-
-  auto setup_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end_setup - start)
-          .count();
-  auto serialize_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                          end_serialize - end_setup)
-                          .count();
-  auto cleanup_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        end_total - end_serialize)
-                        .count();
-
-  // std::cout << "setup: " << setup_ms << "ms, serialize: " << serialize_ms
-  //           << "ms, cleanup: " << cleanup_ms << "ms, total: "
-  //           <<
-  //           std::chrono::duration_cast<std::chrono::milliseconds>(end_total -
-  //                                                                    start)
-  //                  .count()
-  //           << "ms" << std::endl;
 }
 
 // Add this to your loadSingleChunkFromDisk function to isolate bottlenecks:
 
 std::optional<GaussianModel::ChunkData> GaussianModel::loadSingleChunkFromDisk(
     int64_t chunk_id) {
-  auto total_start = std::chrono::steady_clock::now();
+  ChunkCoord chunk_coord = decodeChunkCoord(chunk_id);
+  std::string chunk_filename = getChunkFilename(chunk_coord);
 
-  std::string filename = getChunkFilename(decodeChunkCoord(chunk_id));
-  if (!std::filesystem::exists(filename)) return std::nullopt;
-
-  // TIME: File opening
-  auto file_start = std::chrono::steady_clock::now();
-  int fd = open(filename.c_str(), O_RDONLY);
-  if (fd == -1) return std::nullopt;
-
-  struct stat st;
-  if (fstat(fd, &st) != 0) {
-    close(fd);
+  if (!std::filesystem::exists(chunk_filename)) {
+    throw std::runtime_error("Chunk file does not exist: " + chunk_filename);
     return std::nullopt;
   }
-  size_t file_size = st.st_size;
-  auto file_end = std::chrono::steady_clock::now();
 
-  // TIME: Memory mapping
-  auto mmap_start = std::chrono::steady_clock::now();
-  void* mapped_memory = mmap(nullptr, file_size, PROT_READ, MAP_SHARED, fd, 0);
-  if (mapped_memory == MAP_FAILED) {
-    close(fd);
+  // Use your existing memory-mapped loading
+  std::ifstream file(chunk_filename, std::ios::binary);
+  if (!file.is_open()) {
+    throw std::runtime_error("Cannot open file for reading: " + chunk_filename);
     return std::nullopt;
   }
-  auto mmap_end = std::chrono::steady_clock::now();
 
-  // TIME: Deserialization (this includes GPU memory transfers!)
-  auto deserial_start = std::chrono::steady_clock::now();
-  auto result = deserializeChunkFromBuffer(mapped_memory, chunk_id);
-  auto deserial_end = std::chrono::steady_clock::now();
+  // Validate magic number and version
+  uint32_t magic, version;
+  file.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+  file.read(reinterpret_cast<char*>(&version), sizeof(version));
 
-  // TIME: Cleanup
-  auto cleanup_start = std::chrono::steady_clock::now();
-  munmap(mapped_memory, file_size);
-  close(fd);
-  auto cleanup_end = std::chrono::steady_clock::now();
-
-  auto total_end = std::chrono::steady_clock::now();
-
-  // Print timing breakdown
-  auto file_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                     file_end - file_start)
-                     .count();
-  auto mmap_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                     mmap_end - mmap_start)
-                     .count();
-  auto deserial_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                         deserial_end - deserial_start)
-                         .count();
-  auto cleanup_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        cleanup_end - cleanup_start)
-                        .count();
-  auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                      total_end - total_start)
-                      .count();
-
-  // std::cout << "[LOAD BREAKDOWN] Chunk " << chunk_id << " - file: " <<
-  // file_ms
-  //           << "ms"
-  //           << ", mmap: " << mmap_ms << "ms"
-  //           << ", deserial: " << deserial_ms << "ms"
-  //           << ", cleanup: " << cleanup_ms << "ms"
-  //           << ", total: " << total_ms << "ms"
-  //           << " [Thread: " << std::this_thread::get_id() << "]" <<
-  //           std::endl;
-
-  return result;
-}
-
-void GaussianModel::serializeChunkToBuffer(
-    const GaussianModel::ChunkData& chunk_data,
-    void* buffer,
-    size_t buffer_size) {
-  char* ptr = static_cast<char*>(buffer);
-
-  // Build header
-  ChunkFileHeader header = {};
-  header.chunk_id = chunk_data.chunk_id;
-  header.num_points = chunk_data.num_points;
-
-  size_t offset = sizeof(ChunkFileHeader);
-  header.xyz_offset = offset;
-  offset += chunk_data.num_points * 3 * sizeof(float);
-  header.features_dc_offset = offset;
-  offset += chunk_data.num_points * 3 * sizeof(float);
-  header.features_rest_offset = offset;
-  offset += chunk_data.num_points * ((sh_degree_ + 1) * (sh_degree_ + 1) - 1) *
-            3 * sizeof(float);
-  header.scaling_offset = offset;
-  offset += chunk_data.num_points * 3 * sizeof(float);
-  header.rotation_offset = offset;
-  offset += chunk_data.num_points * 4 * sizeof(float);
-  header.opacity_offset = offset;
-  offset += chunk_data.num_points * 1 * sizeof(float);
-  header.position_lrs_offset = offset;
-  offset += chunk_data.num_points * 1 * sizeof(float);
-  header.exist_since_offset = offset;
-  offset += chunk_data.num_points * 1 * sizeof(int32_t);
-  header.lod_levels_offset = offset;
-  offset += chunk_data.num_points * 1 * sizeof(int32_t);
-
-  // Write header
-  memcpy(ptr, &header, sizeof(header));
-
-  // Calculate data size (without header)
-  size_t data_size = offset - sizeof(ChunkFileHeader);
-
-  // PER-THREAD PINNED ALLOCATION: Zero contention, bulletproof
-  void* thread_pinned;
-  cudaError_t alloc_result =
-      cudaHostAlloc(&thread_pinned, data_size, cudaHostAllocDefault);
-  if (alloc_result != cudaSuccess) {
-    throw std::runtime_error("Failed to allocate thread-local pinned memory");
+  if (magic != 0x43484E4B) {
+    throw std::runtime_error("Invalid checkpoint file format");
   }
 
-  char* pinned_ptr = static_cast<char*>(thread_pinned);
+  int64_t stored_chunk_id;
+  uint32_t stored_num_points;
 
-  // STRUCTURED GPU → pinned transfers (maintaining final layout)
-  cudaMemcpy(pinned_ptr + (header.xyz_offset - sizeof(ChunkFileHeader)),
-             chunk_data.xyz.data_ptr<float>(),
-             chunk_data.num_points * 3 * sizeof(float), cudaMemcpyDeviceToHost);
+  file.read(reinterpret_cast<char*>(&stored_chunk_id), sizeof(stored_chunk_id));
+  file.read(reinterpret_cast<char*>(&stored_num_points),
+            sizeof(stored_num_points));
 
-  cudaMemcpy(pinned_ptr + (header.features_dc_offset - sizeof(ChunkFileHeader)),
-             chunk_data.features_dc.data_ptr<float>(),
-             chunk_data.num_points * 3 * sizeof(float), cudaMemcpyDeviceToHost);
-
-  cudaMemcpy(
-      pinned_ptr + (header.features_rest_offset - sizeof(ChunkFileHeader)),
-      chunk_data.features_rest.data_ptr<float>(),
-      chunk_data.num_points * ((sh_degree_ + 1) * (sh_degree_ + 1) - 1) * 3 *
-          sizeof(float),
-      cudaMemcpyDeviceToHost);
-
-  cudaMemcpy(pinned_ptr + (header.scaling_offset - sizeof(ChunkFileHeader)),
-             chunk_data.scaling.data_ptr<float>(),
-             chunk_data.num_points * 3 * sizeof(float), cudaMemcpyDeviceToHost);
-
-  cudaMemcpy(pinned_ptr + (header.rotation_offset - sizeof(ChunkFileHeader)),
-             chunk_data.rotation.data_ptr<float>(),
-             chunk_data.num_points * 4 * sizeof(float), cudaMemcpyDeviceToHost);
-
-  cudaMemcpy(pinned_ptr + (header.opacity_offset - sizeof(ChunkFileHeader)),
-             chunk_data.opacity.data_ptr<float>(),
-             chunk_data.num_points * 1 * sizeof(float), cudaMemcpyDeviceToHost);
-
-  cudaMemcpy(
-      pinned_ptr + (header.position_lrs_offset - sizeof(ChunkFileHeader)),
-      chunk_data.position_lrs.data_ptr<float>(),
-      chunk_data.num_points * 1 * sizeof(float), cudaMemcpyDeviceToHost);
-
-  cudaMemcpy(pinned_ptr + (header.exist_since_offset - sizeof(ChunkFileHeader)),
-             chunk_data.exist_since.data_ptr<int32_t>(),
-             chunk_data.num_points * 1 * sizeof(int32_t),
-             cudaMemcpyDeviceToHost);
-
-  cudaMemcpy(pinned_ptr + (header.lod_levels_offset - sizeof(ChunkFileHeader)),
-             chunk_data.lod_levels.data_ptr<int32_t>(),
-             chunk_data.num_points * 1 * sizeof(int32_t),
-             cudaMemcpyDeviceToHost);
-
-  // SINGLE COPY: thread pinned → final buffer (~10ms)
-  memcpy(ptr + sizeof(ChunkFileHeader), thread_pinned, data_size);
-
-  // Cleanup thread-local pinned memory
-  cudaFreeHost(thread_pinned);
-}
-
-// Deserialize chunk from aligned buffer
-GaussianModel::ChunkData GaussianModel::deserializeChunkFromBuffer(
-    void* buffer,
-    int64_t chunk_id) {
-  const char* ptr = static_cast<const char*>(buffer);
-
-  // Read header
-  const ChunkFileHeader* header = reinterpret_cast<const ChunkFileHeader*>(ptr);
-
-  // Validate
-  assert(header->magic == 0x43484E4B);
-  assert(header->version == 3);
-  assert(header->chunk_id == chunk_id);
-
-  int num_points = header->num_points;
-  int sh_coeffs = (sh_degree_ + 1) * (sh_degree_ + 1) - 1;
+  if (stored_chunk_id != chunk_id) {
+    throw std::runtime_error("Saved chunk ID does not match requested ID");
+  }
 
   ChunkData data;
-  data.num_points = num_points;
+  try {
+    // Load tensors in the same order as saved
+    data.xyz = loadTensorBinary(file);
+    data.features_dc = loadTensorBinary(file);
+    data.features_rest = loadTensorBinary(file);
+    data.scaling = loadTensorBinary(file);
+    data.rotation = loadTensorBinary(file);
+    data.opacity = loadTensorBinary(file);
+    data.exist_since = loadTensorBinary(file);
+    data.position_lrs = loadTensorBinary(file);
+    data.lod_levels = loadTensorBinary(file);
 
-  auto float_opts = torch::TensorOptions().dtype(torch::kFloat32);
-  auto int_opts = torch::TensorOptions().dtype(torch::kInt32);
+    // Load optimizer states
+    data.exp_avg_states.resize(6);
+    data.exp_avg_sq_states.resize(6);
+    data.step_counts.resize(6);
 
-  // Create tensors from buffer data
-  auto createFloatTensor = [&](size_t offset, std::vector<int64_t> shape) {
-    const float* data_ptr = reinterpret_cast<const float*>(ptr + offset);
-    return torch::from_blob(const_cast<float*>(data_ptr), shape, float_opts)
-        .clone()
-        .to(device_type_);
-  };
+    for (int group_idx = 0; group_idx < 6; ++group_idx) {
+      // Load step count
+      file.read(reinterpret_cast<char*>(&data.step_counts[group_idx]),
+                sizeof(int64_t));
 
-  auto createIntTensor = [&](size_t offset, std::vector<int64_t> shape) {
-    const int32_t* data_ptr = reinterpret_cast<const int32_t*>(ptr + offset);
-    return torch::from_blob(const_cast<int32_t*>(data_ptr), shape, int_opts)
-        .clone()
-        .to(device_type_);
-  };
+      // Load momentum tensors
+      data.exp_avg_states[group_idx] = loadTensorBinary(file);
+      data.exp_avg_sq_states[group_idx] = loadTensorBinary(file);
+    }
 
-  data.xyz = createFloatTensor(header->xyz_offset, {num_points, 3});
-  data.features_dc =
-      createFloatTensor(header->features_dc_offset, {num_points, 1, 3});
-  data.features_rest = createFloatTensor(header->features_rest_offset,
-                                         {num_points, sh_coeffs, 3});
-  data.scaling = createFloatTensor(header->scaling_offset, {num_points, 3});
-  data.rotation = createFloatTensor(header->rotation_offset, {num_points, 4});
-  data.opacity = createFloatTensor(header->opacity_offset, {num_points, 1});
-  data.position_lrs =
-      createFloatTensor(header->position_lrs_offset, {num_points});
-  data.exist_since = createIntTensor(header->exist_since_offset, {num_points});
-  data.lod_levels = createIntTensor(header->lod_levels_offset, {num_points});
+    data.num_points = data.xyz.size(0);
 
-  data.chunk_id = chunk_id;
+    file.close();
 
-  return data;
+    // Validate loaded data
+    if (data.num_points != static_cast<int>(stored_num_points)) {
+      std::cerr << "Point count mismatch in chunk file: " << chunk_filename
+                << std::endl;
+      return std::nullopt;
+    }
+
+    // Create chunk IDs tensor (all points belong to this chunk)
+    data.chunk_id = chunk_id;
+
+    std::cout << "Loaded chunk " << chunk_id << " with " << data.num_points
+              << " points from " << chunk_filename << std::endl;
+
+    return data;
+  } catch (const std::exception& e) {
+    std::cerr << "Failed to load chunk " << chunk_id << ": " << e.what()
+              << std::endl;
+    throw std::runtime_error("Failed to load chunk " +
+                             std::to_string(chunk_id) + ": " + e.what());
+    return std::nullopt;
+  }
+}
+
+void GaussianModel::saveTensorBinary(const torch::Tensor& tensor,
+                                     std::ofstream& file) {
+  TensorHeader header = {};
+  header.dims = tensor.dim();
+
+  for (int i = 0; i < tensor.dim(); ++i) {
+    header.sizes[i] = static_cast<uint32_t>(tensor.size(i));
+  }
+  header.dtype = static_cast<uint32_t>(tensor.scalar_type());
+  header.data_size = tensor.nbytes();
+
+  // Write header
+  file.write(reinterpret_cast<const char*>(&header), sizeof(header));
+
+  // Move tensor to CPU if needed and write data
+  torch::Tensor cpu_tensor = tensor.is_cuda() ? tensor.cpu() : tensor;
+  file.write(reinterpret_cast<const char*>(cpu_tensor.data_ptr()),
+             header.data_size);
+}
+
+torch::Tensor GaussianModel::loadTensorBinary(std::ifstream& file) {
+  TensorHeader header;
+  file.read(reinterpret_cast<char*>(&header), sizeof(header));
+
+  // Reconstruct tensor sizes
+  std::vector<int64_t> sizes(header.dims);
+  for (uint32_t i = 0; i < header.dims; ++i) {
+    sizes[i] = header.sizes[i];
+  }
+
+  // Create tensor with correct type and device
+  torch::TensorOptions options =
+      torch::TensorOptions()
+          .dtype(static_cast<torch::ScalarType>(header.dtype))
+          .device(device_type_);
+
+  torch::Tensor tensor = torch::empty(sizes, options.device(torch::kCPU));
+
+  // Read data
+  file.read(reinterpret_cast<char*>(tensor.data_ptr()), header.data_size);
+
+  // Move to target device if needed
+  return tensor.to(device_type_);
 }
 
 void GaussianModel::appendLoadedChunks(
@@ -1524,6 +1424,10 @@ void GaussianModel::appendLoadedChunks(
   std::vector<torch::Tensor> all_scaling, all_rotation, all_opacity;
   std::vector<torch::Tensor> all_exist_since, all_chunk_ids, all_position_lrs,
       all_lod_levels;
+
+  // NEW: Concatenate optimizer states
+  std::vector<std::vector<torch::Tensor>> all_exp_avg(6), all_exp_avg_sq(6);
+  std::vector<int64_t> max_step_counts(6, 0);
 
   for (const auto& chunk : chunks_data) {
     all_xyz.push_back(chunk.xyz);
@@ -1540,6 +1444,16 @@ void GaussianModel::appendLoadedChunks(
         {chunk.num_points}, chunk.chunk_id,
         torch::TensorOptions().device(device_type_).dtype(torch::kInt64));
     all_chunk_ids.push_back(chunk_ids);
+
+    // NEW: Collect optimizer states
+    for (int group_idx = 0; group_idx < 6; ++group_idx) {
+      if (chunk.exp_avg_states[group_idx].defined()) {
+        all_exp_avg[group_idx].push_back(chunk.exp_avg_states[group_idx]);
+        all_exp_avg_sq[group_idx].push_back(chunk.exp_avg_sq_states[group_idx]);
+      }
+      max_step_counts[group_idx] =
+          std::max(max_step_counts[group_idx], chunk.step_counts[group_idx]);
+    }
   }
 
   // Single concatenation operations
@@ -1563,9 +1477,63 @@ void GaussianModel::appendLoadedChunks(
                        batch_exist_since, batch_chunk_ids, batch_position_lrs,
                        batch_lod_levels);
 
-  // std::cout << "Loaded " << batch_xyz.size(0) << " gaussians from "
-  //           << chunks_data.size() << " chunks with full optimizer states"
-  //           << std::endl;
+  // NEW: Restore optimizer states for the loaded range
+  int new_size = xyz_.size(0);
+  restoreOptimizerStatesForRange(all_exp_avg, all_exp_avg_sq, max_step_counts,
+                                 old_size, new_size);
+
+  std::cout << "Loaded " << batch_xyz.size(0) << " gaussians from "
+            << chunks_data.size() << " chunks with full optimizer states"
+            << std::endl;
+}
+
+void GaussianModel::restoreOptimizerStatesForRange(
+    const std::vector<std::vector<torch::Tensor>>& all_exp_avg,
+    const std::vector<std::vector<torch::Tensor>>& all_exp_avg_sq,
+    const std::vector<int64_t>& max_step_counts,
+    int start_idx,
+    int end_idx) {
+  if (!optimizer_) return;
+
+  auto& param_groups = optimizer_->param_groups();
+  auto& state = optimizer_->state();
+
+  for (int group_idx = 0; group_idx < 6; ++group_idx) {
+    if (group_idx >= param_groups.size()) continue;
+    if (all_exp_avg[group_idx].empty()) continue;
+
+    auto& param_group = param_groups[group_idx];
+    if (param_group.params().empty()) continue;
+
+    auto& param = param_group.params()[0];
+    auto key = param.unsafeGetTensorImpl();
+
+    // Ensure optimizer state exists
+    if (state.find(key) == state.end()) {
+      auto new_state = std::make_unique<torch::optim::AdamParamState>();
+      new_state->step(0);
+      new_state->exp_avg(torch::zeros_like(param));
+      new_state->exp_avg_sq(torch::zeros_like(param));
+      state[key] = std::move(new_state);
+    }
+
+    auto& param_state = static_cast<torch::optim::AdamParamState&>(*state[key]);
+
+    // Concatenate states from all chunks
+    torch::Tensor concat_exp_avg = torch::cat(all_exp_avg[group_idx], 0);
+    torch::Tensor concat_exp_avg_sq = torch::cat(all_exp_avg_sq[group_idx], 0);
+
+    // Update the loaded range in optimizer state
+    param_state.exp_avg().slice(0, start_idx, end_idx).copy_(concat_exp_avg);
+    param_state.exp_avg_sq()
+        .slice(0, start_idx, end_idx)
+        .copy_(concat_exp_avg_sq);
+
+    // Update step count to maximum from loaded chunks
+    if (max_step_counts[group_idx] > param_state.step()) {
+      param_state.step(max_step_counts[group_idx]);
+    }
+  }
 }
 
 void GaussianModel::saveChunks(const torch::Tensor& chunk_ids_to_save) {
@@ -1672,7 +1640,7 @@ GaussianModel::ChunkData GaussianModel::extractChunkData(
     int64_t chunk_id) {
   ChunkData data;
 
-  // Basic tensors (you already have these)
+  // Extract main tensors
   data.xyz = xyz_.index({chunk_mask}).detach().clone();
   data.features_dc = features_dc_.index({chunk_mask}).detach().clone();
   data.features_rest = features_rest_.index({chunk_mask}).detach().clone();
@@ -1684,6 +1652,34 @@ GaussianModel::ChunkData GaussianModel::extractChunkData(
   data.lod_levels = gaussian_lod_levels_.index({chunk_mask}).detach().clone();
   data.num_points = data.xyz.size(0);
   data.chunk_id = chunk_id;
+
+  // NEW: Extract optimizer states
+  data.exp_avg_states.resize(6);
+  data.exp_avg_sq_states.resize(6);
+  data.step_counts.resize(6);
+
+  auto& param_groups = optimizer_->param_groups();
+  auto& state = optimizer_->state();
+
+  for (int group_idx = 0; group_idx < 6; ++group_idx) {
+    auto& param_group = param_groups[group_idx];
+    auto& param = param_group.params()[0];
+    auto key = param.unsafeGetTensorImpl();
+
+    if (state.find(key) != state.end()) {
+      // Extract existing optimizer state
+      auto& param_state =
+          static_cast<torch::optim::AdamParamState&>(*state[key]);
+
+      data.exp_avg_states[group_idx] =
+          param_state.exp_avg().index({chunk_mask}).detach().clone();
+      data.exp_avg_sq_states[group_idx] =
+          param_state.exp_avg_sq().index({chunk_mask}).detach().clone();
+      data.step_counts[group_idx] = param_state.step();
+    } else {
+      throw std::runtime_error("No param state found");
+    }
+  }
 
   return data;
 }

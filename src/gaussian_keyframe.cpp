@@ -882,8 +882,8 @@ void GaussianKeyframe::generateInverseDepthPyramid(const cv::Mat& depth_mat) {
 }
 
 void GaussianKeyframe::saveDataToDisk() {
-  std::cout << "Trying to save keyframe_data " + std::to_string(fid_)
-            << std::endl;
+  // std::cout << "Trying to save keyframe_data " + std::to_string(fid_)
+  //           << std::endl;
   auto start_time = std::chrono::steady_clock::now();
   if (!loaded_) {
     throw std::runtime_error("Can't save keyframe to disk that isn't loaded");

@@ -59,29 +59,6 @@ class SparseGaussianAdam;
 #include <sys/stat.h>
 #include <unistd.h>
 
-// Fixed file layout for maximum speed
-struct ChunkFileHeader {
-  uint32_t magic = 0x43484E4B;  // "CHNK"
-  uint32_t version = 3;         // Updated version for LoD support
-  int64_t chunk_id;
-  int64_t num_points;
-
-  // Direct byte offsets to tensor data blocks
-  int64_t xyz_offset;
-  int64_t features_dc_offset;
-  int64_t features_rest_offset;
-  int64_t scaling_offset;
-  int64_t rotation_offset;
-  int64_t opacity_offset;
-  int64_t position_lrs_offset;
-  int64_t exist_since_offset;
-  int64_t lod_levels_offset;  // New LoD levels offset
-
-  // Pad to 128 bytes
-  char padding[32];
-};
-static_assert(sizeof(ChunkFileHeader) == 128, "Header must be 128 bytes");
-
 #define GAUSSIAN_MODEL_TENSORS_TO_VEC                      \
   this->Tensor_vec_xyz_ = {this->xyz_};                    \
   this->Tensor_vec_feature_dc_ = {this->features_dc_};     \
@@ -273,10 +250,26 @@ class GaussianModel {
     torch::Tensor xyz, features_dc, features_rest;
     torch::Tensor scaling, rotation, opacity;
     torch::Tensor exist_since, position_lrs;
-    torch::Tensor lod_levels;  // LoD level assignments
+    torch::Tensor lod_levels;
+
+    // Optimizer states
+    std::vector<torch::Tensor> exp_avg_states;     // [6] tensors
+    std::vector<torch::Tensor> exp_avg_sq_states;  // [6] tensors
+    std::vector<int64_t> step_counts;              // [6] step counts
+
     int num_points;
     int64_t chunk_id;
   };
+
+  struct TensorHeader {
+    uint32_t dims;
+    uint32_t sizes[8];   // Support up to 8D tensors
+    uint32_t dtype;      // torch::ScalarType as uint32_t
+    uint64_t data_size;  // Size in bytes
+  };
+
+  void saveTensorBinary(const torch::Tensor& tensor, std::ofstream& file);
+  torch::Tensor loadTensorBinary(std::ifstream& file);
 
   std::string getChunkFilename(const ChunkCoord& coord);
 
@@ -285,6 +278,12 @@ class GaussianModel {
   std::optional<ChunkData> loadSingleChunkFromDisk(int64_t chunk_id);
   void appendLoadedChunks(const std::vector<ChunkData>& chunks_data,
                           const std::vector<int64_t>& chunk_ids);
+  void restoreOptimizerStatesForRange(
+      const std::vector<std::vector<torch::Tensor>>& all_exp_avg,
+      const std::vector<std::vector<torch::Tensor>>& all_exp_avg_sq,
+      const std::vector<int64_t>& max_step_counts,
+      int start_idx,
+      int end_idx);
   void saveChunks(const torch::Tensor& chunk_ids_to_save);
   ChunkData extractChunkData(const torch::Tensor& chunk_mask, int64_t chunk_id);
   void saveAndEvictChunks(const torch::Tensor& chunk_ids);
@@ -347,10 +346,4 @@ class GaussianModel {
            a.unit_quaternion().angularDistance(b.unit_quaternion()) <
                rotation_tol;
   }
-
- public:
-  void serializeChunkToBuffer(const ChunkData& chunk_data,
-                              void* buffer,
-                              size_t buffer_size);
-  ChunkData deserializeChunkFromBuffer(void* buffer, int64_t chunk_id);
 };
