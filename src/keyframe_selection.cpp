@@ -102,14 +102,16 @@ void KeyframeQueue::notifyNewKeyframeAdded(
   std::unique_lock<std::mutex> lock(mutex_new_keyframe_);
 
   // Add to the list of keyframe IDs
-  if (keyframe_ids_.size() >= queue_size_) {
+  while (keyframe_ids_.size() >= queue_size_) {
     // Remove the oldest keyframe ID
     std::size_t oldest_kf_id = keyframe_ids_.front();
     keyframe_ids_.erase(keyframe_ids_.begin());
 
     // Queue the oldest keyframe for async saving
     auto it = scene_->keyframes().find(oldest_kf_id);
-    if (it != scene_->keyframes().end()) {
+    if (it != scene_->keyframes().end() && it->second->allow_eviction_) {
+      // std::cout << "Queuing Keyframe: " + std::to_string(it->second->fid_)
+      //           << " for saving" << std::endl;
       queueForSaving(it->second);
     }
   }

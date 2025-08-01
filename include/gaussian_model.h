@@ -248,6 +248,7 @@ class GaussianModel {
   // Storage tracking
   torch::Tensor chunks_loaded_from_disk_;
   torch::Tensor chunks_on_disk_;
+  torch::Tensor chunk_gaussian_counts_;
 
   // For chunk-based save/load operations
   std::string storage_base_path_;
@@ -258,7 +259,8 @@ class GaussianModel {
 
   torch::Tensor
       chunk_last_used_;  // [N] - float tensor of timestamps (as float seconds)
-  std::unordered_map<int64_t, float> chunk_access_times_;  // chunk_id -> timestamp
+  std::unordered_map<int64_t, float>
+      chunk_access_times_;  // chunk_id -> timestamp
   float memory_pressure_threshold_ = 0.85f;
   size_t min_chunks_to_evict_ = 5;
   int new_gaussian_chunk_density_ = 100;
@@ -286,7 +288,7 @@ class GaussianModel {
   ChunkData extractChunkData(const torch::Tensor& chunk_mask, int64_t chunk_id);
   void saveAndEvictChunks(const torch::Tensor& chunk_ids);
 
-  torch::Tensor findLRUChunks(const torch::Tensor& candidate_chunks, int count);
+  torch::Tensor findLRUChunks(const torch::Tensor& candidate_chunks, int64_t target_gaussian_count);
 
   void checkMemoryPressure();
   void testSaveLoadEvictCycle();
@@ -309,7 +311,6 @@ class GaussianModel {
   torch::Tensor encodeChunkCoordsTensor(const torch::Tensor& chunk_coords);
   torch::Tensor decodeChunkCoordsTensor(const torch::Tensor& encoded_ids);
   torch::Tensor chunkCoordVectorToTensor(const std::vector<ChunkCoord>& coords);
-
 
   // Cache for keyframe visibility results
   struct VisibilityCacheEntry {

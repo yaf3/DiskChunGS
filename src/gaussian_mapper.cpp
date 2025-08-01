@@ -104,7 +104,7 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   scene_ = std::make_shared<GaussianScene>(model_params_);
 
   keyframe_queue_ = std::make_shared<KeyframeQueue>(
-      scene_, 40, keyframe_similarity_threshold_, opt_params_.auto_distribute_,
+      scene_, 20, keyframe_similarity_threshold_, opt_params_.auto_distribute_,
       &kfs_loss_);
   // keyframe_queue_->setChunkManager(chunk_manager_);
 
@@ -764,8 +764,12 @@ void GaussianMapper::run() {
           pkf->setupRGBDData();
         }
 
+        pkf->loaded_ = true;
+
         if (!initial_mapped_) {
           scene_->cameras_extent_ = std::get<1>(scene_->getNerfppNorm());
+          scene_->cameras_extent_ =
+              1.0;  // For debugging, maybe its better without;
           std::cout << "Extent: " << scene_->cameras_extent_ << std::endl;
 
           // Initialize Gaussian model
@@ -786,6 +790,11 @@ void GaussianMapper::run() {
 
       // Invoke training once
       trainForOneIteration();
+
+      // Kind of a hack
+      for (auto& kfit : scene_->keyframes()) {
+        kfit.second->allow_eviction_ = true;
+      }
 
       // Finish initial mapping loop
       break;
@@ -1278,10 +1287,10 @@ void GaussianMapper::trainForOneIteration() {
 
   // Chunks automatically released by ChunkOptimizationGuard destructor
   timer_trainForOneIteration.stop();
-  if (getIteration() % 500 == 0) {
-    ProfilingUtils::getInstance().printStats();
-    ProfilingUtils::getInstance().reset();
-  }
+  // if (getIteration() % 500 == 0) {
+  //   ProfilingUtils::getInstance().printStats();
+  //   ProfilingUtils::getInstance().reset();
+  // }
 }
 
 bool GaussianMapper::isStopped() {
@@ -1840,6 +1849,9 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
 
   std::unique_lock<std::mutex> lock_render(mutex_render_);
   sampleGaussians(pkf);
+
+  pkf->loaded_ = true;
+  pkf->allow_eviction_ = true;
 }
 
 void GaussianMapper::generateKfidRandomShuffle() {
@@ -4068,15 +4080,22 @@ void GaussianMapper::saveChunkManifest(std::filesystem::path scene_dir) {
 
   // Save chunks_on_disk_ (std::unordered_set<int64_t>)
   Json::Value chunks_on_disk_array(Json::arrayValue);
+  Json::Value chunk_gaussian_counts_array(Json::arrayValue);
   auto chunks_cpu = gaussians_->chunks_on_disk_.cpu();
-  auto accessor = chunks_cpu.accessor<int64_t, 1>();
+  auto chunk_gaussian_counts_cpu = gaussians_->chunk_gaussian_counts_.cpu();
+  auto accessor_id = chunks_cpu.accessor<int64_t, 1>();
+  auto accessor_count = chunk_gaussian_counts_cpu.accessor<int64_t, 1>();
 
   for (int i = 0; i < chunks_cpu.size(0); ++i) {
-    int64_t chunk_id = accessor[i];
+    int64_t chunk_id = accessor_id[i];
+    int64_t count = accessor_count[i];
     chunks_on_disk_array.append(
         Json::Value(static_cast<Json::Int64>(chunk_id)));
+    chunk_gaussian_counts_array.append(
+        Json::Value(static_cast<Json::Int64>(count)));
   }
   json_root["chunks_on_disk"] = chunks_on_disk_array;
+  json_root["chunk_gaussian_counts"] = chunk_gaussian_counts_array;
 
   // Write to file
   std::ofstream out_stream(manifest_path);
@@ -4148,6 +4167,38 @@ void GaussianMapper::loadChunkManifest(std::filesystem::path scene_dir) {
               .to(gaussians_->device_type_);
     } else {
       gaussians_->chunks_on_disk_ =
+          torch::empty({0}, torch::TensorOptions()
+                                .dtype(torch::kInt64)
+                                .device(gaussians_->device_type_));
+    }
+  }
+
+  if (root.isMember("chunk_gaussian_counts") &&
+      root["chunk_gaussian_counts"].isArray()) {
+    const Json::Value& chunk_gaussian_counts_array =
+        root["chunk_gaussian_counts"];
+
+    // Collect into vector first
+    std::vector<int64_t> chunk_gaussian_counts_vec;
+    chunk_gaussian_counts_vec.reserve(chunk_gaussian_counts_array.size());
+
+    for (const auto& chunk_value : chunk_gaussian_counts_array) {
+      if (chunk_value.isInt64()) {
+        chunk_gaussian_counts_vec.push_back(chunk_value.asInt64());
+      }
+    }
+
+    // Convert to tensor
+    if (!chunk_gaussian_counts_vec.empty()) {
+      gaussians_->chunk_gaussian_counts_ =
+          torch::from_blob(
+              chunk_gaussian_counts_vec.data(),
+              {static_cast<int64_t>(chunk_gaussian_counts_vec.size())},
+              torch::TensorOptions().dtype(torch::kInt64))
+              .clone()
+              .to(gaussians_->device_type_);
+    } else {
+      gaussians_->chunk_gaussian_counts_ =
           torch::empty({0}, torch::TensorOptions()
                                 .dtype(torch::kInt64)
                                 .device(gaussians_->device_type_));

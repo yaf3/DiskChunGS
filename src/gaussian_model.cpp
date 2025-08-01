@@ -41,6 +41,9 @@ GaussianModel::GaussianModel(const int sh_degree)
 
   chunks_loaded_from_disk_ = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
+
+  chunk_gaussian_counts_ = torch::empty(
+      {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
 }
 
 GaussianModel::GaussianModel(const GaussianModelParams& model_params,
@@ -69,6 +72,9 @@ GaussianModel::GaussianModel(const GaussianModelParams& model_params,
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
 
   chunks_loaded_from_disk_ = torch::empty(
+      {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
+
+  chunk_gaussian_counts_ = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
 
   std::cout << "[GaussianModel] Initialized with storage path: "
@@ -1063,6 +1069,61 @@ void GaussianModel::loadChunks(const torch::Tensor& chunk_ids_to_load) {
   torch::NoGradGuard no_grad;
   if (chunk_ids_to_load.size(0) == 0) return;
 
+  // STEP 0: Pre-emptive eviction using exact gaussian counts
+  torch::Tensor load_mask = torch::isin(chunk_ids_to_load, chunks_on_disk_);
+  if (load_mask.any().item<bool>()) {
+    torch::Tensor loadable_ids = chunk_ids_to_load.index({load_mask});
+
+    // Find indices of loadable chunks in chunks_on_disk_
+    int64_t exact_gaussians_to_load = 0;
+    auto loadable_cpu = loadable_ids.cpu();
+    auto chunks_on_disk_cpu = chunks_on_disk_.cpu();
+    auto counts_cpu = chunk_gaussian_counts_.cpu();
+
+    auto loadable_accessor = loadable_cpu.accessor<int64_t, 1>();
+    auto chunks_accessor = chunks_on_disk_cpu.accessor<int64_t, 1>();
+    auto counts_accessor = counts_cpu.accessor<int64_t, 1>();
+
+    // Simple O(n*m) lookup - but n and m are typically small (< 100)
+    for (int64_t i = 0; i < loadable_cpu.size(0); i++) {
+      int64_t target_chunk = loadable_accessor[i];
+
+      // Find this chunk in chunks_on_disk_
+      for (int64_t j = 0; j < chunks_on_disk_cpu.size(0); j++) {
+        if (chunks_accessor[j] == target_chunk) {
+          exact_gaussians_to_load += counts_accessor[j];
+          break;  // Found it, move to next loadable chunk
+        }
+      }
+    }
+
+    int64_t current_gaussians = xyz_.size(0);
+    int64_t target_gaussians = 3000000;
+    int64_t projected_total = current_gaussians + exact_gaussians_to_load;
+
+    std::cout << "[Load] Planning to load " << loadable_ids.size(0)
+              << " chunks (exactly " << exact_gaussians_to_load << " gaussians)"
+              << std::endl;
+
+    if (projected_total > target_gaussians) {
+      int64_t excess = projected_total - target_gaussians;
+      std::cout << "[Load] Pre-emptive eviction needed: current="
+                << current_gaussians << ", incoming=" << exact_gaussians_to_load
+                << ", projected=" << projected_total << ", excess=" << excess
+                << std::endl;
+
+      // Get evictable chunks and find LRU ones to free up 'excess' gaussians
+      torch::Tensor evictable_chunks =
+          std::get<0>(torch::_unique2(gaussian_chunk_ids_));
+      if (evictable_chunks.size(0) > 0) {
+        torch::Tensor lru_chunks = findLRUChunks(evictable_chunks, excess);
+        if (lru_chunks.size(0) > 0) {
+          saveAndEvictChunks(lru_chunks);
+        }
+      }
+    }
+  }
+
   // Step 1: Filter out chunks that are already loaded (unchanged)
   torch::Tensor not_loaded_mask =
       ~torch::isin(chunk_ids_to_load, chunks_loaded_from_disk_);
@@ -1512,10 +1573,12 @@ void GaussianModel::saveChunks(const torch::Tensor& chunk_ids_to_save) {
   int num_chunks = chunks_cpu.size(0);
 
   std::vector<std::pair<int64_t, ChunkData>> prepared_chunks;
+  std::unordered_map<int64_t, int64_t> chunk_id_to_count;
   for (int i = 0; i < num_chunks; ++i) {
     int64_t chunk_id = accessor[i];
     torch::Tensor chunk_mask = (gaussian_chunk_ids_ == chunk_id);
     ChunkData chunk_data = extractChunkData(chunk_mask, chunk_id);
+    chunk_id_to_count[chunk_id] = chunk_data.num_points;
     prepared_chunks.emplace_back(chunk_id, std::move(chunk_data));
   }
 
@@ -1548,18 +1611,44 @@ void GaussianModel::saveChunks(const torch::Tensor& chunk_ids_to_save) {
     }
   }
 
-  // Update tracking (unchanged)
-  if (!successfully_saved.empty()) {
-    torch::Tensor saved_tensor =
-        torch::from_blob(successfully_saved.data(),
-                         {static_cast<int64_t>(successfully_saved.size())},
-                         torch::TensorOptions().dtype(torch::kInt64))
-            .clone()
-            .to(device_type_);
+  // Check if chunk_gaussian_counts_ and chunks_on_disk_ have gone out of sync
+  if (chunk_gaussian_counts_.size(0) != chunks_on_disk_.size(0)) {
+    throw std::runtime_error(
+        "chunk_gaussian_counts_ doesn't match chunks_on_disk_ size!");
+  }
 
-    chunks_on_disk_ = torch::cat({chunks_on_disk_, saved_tensor}, 0);
-    chunks_on_disk_ =
-        std::get<0>(torch::_unique2(chunks_on_disk_, /*sorted=*/true));
+  // Now add new chunk entries to chunks_on_disk_ and update
+  // chunk_gaussian_counts_ for existing and new
+  std::vector<int64_t> saved_counts;
+  for (int64_t chunk_id : successfully_saved) {
+    torch::Tensor chunk_id_tensor = torch::tensor(
+        {chunk_id},
+        torch::TensorOptions().device(device_type_).dtype(torch::kInt64));
+    torch::Tensor gaussian_count_tensor = torch::tensor(
+        {chunk_id_to_count[chunk_id]},
+        torch::TensorOptions().device(device_type_).dtype(torch::kInt64));
+
+    auto mask = torch::eq(chunks_on_disk_, chunk_id_tensor);
+    bool found = torch::any(mask).item<bool>();
+
+    // If we find existing entry, update the gaussian count
+    if (found) {
+      auto indices = torch::where(mask)[0];
+
+      // If there are multiple entries with this chunk id, we messed up
+      // somewhere
+      if (indices.size(0) > 1) {
+        throw std::runtime_error("chunks_on_disk_ has duplicates");
+      }
+      int64_t first_index = indices[0].item<int64_t>();
+      chunk_gaussian_counts_[first_index] = chunk_id_to_count[chunk_id];
+
+      // If first time observing this chunk id add it and the count
+    } else {
+      chunks_on_disk_ = torch::cat({chunks_on_disk_, chunk_id_tensor}, 0);
+      chunk_gaussian_counts_ =
+          torch::cat({chunk_gaussian_counts_, gaussian_count_tensor}, 0);
+    }
   }
 
   auto end_time = std::chrono::steady_clock::now();
@@ -1665,7 +1754,7 @@ void GaussianModel::checkMemoryPressure() {
   // last_memory_check_ = now;
 
   int current_gaussians = getXYZ().size(0);
-  int threshold_gaussians = 4000000;
+  int threshold_gaussians = 3000000;
 
   if (current_gaussians <= threshold_gaussians) {
     return;  // No pressure, exit early
@@ -1689,17 +1778,15 @@ void GaussianModel::checkMemoryPressure() {
       break;
     }
 
-    // Calculate how many chunks to evict this iteration
-    int chunks_to_evict =
-        std::max(static_cast<int>(min_chunks_to_evict_),
-                 static_cast<int>(evictable_chunks.size(0) / 10));
+    // Calculate how many gaussians to evict this iteration
+    int64_t excess_gaussians = current_gaussians - threshold_gaussians;
+    int64_t gaussians_to_evict =
+        std::max(excess_gaussians,
+                 static_cast<int64_t>(100000));  // Minimum 100k per iteration
 
-    // Don't evict more chunks than we have
-    chunks_to_evict =
-        std::min(chunks_to_evict, static_cast<int>(evictable_chunks.size(0)));
-
-    // Get LRU chunks from evictable chunks
-    torch::Tensor lru_chunks = findLRUChunks(evictable_chunks, chunks_to_evict);
+    // Get LRU chunks that total at least gaussians_to_evict
+    torch::Tensor lru_chunks =
+        findLRUChunks(evictable_chunks, gaussians_to_evict);
 
     if (lru_chunks.size(0) == 0) {
       std::cout << "[Memory] Warning: No LRU chunks found to evict"
@@ -1718,8 +1805,8 @@ void GaussianModel::checkMemoryPressure() {
 
 torch::Tensor GaussianModel::findLRUChunks(
     const torch::Tensor& candidate_chunks,
-    int count) {
-  if (candidate_chunks.size(0) == 0) {
+    int64_t target_gaussian_count) {
+  if (candidate_chunks.size(0) == 0 || target_gaussian_count <= 0) {
     return torch::empty(
         {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
   }
@@ -1727,24 +1814,31 @@ torch::Tensor GaussianModel::findLRUChunks(
   auto chunks_cpu = candidate_chunks.cpu();
   auto chunks_accessor = chunks_cpu.accessor<int64_t, 1>();
 
-  // Create vector of (chunk_id, access_time) pairs
-  std::vector<std::pair<int64_t, float>> chunk_times;
+  // Create vector of (chunk_id, access_time, gaussian_count) tuples
+  std::vector<std::tuple<int64_t, float, int64_t>> chunk_data;
   for (int64_t i = 0; i < chunks_cpu.size(0); i++) {
     int64_t chunk_id = chunks_accessor[i];
     float access_time = chunk_access_times_.count(chunk_id)
                             ? chunk_access_times_[chunk_id]
                             : 0.0f;
-    chunk_times.emplace_back(chunk_id, access_time);
+
+    // Get gaussian count for this chunk
+    torch::Tensor chunk_mask = (gaussian_chunk_ids_ == chunk_id);
+    int64_t gaussian_count = chunk_mask.sum().item<int64_t>();
+
+    chunk_data.emplace_back(chunk_id, access_time, gaussian_count);
   }
 
   // Sort by access time (oldest first)
-  std::sort(chunk_times.begin(), chunk_times.end(),
-            [](const auto& a, const auto& b) { return a.second < b.second; });
+  std::sort(chunk_data.begin(), chunk_data.end(),
+            [](const auto& a, const auto& b) {
+              return std::get<1>(a) < std::get<1>(b);
+            });
 
   // Debug output
-  if (!chunk_times.empty()) {
-    float oldest_time = chunk_times.front().second;
-    float newest_time = chunk_times.back().second;
+  if (!chunk_data.empty()) {
+    float oldest_time = std::get<1>(chunk_data.front());
+    float newest_time = std::get<1>(chunk_data.back());
     float time_delta = newest_time - oldest_time;
     std::cout << "[LRU DEBUG] After sorting (oldest first):" << std::endl;
     std::cout << "[LRU DEBUG] Time range: oldest=" << oldest_time
@@ -1752,14 +1846,31 @@ torch::Tensor GaussianModel::findLRUChunks(
               << std::endl;
   }
 
-  // Return the LRU chunks
-  count = std::min(count, static_cast<int>(chunk_times.size()));
+  // Accumulate chunks until we reach target gaussian count
+  std::vector<int64_t> selected_chunks;
+  int64_t accumulated_gaussians = 0;
+
+  for (const auto& [chunk_id, access_time, gaussian_count] : chunk_data) {
+    selected_chunks.push_back(chunk_id);
+    accumulated_gaussians += gaussian_count;
+
+    if (accumulated_gaussians >= target_gaussian_count) {
+      break;
+    }
+  }
+
+  std::cout << "[LRU DEBUG] Selected " << selected_chunks.size() << " chunks ("
+            << accumulated_gaussians << " gaussians) to reach target eviction"
+            << target_gaussian_count << std::endl;
+
+  // Convert to tensor
   torch::Tensor result = torch::empty(
-      {count}, torch::TensorOptions().dtype(torch::kInt64).device(torch::kCPU));
+      {static_cast<int64_t>(selected_chunks.size())},
+      torch::TensorOptions().dtype(torch::kInt64).device(torch::kCPU));
   auto result_accessor = result.accessor<int64_t, 1>();
 
-  for (int i = 0; i < count; i++) {
-    result_accessor[i] = chunk_times[i].first;
+  for (size_t i = 0; i < selected_chunks.size(); i++) {
+    result_accessor[i] = selected_chunks[i];
   }
 
   return result.to(device_type_);
@@ -2147,7 +2258,8 @@ GaussianModel::filterPointsByChunkDensity(const torch::Tensor& xyz,
   int kept_points = filtered_xyz.size(0);
 
   // std::cout << "[Chunk Density Filter] Chunks: " << valid_chunks << "/"
-  //           << total_chunks << " passed (need >= " << min_gaussians_per_chunk
+  //           << total_chunks << " passed (need >= " <<
+  //           min_gaussians_per_chunk
   //           << " points)" << std::endl;
   // std::cout << "[Chunk Density Filter] Points: " << kept_points << "/"
   //           << total_points << " kept ("
@@ -2238,7 +2350,8 @@ void GaussianModel::deleteSparseChunks(int min_gaussians_per_chunk) {
 
   // std::cout << "[Sparse Deletion] Deleting " << num_sparse_chunks
   //           << " sparse chunks with " << total_gaussians_to_delete
-  //           << " total gaussians (threshold: " << min_gaussians_per_chunk <<
+  //           << " total gaussians (threshold: " << min_gaussians_per_chunk
+  //           <<
   //           ")"
   //           << std::endl;
 
@@ -2256,6 +2369,7 @@ void GaussianModel::deleteSparseChunks(int min_gaussians_per_chunk) {
   torch::Tensor keep_disk_mask =
       ~torch::isin(chunks_on_disk_, sparse_chunk_ids);
   chunks_on_disk_ = chunks_on_disk_.index({keep_disk_mask});
+  chunk_gaussian_counts_ = chunk_gaussian_counts_.index({keep_disk_mask});
 
   // Clear access times for deleted chunks
   auto sparse_ids_cpu = sparse_chunk_ids.cpu();
@@ -2410,7 +2524,8 @@ torch::Tensor GaussianModel::assignLoDByDensity(
   if (!printed_density_thresholds) {
     // std::cout << "[LoD Debug] Density thresholds - LoD0: >=" <<
     // sparse_threshold
-    //           << ", LoD1: [" << dense_threshold << " - " << sparse_threshold
+    //           << ", LoD1: [" << dense_threshold << " - " <<
+    //           sparse_threshold
     //           << "), LoD2: <" << dense_threshold << " (mean dist: " <<
     //           mean_dist
     //           << ")" << std::endl;
@@ -2426,7 +2541,8 @@ torch::Tensor GaussianModel::assignLoDByDensity(
                               (nearest_distances < sparse_threshold);
   lod_levels.masked_fill_(medium_mask, 1);
 
-  // LoD 2: Dense areas (small distances between points) - only visible close up
+  // LoD 2: Dense areas (small distances between points) - only visible close
+  // up
   torch::Tensor dense_mask = nearest_distances < dense_threshold;
   lod_levels.masked_fill_(dense_mask, 2);
 
@@ -2467,12 +2583,14 @@ torch::Tensor GaussianModel::selectCumulativeLoD(
   // std::cout << "[LoD Debug] Distance range: " << min_dist << " - " <<
   // max_dist
   //           << ", Mean required LoD: " << mean_required_lod
-  //           << ", Available LoDs - L0: " << visible_lod_counts[0].item<int>()
+  //           << ", Available LoDs - L0: " <<
+  //           visible_lod_counts[0].item<int>()
   //           << ", L1: " << visible_lod_counts[1].item<int>()
   //           << ", L2: " << visible_lod_counts[2].item<int>() << std::endl;
 
-  // Cumulative selection: include gaussian if its assigned LoD >= required LoD
-  // Note: We invert the logic since LoD 0 = large (base), LoD 2 = small (fine)
+  // Cumulative selection: include gaussian if its assigned LoD >= required
+  // LoD Note: We invert the logic since LoD 0 = large (base), LoD 2 = small
+  // (fine)
   torch::Tensor lod_mask = visible_lod_levels.to(torch::kFloat) <= required_lod;
 
   // Create final mask

@@ -214,5 +214,6 @@ class GaussianKeyframe {
   torch::Tensor depth_confidence_;
 
   std::filesystem::path keyframe_save_dir_;
-  bool loaded_ = true;
+  bool loaded_ = false;
+  bool allow_eviction_ = false;
 };
