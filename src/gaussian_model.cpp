@@ -23,7 +23,9 @@ GaussianModel::GaussianModel(const int sh_degree)
       spatial_lr_scale_(0.0),
       position_lr_init_(0.00005),
       position_lr_decay_(0.99998),
-      local_iteration_(0) {
+      local_iteration_(0),
+      base_scale_threshold_(6.0f),
+      detail_scale_threshold_(3.0f) {
   this->sh_degree_ = sh_degree;
 
   // Device
@@ -54,7 +56,9 @@ GaussianModel::GaussianModel(const GaussianModelParams& model_params,
       spatial_lr_scale_(0.0),
       position_lr_init_(0.00005),
       position_lr_decay_(0.99998),
-      local_iteration_(0) {
+      local_iteration_(0),
+      base_scale_threshold_(6.0f),
+      detail_scale_threshold_(3.0f) {
   this->sh_degree_ = model_params.sh_degree_;
 
   // Device
@@ -512,6 +516,8 @@ void GaussianModel::prunePoints(torch::Tensor& mask) {
   this->position_lrs_ = this->position_lrs_.index({valid_points_mask});
   this->gaussian_chunk_ids_ =
       this->gaussian_chunk_ids_.index({valid_points_mask});
+  this->gaussian_lod_levels_ =
+      this->gaussian_lod_levels_.index({valid_points_mask});
 
   c10::cuda::CUDACachingAllocator::emptyCache();
 }
@@ -686,17 +692,32 @@ torch::Tensor GaussianModel::cullVisibleGaussians(
   }
 
   // Convert chunk visibility to gaussian visibility
-  torch::Tensor gaussian_visibility_mask =
+  torch::Tensor chunk_visibility_mask =
       createGaussianMaskFromChunks(visible_chunk_ids);
 
-  // std::cout << "[CullVisibleGaussians] " << "Gaussians visible: "
-  //           << gaussian_visibility_mask.sum().item<int>() << " / "
-  //           << xyz_.size(0) << std::endl;
+  // Apply LoD filtering based on distance
+  torch::Tensor camera_position = keyframe->getCenter().squeeze();
+  torch::Tensor lod_filtered_mask =
+      selectCumulativeLoD(chunk_visibility_mask, camera_position);
+
+  // Debug: Print culling statistics
+  int chunk_visible = chunk_visibility_mask.sum().item<int>();
+  int lod_visible = lod_filtered_mask.sum().item<int>();
+  int total_gaussians = xyz_.size(0);
+  float reduction =
+      (chunk_visible > 0)
+          ? (1.0f - float(lod_visible) / float(chunk_visible)) * 100.0f
+          : 0.0f;
+
+  std::cout << "[LoD Debug] Culling stats - Total: " << total_gaussians
+            << ", Chunk visible: " << chunk_visible
+            << ", LoD visible: " << lod_visible << " (reduction: " << reduction
+            << "%)" << std::endl;
 
   //  Update access times for all visible chunks
   updateChunkAccess(visible_chunk_ids);
 
-  return gaussian_visibility_mask;
+  return lod_filtered_mask;
 }
 
 torch::Tensor GaussianModel::createGaussianMaskFromChunks(
@@ -918,6 +939,24 @@ void GaussianModel::initializeFromPoints(const torch::Tensor& initial_xyz,
 
   gaussian_chunk_ids_ = initial_chunk_ids;
 
+  // Assign LoD levels based on density (distance to nearest neighbors)
+  torch::Tensor point_cloud_copy = initial_xyz.clone();
+  torch::Tensor dist2 =
+      torch::clamp_min(distCUDA2(point_cloud_copy), 0.0000001);
+  torch::Tensor nearest_distances = torch::sqrt(dist2);
+  gaussian_lod_levels_ = assignLoDByDensity(nearest_distances);
+
+  // Debug: Print initial LoD assignment statistics
+  auto lod_counts = torch::bincount(gaussian_lod_levels_, torch::Tensor(), 3);
+  std::cout << "[LoD Debug] Initialized " << gaussian_lod_levels_.size(0)
+            << " gaussians - "
+            << "LoD0: " << lod_counts[0].item<int>() << ", "
+            << "LoD1: " << lod_counts[1].item<int>() << ", "
+            << "LoD2: " << lod_counts[2].item<int>()
+            << " (density range: " << nearest_distances.min().item<float>()
+            << " - " << nearest_distances.max().item<float>() << ")"
+            << std::endl;
+
   GAUSSIAN_MODEL_TENSORS_TO_VEC
 
   c10::cuda::CUDACachingAllocator::emptyCache();
@@ -985,9 +1024,28 @@ void GaussianModel::appendPoints(const torch::Tensor& new_xyzs,
       torch::full({new_xyzs.size(0)}, position_lr_init_,
                   torch::TensorOptions().device(device_type_));
 
+  // Assign LoD levels based on density (distance to nearest neighbors)
+  torch::Tensor dist2 =
+      torch::clamp_min(distCUDA2(new_xyzs.clone()), 0.0000001);
+  torch::Tensor nearest_distances = torch::sqrt(dist2);
+  torch::Tensor new_lod_levels = assignLoDByDensity(nearest_distances);
+
+  // Debug: Print LoD assignment statistics
+  auto lod_counts = torch::bincount(new_lod_levels, torch::Tensor(), 3);
+  std::cout << "[LoD Debug] Added " << new_lod_levels.size(0) << " gaussians - "
+            << "LoD0: " << lod_counts[0].item<int>() << ", "
+            << "LoD1: " << lod_counts[1].item<int>() << ", "
+            << "LoD2: " << lod_counts[2].item<int>()
+            << " (density range: " << nearest_distances.min().item<float>()
+            << " - " << nearest_distances.max().item<float>() << ")"
+            << std::endl;
+
   densificationPostfix(new_xyz_tensor, new_features_dc, new_features_rest,
                        new_opacities_tensor, new_scaling, new_rotation,
                        new_exist_since_iter, new_position_lrs);
+
+  // Append LoD levels
+  gaussian_lod_levels_ = torch::cat({gaussian_lod_levels_, new_lod_levels}, 0);
 
   c10::cuda::CUDACachingAllocator::emptyCache();
 }
@@ -1396,6 +1454,7 @@ void GaussianModel::appendLoadedChunks(
   std::vector<torch::Tensor> all_xyz, all_features_dc, all_features_rest;
   std::vector<torch::Tensor> all_scaling, all_rotation, all_opacity;
   std::vector<torch::Tensor> all_exist_since, all_position_lrs;
+  std::vector<torch::Tensor> all_lod_levels;
 
   for (const auto& chunk : chunks_data) {
     all_xyz.push_back(chunk.xyz);
@@ -1406,6 +1465,7 @@ void GaussianModel::appendLoadedChunks(
     all_opacity.push_back(chunk.opacity);
     all_exist_since.push_back(chunk.exist_since);
     all_position_lrs.push_back(chunk.position_lrs);
+    all_lod_levels.push_back(chunk.lod_levels);
   }
 
   // Single concatenation operations
@@ -1417,6 +1477,7 @@ void GaussianModel::appendLoadedChunks(
   torch::Tensor batch_opacity = torch::cat(all_opacity, 0);
   torch::Tensor batch_exist_since = torch::cat(all_exist_since, 0);
   torch::Tensor batch_position_lrs = torch::cat(all_position_lrs, 0);
+  torch::Tensor batch_lod_levels = torch::cat(all_lod_levels, 0);
 
   // Get starting index for new gaussians
   int old_size = xyz_.size(0);
@@ -1425,6 +1486,10 @@ void GaussianModel::appendLoadedChunks(
   densificationPostfix(batch_xyz, batch_features_dc, batch_features_rest,
                        batch_opacity, batch_scaling, batch_rotation,
                        batch_exist_since, batch_position_lrs);
+
+  // Append LoD levels
+  gaussian_lod_levels_ =
+      torch::cat({gaussian_lod_levels_, batch_lod_levels}, 0);
 
   // std::cout << "Loaded " << batch_xyz.size(0) << " gaussians from "
   //           << chunks_data.size() << " chunks with full optimizer states"
@@ -1516,6 +1581,7 @@ GaussianModel::ChunkData GaussianModel::extractChunkData(
   data.opacity = opacity_.index({chunk_mask}).detach().clone();
   data.exist_since = exist_since_iter_.index({chunk_mask}).detach().clone();
   data.position_lrs = position_lrs_.index({chunk_mask}).detach().clone();
+  data.lod_levels = gaussian_lod_levels_.index({chunk_mask}).detach().clone();
   data.num_points = data.xyz.size(0);
   data.chunk_id = chunk_id;
 
@@ -2369,4 +2435,126 @@ void GaussianModel::debugHashCollisions(const torch::Tensor& candidate_chunks) {
             << " hash collisions affecting " << total_colliding_chunks << "/"
             << candidate_chunks.size(0) << " chunks (" << (collision_rate * 100)
             << "%)" << std::endl;
+}
+
+torch::Tensor GaussianModel::assignLoDByScale(
+    const torch::Tensor& scale_magnitudes) {
+  int n_gaussians = scale_magnitudes.size(0);
+  torch::Tensor lod_levels = torch::zeros(
+      {n_gaussians},
+      torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
+
+  // Debug: Print thresholds (only once per session)
+  static bool printed_thresholds = false;
+  if (!printed_thresholds) {
+    std::cout << "[LoD Debug] Scale thresholds - LoD0: >="
+              << base_scale_threshold_ << ", LoD1: [" << detail_scale_threshold_
+              << " - " << base_scale_threshold_ << "), LoD2: <"
+              << detail_scale_threshold_ << std::endl;
+    printed_thresholds = true;
+  }
+
+  // LoD 0: Large gaussians (base structure)
+  torch::Tensor large_mask = scale_magnitudes >= base_scale_threshold_;
+  lod_levels.masked_fill_(large_mask, 0);
+
+  // LoD 1: Medium gaussians (details)
+  torch::Tensor medium_mask = (scale_magnitudes >= detail_scale_threshold_) &
+                              (scale_magnitudes < base_scale_threshold_);
+  lod_levels.masked_fill_(medium_mask, 1);
+
+  // LoD 2: Small gaussians (fine details) - default assignment (already 0)
+  torch::Tensor small_mask = scale_magnitudes < detail_scale_threshold_;
+  lod_levels.masked_fill_(small_mask, 2);
+
+  return lod_levels;
+}
+
+torch::Tensor GaussianModel::assignLoDByDensity(
+    const torch::Tensor& nearest_distances) {
+  int n_gaussians = nearest_distances.size(0);
+  torch::Tensor lod_levels = torch::zeros(
+      {n_gaussians},
+      torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
+
+  // Calculate density thresholds based on distance distribution
+  // Larger distances = sparser areas = should be LoD 0/1 (visible from far)
+  // Smaller distances = denser areas = can be LoD 2 (only visible close up)
+
+  float mean_dist = nearest_distances.mean().item<float>();
+  float dense_threshold = mean_dist * 0.5f;   // Bottom 25% (very dense areas)
+  float sparse_threshold = mean_dist * 1.5f;  // Top 25% (sparse areas)
+
+  // Debug: Print density thresholds (only once per session)
+  static bool printed_density_thresholds = false;
+  if (!printed_density_thresholds) {
+    std::cout << "[LoD Debug] Density thresholds - LoD0: >=" << sparse_threshold
+              << ", LoD1: [" << dense_threshold << " - " << sparse_threshold
+              << "), LoD2: <" << dense_threshold << " (mean dist: " << mean_dist
+              << ")" << std::endl;
+    printed_density_thresholds = true;
+  }
+
+  // LoD 0: Sparse areas (large distances between points) - visible from far
+  torch::Tensor sparse_mask = nearest_distances >= sparse_threshold;
+  lod_levels.masked_fill_(sparse_mask, 0);
+
+  // LoD 1: Medium density areas
+  torch::Tensor medium_mask = (nearest_distances >= dense_threshold) &
+                              (nearest_distances < sparse_threshold);
+  lod_levels.masked_fill_(medium_mask, 1);
+
+  // LoD 2: Dense areas (small distances between points) - only visible close up
+  torch::Tensor dense_mask = nearest_distances < dense_threshold;
+  lod_levels.masked_fill_(dense_mask, 2);
+
+  return lod_levels;
+}
+
+torch::Tensor GaussianModel::selectCumulativeLoD(
+    const torch::Tensor& visible_gaussian_mask,
+    const torch::Tensor& camera_position) {
+  // Get visible indices and their positions
+  torch::Tensor visible_indices = torch::where(visible_gaussian_mask)[0];
+  if (visible_indices.size(0) == 0) {
+    return visible_gaussian_mask;
+  }
+
+  torch::Tensor visible_positions = xyz_.index({visible_indices});
+
+  // Compute distances for visible gaussians
+  torch::Tensor distances = torch::norm(
+      visible_positions - camera_position.unsqueeze(0), /*p=*/2, /*dim=*/1);
+
+  // Logarithmic LoD level calculation
+  float d_max = 8.0f * chunk_size_;
+  torch::Tensor required_lod = torch::clamp(
+      torch::log2(d_max / torch::clamp_min(distances, 0.1f)), 0.0f, 2.0f);
+
+  // Get pre-assigned LoD levels for visible gaussians
+  torch::Tensor visible_lod_levels =
+      gaussian_lod_levels_.index({visible_indices});
+
+  // Debug: Print distance and LoD statistics
+  float min_dist = distances.min().item<float>();
+  float max_dist = distances.max().item<float>();
+  float mean_required_lod = required_lod.mean().item<float>();
+
+  auto visible_lod_counts =
+      torch::bincount(visible_lod_levels, torch::Tensor(), 3);
+  std::cout << "[LoD Debug] Distance range: " << min_dist << " - " << max_dist
+            << ", Mean required LoD: " << mean_required_lod
+            << ", Available LoDs - L0: " << visible_lod_counts[0].item<int>()
+            << ", L1: " << visible_lod_counts[1].item<int>()
+            << ", L2: " << visible_lod_counts[2].item<int>() << std::endl;
+
+  // Cumulative selection: include gaussian if its assigned LoD >= required LoD
+  // Note: We invert the logic since LoD 0 = large (base), LoD 2 = small (fine)
+  torch::Tensor lod_mask = visible_lod_levels.to(torch::kFloat) <= required_lod;
+
+  // Create final mask
+  torch::Tensor final_mask = torch::zeros_like(visible_gaussian_mask);
+  final_mask.index_put_({visible_indices}, lod_mask);
+
+  return final_mask;
 }

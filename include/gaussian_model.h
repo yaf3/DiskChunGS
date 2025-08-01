@@ -62,7 +62,7 @@ class SparseGaussianAdam;
 // Fixed file layout for maximum speed
 struct ChunkFileHeader {
   uint32_t magic = 0x43484E4B;  // "CHNK"
-  uint32_t version = 2;         // New format version
+  uint32_t version = 3;         // Updated version for LoD support
   int64_t chunk_id;
   int64_t num_points;
 
@@ -75,9 +75,10 @@ struct ChunkFileHeader {
   int64_t opacity_offset;
   int64_t position_lrs_offset;
   int64_t exist_since_offset;
+  int64_t lod_levels_offset;  // New LoD levels offset
 
   // Pad to 128 bytes
-  char padding[40];
+  char padding[32];
 };
 static_assert(sizeof(ChunkFileHeader) == 128, "Header must be 128 bytes");
 
@@ -101,6 +102,8 @@ static_assert(sizeof(ChunkFileHeader) == 128, "Header must be 128 bytes");
       torch::empty(0, torch::TensorOptions().device(device_type));          \
   this->opacity_ =                                                          \
       torch::empty(0, torch::TensorOptions().device(device_type));          \
+  this->gaussian_lod_levels_ =                                              \
+      torch::empty(0, torch::TensorOptions().dtype(torch::kInt32).device(device_type)); \
   GAUSSIAN_MODEL_TENSORS_TO_VEC
 
 class GaussianModel {
@@ -168,6 +171,7 @@ class GaussianModel {
   torch::Tensor opacity_;
   torch::Tensor exist_since_iter_;
   torch::Tensor gaussian_chunk_ids_;
+  torch::Tensor gaussian_lod_levels_;  // LoD level assignment for each gaussian
 
   std::vector<torch::Tensor> Tensor_vec_xyz_, Tensor_vec_feature_dc_,
       Tensor_vec_feature_rest_, Tensor_vec_opacity_, Tensor_vec_scaling_,
@@ -190,11 +194,22 @@ class GaussianModel {
  public:
   float chunk_size_;
 
+  // LoD system parameters
+  float base_scale_threshold_;    // Threshold for LoD 0 (large gaussians) - default 6.0
+  float detail_scale_threshold_;  // Threshold for LoD 1 (medium gaussians) - default 3.0
+                                  // Small gaussians automatically go to LoD 2
+
   std::vector<ChunkCoord> frustumCullChunks(
       std::shared_ptr<GaussianKeyframe> keyframe,
       bool use_cache);
   torch::Tensor cullVisibleGaussians(
       std::shared_ptr<GaussianKeyframe> keyframe);
+
+  // LoD system methods
+  torch::Tensor assignLoDByScale(const torch::Tensor& scale_magnitudes);
+  torch::Tensor assignLoDByDensity(const torch::Tensor& nearest_distances);
+  torch::Tensor selectCumulativeLoD(const torch::Tensor& visible_gaussian_mask,
+                                   const torch::Tensor& camera_position);
 
   torch::Tensor createGaussianMaskFromChunks(
       const torch::Tensor& visible_chunk_ids);
@@ -258,6 +273,7 @@ class GaussianModel {
     torch::Tensor xyz, features_dc, features_rest;
     torch::Tensor scaling, rotation, opacity;
     torch::Tensor exist_since, position_lrs;
+    torch::Tensor lod_levels;  // LoD level assignments
     int num_points;
     int64_t chunk_id;
   };
