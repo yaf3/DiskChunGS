@@ -682,14 +682,8 @@ torch::Tensor GaussianModel::cullVisibleGaussians(
   torch::Tensor visible_chunk_ids =
       encodeChunkCoordsTensor(visible_chunk_coords);
 
-  // Filter to disk-only chunks that need loading
-  torch::Tensor not_loaded_mask =
-      ~torch::isin(visible_chunk_ids, chunks_loaded_from_disk_);
-  torch::Tensor chunks_to_load = visible_chunk_ids.index({not_loaded_mask});
-
-  // Load chunks from disk if needed
-  if (chunks_to_load.size(0) > 0) {
-    loadChunks(chunks_to_load);
+  if (visible_chunk_ids.size(0) > 0) {
+    loadChunks(visible_chunk_ids);
   }
 
   // Convert chunk visibility to gaussian visibility
@@ -1066,34 +1060,51 @@ std::string GaussianModel::getChunkFilename(const ChunkCoord& coord) {
   return storage_base_path_ + "/" + filename;
 }
 
-void GaussianModel::loadChunks(const torch::Tensor& chunk_ids_to_load) {
+void GaussianModel::loadChunks(const torch::Tensor& chunk_id_requests) {
   torch::NoGradGuard no_grad;
-  if (chunk_ids_to_load.size(0) == 0) return;
+  if (chunk_id_requests.size(0) == 0) return;
+
+  // Requested that are on disk
+  torch::Tensor on_disk_mask = torch::isin(chunk_id_requests, chunks_on_disk_);
+
+  // Requested that aren't loaded from disk
+  torch::Tensor not_loaded_mask =
+      ~torch::isin(chunk_id_requests, chunks_loaded_from_disk_);
+
+  // Requested that are on disk and not loaded from disk
+  torch::Tensor on_disk_not_loaded_mask = on_disk_mask & not_loaded_mask;
+
+  // IDs of requested that are on disk but not loaded from disk
+  torch::Tensor chunks_ids_needing_load =
+      chunk_id_requests.index({on_disk_not_loaded_mask});
+
+  // Filter out chunks that are already loaded
+  if (chunks_ids_needing_load.size(0) == 0) {
+    // std::cout << "[Load] All requested chunks already loaded" << std::endl;
+    return;
+  }
 
   // STEP 0: Pre-emptive eviction using exact gaussian counts
-  torch::Tensor load_mask = torch::isin(chunk_ids_to_load, chunks_on_disk_);
-  if (load_mask.any().item<bool>()) {
-    torch::Tensor loadable_ids = chunk_ids_to_load.index({load_mask});
-
+  if (chunks_ids_needing_load.any().item<bool>()) {
     // Find indices of loadable chunks in chunks_on_disk_
     int64_t exact_gaussians_to_load = 0;
-    auto loadable_cpu = loadable_ids.cpu();
+    auto to_load_cpu = chunks_ids_needing_load.cpu();
     auto chunks_on_disk_cpu = chunks_on_disk_.cpu();
     auto counts_cpu = chunk_gaussian_counts_.cpu();
 
-    auto loadable_accessor = loadable_cpu.accessor<int64_t, 1>();
-    auto chunks_accessor = chunks_on_disk_cpu.accessor<int64_t, 1>();
+    auto to_load_accessor = to_load_cpu.accessor<int64_t, 1>();
+    auto chunks_on_disk_accessor = chunks_on_disk_cpu.accessor<int64_t, 1>();
     auto counts_accessor = counts_cpu.accessor<int64_t, 1>();
 
-    // Simple O(n*m) lookup - but n and m are typically small (< 100)
-    for (int64_t i = 0; i < loadable_cpu.size(0); i++) {
-      int64_t target_chunk = loadable_accessor[i];
+    // Iterate through chunks needing load
+    for (int64_t i = 0; i < to_load_accessor.size(0); i++) {
+      int64_t to_load_chunk_id = to_load_accessor[i];
 
       // Find this chunk in chunks_on_disk_
       for (int64_t j = 0; j < chunks_on_disk_cpu.size(0); j++) {
-        if (chunks_accessor[j] == target_chunk) {
+        if (chunks_on_disk_accessor[j] == to_load_chunk_id) {
           exact_gaussians_to_load += counts_accessor[j];
-          break;  // Found it, move to next loadable chunk
+          break;  // Found it, move to next requested chunk
         }
       }
     }
@@ -1102,7 +1113,7 @@ void GaussianModel::loadChunks(const torch::Tensor& chunk_ids_to_load) {
     int64_t target_gaussians = 3000000;
     int64_t projected_total = current_gaussians + exact_gaussians_to_load;
 
-    std::cout << "[Load] Planning to load " << loadable_ids.size(0)
+    std::cout << "[Load] Planning to load " << chunks_ids_needing_load.size(0)
               << " chunks (exactly " << exact_gaussians_to_load << " gaussians)"
               << std::endl;
 
@@ -1114,52 +1125,41 @@ void GaussianModel::loadChunks(const torch::Tensor& chunk_ids_to_load) {
                 << std::endl;
 
       // Get evictable chunks and find LRU ones to free up 'excess' gaussians
-      torch::Tensor evictable_chunks =
+      torch::Tensor spatial_chunks =
           std::get<0>(torch::_unique2(gaussian_chunk_ids_));
-      if (evictable_chunks.size(0) > 0) {
-        torch::Tensor lru_chunks = findLRUChunks(evictable_chunks, excess);
+      if (spatial_chunks.size(0) > 0) {
+        torch::Tensor lru_chunks = findLRUChunks(spatial_chunks, excess);
         if (lru_chunks.size(0) > 0) {
           saveAndEvictChunks(lru_chunks);
+        } else {
+          throw std::runtime_error("No evictable chunks found");
         }
+      } else {
+        throw std::runtime_error(
+            "Literally no chunks exist but we need to evict?");
       }
     }
   }
 
-  // Step 1: Filter out chunks that are already loaded (unchanged)
-  torch::Tensor not_loaded_mask =
-      ~torch::isin(chunk_ids_to_load, chunks_loaded_from_disk_);
-  torch::Tensor chunks_needing_load =
-      chunk_ids_to_load.index({not_loaded_mask});
+  // Parallel load from disk
+  if (chunks_ids_needing_load.size(0) > 0) {
+    // Remove spillover first
+    // torch::Tensor spillover_mask =
+    //     torch::isin(gaussian_chunk_ids_, loadable_chunks);
+    // int spillover_count = spillover_mask.sum().item<int>();
 
-  if (chunks_needing_load.size(0) == 0) {
-    std::cout << "[Load] All requested chunks already loaded" << std::endl;
-    return;
-  }
+    // if (spillover_count > 0) {
+    //   std::cout << "[Load] Removing " << spillover_count
+    //             << " spillover gaussians before loading "
+    //             << loadable_chunks.size(0) << " chunks from disk" <<
+    //             std::endl;
+    //   prunePoints(spillover_mask);
+    // }
 
-  // Step 2: Split into disk chunks vs new chunks (unchanged)
-  torch::Tensor on_disk_mask =
-      torch::isin(chunks_needing_load, chunks_on_disk_);
-  torch::Tensor loadable_chunks = chunks_needing_load.index({on_disk_mask});
-  torch::Tensor new_chunks = chunks_needing_load.index({~on_disk_mask});
-
-  // Step 3: Parallel load from disk - THIS IS THE KEY CHANGE
-  if (loadable_chunks.size(0) > 0) {
-    // Remove spillover first (unchanged)
-    torch::Tensor spillover_mask =
-        torch::isin(gaussian_chunk_ids_, loadable_chunks);
-    int spillover_count = spillover_mask.sum().item<int>();
-
-    if (spillover_count > 0) {
-      std::cout << "[Load] Removing " << spillover_count
-                << " spillover gaussians before loading "
-                << loadable_chunks.size(0) << " chunks from disk" << std::endl;
-      prunePoints(spillover_mask);
-    }
-
-    // PARALLEL LOADING - NEW CODE
-    auto loadable_cpu = loadable_chunks.cpu();
-    auto accessor = loadable_cpu.accessor<int64_t, 1>();
-    int num_chunks = loadable_cpu.size(0);
+    // PARALLEL LOADING
+    auto chunks_ids_needing_load_cpu = chunks_ids_needing_load.cpu();
+    auto accessor = chunks_ids_needing_load_cpu.accessor<int64_t, 1>();
+    int num_chunks = chunks_ids_needing_load_cpu.size(0);
 
     std::vector<std::future<std::pair<int64_t, std::optional<ChunkData>>>>
         futures;
@@ -1187,24 +1187,19 @@ void GaussianModel::loadChunks(const torch::Tensor& chunk_ids_to_load) {
       }
     }
 
-    // Append results (unchanged)
+    // Append results
     if (!chunks_to_append.empty()) {
       appendLoadedChunks(chunks_to_append, loaded_chunk_ids);
     }
 
-    // Mark as loaded (unchanged)
+    // Mark as loaded
     chunks_loaded_from_disk_ =
-        torch::cat({chunks_loaded_from_disk_, loadable_chunks}, 0);
-  }
+        torch::cat({chunks_loaded_from_disk_, chunks_ids_needing_load}, 0);
 
-  // Step 4: Handle new chunks (unchanged)
-  if (new_chunks.size(0) > 0) {
-    // Don't add to chunks_loaded_from_disk_ - they were never on disk!
+    // Clean up duplicates
+    chunks_loaded_from_disk_ =
+        std::get<0>(torch::_unique2(chunks_loaded_from_disk_));
   }
-
-  // Clean up duplicates (unchanged)
-  chunks_loaded_from_disk_ =
-      std::get<0>(torch::_unique2(chunks_loaded_from_disk_));
 }
 
 void GaussianModel::saveSingleChunkToDisk(int64_t chunk_id,
