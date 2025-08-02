@@ -1110,15 +1110,14 @@ void GaussianModel::loadChunks(const torch::Tensor& chunk_id_requests) {
     }
 
     int64_t current_gaussians = xyz_.size(0);
-    int64_t target_gaussians = 3000000;
     int64_t projected_total = current_gaussians + exact_gaussians_to_load;
 
     std::cout << "[Load] Planning to load " << chunks_ids_needing_load.size(0)
               << " chunks (exactly " << exact_gaussians_to_load << " gaussians)"
               << std::endl;
 
-    if (projected_total > target_gaussians) {
-      int64_t excess = projected_total - target_gaussians;
+    if (projected_total > max_gaussians_in_memory_) {
+      int64_t excess = projected_total - max_gaussians_in_memory_;
       std::cout << "[Load] Pre-emptive eviction needed: current="
                 << current_gaussians << ", incoming=" << exact_gaussians_to_load
                 << ", projected=" << projected_total << ", excess=" << excess
@@ -1128,11 +1127,22 @@ void GaussianModel::loadChunks(const torch::Tensor& chunk_id_requests) {
       torch::Tensor spatial_chunks =
           std::get<0>(torch::_unique2(gaussian_chunk_ids_));
       if (spatial_chunks.size(0) > 0) {
-        torch::Tensor lru_chunks = findLRUChunks(spatial_chunks, excess);
-        if (lru_chunks.size(0) > 0) {
-          saveAndEvictChunks(lru_chunks);
+        // Exclude chunks we're trying to load from eviction candidates
+        torch::Tensor evictable_mask =
+            ~torch::isin(spatial_chunks, chunks_ids_needing_load);
+        torch::Tensor evictable_chunks = spatial_chunks.index({evictable_mask});
+
+        if (evictable_chunks.size(0) > 0) {
+          torch::Tensor lru_chunks = findLRUChunks(evictable_chunks, excess);
+          if (lru_chunks.size(0) > 0) {
+            saveAndEvictChunks(lru_chunks);
+          } else {
+            throw std::runtime_error(
+                "No evictable chunks found after excluding protected chunks");
+          }
         } else {
-          throw std::runtime_error("No evictable chunks found");
+          throw std::runtime_error(
+              "No evictable chunks available - all chunks are protected");
         }
       } else {
         throw std::runtime_error(
@@ -1775,16 +1785,15 @@ void GaussianModel::checkMemoryPressure() {
   // last_memory_check_ = now;
 
   int current_gaussians = getXYZ().size(0);
-  int threshold_gaussians = 3000000;
 
-  if (current_gaussians <= threshold_gaussians) {
+  if (current_gaussians <= max_gaussians_in_memory_) {
     return;  // No pressure, exit early
   }
 
   // Keep evicting until we reach our memory goal or run out of chunks
   while (true) {
     current_gaussians = getXYZ().size(0);
-    if (current_gaussians <= threshold_gaussians) {
+    if (current_gaussians <= max_gaussians_in_memory_) {
       // Goal reached, exit the loop
       break;
     }
@@ -1800,7 +1809,7 @@ void GaussianModel::checkMemoryPressure() {
     }
 
     // Calculate how many gaussians to evict this iteration
-    int64_t excess_gaussians = current_gaussians - threshold_gaussians;
+    int64_t excess_gaussians = current_gaussians - max_gaussians_in_memory_;
     int64_t gaussians_to_evict =
         std::max(excess_gaussians,
                  static_cast<int64_t>(100000));  // Minimum 100k per iteration
@@ -1817,7 +1826,7 @@ void GaussianModel::checkMemoryPressure() {
 
     std::cout << "[Memory] Evicting " << lru_chunks.size(0)
               << " LRU chunks (current Gaussians: " << current_gaussians
-              << " target: " << threshold_gaussians << std::endl;
+              << " target: " << max_gaussians_in_memory_ << std::endl;
 
     // Use updated saveAndEvictChunks
     saveAndEvictChunks(lru_chunks);
@@ -2619,4 +2628,152 @@ torch::Tensor GaussianModel::selectCumulativeLoD(
   final_mask.index_put_({visible_indices}, lod_mask);
 
   return final_mask;
+}
+
+void GaussianModel::handleChunkRedistribution(
+    int64_t processed_chunk_id,
+    torch::Tensor& chunks_modified_during_loop) {
+  torch::NoGradGuard no_grad;
+
+  // Step 1: Find gaussians that were in the processed chunk
+  torch::Tensor processed_chunk_mask =
+      (gaussian_chunk_ids_ == processed_chunk_id);
+  torch::Tensor processed_indices = torch::where(processed_chunk_mask)[0];
+
+  if (processed_indices.size(0) == 0) {
+    return;  // No gaussians in this chunk
+  }
+
+  std::cout << "[Redistribution] Processing " << processed_indices.size(0)
+            << " gaussians from chunk " << processed_chunk_id << std::endl;
+
+  // Step 2: Recompute actual chunk IDs based on current positions
+  torch::Tensor processed_positions = xyz_.index({processed_indices});
+  torch::Tensor actual_chunk_ids = computeChunkIds(processed_positions);
+
+  // Step 3: Find gaussians that have moved to different chunks
+  torch::Tensor old_chunk_ids = gaussian_chunk_ids_.index({processed_indices});
+  torch::Tensor moved_mask = (actual_chunk_ids != old_chunk_ids);
+
+  if (!moved_mask.any().item<bool>()) {
+    std::cout << "[Redistribution] No gaussians moved from chunk "
+              << processed_chunk_id << std::endl;
+    return;  // No redistributions needed
+  }
+
+  // Get local indices (within the processed_indices array) of gaussians that
+  // moved
+  torch::Tensor moved_indices_local = torch::where(moved_mask)[0];
+
+  // Convert local indices to global model indices by indexing into
+  // processed_indices where processed_indices contains global indices of
+  // gaussians from the processed chunk
+  // This maps: local_idx_in_processed_chunk -> global_idx_in_entire_model
+  torch::Tensor moved_indices_global =
+      processed_indices.index({moved_indices_local});
+
+  // Get the new chunk IDs that the moved gaussians should belong to
+  // actual_chunk_ids contains recomputed chunk IDs for all processed gaussians
+  // This extracts only the chunk IDs for gaussians that actually moved
+  torch::Tensor destination_chunk_ids =
+      actual_chunk_ids.index({moved_indices_local});
+
+  std::cout << "[Redistribution] " << moved_indices_local.size(0)
+            << " gaussians moved to different chunks" << std::endl;
+
+  // Step 4: Get unique destination chunks that gaussians moved to
+  torch::Tensor unique_destinations =
+      std::get<0>(torch::_unique2(destination_chunk_ids));
+
+  // Step 6: Pre-load destination chunks to prevent spillover classification
+  if (unique_destinations.size(0) > 0) {
+    std::cout << "[Redistribution] Pre-loading destination chunks to prevent "
+                 "spillover"
+              << std::endl;
+
+    // Load destination chunks (loadChunks handles all filtering internally)
+    loadChunks(unique_destinations);
+  }
+
+  // Step 6: CRITICAL - Recompute indices after loadChunks() as eviction may
+  // have invalidated them
+  torch::Tensor updated_processed_chunk_mask =
+      (gaussian_chunk_ids_ == processed_chunk_id);
+  torch::Tensor updated_processed_indices =
+      torch::where(updated_processed_chunk_mask)[0];
+
+  if (updated_processed_indices.size(0) == 0) {
+    std::cout << "[Redistribution] WARNING: All gaussians from chunk "
+              << processed_chunk_id << " were evicted during loading!"
+              << std::endl;
+    return;
+  }
+
+  // Step 7: Recompute which gaussians moved (using updated indices)
+  torch::Tensor updated_processed_positions =
+      xyz_.index({updated_processed_indices});
+  torch::Tensor updated_actual_chunk_ids =
+      computeChunkIds(updated_processed_positions);
+  torch::Tensor updated_old_chunk_ids =
+      gaussian_chunk_ids_.index({updated_processed_indices});
+  torch::Tensor updated_moved_mask =
+      (updated_actual_chunk_ids != updated_old_chunk_ids);
+
+  if (!updated_moved_mask.any().item<bool>()) {
+    std::cout << "[Redistribution] No gaussians moved after recomputation"
+              << std::endl;
+    return;
+  }
+
+  torch::Tensor updated_moved_indices_local =
+      torch::where(updated_moved_mask)[0];
+  torch::Tensor updated_moved_indices_global =
+      updated_processed_indices.index({updated_moved_indices_local});
+  torch::Tensor updated_destination_chunk_ids =
+      updated_actual_chunk_ids.index({updated_moved_indices_local});
+
+  std::cout << "[Redistribution] After recomputation: "
+            << updated_moved_indices_local.size(0)
+            << " gaussians still need redistribution" << std::endl;
+
+  // Step 8: Update gaussian_chunk_ids_ for moved gaussians (now safe!)
+  gaussian_chunk_ids_.index_put_({updated_moved_indices_global},
+                                 updated_destination_chunk_ids);
+
+  // Step 9: Track all affected chunks as modified (original + destinations)
+  torch::Tensor updated_unique_destinations =
+      std::get<0>(torch::_unique2(updated_destination_chunk_ids));
+
+  torch::Tensor all_affected_chunks = torch::cat(
+      {torch::tensor(
+           {processed_chunk_id},
+           torch::TensorOptions().dtype(torch::kInt64).device(device_type_)),
+       updated_unique_destinations},
+      0);
+
+  // Remove duplicates and add to modified chunks tracker
+  all_affected_chunks = std::get<0>(torch::_unique2(all_affected_chunks));
+  chunks_modified_during_loop =
+      torch::cat({chunks_modified_during_loop, all_affected_chunks}, 0);
+
+  // Step 10: Debug output - show redistribution summary
+  auto destinations_cpu = updated_unique_destinations.cpu();
+  auto destinations_accessor = destinations_cpu.accessor<int64_t, 1>();
+
+  std::cout << "[Redistribution] Gaussians redistributed to "
+            << updated_unique_destinations.size(0) << " destination chunks: ";
+  for (int i = 0; i < std::min(5, (int)updated_unique_destinations.size(0));
+       i++) {
+    auto coord = decodeChunkCoord(destinations_accessor[i]);
+    std::cout << "(" << coord.x << "," << coord.y << "," << coord.z << ") ";
+  }
+  if (updated_unique_destinations.size(0) > 5) {
+    std::cout << "... (+" << (updated_unique_destinations.size(0) - 5)
+              << " more)";
+  }
+  std::cout << std::endl;
+
+  std::cout << "[Redistribution] Updated chunk IDs for "
+            << updated_moved_indices_global.size(0) << " moved gaussians"
+            << std::endl;
 }
