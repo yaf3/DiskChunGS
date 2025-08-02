@@ -1682,27 +1682,43 @@ GaussianModel::ChunkData GaussianModel::extractChunkData(
 void GaussianModel::saveAndEvictChunks(const torch::Tensor& chunk_ids) {
   if (chunk_ids.size(0) == 0) return;
 
-  // Step 1: Save loaded chunks (same as before)
+  // Mask of requested that are loaded
   torch::Tensor loaded_mask = torch::isin(chunk_ids, chunks_loaded_from_disk_);
+
+  // IDs of requested that are loaded
   torch::Tensor chunks_to_save = chunk_ids.index({loaded_mask});
 
+  // Save updated chunks that have been loaded before
   if (chunks_to_save.size(0) > 0) {
     saveChunks(chunks_to_save);
   }
 
-  // Step 2: Categorize non-loaded chunks
+  // IDs of all gaussian's chunks in memory
   torch::Tensor spatial_chunks =
       std::get<0>(torch::_unique2(gaussian_chunk_ids_));
+
+  // Mask of requested chunks that have gaussians in memory
   torch::Tensor has_gaussians_mask = torch::isin(chunk_ids, spatial_chunks);
+
+  // Requested IDs of chunks that aren't loaded and have gaussians in memory
   torch::Tensor non_loaded_with_gaussians =
       chunk_ids.index({has_gaussians_mask & (~loaded_mask)});
 
   if (non_loaded_with_gaussians.size(0) > 0) {
     // Distinguish spillover vs new chunks
+
+    // Mask of requested chunks that aren't loaded and have gaussians in memory
+    // and are saved on disk
     torch::Tensor is_spillover_mask =
         torch::isin(non_loaded_with_gaussians, chunks_on_disk_);
+
+    // IDs of requested chunks that aren't loaded and have gaussians in memory
+    // and are saved on disk
     torch::Tensor spillover_chunks =
         non_loaded_with_gaussians.index({is_spillover_mask});
+
+    // IDs of requested chunks that aren't loaded and have gaussians in memory
+    // and aren't saved on disk
     torch::Tensor new_chunks =
         non_loaded_with_gaussians.index({~is_spillover_mask});
 
@@ -1720,15 +1736,20 @@ void GaussianModel::saveAndEvictChunks(const torch::Tensor& chunk_ids) {
     }
   }
 
-  // Step 3: Remove all gaussians from evicted chunks
+  // Remove all gaussians from evicted chunks. We have saved previously loaded
+  // and new gaussians, only spillover gaussians remain. These are negligible
   torch::Tensor remove_mask = torch::isin(gaussian_chunk_ids_, chunk_ids);
   if (remove_mask.sum().item<int>() > 0) {
     prunePoints(remove_mask);
   }
 
-  // Step 4: Update tracking
+  // Update tracking
+
+  // Mask of loaded chunks not in the requested chunks to save
   torch::Tensor keep_loaded_mask =
       ~torch::isin(chunks_loaded_from_disk_, chunk_ids);
+
+  // Remove requested chunk IDs that were in chunks_loaded_from_disk_
   chunks_loaded_from_disk_ = chunks_loaded_from_disk_.index({keep_loaded_mask});
 }
 
