@@ -185,12 +185,6 @@ class GaussianMapper {
   void processLoopClosureBA(ORB_SLAM3::MappingOperation &opr);
   void processScaleRefinement(ORB_SLAM3::MappingOperation &opr);
 
-  void handleChunkRedistribution(int64_t original_chunk_id,
-                                 torch::Tensor &modified_chunks_tensor);
-  void logRedistributionDetails(const torch::Tensor &unique_destination_chunks,
-                                const torch::Tensor &inverse_indices,
-                                const torch::Tensor &counts);
-
   void handleNewKeyframe(std::tuple<unsigned long,
                                     unsigned long,
                                     Sophus::SE3f,

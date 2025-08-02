@@ -130,7 +130,8 @@ class GaussianModel {
                             torch::Tensor& new_exist_since_iter,
                             torch::Tensor& new_chunk_ids,
                             torch::Tensor& new_position_lrs,
-                            torch::Tensor& new_lod_levels);
+                            torch::Tensor& new_lod_levels,
+                            torch::Tensor& new_gaussian_ids);
 
  protected:
   float exponLrFunc(int step);
@@ -227,13 +228,16 @@ class GaussianModel {
   torch::Tensor chunks_loaded_from_disk_;
   torch::Tensor chunks_on_disk_;
   torch::Tensor chunk_gaussian_counts_;
+  torch::Tensor gaussian_ids_;
+
+  int64_t next_gaussian_id_ = 0;
 
   // For chunk-based save/load operations
   std::string storage_base_path_;
 
   // Memory management
   float max_memory_gb_ = 8.0f;  // Configurable
-  int64_t max_gaussians_in_memory_ = 7000000;
+  int64_t max_gaussians_in_memory_ = 2000000;
   std::chrono::steady_clock::time_point last_memory_check_;
 
   torch::Tensor
@@ -251,7 +255,7 @@ class GaussianModel {
     torch::Tensor xyz, features_dc, features_rest;
     torch::Tensor scaling, rotation, opacity;
     torch::Tensor exist_since, position_lrs;
-    torch::Tensor lod_levels;
+    torch::Tensor lod_levels, gaussian_ids;
 
     // Optimizer states
     std::vector<torch::Tensor> exp_avg_states;     // [6] tensors

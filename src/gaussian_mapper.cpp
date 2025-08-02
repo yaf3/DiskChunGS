@@ -1119,9 +1119,9 @@ void GaussianMapper::trainForOneIteration() {
 
   auto timer_deleteSparseChunks = ProfilingUtils::Timer("deleteSparseChunks");
   int min_gaussians_per_chunk = 100;
-  if (getIteration() % 100 == 0) {
-    gaussians_->deleteSparseChunks(min_gaussians_per_chunk);
-  }
+  // if (getIteration() % 100 == 0) {
+  //   gaussians_->deleteSparseChunks(min_gaussians_per_chunk);
+  // }
   timer_deleteSparseChunks.stop();
 
   size_t keyframe_lookahead = 3;
@@ -1418,7 +1418,6 @@ void GaussianMapper::processLocalMappingBABatch(
 }
 
 void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
-  return;
   std::cout << "[DEBUG] Starting loop closure with scale factor: "
             << opr.mfScale << std::endl;
 
@@ -1437,12 +1436,42 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
   int num_transformed = 0;
 
   // Track transformed flags per chunk (keep as-is since it's chunk-specific)
-  std::unordered_map<ChunkCoord, torch::Tensor, ChunkCoordHash>
-      points_transformed_flags;
+  // std::unordered_map<ChunkCoord, torch::Tensor, ChunkCoordHash>
+  //     points_transformed_flags;
+  // torch::Tensor global_points_transformed_flags = torch::full(
+  //     {gaussians_->xyz_.size(0)}, false,
+  //     torch::TensorOptions().device(device_type_).dtype(torch::kBool));
 
-  // VECTORIZED: Track chunks that need final redistribution using tensor
+  // Track chunks that need final redistribution using tensor
   torch::Tensor chunks_modified_during_loop = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
+
+  torch::Tensor transformed_gaussian_ids = torch::full(
+      {static_cast<long>(gaussians_->countAllGaussians() * 1.1)},
+      -1,  // -1 = empty slot
+      torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
+  int next_slot = 0;  // Track where to insert next
+
+  auto updateTransformTracking = [&](const torch::Tensor& old_flags,
+                                     const torch::Tensor& new_flags) {
+    torch::Tensor newly_transformed_mask = new_flags & (~old_flags);
+    torch::Tensor new_indices = torch::where(newly_transformed_mask)[0];
+
+    if (new_indices.size(0) > 0) {
+      torch::Tensor new_ids = gaussians_->gaussian_ids_.index({new_indices});
+
+      // Direct indexing instead of cat
+      int end_slot = next_slot + new_ids.size(0);
+      transformed_gaussian_ids.slice(0, next_slot, end_slot).copy_(new_ids);
+      next_slot = end_slot;
+    }
+  };
+
+  auto getCurrentTransformFlags = [&]() -> torch::Tensor {
+    // Only check the filled portion
+    torch::Tensor valid_ids = transformed_gaussian_ids.slice(0, 0, next_slot);
+    return torch::isin(gaussians_->gaussian_ids_, valid_ids);
+  };
 
   // First pass: Handle all new keyframes (this modifies chunks)
   for (auto& kf : associated_kfs) {
@@ -1455,7 +1484,7 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
     }
   }
 
-  // === OPTIMIZED CHUNK-BASED PROCESSING ===
+  // === CHUNK-BASED PROCESSING ===
 
   // Step 1: Build mapping from chunks to affecting keyframes
   std::unordered_map<ChunkCoord,
@@ -1493,14 +1522,15 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
                                              diff_pose.matrix(), device_type_)
                                              .transpose(0, 1);
 
-        // VECTORIZED: Convert chunk coords to IDs and filter existing chunks
+        // Convert chunk coords to IDs and filter existing chunks
         torch::Tensor visible_chunk_coords_tensor =
             gaussians_->chunkCoordVectorToTensor(visible_chunk_coords);
         torch::Tensor visible_chunk_ids =
             gaussians_->encodeChunkCoordsTensor(visible_chunk_coords_tensor);
 
-        // NEW: Check which chunks have any relevance (loaded, on disk, OR have
-        // gaussians)
+        // Check which chunks have any relevance (loaded, on disk, OR have
+        // gaussians) (Should really only have to check on disk and spatial as
+        // all loaded need to be on disk)
         torch::Tensor loaded_mask = torch::isin(
             visible_chunk_ids, gaussians_->chunks_loaded_from_disk_);
         torch::Tensor on_disk_mask =
@@ -1536,7 +1566,7 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
         }
       }
 
-      // Update keyframe pose (do this regardless of transformation size)
+      // Update keyframe pose
       pkf->setPose(pose.unit_quaternion().cast<double>(),
                    pose.translation().cast<double>());
       pkf->computeTransformTensors();
@@ -1547,6 +1577,7 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
   std::cout << "[DEBUG] Processing " << chunk_to_keyframe_transforms.size()
             << " affected chunks..." << std::endl;
 
+  // Todo check if we could lock less of this section
   std::unique_lock<std::mutex> lock_render(mutex_render_);
 
   for (const auto& chunk_entry : chunk_to_keyframe_transforms) {
@@ -1559,45 +1590,50 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
               << affecting_keyframes.size() << " affecting keyframes"
               << std::endl;
 
-    gaussians_->checkMemoryPressure();  // Use vectorized version
-
-    // VECTORIZED: Check if chunk needs loading
     torch::Tensor single_chunk_tensor = torch::tensor(
         {chunk_id},
         torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
 
-    torch::Tensor loaded_mask =
-        torch::isin(single_chunk_tensor, gaussians_->chunks_loaded_from_disk_);
-    torch::Tensor on_disk_mask =
-        torch::isin(single_chunk_tensor, gaussians_->chunks_on_disk_);
-    torch::Tensor need_loading_mask = on_disk_mask & (~loaded_mask);
-
-    if (need_loading_mask.any().item<bool>()) {
-      gaussians_->loadChunks(single_chunk_tensor);  // Use vectorized loadChunks
-    }
+    // loadChunks will do housekeeping on staying under set max gaussians in
+    // memory
+    gaussians_->loadChunks(single_chunk_tensor);
 
     // Initialize or retrieve transformation flags for this chunk
-    torch::Tensor current_chunk_points_transformed_flags;
-    auto flags_it = points_transformed_flags.find(chunk_coord);
+    // torch::Tensor current_chunk_points_transformed_flags;
+    // auto flags_it = points_transformed_flags.find(chunk_coord);
 
-    if (flags_it == points_transformed_flags.end()) {
-      std::cout << "[DEBUG] First time seeing chunk, initializing flags"
-                << std::endl;
-      points_transformed_flags[chunk_coord] = torch::full(
-          {gaussians_->xyz_.size(0)}, false,
-          torch::TensorOptions().device(device_type_).dtype(torch::kBool));
-      current_chunk_points_transformed_flags =
-          points_transformed_flags[chunk_coord];
-    } else {
-      current_chunk_points_transformed_flags = flags_it->second;
-    }
+    // if (flags_it == points_transformed_flags.end()) {
+    //   std::cout << "[DEBUG] First time seeing chunk, initializing flags"
+    //             << std::endl;
+    //   points_transformed_flags[chunk_coord] = torch::full(
+    //       {gaussians_->xyz_.size(0)}, false,
+    //       torch::TensorOptions().device(device_type_).dtype(torch::kBool));
+    //   current_chunk_points_transformed_flags =
+    //       points_transformed_flags[chunk_coord];
+    // } else {
+    //   current_chunk_points_transformed_flags = flags_it->second;
+    // }
 
-    // Apply transformations from all affecting keyframes (keep as-is -
-    // chunk-specific logic)
+    // Apply transformations from all affecting keyframes
     int chunk_total_transformed = 0;
     for (const auto& kf_transform : affecting_keyframes) {
       std::size_t kfid = kf_transform.first;
       const torch::Tensor& diff_pose_tensor = kf_transform.second;
+
+      torch::Tensor old_transform_flags = getCurrentTransformFlags();
+
+      torch::Tensor chunk_mask = (gaussians_->gaussian_chunk_ids_ == chunk_id);
+      torch::Tensor chunk_flags = old_transform_flags & chunk_mask;
+
+      // If all chunk points are already transformed, skip this keyframe
+      if (chunk_flags.sum().item<int>() == chunk_mask.sum().item<int>()) {
+        std::cout << "[DEBUG] All points in chunk already transformed, "
+                     "skipping remaining keyframes"
+                  << std::endl;
+        break;  // ← BREAK, not continue!
+      }
+
+      torch::Tensor current_transform_flags = old_transform_flags.clone();
 
       std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
       if (!pkf) {
@@ -1610,11 +1646,22 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
                 << " to chunk (" << chunk_coord.x << "," << chunk_coord.y << ","
                 << chunk_coord.z << ")" << std::endl;
 
+      // if (gaussians_->getXYZ().size(0) !=
+      //     global_points_transformed_flags.size(0)) {
+      //   std::cout << "Gaussians size: " << gaussians_->getXYZ().size(0)
+      //             << std::endl;
+      //   std::cout << "global_points_transformed_flags size: "
+      //             << global_points_transformed_flags.size(0) << std::endl;
+      //   TORCH_CHECK(false, "gaussians and transform mask must have same
+      //   size");
+      // }
+
       gaussians_->scaledTransformVisiblePointsOfKeyframe(
-          current_chunk_points_transformed_flags, diff_pose_tensor,
-          pkf->world_view_transform_, pkf->full_proj_transform_,
-          pkf->creation_iter_, stableNumIterExistence(),
-          chunk_transformed_by_this_kf, 1.0f);
+          current_transform_flags, diff_pose_tensor, pkf->world_view_transform_,
+          pkf->full_proj_transform_, pkf->creation_iter_,
+          stableNumIterExistence(), chunk_transformed_by_this_kf, 1.0f);
+
+      updateTransformTracking(old_transform_flags, current_transform_flags);
 
       chunk_total_transformed += chunk_transformed_by_this_kf;
       std::cout << "[DEBUG] Keyframe " << kfid << " transformed "
@@ -1626,18 +1673,18 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
     }
 
     // Update the flags
-    points_transformed_flags[chunk_coord] =
-        current_chunk_points_transformed_flags;
-    num_transformed += chunk_total_transformed;
+    // points_transformed_flags[chunk_coord] =
+    //     current_chunk_points_transformed_flags;
+    // num_transformed += chunk_total_transformed;
 
     std::cout << "[DEBUG] Chunk (" << chunk_coord.x << "," << chunk_coord.y
               << "," << chunk_coord.z
               << ") total transformed: " << chunk_total_transformed << " points"
               << std::endl;
 
-    // VECTORIZED: Handle redistribution and track modified chunks
-    handleChunkRedistribution(
-        chunk_id, chunks_modified_during_loop);  // Uses vectorized version
+    // Handle redistribution and track modified chunks
+    gaussians_->handleChunkRedistribution(chunk_id,
+                                          chunks_modified_during_loop);
   }
 
   if (record_loop_ply_) {
@@ -1647,32 +1694,33 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
   }
 
   // Print summary of transformations per chunk (keep as-is for debugging)
-  std::cout << "[LOOP CLOSURE SUMMARY] Transformation counts per chunk:"
-            << std::endl;
-  for (const auto& entry : points_transformed_flags) {
-    const auto& coord = entry.first;
-    const auto& flags = entry.second;
-    int transformed_count = flags.sum().item<int>();
-    int total_count = flags.size(0);
-    std::cout << "[SUMMARY] Chunk (" << coord.x << "," << coord.y << ","
-              << coord.z << "): " << transformed_count << "/" << total_count
-              << " points transformed" << std::endl;
-  }
-  std::cout << "[SUMMARY] Total points transformed across all chunks: "
-            << num_transformed << std::endl;
+  // std::cout << "[LOOP CLOSURE SUMMARY] Transformation counts per chunk:"
+  //           << std::endl;
+  // for (const auto& entry : points_transformed_flags) {
+  //   const auto& coord = entry.first;
+  //   const auto& flags = entry.second;
+  //   int transformed_count = flags.sum().item<int>();
+  //   int total_count = flags.size(0);
+  //   std::cout << "[SUMMARY] Chunk (" << coord.x << "," << coord.y << ","
+  //             << coord.z << "): " << transformed_count << "/" << total_count
+  //             << " points transformed" << std::endl;
+  // }
+  // std::cout << "[SUMMARY] Total points transformed across all chunks: "
+  //           << num_transformed << std::endl;
 
-  // VECTORIZED: Final cleanup - save all modified chunks
-  if (chunks_modified_during_loop.size(0) > 0) {
-    // Remove duplicates
-    chunks_modified_during_loop = std::get<0>(
-        torch::_unique2(chunks_modified_during_loop, /*sorted=*/true));
+  // // VECTORIZED: Final cleanup - save all modified chunks
+  // if (chunks_modified_during_loop.size(0) > 0) {
+  //   // Remove duplicates
+  //   chunks_modified_during_loop = std::get<0>(
+  //       torch::_unique2(chunks_modified_during_loop, /*sorted=*/true));
 
-    std::cout << "[Loop Closure] Saving " << chunks_modified_during_loop.size(0)
-              << " modified chunks to disk" << std::endl;
+  //   std::cout << "[Loop Closure] Saving " <<
+  //   chunks_modified_during_loop.size(0)
+  //             << " modified chunks to disk" << std::endl;
 
-    gaussians_->saveChunks(
-        chunks_modified_during_loop);  // Use vectorized saveChunks
-  }
+  //   gaussians_->saveChunks(
+  //       chunks_modified_during_loop);  // Use vectorized saveChunks
+  // }
 
   // Mark this iteration
   loop_closure_iteration_ = true;
@@ -5430,120 +5478,4 @@ void GaussianMapper::testTransferGaussiansAcrossChunks() {
   // chunk_manager_->transferGaussiansAcrossChunks();
 
   // std::cout << "Test completed." << std::endl;
-}
-
-void GaussianMapper::handleChunkRedistribution(
-    int64_t original_chunk_id,
-    torch::Tensor& modified_chunks_tensor) {
-  // Step 1: Extract gaussians from the original chunk
-  torch::Tensor original_chunk_mask =
-      (gaussians_->gaussian_chunk_ids_ == original_chunk_id);
-  int num_gaussians_in_chunk = original_chunk_mask.sum().item<int>();
-
-  if (num_gaussians_in_chunk == 0) {
-    return;  // No gaussians in this chunk
-  }
-
-  std::cout << "[Chunk Redistribution] Processing " << num_gaussians_in_chunk
-            << " gaussians from chunk " << original_chunk_id << std::endl;
-
-  // Step 2: Get positions and recompute chunk IDs (vectorized)
-  torch::Tensor chunk_positions =
-      gaussians_->getXYZ().index({original_chunk_mask});
-  torch::Tensor new_chunk_ids = gaussians_->computeChunkIds(chunk_positions);
-
-  // Step 3: Find unique destination chunks (vectorized)
-  auto [unique_destination_chunks, inverse_indices, counts] =
-      torch::_unique2(new_chunk_ids, /*sorted=*/false,
-                      /*return_inverse=*/true, /*return_counts=*/true);
-
-  std::cout << "[Chunk Redistribution] Gaussians will be redistributed to "
-            << unique_destination_chunks.size(0) << " chunks" << std::endl;
-
-  // Step 4: Categorize destination chunks (vectorized)
-  torch::Tensor same_chunk_mask =
-      (unique_destination_chunks == original_chunk_id);
-  torch::Tensor loaded_mask = torch::isin(unique_destination_chunks,
-                                          gaussians_->chunks_loaded_from_disk_);
-  torch::Tensor on_disk_mask =
-      torch::isin(unique_destination_chunks, gaussians_->chunks_on_disk_);
-  torch::Tensor spatial_chunks =
-      std::get<0>(torch::_unique2(gaussians_->gaussian_chunk_ids_));
-  torch::Tensor has_gaussians_mask =
-      torch::isin(unique_destination_chunks, spatial_chunks);
-
-  // Compute action masks
-  torch::Tensor no_action_mask =
-      same_chunk_mask | loaded_mask;  // Stay same OR already loaded
-  torch::Tensor need_loading_mask =
-      (~no_action_mask) & on_disk_mask;  // Need to load from disk
-  torch::Tensor has_spillover_only_mask = (~no_action_mask) & (~on_disk_mask) &
-                                          has_gaussians_mask;  // Only spillover
-  torch::Tensor truly_new_mask = (~no_action_mask) & (~on_disk_mask) &
-                                 (~has_gaussians_mask);  // Completely new
-
-  // Step 5: Load existing chunks with spillover cleanup
-  torch::Tensor chunks_to_load =
-      unique_destination_chunks.index({need_loading_mask});
-  if (chunks_to_load.size(0) > 0) {
-    std::cout << "[Chunk Redistribution] Loading " << chunks_to_load.size(0)
-              << " existing destination chunks from disk" << std::endl;
-    gaussians_->loadChunks(chunks_to_load);
-  }
-
-  // Step 6: Handle spillover-only chunks (promote to loaded)
-  torch::Tensor spillover_chunks =
-      unique_destination_chunks.index({has_spillover_only_mask});
-  if (spillover_chunks.size(0) > 0) {
-    std::cout << "[Chunk Redistribution] Promoting " << spillover_chunks.size(0)
-              << " spillover-only chunks to loaded status" << std::endl;
-
-    gaussians_->chunks_loaded_from_disk_ =
-        torch::cat({gaussians_->chunks_loaded_from_disk_, spillover_chunks}, 0);
-    gaussians_->chunks_loaded_from_disk_ =
-        std::get<0>(torch::_unique2(gaussians_->chunks_loaded_from_disk_));
-  }
-
-  // Step 7: Handle truly new chunks (mark as loaded)
-  torch::Tensor new_chunks = unique_destination_chunks.index({truly_new_mask});
-  if (new_chunks.size(0) > 0) {
-    std::cout << "[Chunk Redistribution] Creating " << new_chunks.size(0)
-              << " completely new chunks" << std::endl;
-
-    gaussians_->chunks_loaded_from_disk_ =
-        torch::cat({gaussians_->chunks_loaded_from_disk_, new_chunks}, 0);
-    gaussians_->chunks_loaded_from_disk_ =
-        std::get<0>(torch::_unique2(gaussians_->chunks_loaded_from_disk_));
-  }
-
-  // Step 8: Update chunk IDs in the unified model (vectorized)
-  torch::Tensor full_model_indices = torch::where(original_chunk_mask)[0];
-  gaussians_->gaussian_chunk_ids_.index_put_({full_model_indices},
-                                             new_chunk_ids);
-
-  // Step 9: Add all destination chunks to modified_chunks_tensor (vectorized)
-  modified_chunks_tensor =
-      torch::cat({modified_chunks_tensor, unique_destination_chunks}, 0);
-
-  // Step 10: Log redistribution details
-  logRedistributionDetails(unique_destination_chunks, inverse_indices, counts);
-}
-
-void GaussianMapper::logRedistributionDetails(
-    const torch::Tensor& unique_destination_chunks,
-    const torch::Tensor& inverse_indices,
-    const torch::Tensor& counts) {
-  // Move to CPU once for all logging
-  auto dest_cpu = unique_destination_chunks.cpu();
-  auto counts_cpu = counts.cpu();
-  auto dest_accessor = dest_cpu.accessor<int64_t, 1>();
-  auto counts_accessor = counts_cpu.accessor<int64_t, 1>();
-
-  for (int i = 0; i < dest_cpu.size(0); ++i) {
-    int64_t dest_chunk_id = dest_accessor[i];
-    int num_gaussians_to_dest = counts_accessor[i];
-
-    std::cout << "[Chunk Redistribution] " << num_gaussians_to_dest
-              << " gaussians -> chunk " << dest_chunk_id << std::endl;
-  }
 }

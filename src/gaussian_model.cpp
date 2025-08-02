@@ -44,6 +44,9 @@ GaussianModel::GaussianModel(const int sh_degree)
 
   chunk_gaussian_counts_ = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
+
+  gaussian_ids_ = torch::empty(
+      0, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
 }
 
 GaussianModel::GaussianModel(const GaussianModelParams& model_params,
@@ -76,6 +79,8 @@ GaussianModel::GaussianModel(const GaussianModelParams& model_params,
 
   chunk_gaussian_counts_ = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
+  gaussian_ids_ = torch::empty(
+      0, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
 
   std::cout << "[GaussianModel] Initialized with storage path: "
             << storage_base_path_ << " and chunk size: " << chunk_size_
@@ -516,6 +521,7 @@ void GaussianModel::prunePoints(torch::Tensor& mask) {
       this->gaussian_chunk_ids_.index({valid_points_mask});
   this->gaussian_lod_levels_ =
       this->gaussian_lod_levels_.index({valid_points_mask});
+  this->gaussian_ids_ = this->gaussian_ids_.index({valid_points_mask});
 
   c10::cuda::CUDACachingAllocator::emptyCache();
 }
@@ -529,7 +535,8 @@ void GaussianModel::densificationPostfix(torch::Tensor& new_xyz,
                                          torch::Tensor& new_exist_since_iter,
                                          torch::Tensor& new_chunk_ids,
                                          torch::Tensor& new_position_lrs,
-                                         torch::Tensor& new_lod_levels) {
+                                         torch::Tensor& new_lod_levels,
+                                         torch::Tensor& new_gaussian_ids) {
   torch::NoGradGuard no_grad;
   // cat_tensors_to_optimizer
   std::vector<torch::Tensor> optimizable_tensors(6);
@@ -596,6 +603,8 @@ void GaussianModel::densificationPostfix(torch::Tensor& new_xyz,
       torch::cat({gaussian_chunk_ids_, new_chunk_ids}, /*dim=*/0);
   // Append LoD levels
   gaussian_lod_levels_ = torch::cat({gaussian_lod_levels_, new_lod_levels}, 0);
+  this->gaussian_ids_ =
+      torch::cat({this->gaussian_ids_, new_gaussian_ids}, /*dim=*/0);
 }
 
 std::vector<ChunkCoord> GaussianModel::frustumCullChunks(
@@ -942,6 +951,11 @@ void GaussianModel::initializeFromPoints(const torch::Tensor& initial_xyz,
   torch::Tensor nearest_distances = torch::sqrt(dist2);
   gaussian_lod_levels_ = assignLoDByDensity(nearest_distances);
 
+  gaussian_ids_ = torch::arange(
+      next_gaussian_id_, next_gaussian_id_ + initial_xyz.size(0),
+      torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
+  next_gaussian_id_ += initial_xyz.size(0);
+
   // Debug: Print initial LoD assignment statistics
   auto lod_counts = torch::bincount(gaussian_lod_levels_, torch::Tensor(), 3);
   // std::cout << "[LoD Debug] Initialized " << gaussian_lod_levels_.size(0)
@@ -1037,12 +1051,17 @@ void GaussianModel::appendPoints(const torch::Tensor& new_xyzs,
   //           << " - " << nearest_distances.max().item<float>() << ")"
   //           << std::endl;
 
+  torch::Tensor new_gaussian_ids = torch::arange(
+      next_gaussian_id_, next_gaussian_id_ + new_xyzs.size(0),
+      torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
+  next_gaussian_id_ += new_xyzs.size(0);
+
   torch::Tensor new_chunk_ids = computeChunkIds(new_xyzs);
 
   densificationPostfix(new_xyz_tensor, new_features_dc, new_features_rest,
                        new_opacities_tensor, new_scaling, new_rotation,
                        new_exist_since_iter, new_chunk_ids, new_position_lrs,
-                       new_lod_levels);
+                       new_lod_levels, new_gaussian_ids);
 
   c10::cuda::CUDACachingAllocator::emptyCache();
 }
@@ -1247,6 +1266,7 @@ void GaussianModel::saveSingleChunkToDisk(int64_t chunk_id,
     saveTensorBinary(chunk_data.exist_since, file);
     saveTensorBinary(chunk_data.position_lrs, file);
     saveTensorBinary(chunk_data.lod_levels, file);
+    saveTensorBinary(chunk_data.gaussian_ids, file);
 
     // Save optimizer states
     for (int group_idx = 0; group_idx < 6; ++group_idx) {
@@ -1330,6 +1350,7 @@ std::optional<GaussianModel::ChunkData> GaussianModel::loadSingleChunkFromDisk(
     data.exist_since = loadTensorBinary(file);
     data.position_lrs = loadTensorBinary(file);
     data.lod_levels = loadTensorBinary(file);
+    data.gaussian_ids = loadTensorBinary(file);
 
     // Load optimizer states
     data.exp_avg_states.resize(6);
@@ -1428,7 +1449,7 @@ void GaussianModel::appendLoadedChunks(
   std::vector<torch::Tensor> all_xyz, all_features_dc, all_features_rest;
   std::vector<torch::Tensor> all_scaling, all_rotation, all_opacity;
   std::vector<torch::Tensor> all_exist_since, all_chunk_ids, all_position_lrs,
-      all_lod_levels;
+      all_lod_levels, all_gaussian_ids;
 
   // NEW: Concatenate optimizer states
   std::vector<std::vector<torch::Tensor>> all_exp_avg(6), all_exp_avg_sq(6);
@@ -1444,6 +1465,7 @@ void GaussianModel::appendLoadedChunks(
     all_exist_since.push_back(chunk.exist_since);
     all_position_lrs.push_back(chunk.position_lrs);
     all_lod_levels.push_back(chunk.lod_levels);
+    all_gaussian_ids.push_back(chunk.gaussian_ids);
 
     torch::Tensor chunk_ids = torch::full(
         {chunk.num_points}, chunk.chunk_id,
@@ -1472,6 +1494,7 @@ void GaussianModel::appendLoadedChunks(
   torch::Tensor batch_position_lrs = torch::cat(all_position_lrs, 0);
   torch::Tensor batch_lod_levels = torch::cat(all_lod_levels, 0);
   torch::Tensor batch_chunk_ids = torch::cat(all_chunk_ids, 0);
+  torch::Tensor batch_gaussian_ids = torch::cat(all_gaussian_ids, 0);
 
   // Get starting index for new gaussians
   int old_size = xyz_.size(0);
@@ -1480,7 +1503,7 @@ void GaussianModel::appendLoadedChunks(
   densificationPostfix(batch_xyz, batch_features_dc, batch_features_rest,
                        batch_opacity, batch_scaling, batch_rotation,
                        batch_exist_since, batch_chunk_ids, batch_position_lrs,
-                       batch_lod_levels);
+                       batch_lod_levels, batch_gaussian_ids);
 
   // NEW: Restore optimizer states for the loaded range
   int new_size = xyz_.size(0);
@@ -1655,6 +1678,7 @@ GaussianModel::ChunkData GaussianModel::extractChunkData(
   data.exist_since = exist_since_iter_.index({chunk_mask}).detach().clone();
   data.position_lrs = position_lrs_.index({chunk_mask}).detach().clone();
   data.lod_levels = gaussian_lod_levels_.index({chunk_mask}).detach().clone();
+  data.gaussian_ids = gaussian_ids_.index({chunk_mask}).detach().clone();
   data.num_points = data.xyz.size(0);
   data.chunk_id = chunk_id;
 
