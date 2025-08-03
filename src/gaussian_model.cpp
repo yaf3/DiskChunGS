@@ -2654,9 +2654,7 @@ torch::Tensor GaussianModel::selectCumulativeLoD(
   return final_mask;
 }
 
-void GaussianModel::handleChunkRedistribution(
-    int64_t processed_chunk_id,
-    torch::Tensor& chunks_modified_during_loop) {
+void GaussianModel::handleChunkRedistribution(int64_t processed_chunk_id) {
   torch::NoGradGuard no_grad;
 
   // Step 1: Find gaussians that were in the processed chunk
@@ -2763,41 +2761,128 @@ void GaussianModel::handleChunkRedistribution(
   // Step 8: Update gaussian_chunk_ids_ for moved gaussians (now safe!)
   gaussian_chunk_ids_.index_put_({updated_moved_indices_global},
                                  updated_destination_chunk_ids);
+}
 
-  // Step 9: Track all affected chunks as modified (original + destinations)
-  torch::Tensor updated_unique_destinations =
-      std::get<0>(torch::_unique2(updated_destination_chunk_ids));
+void GaussianModel::handleBatchChunkRedistribution(
+    const torch::Tensor& processed_chunk_ids) {
+  torch::NoGradGuard no_grad;
 
-  torch::Tensor all_affected_chunks = torch::cat(
-      {torch::tensor(
-           {processed_chunk_id},
-           torch::TensorOptions().dtype(torch::kInt64).device(device_type_)),
-       updated_unique_destinations},
-      0);
-
-  // Remove duplicates and add to modified chunks tracker
-  all_affected_chunks = std::get<0>(torch::_unique2(all_affected_chunks));
-  chunks_modified_during_loop =
-      torch::cat({chunks_modified_during_loop, all_affected_chunks}, 0);
-
-  // Step 10: Debug output - show redistribution summary
-  auto destinations_cpu = updated_unique_destinations.cpu();
-  auto destinations_accessor = destinations_cpu.accessor<int64_t, 1>();
-
-  std::cout << "[Redistribution] Gaussians redistributed to "
-            << updated_unique_destinations.size(0) << " destination chunks: ";
-  for (int i = 0; i < std::min(5, (int)updated_unique_destinations.size(0));
-       i++) {
-    auto coord = decodeChunkCoord(destinations_accessor[i]);
-    std::cout << "(" << coord.x << "," << coord.y << "," << coord.z << ") ";
+  if (processed_chunk_ids.size(0) == 0) {
+    return;  // No chunks to process
   }
-  if (updated_unique_destinations.size(0) > 5) {
-    std::cout << "... (+" << (updated_unique_destinations.size(0) - 5)
-              << " more)";
-  }
-  std::cout << std::endl;
 
-  std::cout << "[Redistribution] Updated chunk IDs for "
-            << updated_moved_indices_global.size(0) << " moved gaussians"
-            << std::endl;
+  std::cout << "[Batch Redistribution] Processing "
+            << processed_chunk_ids.size(0) << " chunks" << std::endl;
+
+  // Step 1: Find all gaussians that were in any of the processed chunks
+  torch::Tensor processed_chunk_mask =
+      torch::zeros_like(gaussian_chunk_ids_, torch::kBool);
+
+  // Create mask for all processed chunks at once
+  for (int i = 0; i < processed_chunk_ids.size(0); i++) {
+    int64_t chunk_id = processed_chunk_ids[i].item<int64_t>();
+    processed_chunk_mask =
+        processed_chunk_mask | (gaussian_chunk_ids_ == chunk_id);
+  }
+
+  torch::Tensor processed_indices = torch::where(processed_chunk_mask)[0];
+
+  if (processed_indices.size(0) == 0) {
+    std::cout << "[Batch Redistribution] No gaussians found in processed chunks"
+              << std::endl;
+    return;  // No gaussians in any of these chunks
+  }
+
+  std::cout << "[Batch Redistribution] Found " << processed_indices.size(0)
+            << " gaussians across all processed chunks" << std::endl;
+
+  // Step 2: Recompute actual chunk IDs based on current positions
+  torch::Tensor processed_positions = xyz_.index({processed_indices});
+  torch::Tensor actual_chunk_ids = computeChunkIds(processed_positions);
+
+  // Step 3: Find gaussians that have moved to different chunks
+  torch::Tensor old_chunk_ids = gaussian_chunk_ids_.index({processed_indices});
+  torch::Tensor moved_mask = (actual_chunk_ids != old_chunk_ids);
+
+  if (!moved_mask.any().item<bool>()) {
+    std::cout
+        << "[Batch Redistribution] No gaussians moved from any processed chunks"
+        << std::endl;
+    return;  // No redistributions needed
+  }
+
+  // Get indices of gaussians that moved
+  torch::Tensor moved_indices_local = torch::where(moved_mask)[0];
+  torch::Tensor moved_indices_global =
+      processed_indices.index({moved_indices_local});
+  torch::Tensor destination_chunk_ids =
+      actual_chunk_ids.index({moved_indices_local});
+
+  std::cout << "[Batch Redistribution] " << moved_indices_local.size(0)
+            << " gaussians moved to different chunks" << std::endl;
+
+  // Step 4: Get unique destination chunks that gaussians moved to
+  torch::Tensor unique_destinations =
+      std::get<0>(torch::_unique2(destination_chunk_ids));
+
+  // Step 5: Pre-load destination chunks to prevent spillover classification
+  if (unique_destinations.size(0) > 0) {
+    std::cout << "[Batch Redistribution] Pre-loading "
+              << unique_destinations.size(0)
+              << " destination chunks to prevent spillover" << std::endl;
+    loadChunks(unique_destinations);
+  }
+
+  // Step 6: CRITICAL - Recompute indices after loadChunks() as eviction may
+  // have invalidated them
+  torch::Tensor updated_processed_chunk_mask =
+      torch::zeros_like(gaussian_chunk_ids_, torch::kBool);
+
+  // Recreate mask for all processed chunks
+  for (int i = 0; i < processed_chunk_ids.size(0); i++) {
+    int64_t chunk_id = processed_chunk_ids[i].item<int64_t>();
+    updated_processed_chunk_mask =
+        updated_processed_chunk_mask | (gaussian_chunk_ids_ == chunk_id);
+  }
+
+  torch::Tensor updated_processed_indices =
+      torch::where(updated_processed_chunk_mask)[0];
+
+  if (updated_processed_indices.size(0) == 0) {
+    std::cout << "[Batch Redistribution] WARNING: All gaussians from processed "
+                 "chunks "
+              << "were evicted during loading!" << std::endl;
+    return;
+  }
+
+  // Step 7: Recompute which gaussians moved (using updated indices)
+  torch::Tensor updated_processed_positions =
+      xyz_.index({updated_processed_indices});
+  torch::Tensor updated_actual_chunk_ids =
+      computeChunkIds(updated_processed_positions);
+  torch::Tensor updated_old_chunk_ids =
+      gaussian_chunk_ids_.index({updated_processed_indices});
+  torch::Tensor updated_moved_mask =
+      (updated_actual_chunk_ids != updated_old_chunk_ids);
+
+  if (!updated_moved_mask.any().item<bool>()) {
+    std::cout << "[Batch Redistribution] No gaussians moved after recomputation"
+              << std::endl;
+    return;
+  }
+
+  torch::Tensor updated_moved_indices_local =
+      torch::where(updated_moved_mask)[0];
+  torch::Tensor updated_moved_indices_global =
+      updated_processed_indices.index({updated_moved_indices_local});
+  torch::Tensor updated_destination_chunk_ids =
+      updated_actual_chunk_ids.index({updated_moved_indices_local});
+
+  std::cout << "[Batch Redistribution] After recomputation: "
+            << updated_moved_indices_local.size(0)
+            << " gaussians still need redistribution" << std::endl;
+
+  // Step 8: Update gaussian_chunk_ids_ for moved gaussians (now safe!)
+  gaussian_chunk_ids_.index_put_({updated_moved_indices_global},
+                                 updated_destination_chunk_ids);
 }

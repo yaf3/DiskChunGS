@@ -103,31 +103,32 @@ void scaleAndTransformThenMarkVisiblePoints(
 
   torch::Tensor present = markVisible(points, viewmatrix, projmatrix);
 
-  std::cout << "[DEBUG] Visible points: " << present.sum().item<int>()
-            << " out of " << present.size(0) << std::endl;
+  // std::cout << "[DEBUG] Visible points: " << present.sum().item<int>()
+  //           << " out of " << present.size(0) << std::endl;
 
   auto num_points = present.size(0);
   if (point_transformed_mask.size(0) != num_points ||
       point_unstable_mask.size(0) != num_points) {
-    std::cout << "[DEBUG] point_transformed_mask size: "
-              << point_transformed_mask.size(0)
-              << ", point_unstable_mask size: " << point_unstable_mask.size(0)
-              << std::endl;
+    // std::cout << "[DEBUG] point_transformed_mask size: "
+    //           << point_transformed_mask.size(0)
+    //           << ", point_unstable_mask size: " <<
+    //           point_unstable_mask.size(0)
+    //           << std::endl;
     TORCH_CHECK(false, "points_mask must have dimensions (num_points)");
   }
 
-  std::cout << "[DEBUG] Points unstable mask true count: "
-            << point_unstable_mask.sum().item<int>() << std::endl;
+  // std::cout << "[DEBUG] Points unstable mask true count: "
+  //           << point_unstable_mask.sum().item<int>() << std::endl;
   torch::Tensor final_mask = torch::logical_and(
       torch::logical_not(point_transformed_mask), point_unstable_mask);
   final_mask = torch::logical_and(final_mask, present);
 
-  std::cout << "[DEBUG] Not transformed mask true count: "
-            << torch::logical_not(point_transformed_mask).sum().item<int>()
-            << std::endl;
+  // std::cout << "[DEBUG] Not transformed mask true count: "
+  //           << torch::logical_not(point_transformed_mask).sum().item<int>()
+  //           << std::endl;
 
-  std::cout << "[DEBUG] Final mask (intersection) true count: "
-            << final_mask.sum().item<int>() << std::endl;
+  // std::cout << "[DEBUG] Final mask (intersection) true count: "
+  //           << final_mask.sum().item<int>() << std::endl;
 
   num_transformed += final_mask.sum().item<int>();
   const int P = points.size(0);

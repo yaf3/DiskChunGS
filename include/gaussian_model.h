@@ -237,7 +237,7 @@ class GaussianModel {
 
   // Memory management
   float max_memory_gb_ = 8.0f;  // Configurable
-  int64_t max_gaussians_in_memory_ = 2000000;
+  int64_t max_gaussians_in_memory_ = 3000000;
   std::chrono::steady_clock::time_point last_memory_check_;
 
   torch::Tensor
@@ -318,8 +318,8 @@ class GaussianModel {
   torch::Tensor decodeChunkCoordsTensor(const torch::Tensor& encoded_ids);
   torch::Tensor chunkCoordVectorToTensor(const std::vector<ChunkCoord>& coords);
 
-  void handleChunkRedistribution(int64_t processed_chunk_id,
-                                 torch::Tensor& chunks_modified_during_loop);
+  void handleChunkRedistribution(int64_t processed_chunk_id);
+  void handleBatchChunkRedistribution(const torch::Tensor& processed_chunk_ids);
 
   // Cache for keyframe visibility results
   struct VisibilityCacheEntry {
