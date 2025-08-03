@@ -183,6 +183,29 @@ class GaussianMapper {
   void processLocalMappingBABatch(
       std::vector<ORB_SLAM3::MappingOperation> &operations);
   void processLoopClosureBA(ORB_SLAM3::MappingOperation &opr);
+  int processSequentialLoopClosure(
+      const std::vector<std::tuple<unsigned long,
+                                   unsigned long,
+                                   Sophus::SE3f,
+                                   cv::Mat,
+                                   bool,
+                                   cv::Mat,
+                                   std::vector<float>,
+                                   std::vector<float>,
+                                   std::string>> &associated_kfs);
+  int processBatchedLoopClosure(
+      std::vector<std::tuple<unsigned long,
+                             unsigned long,
+                             Sophus::SE3f,
+                             cv::Mat,
+                             bool,
+                             cv::Mat,
+                             std::vector<float>,
+                             std::vector<float>,
+                             std::string>> &associated_kfs,
+      const std::vector<std::pair<std::shared_ptr<GaussianKeyframe>,
+                                  torch::Tensor>> &kf_chunk_pairs,
+      const std::unordered_set<int64_t> &all_unique_chunks);
   void processScaleRefinement(ORB_SLAM3::MappingOperation &opr);
 
   void handleNewKeyframe(std::tuple<unsigned long,
