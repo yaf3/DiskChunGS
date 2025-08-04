@@ -103,9 +103,9 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   // Initialize scene
   scene_ = std::make_shared<GaussianScene>(model_params_);
 
-  keyframe_queue_ =
-      std::make_shared<KeyframeQueue>(scene_, 5, keyframe_similarity_threshold_,
-                                      opt_params_.auto_distribute_, &kfs_loss_);
+  keyframe_queue_ = std::make_shared<KeyframeQueue>(
+      scene_, 40, keyframe_similarity_threshold_, opt_params_.auto_distribute_,
+      &kfs_loss_);
   // keyframe_queue_->setChunkManager(chunk_manager_);
 
   // Initialize Laplacian of Gaussian kernel
@@ -2473,7 +2473,7 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   // Step 1: Get RGB image and depth data
   torch::Tensor rgb = pkf->gaus_pyramid_original_image_[0];
 
-  bool downsample = true;
+  bool downsample = false;
   if (downsample) {
     // Step 1: Downsample by factor of 2 using average pooling
     // avg_pool2d expects [N, C, H, W], so add batch dimension

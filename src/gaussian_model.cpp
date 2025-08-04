@@ -699,7 +699,9 @@ torch::Tensor GaussianModel::cullVisibleGaussians(
   torch::Tensor chunk_visibility_mask =
       createGaussianMaskFromChunks(visible_chunk_ids);
 
-  // return chunk_visibility_mask;
+  updateChunkAccess(visible_chunk_ids);
+
+  return chunk_visibility_mask;
 
   // Apply LoD filtering based on distance
   torch::Tensor camera_position = keyframe->getCenter().squeeze();
@@ -722,7 +724,6 @@ torch::Tensor GaussianModel::cullVisibleGaussians(
   //           << "%)" << std::endl;
 
   //  Update access times for all visible chunks
-  updateChunkAccess(visible_chunk_ids);
 
   return lod_filtered_mask;
 }
@@ -1509,6 +1510,30 @@ void GaussianModel::appendLoadedChunks(
   int new_size = xyz_.size(0);
   restoreOptimizerStatesForRange(all_exp_avg, all_exp_avg_sq, max_step_counts,
                                  old_size, new_size);
+
+  // VERIFICATION: Check learning rates for newly loaded gaussians only
+  if (new_size > old_size) {
+    torch::Tensor loaded_lrs = position_lrs_.slice(0, old_size, new_size);
+    float min_loaded_lr = loaded_lrs.min().item<float>();
+    float max_loaded_lr = loaded_lrs.max().item<float>();
+    float mean_loaded_lr = loaded_lrs.mean().item<float>();
+
+    std::cout << "[LR Verification] Loaded gaussians [" << old_size << ":"
+              << new_size << "] "
+              << "LR range: " << min_loaded_lr << " - " << max_loaded_lr
+              << " (mean: " << mean_loaded_lr << ", init: " << position_lr_init_
+              << ")" << std::endl;
+
+    // Check if any learning rates are below initial (indicating they were
+    // decayed)
+    torch::Tensor decayed_mask = loaded_lrs < (position_lr_init_ * 0.99f);
+    int num_decayed = decayed_mask.sum().item<int>();
+    float percent_decayed = 100.0f * num_decayed / loaded_lrs.size(0);
+
+    std::cout << "[LR Verification] " << num_decayed << "/"
+              << loaded_lrs.size(0) << " (" << percent_decayed
+              << "%) loaded gaussians have decayed learning rates" << std::endl;
+  }
 
   std::cout << "Loaded " << batch_xyz.size(0) << " gaussians from "
             << chunks_data.size() << " chunks with full optimizer states"
