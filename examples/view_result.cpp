@@ -50,9 +50,8 @@ int main(int argc, char** argv) {
   std::filesystem::path gaussian_cfg_path =
       result_path / "gaussian_mapper_cfg.yaml";
   std::shared_ptr<GaussianMapper> pGausMapper =
-      std::make_shared<GaussianMapper>(nullptr, gaussian_cfg_path, result_path,
-                                       0, device_type);
-  pGausMapper->loadScene(result_path, std::filesystem::path(""));
+      std::make_shared<GaussianMapper>(gaussian_cfg_path, result_path, 0,
+                                       device_type);
 
   // Create Gaussian Viewer
   std::thread viewer_thd;

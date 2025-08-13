@@ -29,15 +29,8 @@ bool initialize(const std::string& gaussian_cfg_path,
   try {
     // Create GaussianMapper
     g_pGausMapper = std::make_shared<GaussianMapper>(
-        nullptr, std::filesystem::path(gaussian_cfg_path),
+        std::filesystem::path(gaussian_cfg_path),
         std::filesystem::path(result_path), 0, device_type);
-
-    // Load the scene
-    std::cout << "Loading scene from: " << result_path << std::endl;
-    g_pGausMapper->loadScene(std::filesystem::path(result_path),
-                             std::filesystem::path(""));
-    std::cout << "Scene loaded successfully" << std::endl;
-
     return true;
   } catch (const std::exception& e) {
     std::cerr << "Error initializing GaussianMapper: " << e.what() << std::endl;

@@ -1132,16 +1132,19 @@ void GaussianModel::loadChunks(const torch::Tensor& chunk_id_requests) {
     int64_t current_gaussians = xyz_.size(0);
     int64_t projected_total = current_gaussians + exact_gaussians_to_load;
 
-    std::cout << "[Load] Planning to load " << chunks_ids_needing_load.size(0)
-              << " chunks (exactly " << exact_gaussians_to_load << " gaussians)"
-              << std::endl;
+    // std::cout << "[Load] Planning to load " <<
+    // chunks_ids_needing_load.size(0)
+    //           << " chunks (exactly " << exact_gaussians_to_load << "
+    //           gaussians)"
+    //           << std::endl;
 
     if (projected_total > max_gaussians_in_memory_) {
       int64_t excess = projected_total - max_gaussians_in_memory_;
-      std::cout << "[Load] Pre-emptive eviction needed: current="
-                << current_gaussians << ", incoming=" << exact_gaussians_to_load
-                << ", projected=" << projected_total << ", excess=" << excess
-                << std::endl;
+      // std::cout << "[Load] Pre-emptive eviction needed: current="
+      //           << current_gaussians << ", incoming=" <<
+      //           exact_gaussians_to_load
+      //           << ", projected=" << projected_total << ", excess=" << excess
+      //           << std::endl;
 
       // Get evictable chunks and find LRU ones to free up 'excess' gaussians
       torch::Tensor spatial_chunks =
@@ -1289,8 +1292,8 @@ void GaussianModel::saveSingleChunkToDisk(int64_t chunk_id,
     }
 
     file.close();
-    std::cout << "Saved chunk " << chunk_id << " with " << num_points
-              << " points to " << chunk_filename << std::endl;
+    // std::cout << "Saved chunk " << chunk_id << " with " << num_points
+    //           << " points to " << chunk_filename << std::endl;
 
   } catch (const std::exception& e) {
     file.close();
@@ -1382,8 +1385,8 @@ std::optional<GaussianModel::ChunkData> GaussianModel::loadSingleChunkFromDisk(
     // Create chunk IDs tensor (all points belong to this chunk)
     data.chunk_id = chunk_id;
 
-    std::cout << "Loaded chunk " << chunk_id << " with " << data.num_points
-              << " points from " << chunk_filename << std::endl;
+    // std::cout << "Loaded chunk " << chunk_id << " with " << data.num_points
+    //           << " points from " << chunk_filename << std::endl;
 
     return data;
   } catch (const std::exception& e) {
@@ -1511,33 +1514,9 @@ void GaussianModel::appendLoadedChunks(
   restoreOptimizerStatesForRange(all_exp_avg, all_exp_avg_sq, max_step_counts,
                                  old_size, new_size);
 
-  // VERIFICATION: Check learning rates for newly loaded gaussians only
-  if (new_size > old_size) {
-    torch::Tensor loaded_lrs = position_lrs_.slice(0, old_size, new_size);
-    float min_loaded_lr = loaded_lrs.min().item<float>();
-    float max_loaded_lr = loaded_lrs.max().item<float>();
-    float mean_loaded_lr = loaded_lrs.mean().item<float>();
-
-    std::cout << "[LR Verification] Loaded gaussians [" << old_size << ":"
-              << new_size << "] "
-              << "LR range: " << min_loaded_lr << " - " << max_loaded_lr
-              << " (mean: " << mean_loaded_lr << ", init: " << position_lr_init_
-              << ")" << std::endl;
-
-    // Check if any learning rates are below initial (indicating they were
-    // decayed)
-    torch::Tensor decayed_mask = loaded_lrs < (position_lr_init_ * 0.99f);
-    int num_decayed = decayed_mask.sum().item<int>();
-    float percent_decayed = 100.0f * num_decayed / loaded_lrs.size(0);
-
-    std::cout << "[LR Verification] " << num_decayed << "/"
-              << loaded_lrs.size(0) << " (" << percent_decayed
-              << "%) loaded gaussians have decayed learning rates" << std::endl;
-  }
-
-  std::cout << "Loaded " << batch_xyz.size(0) << " gaussians from "
-            << chunks_data.size() << " chunks with full optimizer states"
-            << std::endl;
+  // std::cout << "Loaded " << batch_xyz.size(0) << " gaussians from "
+  //           << chunks_data.size() << " chunks with full optimizer states"
+  //           << std::endl;
 }
 
 void GaussianModel::restoreOptimizerStatesForRange(
@@ -1595,8 +1574,8 @@ void GaussianModel::saveChunks(const torch::Tensor& chunk_ids_to_save) {
 
   auto start_time = std::chrono::steady_clock::now();
 
-  std::cout << "[Chunk Save] Saving " << chunk_ids_to_save.size(0)
-            << " chunks to disk" << std::endl;
+  // std::cout << "[Chunk Save] Saving " << chunk_ids_to_save.size(0)
+  //           << " chunks to disk" << std::endl;
 
   auto chunks_cpu = chunk_ids_to_save.cpu();
   auto accessor = chunks_cpu.accessor<int64_t, 1>();
@@ -1684,8 +1663,8 @@ void GaussianModel::saveChunks(const torch::Tensor& chunk_ids_to_save) {
   auto end_time = std::chrono::steady_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_time - start_time);
-  std::cout << "saveChunks completed in " << duration.count() << "ms"
-            << std::endl;
+  // std::cout << "saveChunks completed in " << duration.count() << "ms"
+  //           << std::endl;
 }
 
 GaussianModel::ChunkData GaussianModel::extractChunkData(
@@ -1783,14 +1762,15 @@ void GaussianModel::saveAndEvictChunks(const torch::Tensor& chunk_ids) {
 
     // Handle spillover chunks - discard without saving
     if (spillover_chunks.size(0) > 0) {
-      std::cout << "[Eviction] Discarding " << spillover_chunks.size(0)
-                << " spillover-only chunks" << std::endl;
+      // std::cout << "[Eviction] Discarding " << spillover_chunks.size(0)
+      //           << " spillover-only chunks" << std::endl;
     }
 
     // Handle new chunks - save them!
     if (new_chunks.size(0) > 0) {
-      std::cout << "[Eviction] Saving " << new_chunks.size(0) << " new chunks"
-                << std::endl;
+      // std::cout << "[Eviction] Saving " << new_chunks.size(0) << " new
+      // chunks"
+      //           << std::endl;
       saveChunks(new_chunks);  // Save the new chunks to disk
     }
   }
@@ -1873,9 +1853,9 @@ void GaussianModel::checkMemoryPressure() {
       break;
     }
 
-    std::cout << "[Memory] Evicting " << lru_chunks.size(0)
-              << " LRU chunks (current Gaussians: " << current_gaussians
-              << " target: " << max_gaussians_in_memory_ << std::endl;
+    // std::cout << "[Memory] Evicting " << lru_chunks.size(0)
+    //           << " LRU chunks (current Gaussians: " << current_gaussians
+    //           << " target: " << max_gaussians_in_memory_ << std::endl;
 
     // Use updated saveAndEvictChunks
     saveAndEvictChunks(lru_chunks);
@@ -1919,10 +1899,11 @@ torch::Tensor GaussianModel::findLRUChunks(
     float oldest_time = std::get<1>(chunk_data.front());
     float newest_time = std::get<1>(chunk_data.back());
     float time_delta = newest_time - oldest_time;
-    std::cout << "[LRU DEBUG] After sorting (oldest first):" << std::endl;
-    std::cout << "[LRU DEBUG] Time range: oldest=" << oldest_time
-              << ", newest=" << newest_time << ", delta=" << time_delta << "ms"
-              << std::endl;
+    // std::cout << "[LRU DEBUG] After sorting (oldest first):" << std::endl;
+    // std::cout << "[LRU DEBUG] Time range: oldest=" << oldest_time
+    //           << ", newest=" << newest_time << ", delta=" << time_delta <<
+    //           "ms"
+    //           << std::endl;
   }
 
   // Accumulate chunks until we reach target gaussian count
@@ -1938,9 +1919,11 @@ torch::Tensor GaussianModel::findLRUChunks(
     }
   }
 
-  std::cout << "[LRU DEBUG] Selected " << selected_chunks.size() << " chunks ("
-            << accumulated_gaussians << " gaussians) to reach target eviction"
-            << target_gaussian_count << std::endl;
+  // std::cout << "[LRU DEBUG] Selected " << selected_chunks.size() << " chunks
+  // ("
+  //           << accumulated_gaussians << " gaussians) to reach target
+  //           eviction"
+  //           << target_gaussian_count << std::endl;
 
   // Convert to tensor
   torch::Tensor result = torch::empty(
@@ -2535,7 +2518,8 @@ void GaussianModel::deleteSparseChunkFiles(const torch::Tensor& chunk_ids) {
       try {
         std::filesystem::remove(chunk_filename);
         files_deleted++;
-        std::cout << "[File Deletion] Deleted " << chunk_filename << std::endl;
+        // std::cout << "[File Deletion] Deleted " << chunk_filename <<
+        // std::endl;
       } catch (const std::exception& e) {
         std::cerr << "[File Deletion] Failed to delete " << chunk_filename
                   << ": " << e.what() << std::endl;
@@ -2544,8 +2528,8 @@ void GaussianModel::deleteSparseChunkFiles(const torch::Tensor& chunk_ids) {
   }
 
   if (files_deleted > 0) {
-    std::cout << "[File Deletion] Deleted " << files_deleted
-              << " chunk files from disk" << std::endl;
+    // std::cout << "[File Deletion] Deleted " << files_deleted
+    //           << " chunk files from disk" << std::endl;
   }
 }
 
@@ -2644,7 +2628,7 @@ torch::Tensor GaussianModel::selectCumulativeLoD(
       visible_positions - camera_position.unsqueeze(0), /*p=*/2, /*dim=*/1);
 
   // Logarithmic LoD level calculation
-  float d_max = 8.0f * chunk_size_;
+  float d_max = 2.0f * chunk_size_;
   torch::Tensor required_lod = torch::clamp(
       torch::log2(d_max / torch::clamp_min(distances, 0.1f)), 0.0f, 2.0f);
 
@@ -2662,8 +2646,7 @@ torch::Tensor GaussianModel::selectCumulativeLoD(
   // std::cout << "[LoD Debug] Distance range: " << min_dist << " - " <<
   // max_dist
   //           << ", Mean required LoD: " << mean_required_lod
-  //           << ", Available LoDs - L0: " <<
-  //           visible_lod_counts[0].item<int>()
+  //           << ", Available LoDs - L0: " << visible_lod_counts[0].item<int>()
   //           << ", L1: " << visible_lod_counts[1].item<int>()
   //           << ", L2: " << visible_lod_counts[2].item<int>() << std::endl;
 

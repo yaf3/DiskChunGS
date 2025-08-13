@@ -976,8 +976,8 @@ void GaussianKeyframe::saveDataToDisk() {
 }
 
 void GaussianKeyframe::loadDataFromDisk() {
-  std::cout << "Trying to load keyframe_data " + std::to_string(fid_)
-            << std::endl;
+  // std::cout << "Trying to load keyframe_data " + std::to_string(fid_)
+  //           << std::endl;
   if (loaded_) {
     std::cout << "WARN: Loading keyframe that is already marked as loaded!"
               << std::endl;
@@ -1062,7 +1062,7 @@ void GaussianKeyframe::loadDataFromDisk() {
       // Silent fail
     }
 
-    std::cout << "Data loaded from disk for keyframe " << fid_ << std::endl;
+    // std::cout << "Data loaded from disk for keyframe " << fid_ << std::endl;
 
   } catch (const std::exception& e) {
     std::cerr << "Error loading data for keyframe " << fid_ << ": " << e.what()

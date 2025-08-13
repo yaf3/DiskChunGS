@@ -250,24 +250,21 @@ void GaussianSLAMWrapper::initializeGaussianMapper() {
   // std::cout << "OpenCV Build Information:\n"
   //           << cv::getBuildInformation() << std::endl;
   if (slam_mode_ == "external") {
-    SystemSensorType sensor_type;
+    ORB_SLAM3::System::eSensor sensor_type;
 
     if (mode_ == "mono") {
-      sensor_type = MONOCULAR;
+      sensor_type = ORB_SLAM3::System::MONOCULAR;
     } else if (mode_ == "stereo") {
-      sensor_type = STEREO;
+      sensor_type = ORB_SLAM3::System::STEREO;
     } else if (mode_ == "rgbd") {
-      sensor_type = RGBD;
+      sensor_type = ORB_SLAM3::System::RGBD;
     } else {
       throw std::runtime_error("[Gaussian Mapper]Unsupported sensor type!");
     }
 
     gaussian_mapper_ = std::make_shared<GaussianMapper>(
-        sensor_type, orb_settings_path_, gaussian_settings_path_,
-        output_directory_,
-        0,            // stream id
-        torch::kCUDA  // assuming CUDA is available
-    );
+        slam_system_, gaussian_settings_path_, output_directory_, 0,
+        torch::kCUDA, sensor_type, orb_settings_path_);
 
     gaussian_mapper_->setCompletionCallback(
         [this]() { this->mapping_completed_.store(true); });

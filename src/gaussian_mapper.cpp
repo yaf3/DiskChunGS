@@ -48,7 +48,9 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
                                std::filesystem::path gaussian_config_file_path,
                                std::filesystem::path result_dir,
                                int seed,
-                               torch::DeviceType device_type)
+                               torch::DeviceType device_type,
+                               ORB_SLAM3::System::eSensor sensor_type,
+                               const string& orb_settings_path)
     : pSLAM_(pSLAM),
       initial_mapped_(false),
       interrupt_training_(false),
@@ -79,7 +81,6 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
 
   result_dir_ = result_dir;
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
-
   chunk_save_dir_ = result_dir_ / "chunks";
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
   keyframe_save_dir_ = result_dir_ / "keyframes";
@@ -106,51 +107,82 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   keyframe_queue_ = std::make_shared<KeyframeQueue>(
       scene_, 40, keyframe_similarity_threshold_, opt_params_.auto_distribute_,
       &kfs_loss_);
-  // keyframe_queue_->setChunkManager(chunk_manager_);
 
   // Initialize Laplacian of Gaussian kernel
   initializeLaplacianOfGaussianKernel();
 
-  // Mode
-  if (!pSLAM) {
-    // NO SLAM
-    return;
+  ORB_SLAM3::Settings* orb_settings;
+
+  std::vector<ORB_SLAM3::GeometricCamera*> vpCameras;
+  cv::Size SLAM_im_size;
+  UndistortParams undistort_params;
+  if (pSLAM) {
+    // Cameras
+    // TODO: not only monocular
+    orb_settings = pSLAM->getSettings();
+    SLAM_im_size = orb_settings->newImSize();
+    undistort_params =
+        UndistortParams(SLAM_im_size, orb_settings->camera1DistortionCoef());
+
+    vpCameras = pSLAM->getAtlas()->GetAllCameras();
+    std::cout << "Num. of Camera is " << vpCameras.size() << std::endl;
+  } else {
+    // Check settings file
+    cv::FileStorage fsSettings(orb_settings_path.c_str(),
+                               cv::FileStorage::READ);
+    if (!fsSettings.isOpened()) {
+      cerr << "Failed to open settings file at: " << orb_settings_path << endl;
+      exit(-1);
+    }
+
+    cv::FileNode node = fsSettings["File.version"];
+    if (!node.empty() && node.isString() && node.string() == "1.0") {
+      orb_settings = new ORB_SLAM3::Settings(orb_settings_path, sensor_type);
+    }
+
+    SLAM_im_size = orb_settings->newImSize();
+    undistort_params =
+        UndistortParams(SLAM_im_size, orb_settings->camera1DistortionCoef());
+
+    vpCameras.push_back(orb_settings->camera1());
+    vpCameras.push_back(orb_settings->camera2());
   }
 
-  float mvs_inverse_depth_range;
+  if (pSLAM) {
+    sensor_type = pSLAM->getSensorType();
+  }
 
-  // Sensors
-  switch (pSLAM->getSensorType()) {
+  switch (sensor_type) {
     case ORB_SLAM3::System::MONOCULAR:
     case ORB_SLAM3::System::IMU_MONOCULAR: {
       this->sensor_type_ = MONOCULAR;
-      initializeMonocularDepthEstimator();
-      mvs_inverse_depth_range = 0.2f;
     } break;
     case ORB_SLAM3::System::STEREO:
     case ORB_SLAM3::System::IMU_STEREO: {
       this->sensor_type_ = STEREO;
-      this->stereo_baseline_length_ = pSLAM->getSettings()->b();
-      this->stereo_cv_sgm_ = cv::cuda::createStereoSGM(
-          this->stereo_min_disparity_, this->stereo_num_disparity_);
-      this->stereo_Q_ = pSLAM->getSettings()->Q().clone();
+      this->stereo_baseline_length_ = orb_settings->b();
+      this->stereo_Q_ = orb_settings->Q().clone();
       stereo_Q_.convertTo(stereo_Q_, CV_32FC3, 1.0);
-
-      initializeStereoDepthEstimator();
-      mvs_inverse_depth_range = 0.01f;
-      // initializeMonocularDepthEstimator();
     } break;
     case ORB_SLAM3::System::RGBD:
     case ORB_SLAM3::System::IMU_RGBD: {
       this->sensor_type_ = RGBD;
-      mvs_inverse_depth_range = 0.05f;
     } break;
     default: {
       throw std::runtime_error("[Gaussian Mapper]Unsupported sensor type!");
     } break;
   }
 
-  feat_extractor_ = std::make_unique<XFeat::XFDetector>(4096, 0.05, true);
+  float mvs_inverse_depth_range;
+  if (sensor_type_ == STEREO) {
+    initializeStereoDepthEstimator();
+    mvs_inverse_depth_range = 0.01f;
+  } else if (sensor_type_ == RGBD) {
+    mvs_inverse_depth_range = 0.05f;
+  } else if (sensor_type_ == MONOCULAR) {
+    initializeMonocularDepthEstimator();
+    mvs_inverse_depth_range = 0.2f;
+  }
 
   int num_prev_keyframes = 6;
   int num_depth_candidates = 16;
@@ -158,15 +190,8 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   guided_mvs_ = std::make_unique<GuidedMVS>(
       num_prev_keyframes, num_depth_candidates, mvs_inverse_depth_range);
 
-  // Cameras
-  // TODO: not only monocular
-  auto settings = pSLAM->getSettings();
-  cv::Size SLAM_im_size = settings->newImSize();
-  UndistortParams undistort_params(SLAM_im_size,
-                                   settings->camera1DistortionCoef());
+  feat_extractor_ = std::make_unique<XFeat::XFDetector>(4096, 0.05, true);
 
-  auto vpCameras = pSLAM->getAtlas()->GetAllCameras();
-  std::cout << "Num. of Camera is " << vpCameras.size() << std::endl;
   for (auto& SLAM_camera : vpCameras) {
     Camera camera;
     camera.camera_id_ = SLAM_camera->GetId();
@@ -280,15 +305,11 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   }
 }
 
-// External mode initialization
-GaussianMapper::GaussianMapper(const SystemSensorType sensor_type,
-                               const string& orb_settings_path,
-                               std::filesystem::path gaussian_config_file_path,
+GaussianMapper::GaussianMapper(std::filesystem::path gaussian_config_file_path,
                                std::filesystem::path result_dir,
                                int seed,
                                torch::DeviceType device_type)
-    : pSLAM_(nullptr),
-      initial_mapped_(false),
+    : initial_mapped_(false),
       interrupt_training_(false),
       stopped_(false),
       iteration_(0),
@@ -296,7 +317,9 @@ GaussianMapper::GaussianMapper(const SystemSensorType sensor_type,
       SLAM_ended_(false),
       loop_closure_iteration_(false),
       min_num_initial_map_kfs_(15UL),
-      sensor_type_(sensor_type) {
+      large_rot_th_(1e-1f),
+      large_trans_th_(1e-2f),
+      training_report_interval_(0) {
   // Random seed
   std::srand(seed);
   torch::manual_seed(seed);
@@ -315,8 +338,10 @@ GaussianMapper::GaussianMapper(const SystemSensorType sensor_type,
 
   result_dir_ = result_dir;
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
-
-  chunk_save_dir_ = result_dir / "chunks";
+  chunk_save_dir_ = result_dir_ / "chunks";
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
+  keyframe_save_dir_ = result_dir_ / "keyframes";
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(keyframe_save_dir_)
 
   config_file_path_ = gaussian_config_file_path;
   readConfigFromFile(gaussian_config_file_path);
@@ -339,158 +364,11 @@ GaussianMapper::GaussianMapper(const SystemSensorType sensor_type,
   keyframe_queue_ = std::make_shared<KeyframeQueue>(
       scene_, 40, keyframe_similarity_threshold_, opt_params_.auto_distribute_,
       &kfs_loss_);
-  // keyframe_queue_->setChunkManager(chunk_manager_);
 
   // Initialize Laplacian of Gaussian kernel
   initializeLaplacianOfGaussianKernel();
 
-  ORB_SLAM3::System::eSensor system_mode;
-  if (sensor_type == STEREO) {
-    system_mode = ORB_SLAM3::System::STEREO;
-  } else if (sensor_type == RGBD) {
-    system_mode = ORB_SLAM3::System::RGBD;
-  } else {
-    system_mode = ORB_SLAM3::System::MONOCULAR;
-  }
-
-  // Check settings file
-  cv::FileStorage fsSettings(orb_settings_path.c_str(), cv::FileStorage::READ);
-  if (!fsSettings.isOpened()) {
-    cerr << "Failed to open settings file at: " << orb_settings_path << endl;
-    exit(-1);
-  }
-
-  ORB_SLAM3::Settings* orb_settings;
-
-  cv::FileNode node = fsSettings["File.version"];
-  if (!node.empty() && node.isString() && node.string() == "1.0") {
-    orb_settings = new ORB_SLAM3::Settings(orb_settings_path, system_mode);
-  }
-
-  cv::Size SLAM_im_size = orb_settings->newImSize();
-  UndistortParams undistort_params(SLAM_im_size,
-                                   orb_settings->camera1DistortionCoef());
-
-  vector<ORB_SLAM3::GeometricCamera*> SLAM_cameras;
-  SLAM_cameras.push_back(orb_settings->camera1());
-  SLAM_cameras.push_back(orb_settings->camera2());
-
-  for (auto& SLAM_camera : SLAM_cameras) {
-    Camera camera;
-    camera.camera_id_ = SLAM_camera->GetId();
-    if (SLAM_camera->GetType() == ORB_SLAM3::GeometricCamera::CAM_PINHOLE) {
-      camera.setModelId(Camera::CameraModelType::PINHOLE);
-      float SLAM_fx = SLAM_camera->getParameter(0);
-      float SLAM_fy = SLAM_camera->getParameter(1);
-      float SLAM_cx = SLAM_camera->getParameter(2);
-      float SLAM_cy = SLAM_camera->getParameter(3);
-
-      // Old K, i.e. K in SLAM
-      cv::Mat K = (cv::Mat_<float>(3, 3) << SLAM_fx, 0.f, SLAM_cx, 0.f, SLAM_fy,
-                   SLAM_cy, 0.f, 0.f, 1.f);
-
-      // camera.width_ = this->sensor_type_ == STEREO ?
-      // undistort_params.old_size_.width
-      //                                              :
-      //                                              graphics_utils::roundToIntegerMultipleOf16(
-      //                                                    undistort_params.old_size_.width);
-      camera.width_ = undistort_params.old_size_.width;
-      float x_ratio =
-          static_cast<float>(camera.width_) / undistort_params.old_size_.width;
-
-      // camera.height_ = this->sensor_type_ == STEREO ?
-      // undistort_params.old_size_.height
-      //                                               :
-      //                                               graphics_utils::roundToIntegerMultipleOf16(
-      //                                                     undistort_params.old_size_.height);
-      camera.height_ = undistort_params.old_size_.height;
-      float y_ratio = static_cast<float>(camera.height_) /
-                      undistort_params.old_size_.height;
-
-      camera.num_gaus_pyramid_sub_levels_ = num_gaus_pyramid_sub_levels_;
-      camera.gaus_pyramid_width_.resize(num_gaus_pyramid_sub_levels_);
-      camera.gaus_pyramid_height_.resize(num_gaus_pyramid_sub_levels_);
-      for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-        camera.gaus_pyramid_width_[l] =
-            camera.width_ * this->kf_gaus_pyramid_factors_[l];
-        camera.gaus_pyramid_height_[l] =
-            camera.height_ * this->kf_gaus_pyramid_factors_[l];
-      }
-
-      camera.params_[0] /*new fx*/ = SLAM_fx * x_ratio;
-      camera.params_[1] /*new fy*/ = SLAM_fy * y_ratio;
-      camera.params_[2] /*new cx*/ = SLAM_cx * x_ratio;
-      camera.params_[3] /*new cy*/ = SLAM_cy * y_ratio;
-
-      cv::Mat K_new =
-          (cv::Mat_<float>(3, 3) << camera.params_[0], 0.f, camera.params_[2],
-           0.f, camera.params_[1], camera.params_[3], 0.f, 0.f, 1.f);
-
-      // Undistortion
-      if (this->sensor_type_ == MONOCULAR || this->sensor_type_ == RGBD)
-        undistort_params.dist_coeff_.copyTo(camera.dist_coeff_);
-
-      camera.initUndistortRectifyMapAndMask(K, SLAM_im_size, K_new, true);
-
-      undistort_mask_[camera.camera_id_] =
-          tensor_utils::cvMat2TorchTensor_Float32(camera.undistort_mask,
-                                                  device_type_);
-
-      cv::Mat viewer_sub_undistort_mask;
-      int viewer_image_height_ = camera.height_ * rendered_image_viewer_scale_;
-      int viewer_image_width_ = camera.width_ * rendered_image_viewer_scale_;
-      cv::resize(camera.undistort_mask, viewer_sub_undistort_mask,
-                 cv::Size(viewer_image_width_, viewer_image_height_));
-      viewer_sub_undistort_mask_[camera.camera_id_] =
-          tensor_utils::cvMat2TorchTensor_Float32(viewer_sub_undistort_mask,
-                                                  device_type_);
-
-      cv::Mat viewer_main_undistort_mask;
-      int viewer_image_height_main_ =
-          camera.height_ * rendered_image_viewer_scale_main_;
-      int viewer_image_width_main_ =
-          camera.width_ * rendered_image_viewer_scale_main_;
-      cv::resize(camera.undistort_mask, viewer_main_undistort_mask,
-                 cv::Size(viewer_image_width_main_, viewer_image_height_main_));
-      viewer_main_undistort_mask_[camera.camera_id_] =
-          tensor_utils::cvMat2TorchTensor_Float32(viewer_main_undistort_mask,
-                                                  device_type_);
-
-      if (this->sensor_type_ == STEREO) {
-        camera.stereo_bf_ = stereo_baseline_length_ * camera.params_[0];
-        if (this->stereo_Q_.cols != 4) {
-          this->stereo_Q_ = cv::Mat(4, 4, CV_32FC1);
-          this->stereo_Q_.setTo(0.0f);
-          this->stereo_Q_.at<float>(0, 0) = 1.0f;
-          this->stereo_Q_.at<float>(0, 3) = -camera.params_[2];
-          this->stereo_Q_.at<float>(1, 1) = 1.0f;
-          this->stereo_Q_.at<float>(1, 3) = -camera.params_[3];
-          this->stereo_Q_.at<float>(2, 3) = camera.params_[0];
-          this->stereo_Q_.at<float>(3, 2) = 1.0f / stereo_baseline_length_;
-        }
-      }
-    } else if (SLAM_camera->GetType() ==
-               ORB_SLAM3::GeometricCamera::CAM_FISHEYE) {
-      camera.setModelId(Camera::CameraModelType::FISHEYE);
-    } else {
-      camera.setModelId(Camera::CameraModelType::INVALID);
-    }
-
-    if (!viewer_camera_id_set_) {
-      viewer_camera_id_ = camera.camera_id_;
-      viewer_camera_id_set_ = true;
-    }
-    this->scene_->addCamera(camera);
-  }
-
-  if (sensor_type == STEREO) {
-    initializeStereoDepthEstimator();
-    // initializeMonocularDepthEstimator();
-  } else if (sensor_type == RGBD) {
-    // initializeMonocularDepthEstimator();
-  } else {
-    initializeMonocularDepthEstimator();
-  }
+  loadScene(result_dir);
 }
 
 void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
@@ -518,21 +396,12 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
   z_near_ = settings_file["Camera.z_near"].operator float();
   z_far_ = settings_file["Camera.z_far"].operator float();
 
-  monocular_inactive_geo_densify_max_pixel_dist_ =
-      settings_file["Monocular.inactive_geo_densify_max_pixel_dist"]
-          .operator float();
-
   stereo_min_disparity_ = settings_file["Stereo.min_disparity"].operator int();
   stereo_num_disparity_ = settings_file["Stereo.num_disparity"].operator int();
   do_stereo_loss_ = settings_file["Stereo.do_stereo_loss"].operator int();
   min_depth_ = settings_file["Mapper.min_depth_"].operator float();
   max_depth_ = settings_file["Mapper.max_depth_"].operator float();
 
-  inactive_geo_densify_ =
-      (settings_file["Mapper.inactive_geo_densify"].operator int()) != 0;
-  depth_densify_subsample_ratio_ =
-      settings_file["Mapper.depth_densify_subsample_ratio"].operator float();
-  depth_densify_ = (settings_file["Mapper.depth_densify"].operator int()) != 0;
   min_num_initial_map_kfs_ = static_cast<unsigned long>(
       settings_file["Mapper.min_num_initial_map_kfs"].operator int());
   new_keyframe_times_of_use_ =
@@ -1143,6 +1012,8 @@ void GaussianMapper::trainForOneIteration() {
   auto timer_loadKeyframe = ProfilingUtils::Timer("LoadKeyframe");
   bool had_to_load = false;
   if (!viewpoint_cam->loaded_) {
+    std::cout << "Loading keyframe " << std::to_string(viewpoint_cam->fid_)
+              << "from disk for training" << std::endl;
     viewpoint_cam->loadDataFromDisk();
     had_to_load = true;
   }
@@ -1151,10 +1022,6 @@ void GaussianMapper::trainForOneIteration() {
   // std::cout << "Using keyframe id: " << viewpoint_cam->fid_ << std::endl;
 
   writeKeyframeUsedTimes(result_dir_ / "used_times");
-
-  // if (isdoingInactiveGeoDensify() &&
-  // !viewpoint_cam->done_inactive_geo_densify_)
-  //   increasePcdByKeyframeInactiveGeoDensify(viewpoint_cam);
 
   auto [gt_image, gt_inv_depth, mask, image_height, image_width] =
       viewpoint_cam->getTrainingData(
@@ -1483,6 +1350,8 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
   std::cout << "[DEBUG] Processing " << associated_kfs.size() << " keyframes"
             << std::endl;
 
+  auto time_start = std::chrono::steady_clock::now();
+
   if (record_loop_ply_) {
     saveScene(result_dir_ /
               (std::to_string(getIteration()) + "_0_before_loop_correction") /
@@ -1632,6 +1501,12 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
 
   // Mark this iteration
   loop_closure_iteration_ = true;
+
+  auto time_end = std::chrono::steady_clock::now();
+  auto duration =
+      std::chrono::duration_cast<std::chrono::seconds>(time_end - time_start)
+          .count();
+  std::cout << duration << " s" << std::endl;
 
   // Set gaussian limit back to what it was
   gaussians_->max_gaussians_in_memory_ = old_max_gaussians_in_memory_;
@@ -2009,8 +1884,6 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   pkf->img_auxiliary_undist_ = imgAux_undistorted;
   pkf->kps_pixel_ = std::move(std::get<6>(kf));
   pkf->kps_point_local_ = std::move(std::get<7>(kf));
-  // if (isdoingInactiveGeoDensify())
-  // increasePcdByKeyframeInactiveGeoDensify(pkf);
 
   // std::cout << "Image sizes: " << pkf->original_image_.sizes() <<
   // std::endl; std::cout << "Img undistrorted sizes: " <<
@@ -2018,11 +1891,7 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   //           << std::endl;
 
   torch::Tensor input_tensor = feat_extractor_->parseInput(pkf->img_undist_);
-  // std::cout << "Input Tensor Sizes: " << input_tensor.sizes() << std::endl;
   pkf->feature_map_ = feat_extractor_->extractDenseFeatures(input_tensor);
-
-  // std::cout << "Features Sizes: " << pkf->feature_map_.sizes() <<
-  // std::endl;
 
   pkf->initOptimizer(device_type_, opt_params_.pose_lr_,
                      opt_params_.exposure_lr_,
@@ -2040,18 +1909,6 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   } else if (sensor_type_ == RGBD && !pkf->img_auxiliary_undist_.empty()) {
     pkf->setupRGBDData();
   }
-
-  // Convert tensors to cv::Mat for processing
-  torch::Tensor rgb_image =
-      tensor_utils::cvMat2TorchTensor_Float32(pkf->img_undist_, device_type_);
-
-  // Get camera pose (world-to-camera)
-  // Sophus::SE3f Tcw = pkf->getPosef();
-
-  // Project to point cloud
-  // std::string pcd_path = "depth_pcd_kf.ply";
-  // projectRgbDepthToPointCloud(rgb_image, pkf->depth_image_, pkf->intr_,
-  //                             min_depth_, max_depth_, Tcw, pcd_path, 2);
 
   std::unique_lock<std::mutex> lock_render(mutex_render_);
   sampleGaussians(pkf);
@@ -2252,215 +2109,6 @@ void GaussianMapper::cullKeyframes() {
 
   for (auto& kfid : kfids_to_erase) {
     scene_->keyframes().erase(kfid);
-  }
-}
-
-void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
-    std::shared_ptr<GaussianKeyframe> pkf) {
-  // auto start_timing = std::chrono::steady_clock::now();
-  torch::NoGradGuard no_grad;
-
-  Sophus::SE3f Twc = pkf->getPosef().inverse();
-
-  switch (this->sensor_type_) {
-    case MONOCULAR: {
-      // savePly(result_dir_ / (std::to_string(getIteration()) + "_" +
-      // std::to_string(pkf->fid_) + "_0_before_inactive_geo_densify"));
-      assert(pkf->kps_pixel_.size() % 2 == 0);
-      int N = pkf->kps_pixel_.size() / 2;
-      torch::Tensor kps_pixel_tensor =
-          torch::from_blob(pkf->kps_pixel_.data(), {N, 2},
-                           torch::TensorOptions().dtype(torch::kFloat32))
-              .to(device_type_);
-      torch::Tensor kps_point_local_tensor =
-          torch::from_blob(pkf->kps_point_local_.data(), {N, 3},
-                           torch::TensorOptions().dtype(torch::kFloat32))
-              .to(device_type_);
-      torch::Tensor kps_has3D_tensor = torch::where(
-          kps_point_local_tensor.index({torch::indexing::Slice(), 2}) > 0.0f,
-          true, false);
-
-      cv::cuda::GpuMat rgb_gpu;
-      rgb_gpu.upload(pkf->img_undist_);
-      torch::Tensor colors =
-          tensor_utils::cvGpuMat2TorchTensor_Float32(rgb_gpu);
-      colors = colors.permute({1, 2, 0}).flatten(0, 1).contiguous();
-
-      auto result =
-          monocularPinholeInactiveGeoDensifyBySearchingNeighborhoodKeypoints(
-              kps_pixel_tensor, kps_has3D_tensor, kps_point_local_tensor,
-              colors, monocular_inactive_geo_densify_max_pixel_dist_,
-              pkf->intr_, pkf->image_width_);
-      torch::Tensor& points3D_valid = std::get<0>(result);
-      torch::Tensor& colors_valid = std::get<1>(result);
-      // Transform points to the world coordinate
-      torch::Tensor Twc_tensor =
-          tensor_utils::EigenMatrix2TorchTensor(Twc.matrix(), device_type_)
-              .transpose(0, 1);
-      transformPoints(points3D_valid, Twc_tensor);
-
-      torch::Tensor opacities_tensor = general_utils::inverse_sigmoid(
-          0.02f *
-          torch::ones({points3D_valid.size(0), 1}, torch::TensorOptions()
-                                                       .dtype(torch::kFloat)
-                                                       .device(device_type_)));
-
-      std::unique_lock<std::mutex> lock_render(mutex_render_);
-      gaussians_->addPoints(points3D_valid, colors_valid, torch::Tensor(),
-                            opacities_tensor, getIteration(),
-                            scene_->cameras_extent_);
-    } break;
-    case STEREO: {
-      // savePly(result_dir_ / (std::to_string(getIteration()) + "_" +
-      // std::to_string(pkf->fid_) + "_0_before_inactive_geo_densify"));
-      cv::cuda::GpuMat rgb_left_gpu, rgb_right_gpu;
-      cv::cuda::GpuMat gray_left_gpu, gray_right_gpu;
-
-      rgb_left_gpu.upload(pkf->img_undist_);
-      rgb_right_gpu.upload(pkf->img_auxiliary_undist_);
-
-      // From CV_32FC3 to CV_32FC1
-      cv::cuda::cvtColor(rgb_left_gpu, gray_left_gpu, cv::COLOR_RGB2GRAY);
-      cv::cuda::cvtColor(rgb_right_gpu, gray_right_gpu, cv::COLOR_RGB2GRAY);
-
-      // From CV_32FC1 to CV_8UC1
-      gray_left_gpu.convertTo(gray_left_gpu, CV_8UC1, 255.0);
-      gray_right_gpu.convertTo(gray_right_gpu, CV_8UC1, 255.0);
-
-      // Compute disparity
-      cv::cuda::GpuMat cv_disp;
-      stereo_cv_sgm_->compute(gray_left_gpu, gray_right_gpu, cv_disp);
-      cv_disp.convertTo(cv_disp, CV_32F, 1.0 / 16.0);
-
-      // Reproject to get 3D points
-      cv::cuda::GpuMat cv_points3D;
-      cv::cuda::reprojectImageTo3D(cv_disp, cv_points3D, stereo_Q_, 3);
-
-      // From cv::cuda::GpuMat to torch::Tensor
-      torch::Tensor disp = tensor_utils::cvGpuMat2TorchTensor_Float32(cv_disp);
-      disp = disp.flatten(0, 1).contiguous();
-      torch::Tensor points3D =
-          tensor_utils::cvGpuMat2TorchTensor_Float32(cv_points3D);
-      points3D = points3D.permute({1, 2, 0}).flatten(0, 1).contiguous();
-      torch::Tensor colors =
-          tensor_utils::cvGpuMat2TorchTensor_Float32(rgb_left_gpu);
-      colors = colors.permute({1, 2, 0}).flatten(0, 1).contiguous();
-
-      // Clear undisired and unreliable stereo points
-      torch::Tensor point_valid_flags = torch::full(
-          {disp.size(0)}, false,
-          torch::TensorOptions().dtype(torch::kBool).device(device_type_));
-      int nkps_twice = pkf->kps_pixel_.size();
-      int width = pkf->image_width_;
-      for (int kpidx = 0; kpidx < nkps_twice; kpidx += 2) {
-        int idx = static_cast<int>(/*u*/ pkf->kps_pixel_[kpidx]) +
-                  static_cast<int>(/*v*/ pkf->kps_pixel_[kpidx + 1]) * width;
-        // int u = static_cast<int>(/*u*/pkf->kps_pixel_[kpidx]);
-        // if (u < 0.3 * width || u > 0.7 * width)
-        point_valid_flags[idx] = true;
-      }
-      point_valid_flags = torch::logical_and(
-          point_valid_flags,
-          torch::where(
-              disp > static_cast<float>(stereo_cv_sgm_->getMinDisparity()),
-              true, false));
-      point_valid_flags = torch::logical_and(
-          point_valid_flags,
-          torch::where(
-              disp < static_cast<float>(stereo_cv_sgm_->getNumDisparities()),
-              true, false));
-
-      torch::Tensor points3D_valid = points3D.index({point_valid_flags});
-      torch::Tensor colors_valid = colors.index({point_valid_flags});
-
-      // Transform points to the world coordinate
-      torch::Tensor Twc_tensor =
-          tensor_utils::EigenMatrix2TorchTensor(Twc.matrix(), device_type_)
-              .transpose(0, 1);
-      transformPoints(points3D_valid, Twc_tensor);
-
-      torch::Tensor opacities_tensor = general_utils::inverse_sigmoid(
-          0.02f *
-          torch::ones({points3D_valid.size(0), 1}, torch::TensorOptions()
-                                                       .dtype(torch::kFloat)
-                                                       .device(device_type_)));
-
-      std::unique_lock<std::mutex> lock_render(mutex_render_);
-      gaussians_->addPoints(points3D_valid, colors_valid, torch::Tensor(),
-                            opacities_tensor, getIteration(),
-                            scene_->cameras_extent_);
-    } break;
-    case RGBD: {
-      cv::cuda::GpuMat img_rgb_gpu, img_depth_gpu;
-      img_rgb_gpu.upload(pkf->img_undist_);
-      img_depth_gpu.upload(pkf->img_auxiliary_undist_);
-
-      // From cv::cuda::GpuMat to torch::Tensor
-      torch::Tensor rgb =
-          tensor_utils::cvGpuMat2TorchTensor_Float32(img_rgb_gpu);
-      rgb = rgb.permute({1, 2, 0}).flatten(0, 1).contiguous();
-      torch::Tensor depth =
-          tensor_utils::cvGpuMat2TorchTensor_Float32(img_depth_gpu);
-      depth = depth.flatten(0, 1).contiguous();
-
-      // To clear undisired and unreliable depth
-      torch::Tensor point_valid_flags = torch::full(
-          {depth.size(0)}, false /*true*/,
-          torch::TensorOptions().dtype(torch::kBool).device(device_type_));
-      int nkps_twice = pkf->kps_pixel_.size();
-      int width = pkf->image_width_;
-      for (int kpidx = 0; kpidx < nkps_twice; kpidx += 2) {
-        int idx = static_cast<int>(/*u*/ pkf->kps_pixel_[kpidx]) +
-                  static_cast<int>(/*v*/ pkf->kps_pixel_[kpidx + 1]) * width;
-        point_valid_flags[idx] = true;
-      }
-      point_valid_flags = torch::logical_and(
-          point_valid_flags, torch::where(depth > min_depth_, true, false));
-      point_valid_flags = torch::logical_and(
-          point_valid_flags, torch::where(depth < max_depth_, true, false));
-
-      torch::Tensor colors_valid = rgb.index({point_valid_flags});
-
-      // Reproject to get 3D points
-      torch::Tensor points3D_valid;
-      Camera& camera = scene_->cameras_.at(pkf->camera_id_);
-      switch (camera.model_id_) {
-        case Camera::PINHOLE: {
-          points3D_valid = reprojectDepthPinhole(depth, point_valid_flags,
-                                                 pkf->intr_, pkf->image_width_);
-        } break;
-        case Camera::FISHEYE: {
-          // TODO: support fisheye camera?
-          throw std::runtime_error(
-              "[Gaussian Mapper]Fisheye cameras are not supported "
-              "currently!");
-        } break;
-        default: {
-          throw std::runtime_error("[Gaussian Mapper]Invalid camera model!");
-        } break;
-      }
-      points3D_valid = points3D_valid.index({point_valid_flags});
-
-      // Transform points to the world coordinate
-      torch::Tensor Twc_tensor =
-          tensor_utils::EigenMatrix2TorchTensor(Twc.matrix(), device_type_)
-              .transpose(0, 1);
-      transformPoints(points3D_valid, Twc_tensor);
-
-      torch::Tensor opacities_tensor = general_utils::inverse_sigmoid(
-          0.02f *
-          torch::ones({points3D_valid.size(0), 1}, torch::TensorOptions()
-                                                       .dtype(torch::kFloat)
-                                                       .device(device_type_)));
-
-      std::unique_lock<std::mutex> lock_render(mutex_render_);
-      gaussians_->addPoints(points3D_valid, colors_valid, torch::Tensor(),
-                            opacities_tensor, getIteration(),
-                            scene_->cameras_extent_);
-    } break;
-    default: {
-      throw std::runtime_error("[Gaussian Mapper]Unsupported sensor type!");
-    } break;
   }
 }
 
@@ -2971,8 +2619,7 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   // std::cout << "pruneLowOpacityGaussians completed in "
   //           << duration_prune.count() << "ms" << std::endl;
 
-  // std::cout << "Adding " << all_points3D.size(0) << " total points to
-  // scene("
+  // std::cout << "Adding " << all_points3D.size(0) << " total points to scene("
   //           << num_sampled << " sampled + " << num_matched_points <<
   //           "matched) "
   //           << std::endl;
@@ -3421,10 +3068,6 @@ bool GaussianMapper::isKeepingTraining() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return keep_training_;
 }
-bool GaussianMapper::isdoingInactiveGeoDensify() {
-  std::unique_lock<std::mutex> lock(mutex_settings_);
-  return inactive_geo_densify_;
-}
 void GaussianMapper::setLambdaDssim(const float lambda_dssim) {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   opt_params_.lambda_dssim_ = lambda_dssim;
@@ -3453,10 +3096,6 @@ void GaussianMapper::setKeepTraining(const bool keep) {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   keep_training_ = keep;
 }
-void GaussianMapper::setDoInactiveGeoDensify(const bool inactive_geo_densify) {
-  std::unique_lock<std::mutex> lock(mutex_settings_);
-  inactive_geo_densify_ = inactive_geo_densify;
-}
 
 VariableParameters GaussianMapper::getVaribleParameters() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
@@ -3473,7 +3112,6 @@ VariableParameters GaussianMapper::getVaribleParameters() {
   params.new_kf_times_of_use = new_keyframe_times_of_use_;
   params.stable_num_iter_existence = stable_num_iter_existence_;
   params.keep_training = keep_training_;
-  params.do_inactive_geo_densify = inactive_geo_densify_;
   return params;
 }
 
@@ -3491,7 +3129,6 @@ void GaussianMapper::setVaribleParameters(const VariableParameters& params) {
   new_keyframe_times_of_use_ = params.new_kf_times_of_use;
   stable_num_iter_existence_ = params.stable_num_iter_existence;
   keep_training_ = params.keep_training;
-  inactive_geo_densify_ = params.do_inactive_geo_densify;
 }
 
 void GaussianMapper::loadPly(std::filesystem::path ply_path,
@@ -3570,117 +3207,6 @@ void GaussianMapper::loadPly(std::filesystem::path ply_path,
   // Ready
   this->initial_mapped_ = true;
   increaseIteration();
-}
-
-void GaussianMapper::handleNewFrameExternal(const cv::Mat& rgb_image,
-                                            const cv::Mat& depth_or_right_image,
-                                            const Sophus::SE3f& pose,
-                                            const double timestamp) {
-  static int frame_count = 0;
-  // std::cout << "External frame #" << frame_count++ << " with timestamp "
-  //           << timestamp << " and position " <<
-  //           pose.translation().transpose()
-  //           << std::endl;
-  frame_queue_.push(Frame(rgb_image, depth_or_right_image, pose, timestamp));
-}
-
-void GaussianMapper::run_external_poses() {
-  std::filesystem::remove_all(chunk_save_dir_);
-  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
-
-  // Process frames until we have enough keyframes
-  while (!initial_mapped_ && !isStopped() && !isExternalDataStopped()) {
-    auto maybe_frame = frame_queue_.pop(true);
-    if (!maybe_frame) continue;
-
-    auto& frame = *maybe_frame;
-    processNewFrame(frame.rgb_image, frame.depth_image, frame.pose,
-                    frame.timestamp);
-
-    if (scene_->keyframes().size() >= min_num_initial_map_kfs_) {
-      std::cout << "Initializing with " << scene_->keyframes().size()
-                << " keyframes" << std::endl;
-      initial_mapped_ = true;
-      scene_->cameras_extent_ = std::get<1>(scene_->getNerfppNorm());
-      break;
-    }
-  }
-
-  if (!initial_mapped_) {
-    std::cout << "Failed to initialize, stopping" << std::endl;
-    return;
-  }
-
-  int SLAM_stop_iter = 0;
-  // Start training loop while still processing new frames
-  std::cout << "Starting training loop" << std::endl;
-  while (!isExternalDataStopped() && !isStopped()) {
-    // Process any pending frames
-    while (auto maybe_frame = frame_queue_.pop(false)) {
-      processNewFrame(maybe_frame->rgb_image, maybe_frame->depth_image,
-                      maybe_frame->pose, maybe_frame->timestamp);
-    }
-
-    trainForOneIteration();
-    SLAM_stop_iter = getIteration();
-
-    // std::cout << "Loop check: isExternalDataStopped()="
-    //           << (isExternalDataStopped() ? "true" : "false")
-    //           << ", isStopped()=" << (isStopped() ? "true" : "false")
-    //           << std::endl;
-  }
-
-  std::cout << "Starting post-training loop" << std::endl;
-  while (!isExternalDataStopped() && !isStopped()) {
-    // std::cout << "Loop check: isExternalDataStopped()="
-    //           << (isExternalDataStopped() ? "true" : "false")
-    //           << ", isStopped()=" << (isStopped() ? "true" : "false")
-    //           << std::endl;
-    trainForOneIteration();
-    if (getIteration() >= opt_params_.iterations_) break;
-  }
-
-  // std::cout << "Starting Tail gaussian optimization" << std::endl;
-  // Fourth loop: Tail gaussian optimization
-  int densify_interval = densifyInterval();
-  int n_delay_iters = densify_interval * 0.8;
-  std::cout << "Starting tail optimization loop" << std::endl;
-  while (getIteration() - SLAM_stop_iter < n_delay_iters ||
-         getIteration() % densify_interval < n_delay_iters) {
-    trainForOneIteration();
-  }
-
-  // std::cout << "Training finished" << std::endl;
-
-  frame_queue_.stop();
-
-  if (render_fly_through_) {
-    auto video_dir = result_dir_ / "flythrough";
-    CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
-    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30,
-                          render_fly_through_speed_, 0.8f, 2);
-    // render3DExplorationVideo(video_dir / "3d_exploration", 1920, 1080, 30,
-    //                          20.0f, 0.05f, false);
-  }
-
-  // For debug: basically viewer now
-  // while (getIteration() < 100000) {
-  //   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-  // }
-
-  saveTotalGaussians("_shutdown");
-  // Save and clear
-  renderAndRecordAllKeyframes("_shutdown");
-  // savePly(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
-  // "ply");
-  saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
-            "data");
-  writeKeyframeUsedTimes(result_dir_ / "used_times", "final");
-
-  signalStop();
-  if (completion_callback_) {
-    completion_callback_();
-  }
 }
 
 std::vector<std::shared_ptr<GaussianModel>>
@@ -4632,6 +4158,99 @@ std::shared_ptr<GaussianKeyframe> GaussianMapper::useRecentKeyframe() {
   return most_recent_kf;
 }
 
+void GaussianMapper::handleNewFrameExternal(const cv::Mat& rgb_image,
+                                            const cv::Mat& depth_or_right_image,
+                                            const Sophus::SE3f& pose,
+                                            const double timestamp) {
+  static int frame_count = 0;
+  // std::cout << "External frame #" << frame_count++ << " with timestamp "
+  //           << timestamp << " and position " <<
+  //           pose.translation().transpose()
+  //           << std::endl;
+  frame_queue_.push(Frame(rgb_image, depth_or_right_image, pose, timestamp));
+}
+
+void GaussianMapper::run_external_poses() {
+  std::filesystem::remove_all(chunk_save_dir_);
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
+
+  // Initialize Gaussian model
+  gaussians_ = std::make_shared<GaussianModel>(
+      model_params_, chunk_save_dir_.string(), chunk_size_);
+
+  scene_->cameras_extent_ = 1.0f;
+
+  // Process frames until we have enough keyframes
+  while (!initial_mapped_ && !isStopped() && !isExternalDataStopped()) {
+    auto maybe_frame = frame_queue_.pop(true);
+    if (!maybe_frame) continue;
+
+    auto& frame = *maybe_frame;
+    processNewFrame(frame.rgb_image, frame.depth_image, frame.pose,
+                    frame.timestamp);
+    std::cout << "Num keyframes: " << scene_->keyframes().size() << std::endl;
+
+    if (!initial_mapped_ &&
+        scene_->keyframes().size() >= min_num_initial_map_kfs_) {
+      std::unique_lock<std::mutex> lock_render(mutex_render_);
+      gaussians_->trainingSetup(opt_params_);
+      std::cout << "Inital mapped!\n";
+      break;
+    }
+  }
+
+  int SLAM_stop_iter = 0;
+  // Start training loop while still processing new frames
+  std::cout << "Starting training loop" << std::endl;
+  while (!isExternalDataStopped() && !isStopped()) {
+    // Process any pending frames
+    while (auto maybe_frame = frame_queue_.pop(false)) {
+      processNewFrame(maybe_frame->rgb_image, maybe_frame->depth_image,
+                      maybe_frame->pose, maybe_frame->timestamp);
+    }
+
+    trainForOneIteration();
+    SLAM_stop_iter = getIteration();
+
+    // std::cout << "Loop check: isExternalDataStopped()="
+    //           << (isExternalDataStopped() ? "true" : "false")
+    //           << ", isStopped()=" << (isStopped() ? "true" : "false")
+    //           << std::endl;
+  }
+
+  std::cout << "Training finished" << std::endl;
+
+  frame_queue_.stop();
+
+  if (render_fly_through_) {
+    auto video_dir = result_dir_ / "flythrough";
+    CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
+    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30,
+                          render_fly_through_speed_, 0.8f, 2);
+    // render3DExplorationVideo(video_dir / "3d_exploration", 1920, 1080, 30,
+    //                          20.0f, 0.05f, false);
+  }
+
+  // For debug: basically viewer now
+  // while (getIteration() < 100000) {
+  //   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+  // }
+
+  saveTotalGaussians("_shutdown");
+  // Save and clear
+  renderAndRecordAllKeyframes("_shutdown");
+  // savePly(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
+  // "ply");
+  saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
+            "data");
+  writeKeyframeUsedTimes(result_dir_ / "used_times", "final");
+
+  signalStop();
+  if (completion_callback_) {
+    completion_callback_();
+  }
+}
+
 bool GaussianMapper::isKeyframe(const Sophus::SE3f& current_pose,
                                 double current_time) {
   if (scene_->keyframes().empty()) {
@@ -4724,211 +4343,79 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
                                      const cv::Mat& depth_or_right_image,
                                      const Sophus::SE3f& pose,
                                      const double timestamp) {
-  // std::cout << "\n[ProcessFrame] Starting..." << std::endl;
-  // size_t free_mem, total_mem;
-  // cudaMemGetInfo(&free_mem, &total_mem);
-  // std::cout << "[ProcessFrame] Starting CUDA Memory - Free: "
-  //           << free_mem / 1024 / 1024
-  //           << "MB, Total: " << total_mem / 1024 / 1024 << "MB" <<
-  //           std::endl;
+  std::cout << "[ProcessFrame] Updating external data..." << std::endl;
+  setRecentExternalData(rgb_image, pose);
 
-  try {
-    // First, update external data without holding the main lock
-    // std::cout << "[ProcessFrame] Updating external data..." << std::endl;
-    setRecentExternalData(rgb_image, pose);
-
-    // Check if this should be a keyframe - use a separate short lock
-    bool should_create_keyframe = false;
-    {
-      // std::cout << "[ProcessFrame] Acquiring lock for keyframe check..."
-      //           << std::endl;
-      std::unique_lock<std::mutex> lock(mutex_new_frame_);
-      should_create_keyframe = isKeyframe(pose, timestamp);
-      // std::cout << "[ProcessFrame] Should create keyframe: "
-      //           << should_create_keyframe << std::endl;
-    }
-
-    if (!should_create_keyframe) {
-      // std::cout << "[ProcessFrame] Not a keyframe, returning" << std::endl;
-      return;
-    }
-
-    // Prepare the new keyframe without holding the lock
-    // std::cout << "[ProcessFrame] Creating new keyframe..." << std::endl;
-    std::shared_ptr<GaussianKeyframe> new_kf =
-        std::make_shared<GaussianKeyframe>(scene_->keyframes().size(),
-                                           getIteration(), keyframe_save_dir_);
-    // std::cout << "New kf. fid: " << new_kf->fid_ << std::endl;
-
-    new_kf->zfar_ = z_far_;
-    new_kf->znear_ = z_near_;
-
-    // std::cout << "new_kf->zfar_" << new_kf->zfar_ << std::endl;
-    // std::cout << "new_kf->znear_" << new_kf->znear_ << std::endl;
-
-    // Set pose
-    // std::cout << "[ProcessFrame] Setting pose..." << std::endl;
-    new_kf->setPose(pose.unit_quaternion().cast<double>(),
-                    pose.translation().cast<double>());
-
-    // Get camera parameters - brief lock
-    Camera camera;
-    {
-      // std::cout << "[ProcessFrame] Getting camera parameters..." <<
-      // std::endl;
-      std::unique_lock<std::mutex> lock(mutex_new_frame_);
-      camera = scene_->cameras_.at(0);
-    }
-    new_kf->setCameraParams(camera);
-
-    // Process images - no lock needed
-    // std::cout << "[ProcessFrame] Processing images..." << std::endl;
-
-    // std::cout << "[ProcessFrame] Image check - RGB size: " <<
-    // rgb_image.size()
-    //           << ", type: " << rgb_image.type()
-    //           << ", empty: " << rgb_image.empty() << std::endl;
-
-    // {
-    //   // Save input RGB image
-    //   cv::Mat save_rgb = rgb_image.clone();
-    //   if (save_rgb.type() == CV_32FC3) {
-    //     save_rgb.convertTo(save_rgb, CV_8UC3, 255.0);
-    //   }
-    //   cv::cvtColor(save_rgb, save_rgb, cv::COLOR_RGB2BGR);
-    //   cv::imwrite("/workspaces/large_scale_gaussian_slam/debug_input_rgb.png",
-    //               save_rgb);
-    //   std::cout << "Saved input RGB image to "
-    //                "/workspaces/large_scale_gaussian_slam/debug_input_rgb.png"
-    //             << std::endl;
-    // }
-
-    cv::Mat rgb_undistorted = rgb_image;
-    // std::cout << "[ProcessFrame] Undistorted copy created" << std::endl;
-
-    try {
-      // std::cout << "[ProcessFrame] Starting tensor conversion..." <<
-      // std::endl; std::cout << "[ProcessFrame] Device type: " <<
-      // device_type_
-      // << std::endl;
-
-      new_kf->gaus_pyramid_height_ = camera.gaus_pyramid_height_;
-      new_kf->gaus_pyramid_width_ = camera.gaus_pyramid_width_;
-      new_kf->gaus_pyramid_times_of_use_ = kf_gaus_pyramid_times_of_use_;
-
-      // {
-      //   // Save PyTorch tensor image
-      //   torch::Tensor cpu_tensor = new_kf->original_image_.cpu().clone();
-      //   if (cpu_tensor.dim() == 3 && cpu_tensor.size(0) == 3) {
-      //     cpu_tensor = cpu_tensor.permute({1, 2, 0}).contiguous();
-      //   }
-      //   cv::Mat tensor_img(cpu_tensor.size(0), cpu_tensor.size(1),
-      //   CV_32FC3); std::memcpy(tensor_img.data,
-      //   cpu_tensor.data_ptr<float>(),
-      //               sizeof(float) * tensor_img.rows * tensor_img.cols * 3);
-
-      //   tensor_img.convertTo(tensor_img, CV_8UC3, 255.0);
-      //   cv::cvtColor(tensor_img, tensor_img, cv::COLOR_RGB2BGR);
-      //   cv::imwrite(
-      //       "/workspaces/large_scale_gaussian_slam/debug_tensor_image.png",
-      //       tensor_img);
-      //   std::cout
-      //       << "Saved tensor image to "
-      //          "/workspaces/large_scale_gaussian_slam/debug_tensor_image.png"
-      //       << std::endl;
-      // }
-
-    } catch (const std::exception& e) {
-      std::cerr << "[ProcessFrame] Exception in tensor conversion: " << e.what()
-                << std::endl;
-      throw;
-    } catch (...) {
-      std::cerr << "[ProcessFrame] Unknown exception in tensor conversion"
-                << std::endl;
-      throw;
-    }
-
-    // std::cout << "[ProcessFrame] Setting undistorted image" << std::endl;
-    new_kf->img_undist_ = rgb_undistorted;
-
-    // std::cout << "[ProcessFrame] Setting auxiliary image..." << std::endl;
-    if (sensor_type_ == STEREO) {
-      new_kf->img_auxiliary_undist_ = depth_or_right_image;
-    } else if (sensor_type_ == RGBD) {
-      new_kf->img_auxiliary_undist_ = depth_or_right_image;
-    } else {
-      throw std::runtime_error(
-          "[GaussianMapper] Unsupported sensor type for auxiliary image");
-    }
-
-    // Compute transforms - no lock needed
-    // std::cout << "[ProcessFrame] Computing transforms..." << std::endl;
-    try {
-      new_kf->computeTransformTensors();
-    } catch (const std::exception& e) {
-      std::cerr << "[ProcessFrame] Exception in transform computation: "
-                << e.what() << std::endl;
-      throw;
-    }
-
-    // Now take the lock only for the critical section of adding to scene
-    {
-      // std::cout << "[ProcessFrame] Adding keyframe to scene..." <<
-      // std::endl;
-      std::unique_lock<std::mutex> lock(mutex_new_frame_);
-
-      // // Double-check in case another thread created a keyframe while we
-      // were
-      // // preparing
-      // if (!isKeyframe(pose, timestamp)) {
-      //   std::cout << "[ProcessFrame] Keyframe no longer needed after "
-      //                "preparation, returning"
-      //             << std::endl;
-      //   return;
-      // }
-
-      increaseKeyframeTimesOfUse(new_kf, newKeyframeTimesOfUse());
-
-      scene_->addKeyframe(new_kf);
-      new_kf->initOptimizer(device_type_, opt_params_.pose_lr_,
-                            opt_params_.exposure_lr_,
-                            opt_params_.depth_scale_bias_lr_);
-      kfid_shuffled_ = false;
-
-      // Update tracking info
-      last_keyframe_pose_ = pose;
-      last_keyframe_timestamp_ = timestamp;
-    }
-
-    // Generate point cloud after releasing the lock
-    // std::cout << "[ProcessFrame] Generating point cloud..." << std::endl;
-
-    // Prepare multi resolution images for training
-    new_kf->generateImagePyramid();
-
-    if (sensor_type_ == MONOCULAR) {
-      new_kf->setupMonoData(device_type_, monocular_depth_estimator_,
-                            min_depth_, max_depth_);
-    } else if (sensor_type_ == STEREO && !depth_or_right_image.empty()) {
-      new_kf->setupStereoData(stereo_baseline_length_, device_type_,
-                              stereo_depth_estimator_, min_depth_, max_depth_);
-    } else if (sensor_type_ == RGBD && !new_kf->img_auxiliary_undist_.empty()) {
-      new_kf->setupRGBDData();
-    }
-    std::unique_lock<std::mutex> lock_render(mutex_render_);
-    sampleGaussians(new_kf);
-
-    // Only update it if we are actually using it
-    if (keyframe_selection_strategy_ == 1) {
-      keyframe_queue_->notifyNewKeyframeAdded(new_kf);
-    }
-
-    // std::cout << "[ProcessFrame] Successfully completed" << std::endl;
-  } catch (const std::exception& e) {
-    std::cerr << "[ProcessFrame] Critical exception in process frame: "
-              << e.what() << std::endl;
-    throw;  // Re-throw after logging
+  if (!isKeyframe(pose, timestamp)) {
+    std::cout << "[ProcessFrame] Not a keyframe, returning" << std::endl;
+    return;
   }
+
+  // Update tracking info
+  last_keyframe_pose_ = pose;
+  last_keyframe_timestamp_ = timestamp;
+
+  // std::cout << "[ProcessFrame] Creating new keyframe..." << std::endl;
+  std::shared_ptr<GaussianKeyframe> pkf = std::make_shared<GaussianKeyframe>(
+      scene_->keyframes().size(), getIteration(), keyframe_save_dir_);
+  std::cout << "New kf. fid: " << pkf->fid_ << std::endl;
+
+  pkf->zfar_ = z_far_ * scene_->cameras_extent_;
+  pkf->znear_ = z_near_ * scene_->cameras_extent_;
+
+  pkf->setPose(pose.unit_quaternion().cast<double>(),
+               pose.translation().cast<double>());
+
+  Camera camera = scene_->cameras_.at(0);
+  pkf->setCameraParams(camera);
+
+  pkf->gaus_pyramid_height_ = camera.gaus_pyramid_height_;
+  pkf->gaus_pyramid_width_ = camera.gaus_pyramid_width_;
+  pkf->gaus_pyramid_times_of_use_ = kf_gaus_pyramid_times_of_use_;
+
+  // Add the new keyframe to the scene
+  pkf->computeTransformTensors();
+  scene_->addKeyframe(pkf);
+  kfid_shuffled_ = false;
+  // Only update it if we are actually using it
+  if (keyframe_selection_strategy_ == 1) {
+    keyframe_queue_->notifyNewKeyframeAdded(pkf);
+  }
+
+  // Give new keyframes times of use and add it to the training sliding window
+  increaseKeyframeTimesOfUse(pkf, newKeyframeTimesOfUse());
+
+  cv::Mat rgb_undistorted = rgb_image;
+  pkf->img_undist_ = rgb_undistorted;
+  pkf->img_auxiliary_undist_ = depth_or_right_image;
+
+  torch::Tensor input_tensor = feat_extractor_->parseInput(pkf->img_undist_);
+  pkf->feature_map_ = feat_extractor_->extractDenseFeatures(input_tensor);
+
+  pkf->initOptimizer(device_type_, opt_params_.pose_lr_,
+                     opt_params_.exposure_lr_,
+                     opt_params_.depth_scale_bias_lr_);
+
+  // Prepare multi resolution images for training
+  pkf->generateImagePyramid();
+
+  if (sensor_type_ == MONOCULAR) {
+    pkf->setupMonoData(device_type_, monocular_depth_estimator_, min_depth_,
+                       max_depth_);
+  } else if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
+    pkf->setupStereoData(stereo_baseline_length_, device_type_,
+                         stereo_depth_estimator_, min_depth_, max_depth_);
+  } else if (sensor_type_ == RGBD && !pkf->img_auxiliary_undist_.empty()) {
+    pkf->setupRGBDData();
+  }
+
+  std::unique_lock<std::mutex> lock(mutex_render_);
+  sampleGaussians(pkf);
+
+  pkf->loaded_ = true;
+  pkf->allow_eviction_ = true;
+
+  // std::cout << "[ProcessFrame] Successfully completed" << std::endl;
 }
 
 void GaussianMapper::setRecentExternalData(const cv::Mat& rgb_image,
@@ -5146,65 +4633,6 @@ torch::Tensor GaussianMapper::computeLoGProbability(
   // Step 7: Extract result and clamp to [0, 1]
   result = result[0][0];  // Remove batch and channel dimensions -> [H, W]
   return torch::clamp(result, 0.0f, 1.0f);
-}
-
-// Alternative fast implementation using morphological operations
-torch::Tensor GaussianMapper::densify_depth_morphological(
-    const torch::Tensor& depth_map,
-    float invalid_threshold,
-    int dilation_size) {
-  auto device = depth_map.device();
-  if (!device.is_cuda()) {
-    throw std::runtime_error("Input tensor must be on CUDA device");
-  }
-
-  auto depth = depth_map.to(torch::kFloat32);
-  auto valid_mask = depth > invalid_threshold;
-
-  // Create structuring element for morphological operations
-  auto kernel_size = dilation_size;
-  auto kernel =
-      torch::ones({1, 1, kernel_size, kernel_size},
-                  torch::TensorOptions().dtype(torch::kFloat32).device(device));
-
-  // Prepare input for convolution
-  auto input_4d = depth;
-  if (input_4d.dim() == 2) {
-    input_4d = input_4d.unsqueeze(0).unsqueeze(0);
-  } else if (input_4d.dim() == 3) {
-    input_4d = input_4d.unsqueeze(0);
-  }
-
-  auto mask_4d = valid_mask.to(torch::kFloat32);
-  if (mask_4d.dim() == 2) {
-    mask_4d = mask_4d.unsqueeze(0).unsqueeze(0);
-  } else if (mask_4d.dim() == 3) {
-    mask_4d = mask_4d.unsqueeze(0);
-  }
-
-  // Dilate valid regions and interpolate
-  auto dilated_mask =
-      torch::conv2d(mask_4d, kernel, {}, 1, kernel_size / 2) > 0;
-  auto sum_values =
-      torch::conv2d(input_4d * mask_4d, kernel, {}, 1, kernel_size / 2);
-  auto sum_weights = torch::conv2d(mask_4d, kernel, {}, 1, kernel_size / 2);
-
-  auto interpolated = sum_values / (sum_weights + 1e-8f);
-
-  // Remove extra dimensions
-  if (depth.dim() == 2) {
-    interpolated = interpolated.squeeze(0).squeeze(0);
-    dilated_mask = dilated_mask.squeeze(0).squeeze(0);
-  } else if (depth.dim() == 3) {
-    interpolated = interpolated.squeeze(0);
-    dilated_mask = dilated_mask.squeeze(0);
-  }
-
-  // Fill invalid regions with interpolated values
-  auto result = torch::where(valid_mask, depth,
-                             torch::where(dilated_mask, interpolated, depth));
-
-  return result;
 }
 
 void GaussianMapper::initializeLaplacianOfGaussianKernel() {
@@ -5522,118 +4950,4 @@ torch::Tensor GaussianMapper::sampleConf(const torch::Tensor& mono_depth_conf,
 
   // Return flattened result [N]
   return sampled[0][0][0];  // Remove batch and channel dimensions
-}
-
-void GaussianMapper::testTransferGaussiansAcrossChunks() {
-  // std::cout << "=== Starting Transfer Gaussians Test ===" << std::endl;
-
-  // if (!chunk_manager_) {
-  //   std::cerr << "Error: chunk_manager_ is null" << std::endl;
-  //   return;
-  // }
-
-  // std::vector<ChunkCoord> all_chunks =
-  // chunk_manager_->getExistingChunkCoords(); std::cout << "Found " <<
-  // all_chunks.size() << " existing chunks" << std::endl;
-
-  // std::cout << "Applying translation to all gaussians..." << std::endl;
-
-  // // Create a simple translation matrix (translate by [1.0, 0.5, 0.2])
-  // Eigen::Matrix4f translation_matrix = Eigen::Matrix4f::Identity();
-  // translation_matrix.block<3, 1>(0, 3) = Eigen::Vector3f(10.0f, 0.0f,
-  // 0.0f);
-
-  // torch::Tensor transform_tensor =
-  //     tensor_utils::EigenMatrix2TorchTensor(translation_matrix,
-  //     device_type_)
-  //         .transpose(0, 1);
-
-  // for (size_t i = 0; i < all_chunks.size(); i++) {
-  //   const auto& coord = all_chunks[i];
-
-  //   if (!chunk_manager_->chunkExists(coord)) continue;
-
-  //   if (!chunk_manager_->loadChunkSync(coord, true, false)) {
-  //     throw std::runtime_error("Failed to load gaussian for chunk");
-  //   }
-
-  //   {
-  //     auto chunk = chunk_manager_->getChunkAt(coord);
-  //     if (!chunk || !chunk->getGaussians()) {
-  //       throw std::runtime_error("Chunk or Gaussians not found for coord");
-  //     }
-  //     ChunkOptimizationGuard guard(chunk_manager_.get(), {chunk});
-
-  //     auto gaussians = chunk->getGaussians();
-  //     torch::Tensor positions = gaussians->getXYZ();
-
-  //     // Apply translation using the existing transformPoints function
-  //     transformPoints(positions, transform_tensor);
-
-  //     torch::Tensor optimizable_xyz =
-  //         gaussians->replaceTensorToOptimizer(positions, 0);
-  //     gaussians->xyz_ = optimizable_xyz;
-  //     gaussians->Tensor_vec_xyz_ = {gaussians->xyz_};
-
-  //     std::cout << "Applied translation to chunk " << coord.x << "," <<
-  //     coord.y
-  //               << "," << coord.z << std::endl;
-  //   }  // Guard automatically releases here
-  // }
-
-  // // Step 4: Now test the transferGaussiansAcrossChunks function
-  // std::cout << "Testing transferGaussiansAcrossChunks..." << std::endl;
-  // chunk_manager_->transferGaussiansAcrossChunks();
-
-  // all_chunks = chunk_manager_->getExistingChunkCoords();
-
-  // // Create a simple translation matrix (translate by [1.0, 0.5, 0.2])
-  // Eigen::Matrix4f translation_back_matrix = Eigen::Matrix4f::Identity();
-  // translation_back_matrix.block<3, 1>(0, 3) =
-  //     Eigen::Vector3f(-10.0f, 0.0f, 0.0f);
-
-  // torch::Tensor transform_back_tensor =
-  //     tensor_utils::EigenMatrix2TorchTensor(translation_back_matrix,
-  //                                           device_type_)
-  //         .transpose(0, 1);
-
-  // for (size_t i = 0; i < all_chunks.size(); i++) {
-  //   const auto& coord = all_chunks[i];
-
-  //   if (!chunk_manager_->chunkExists(coord)) continue;
-
-  //   if (!chunk_manager_->loadChunkSync(coord, true, false)) {
-  //     throw std::runtime_error("Failed to load gaussian for chunk");
-  //   }
-
-  //   {
-  //     auto chunk = chunk_manager_->getChunkAt(coord);
-  //     if (!chunk || !chunk->getGaussians()) {
-  //       throw std::runtime_error("Chunk or Gaussians not found for coord");
-  //     }
-
-  //     ChunkOptimizationGuard guard(chunk_manager_.get(), {chunk});
-
-  //     auto gaussians = chunk->getGaussians();
-  //     torch::Tensor positions = gaussians->getXYZ();
-
-  //     // Apply translation using the existing transformPoints function
-  //     transformPoints(positions, transform_back_tensor);
-
-  //     torch::Tensor optimizable_xyz =
-  //         gaussians->replaceTensorToOptimizer(positions, 0);
-  //     gaussians->xyz_ = optimizable_xyz;
-  //     gaussians->Tensor_vec_xyz_ = {gaussians->xyz_};
-
-  //     std::cout << "Applied translation to chunk " << coord.x << "," <<
-  //     coord.y
-  //               << "," << coord.z << std::endl;
-  //   }  // Guard automatically releases here
-  // }
-
-  // // Step 4: Now test the transferGaussiansAcrossChunks function
-  // std::cout << "Testing transferGaussiansAcrossChunks..." << std::endl;
-  // chunk_manager_->transferGaussiansAcrossChunks();
-
-  // std::cout << "Test completed." << std::endl;
 }

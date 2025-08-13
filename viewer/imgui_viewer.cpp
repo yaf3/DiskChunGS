@@ -138,8 +138,6 @@ void ImGuiViewer::readConfigFromFile(std::filesystem::path cfg_path) {
   densify_interval_ = pGausMapper_->densifyInterval();
   new_kf_times_of_use_ = pGausMapper_->newKeyframeTimesOfUse();
   stable_num_iter_existence_ = pGausMapper_->stableNumIterExistence();
-
-  do_inactive_geo_densify_ = pGausMapper_->isdoingInactiveGeoDensify();
 }
 
 void ImGuiViewer::run() {
@@ -525,7 +523,6 @@ void ImGuiViewer::run() {
     new_kf_times_of_use_ = params_in.new_kf_times_of_use;
     stable_num_iter_existence_ = params_in.stable_num_iter_existence;
     keep_training_ = params_in.keep_training;
-    do_inactive_geo_densify_ = params_in.do_inactive_geo_densify;
 
     //--------------Display mode panel--------------
     ImGui::SetNextWindowPos(ImVec2(glfw_window_width_ - panel_width_, 0),
@@ -589,8 +586,6 @@ void ImGuiViewer::run() {
           ImGui::Text("Total Chunks: Not initialized");
         }
 
-        ImGui::Checkbox("Densify with inactive geometries",
-                        &do_inactive_geo_densify_);
         ImGui::Checkbox("Keep training after stop", &keep_training_);
 
         ImGui::SliderFloat("Position l.r.", &position_lr_init_, 0.00001f,
@@ -627,7 +622,6 @@ void ImGuiViewer::run() {
     params_out.new_kf_times_of_use = new_kf_times_of_use_;
     params_out.stable_num_iter_existence = stable_num_iter_existence_;
     params_out.keep_training = keep_training_;
-    params_out.do_inactive_geo_densify = do_inactive_geo_densify_;
     pGausMapper_->setVaribleParameters(params_out);
 
     //--------------Camera view panel--------------

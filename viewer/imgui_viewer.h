@@ -144,7 +144,6 @@ class ImGuiViewer {
 
   bool keep_training_ = false;
   bool do_gaus_pyramid_training_;
-  bool do_inactive_geo_densify_;
 
   // Performance tracking
   float iterations_per_second_ = 0.0f;

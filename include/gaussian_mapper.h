@@ -68,6 +68,10 @@ class KeyframeSelector;  // Forward declaration
       throw std::runtime_error("Cannot create result directory at " + \
                                dir.string());
 struct UndistortParams {
+  UndistortParams() : old_size_(0, 0) {
+    dist_coeff_ = (cv::Mat_<float>(1, 4) << 0.0f, 0.0f, 0.0f, 0.0f);
+  }
+
   UndistortParams(
       const cv::Size &old_size,
       cv::Mat dist_coeff = (cv::Mat_<float>(1, 4) << 0.0f, 0.0f, 0.0f, 0.0f))
@@ -96,7 +100,6 @@ struct VariableParameters {
 
   bool keep_training;
   bool do_gaus_pyramid_training;
-  bool do_inactive_geo_densify;
 };
 
 void copyFolder(const std::filesystem::path &source,
@@ -104,19 +107,19 @@ void copyFolder(const std::filesystem::path &source,
 
 class GaussianMapper {
  public:
-  GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
-                 std::filesystem::path gaussian_config_file_path,
-                 std::filesystem::path result_dir = "",
+  GaussianMapper(
+      std::shared_ptr<ORB_SLAM3::System> pSLAM,
+      std::filesystem::path gaussian_config_file_path,
+      std::filesystem::path result_dir,
+      int seed = 0,
+      torch::DeviceType device_type = torch::kCUDA,
+      ORB_SLAM3::System::eSensor sensor_type = ORB_SLAM3::System::MONOCULAR,
+      const string &orb_settings_path = "");
+
+  GaussianMapper(std::filesystem::path gaussian_config_file_path,
+                 std::filesystem::path result_dir,
                  int seed = 0,
                  torch::DeviceType device_type = torch::kCUDA);
-
-  // External mode initialization
-  GaussianMapper(const SystemSensorType sensor_type,
-                 const string &orb_settings_path,
-                 std::filesystem::path gaussian_config_file_path,
-                 std::filesystem::path result_dir,
-                 int seed,
-                 torch::DeviceType device_type);
 
   void readConfigFromFile(std::filesystem::path cfg_path);
 
@@ -148,7 +151,6 @@ class GaussianMapper {
   int newKeyframeTimesOfUse();
   int stableNumIterExistence();
   bool isKeepingTraining();
-  bool isdoingInactiveGeoDensify();
 
   void setLambdaDssim(const float lambda_dssim);
   void setOpacityResetInterval(const int interval);
@@ -157,7 +159,6 @@ class GaussianMapper {
   void setNewKeyframeTimesOfUse(const int times);
   void setStableNumIterExistence(const int niter);
   void setKeepTraining(const bool keep);
-  void setDoInactiveGeoDensify(const bool inactive_geo_densify);
 
   VariableParameters getVaribleParameters();
   void setVaribleParameters(const VariableParameters &params);
@@ -238,9 +239,6 @@ class GaussianMapper {
  protected:
   void cullKeyframes();
 
-  void increasePcdByKeyframeInactiveGeoDensify(
-      std::shared_ptr<GaussianKeyframe> pkf);
-
   void sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf);
 
   // bool needInterruptTraining();
@@ -301,9 +299,7 @@ class GaussianMapper {
 
   torch::Tensor computeLoGProbability(const torch::Tensor &image);
   void initializeLaplacianOfGaussianKernel();
-  torch::Tensor densify_depth_morphological(const torch::Tensor &depth_map,
-                                            float invalid_threshold = 0.0f,
-                                            int dilation_size = 3);
+
   void initializeMonocularDepthEstimator();
   void initializeStereoDepthEstimator();
   std::tuple<std::vector<float>, std::vector<float>>
@@ -426,15 +422,12 @@ class GaussianMapper {
   // Settings
   SystemSensorType sensor_type_;
 
-  float monocular_inactive_geo_densify_max_pixel_dist_ = 20.0;
-  float depth_densify_subsample_ratio_ = 0.1;
   float stereo_baseline_length_ = 0.0f;
   int stereo_min_disparity_ = 0;
   int stereo_num_disparity_ = 128;
   bool do_stereo_loss_ = false;
 
   cv::Mat stereo_Q_;
-  cv::Ptr<cv::cuda::StereoSGM> stereo_cv_sgm_;
   std::shared_ptr<StereoDepth> stereo_depth_estimator_;
   std::shared_ptr<MonoDepth> monocular_depth_estimator_;
   float min_depth_ = 0.0f;
@@ -442,9 +435,6 @@ class GaussianMapper {
 
   std::unique_ptr<XFeat::XFDetector> feat_extractor_;
   std::unique_ptr<GuidedMVS> guided_mvs_;
-
-  bool inactive_geo_densify_ = true;
-  bool depth_densify_ = false;
 
   unsigned long min_num_initial_map_kfs_;
   torch::Tensor background_;
@@ -535,7 +525,6 @@ class GaussianMapper {
   void setCompletionCallback(std::function<void()> callback);
 
   // Member variables for external pose handling
-  std::mutex mutex_new_frame_;
   Sophus::SE3f last_keyframe_pose_;
   float min_keyframe_translation_{
       0.25f};                           // Minimum translation for new keyframe

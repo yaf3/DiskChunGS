@@ -195,8 +195,6 @@ class GaussianKeyframe {
   std::vector<float> kps_pixel_;
   std::vector<float> kps_point_local_;
 
-  bool done_inactive_geo_densify_ = false;
-
   torch::Tensor exposure_transform_;  // 3x4 matrix
   torch::Tensor depth_scale_, depth_bias_;
   std::vector<torch::Tensor> Tensor_vec_rW2C_, Tensor_vec_tW2C_,

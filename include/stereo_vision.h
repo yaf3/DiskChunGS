@@ -30,13 +30,3 @@ torch::Tensor reprojectDepthPinhole(torch::Tensor& depth,
                                     torch::Tensor& mask,
                                     std::vector<float>& intr,
                                     int width);
-
-std::tuple<torch::Tensor, torch::Tensor>
-monocularPinholeInactiveGeoDensifyBySearchingNeighborhoodKeypoints(
-    torch::Tensor& kps_pixel,
-    torch::Tensor& kps_has3D,
-    torch::Tensor& kps_point_local,
-    torch::Tensor& colors,
-    float max_pixel_dist,
-    std::vector<float>& intr,
-    int width);
