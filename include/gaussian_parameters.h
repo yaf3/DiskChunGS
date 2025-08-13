@@ -67,11 +67,6 @@ class GaussianOptimizationParams {
                              float depth_scale_bias_lr = 0.0001f,
                              float lambda_dssim = 0.2f,
                              float lambda_depth = 0.001f,
-                             int densification_interval = 100,
-                             int opacity_reset_interval = 3000,
-                             int densify_from_iter = 500,
-                             int densify_until_iter = 15'000,
-                             float densify_grad_threshold = 0.0002f,
                              int auto_distribute = 0,
                              bool smooth_l1 = false,
                              float opacity_reg = 0.01f);
@@ -89,11 +84,6 @@ class GaussianOptimizationParams {
   float depth_scale_bias_lr_;
   float lambda_dssim_;
   float lambda_depth_;
-  int densification_interval_;
-  int opacity_reset_interval_;
-  int densify_from_iter_;
-  int densify_until_iter_;
-  float densify_grad_threshold_;
   int auto_distribute_;
   bool smooth_l1_;
   float opacity_reg_;

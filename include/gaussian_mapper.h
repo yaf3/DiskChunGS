@@ -124,7 +124,6 @@ class GaussianMapper {
   void readConfigFromFile(std::filesystem::path cfg_path);
 
   void run();
-  void trainColmap();
   void trainForOneIteration();
 
   bool isStopped();
@@ -145,17 +144,11 @@ class GaussianMapper {
   float rotationLearningRate();
   float lambdaDssim();
   float lambdaDepth();
-  int opacityResetInterval();
-  float densifyGradThreshold();
-  int densifyInterval();
   int newKeyframeTimesOfUse();
   int stableNumIterExistence();
   bool isKeepingTraining();
 
   void setLambdaDssim(const float lambda_dssim);
-  void setOpacityResetInterval(const int interval);
-  void setDensifyGradThreshold(const float th);
-  void setDensifyInterval(const int interval);
   void setNewKeyframeTimesOfUse(const int times);
   void setStableNumIterExistence(const int niter);
   void setKeepTraining(const bool keep);
@@ -164,9 +157,6 @@ class GaussianMapper {
   void setVaribleParameters(const VariableParameters &params);
 
   GaussianModelParams &getGaussianModelParams() { return this->model_params_; }
-  void setColmapDataPath(std::filesystem::path colmap_path) {
-    this->model_params_.source_path_ = colmap_path;
-  }
   void setSensorType(SystemSensorType sensor_type) {
     this->sensor_type_ = sensor_type;
   }
@@ -365,8 +355,6 @@ class GaussianMapper {
   std::shared_ptr<ORB_SLAM3::System> pSLAM_;
 
   float chunk_size_ = 50.0;
-  int max_chunks_in_memory_ = 50;
-  size_t max_vram_budget_mb_ = 8192;  // 8GB default VRAM budget for chunks
   std::filesystem::path chunk_save_dir_;
   std::filesystem::path keyframe_save_dir_;
 
@@ -461,9 +449,7 @@ class GaussianMapper {
   int training_report_interval_;
   bool record_loop_ply_;
 
-  int prune_big_point_after_iter_;
-  float densify_min_opacity_ = 20;
-  int appearance_embedding_ = 0;
+  int exposure_optimization_ = 0;
   float init_proba_scaler_ = 2.0;
 
   // Tools

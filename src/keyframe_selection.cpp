@@ -10,8 +10,6 @@
 // Constructor
 KeyframeQueue::KeyframeQueue(std::shared_ptr<GaussianScene> scene,
                              size_t queue_size,
-                             float similarity_threshold,
-                             int auto_distribute,
                              const std::map<std::size_t, float>* loss_map)
     : scene_(scene),
       queue_size_(queue_size),

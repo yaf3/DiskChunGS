@@ -133,9 +133,6 @@ void ImGuiViewer::readConfigFromFile(std::filesystem::path cfg_path) {
   scaling_lr_ = pGausMapper_->scalingLearningRate();
   rotation_lr_ = pGausMapper_->rotationLearningRate();
   lambda_dssim_ = pGausMapper_->lambdaDssim();
-  opacity_reset_interval_ = pGausMapper_->opacityResetInterval();
-  densify_grad_th_ = pGausMapper_->densifyGradThreshold();
-  densify_interval_ = pGausMapper_->densifyInterval();
   new_kf_times_of_use_ = pGausMapper_->newKeyframeTimesOfUse();
   stable_num_iter_existence_ = pGausMapper_->stableNumIterExistence();
 }
@@ -517,9 +514,6 @@ void ImGuiViewer::run() {
     scaling_lr_ = params_in.scaling_lr;
     rotation_lr_ = params_in.rotation_lr;
     lambda_dssim_ = params_in.lambda_dssim;
-    opacity_reset_interval_ = params_in.opacity_reset_interval;
-    densify_grad_th_ = params_in.densify_grad_th;
-    densify_interval_ = params_in.densify_interval;
     new_kf_times_of_use_ = params_in.new_kf_times_of_use;
     stable_num_iter_existence_ = params_in.stable_num_iter_existence;
     keep_training_ = params_in.keep_training;
@@ -599,10 +593,6 @@ void ImGuiViewer::run() {
                            "%.5f");
         ImGui::SliderFloat("Lambda dssim", &lambda_dssim_, 0.01f, 0.40f,
                            "%.2f");
-        ImGui::SliderInt("Opacity reset", &opacity_reset_interval_, 0, 6000);
-        ImGui::SliderFloat("Densify grad th.", &densify_grad_th_, 0.0001f,
-                           0.0020f, "%.5f");
-        ImGui::SliderInt("Densify int.", &densify_interval_, 1, 400);
         ImGui::SliderInt("New kf. using", &new_kf_times_of_use_, 0, 10);
         ImGui::SliderInt("Stable iter.", &stable_num_iter_existence_, 0, 100);
 
@@ -616,9 +606,6 @@ void ImGuiViewer::run() {
     params_out.scaling_lr = scaling_lr_;
     params_out.rotation_lr = rotation_lr_;
     params_out.lambda_dssim = lambda_dssim_;
-    params_out.opacity_reset_interval = opacity_reset_interval_;
-    params_out.densify_grad_th = densify_grad_th_;
-    params_out.densify_interval = densify_interval_;
     params_out.new_kf_times_of_use = new_kf_times_of_use_;
     params_out.stable_num_iter_existence = stable_num_iter_existence_;
     params_out.keep_training = keep_training_;

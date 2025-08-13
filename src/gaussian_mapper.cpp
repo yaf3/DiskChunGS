@@ -104,9 +104,7 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   // Initialize scene
   scene_ = std::make_shared<GaussianScene>(model_params_);
 
-  keyframe_queue_ = std::make_shared<KeyframeQueue>(
-      scene_, 40, keyframe_similarity_threshold_, opt_params_.auto_distribute_,
-      &kfs_loss_);
+  keyframe_queue_ = std::make_shared<KeyframeQueue>(scene_, 40, &kfs_loss_);
 
   // Initialize Laplacian of Gaussian kernel
   initializeLaplacianOfGaussianKernel();
@@ -361,9 +359,7 @@ GaussianMapper::GaussianMapper(std::filesystem::path gaussian_config_file_path,
   // Initialize scene
   scene_ = std::make_shared<GaussianScene>(model_params_);
 
-  keyframe_queue_ = std::make_shared<KeyframeQueue>(
-      scene_, 40, keyframe_similarity_threshold_, opt_params_.auto_distribute_,
-      &kfs_loss_);
+  keyframe_queue_ = std::make_shared<KeyframeQueue>(scene_, 40, &kfs_loss_);
 
   // Initialize Laplacian of Gaussian kernel
   initializeLaplacianOfGaussianKernel();
@@ -494,25 +490,10 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       settings_file["Optimization.lambda_dssim"].operator float();
   opt_params_.lambda_depth_ =
       settings_file["Optimization.lambda_depth"].operator float();
-  opt_params_.densification_interval_ =
-      settings_file["Optimization.densification_interval"].operator int();
-  opt_params_.opacity_reset_interval_ =
-      settings_file["Optimization.opacity_reset_interval"].operator int();
-  opt_params_.densify_from_iter_ =
-      settings_file["Optimization.densify_from_iter"].operator int();
-  opt_params_.densify_until_iter_ =
-      settings_file["Optimization.densify_until_iter"].operator int();
-  opt_params_.densify_grad_threshold_ =
-      settings_file["Optimization.densify_grad_threshold"].operator float();
   opt_params_.auto_distribute_ =
       settings_file["Optimization.auto_distribute"].operator int();
-
-  prune_big_point_after_iter_ =
-      settings_file["Optimization.prune_big_point_after_iter"].operator int();
-  densify_min_opacity_ =
-      settings_file["Optimization.densify_min_opacity"].operator float();
-  appearance_embedding_ =
-      settings_file["Optimization.appearance_embedding"].operator int();
+  exposure_optimization_ =
+      settings_file["Optimization.exposure_optimization"].operator int();
   init_proba_scaler_ =
       settings_file["Optimization.init_proba_scaler"].operator float();
 
@@ -523,15 +504,6 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       settings_file["GaussianViewer.image_scale_main"].operator float();
 
   chunk_size_ = settings_file["Chunking.chunk_size"].operator float();
-  max_chunks_in_memory_ = settings_file["Chunking.max_chunks"].operator int();
-
-  // VRAM budget with fallback for backwards compatibility
-  if (settings_file["Chunking.max_vram_budget_mb"].isNone()) {
-    max_vram_budget_mb_ = 8192;  // Default 8GB
-  } else {
-    max_vram_budget_mb_ =
-        settings_file["Chunking.max_vram_budget_mb"].operator int();
-  }
 }
 
 void GaussianMapper::run() {
@@ -841,112 +813,6 @@ void GaussianMapper::run() {
 
   std::cout << "[MAPPER DEBUG] ===== GaussianMapper::run() COMPLETED ====="
             << std::endl;
-}
-
-void GaussianMapper::trainColmap() {
-  // Delete existing chunks since training
-  if (!chunk_save_dir_.empty() && std::filesystem::exists(chunk_save_dir_)) {
-    for (const auto& entry :
-         std::filesystem::directory_iterator(chunk_save_dir_)) {
-      std::filesystem::remove_all(entry.path());
-    }
-  }
-
-  // Prepare multi resolution images for training
-  for (auto& kfit : scene_->keyframes()) {
-    auto pkf = kfit.second;
-    increaseKeyframeTimesOfUse(pkf, newKeyframeTimesOfUse());
-    if (device_type_ == torch::kCUDA) {
-      cv::cuda::GpuMat img_gpu;
-      img_gpu.upload(pkf->img_undist_);
-      pkf->gaus_pyramid_original_image_.resize(num_gaus_pyramid_sub_levels_);
-      for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-        cv::cuda::GpuMat img_resized;
-        cv::cuda::resize(img_gpu, img_resized,
-                         cv::Size(pkf->gaus_pyramid_width_[l],
-                                  pkf->gaus_pyramid_height_[l]));
-        pkf->gaus_pyramid_original_image_[l] =
-            tensor_utils::cvGpuMat2TorchTensor_Float32(img_resized);
-      }
-    } else {
-      pkf->gaus_pyramid_original_image_.resize(num_gaus_pyramid_sub_levels_);
-      for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-        cv::Mat img_resized;
-        cv::resize(pkf->img_undist_, img_resized,
-                   cv::Size(pkf->gaus_pyramid_width_[l],
-                            pkf->gaus_pyramid_height_[l]));
-        pkf->gaus_pyramid_original_image_[l] =
-            tensor_utils::cvMat2TorchTensor_Float32(img_resized, device_type_);
-      }
-    }
-  }
-
-  // Prepare for training
-  {
-    std::unique_lock<std::mutex> lock_render(mutex_render_);
-    scene_->cameras_extent_ = std::get<1>(scene_->getNerfppNorm());
-    int num_points = static_cast<int>(scene_->cached_point_cloud_.size());
-    torch::Tensor fused_point_cloud = torch::zeros(
-        {num_points, 3},
-        torch::TensorOptions().dtype(torch::kFloat).device(device_type_));
-    torch::Tensor color = torch::zeros(
-        {num_points, 3},
-        torch::TensorOptions().dtype(torch::kFloat).device(device_type_));
-    auto pcd_it = scene_->cached_point_cloud_.begin();
-    for (int point_idx = 0; point_idx < num_points; ++point_idx) {
-      auto& point = (*pcd_it).second;
-      fused_point_cloud.index({point_idx, 0}) = point.xyz_(0);
-      fused_point_cloud.index({point_idx, 1}) = point.xyz_(1);
-      fused_point_cloud.index({point_idx, 2}) = point.xyz_(2);
-      color.index({point_idx, 0}) = point.color_(0);
-      color.index({point_idx, 1}) = point.color_(1);
-      color.index({point_idx, 2}) = point.color_(2);
-      ++pcd_it;
-    }
-    std::cout << "Adding initial points\n";
-    // TODO UPDATE
-    // addPoints(fused_point_cloud, color, torch::Tensor(),
-    // scene_->keyframes());
-    this->initial_mapped_ = true;
-  }
-
-  // Main loop: gaussian splatting training
-  while (!isStopped()) {
-    // Invoke training once
-    trainForOneIteration();
-
-    if (getIteration() >= opt_params_.iterations_) break;
-  }
-
-  // Tail gaussian optimization
-  int densify_interval = densifyInterval();
-  int n_delay_iters = densify_interval * 0.8;
-  while (getIteration() % densify_interval <= n_delay_iters ||
-         isKeepingTraining()) {
-    trainForOneIteration();
-    densify_interval = densifyInterval();
-    n_delay_iters = densify_interval * 0.8;
-  }
-
-  if (render_fly_through_) {
-    auto video_dir = result_dir_ / "flythrough";
-    CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
-    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30,
-                          render_fly_through_speed_, 0.8f, 2);
-    // render3DExplorationVideo(video_dir / "3d_exploration", 1920, 1080, 30,
-    //                          20.0f, 0.05f, false);
-  }
-
-  // Save and clear
-  renderAndRecordAllKeyframes("_shutdown");
-  saveTotalGaussians("_shutdown");
-  // savePly(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
-  // "ply");
-  saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
-            "data");
-  writeKeyframeUsedTimes(result_dir_ / "used_times", "final");
-
-  signalStop();
 }
 
 // Modified version of trainForOneIteration that uses the chunk manager
@@ -2986,25 +2852,28 @@ void GaussianMapper::saveModelParams(std::filesystem::path result_dir) {
 
 void GaussianMapper::writeKeyframeUsedTimes(std::filesystem::path result_dir,
                                             std::string name_suffix) {
-  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
-  std::filesystem::path result_path =
-      result_dir / ("keyframe_used_times" + name_suffix + ".txt");
-  std::ofstream out_stream;
-  out_stream.open(result_path, std::ios::app);
-  if (!out_stream.is_open())
-    throw std::runtime_error("Cannot open json at " + result_path.string());
+  return;
+  //   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
+  //   std::filesystem::path result_path =
+  //       result_dir / ("keyframe_used_times" + name_suffix + ".txt");
+  //   std::ofstream out_stream;
+  //   out_stream.open(result_path, std::ios::app);
+  //   if (!out_stream.is_open())
+  //     throw std::runtime_error("Cannot open json at " +
+  //     result_path.string());
 
-  out_stream << "##[Gaussian Mapper]Iteration " << getIteration()
-             << " keyframe id, used times, remaining times:\n";
-  for (const auto& used_times_it : keyframe_queue_->getKfsUsedTimes()) {
-    out_stream
-        << used_times_it.first << " " << used_times_it.second << " "
-        << scene_->keyframes().at(used_times_it.first)->remaining_times_of_use_
-        << "\n";
-  }
-  out_stream << "##=========================================" << std::endl;
+  //   out_stream << "##[Gaussian Mapper]Iteration " << getIteration()
+  //              << " keyframe id, used times, remaining times:\n";
+  //   for (const auto& used_times_it : keyframe_queue_->getKfsUsedTimes()) {
+  //     out_stream
+  //         << used_times_it.first << " " << used_times_it.second << " "
+  //         <<
+  //         scene_->keyframes().at(used_times_it.first)->remaining_times_of_use_
+  //         << "\n";
+  //   }
+  //   out_stream << "##=========================================" << std::endl;
 
-  out_stream.close();
+  //   out_stream.close();
 }
 
 int GaussianMapper::getIteration() {
@@ -3044,18 +2913,6 @@ float GaussianMapper::lambdaDepth() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return opt_params_.lambda_depth_;
 }
-int GaussianMapper::opacityResetInterval() {
-  std::unique_lock<std::mutex> lock(mutex_settings_);
-  return opt_params_.opacity_reset_interval_;
-}
-float GaussianMapper::densifyGradThreshold() {
-  std::unique_lock<std::mutex> lock(mutex_settings_);
-  return opt_params_.densify_grad_threshold_;
-}
-int GaussianMapper::densifyInterval() {
-  std::unique_lock<std::mutex> lock(mutex_settings_);
-  return opt_params_.densification_interval_;
-}
 int GaussianMapper::newKeyframeTimesOfUse() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return new_keyframe_times_of_use_;
@@ -3071,18 +2928,6 @@ bool GaussianMapper::isKeepingTraining() {
 void GaussianMapper::setLambdaDssim(const float lambda_dssim) {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   opt_params_.lambda_dssim_ = lambda_dssim;
-}
-void GaussianMapper::setOpacityResetInterval(const int interval) {
-  std::unique_lock<std::mutex> lock(mutex_settings_);
-  opt_params_.opacity_reset_interval_ = interval;
-}
-void GaussianMapper::setDensifyGradThreshold(const float th) {
-  std::unique_lock<std::mutex> lock(mutex_settings_);
-  opt_params_.densify_grad_threshold_ = th;
-}
-void GaussianMapper::setDensifyInterval(const int interval) {
-  std::unique_lock<std::mutex> lock(mutex_settings_);
-  opt_params_.densification_interval_ = interval;
 }
 void GaussianMapper::setNewKeyframeTimesOfUse(const int times) {
   std::unique_lock<std::mutex> lock(mutex_settings_);
@@ -3106,9 +2951,6 @@ VariableParameters GaussianMapper::getVaribleParameters() {
   params.scaling_lr = opt_params_.scaling_lr_;
   params.rotation_lr = opt_params_.rotation_lr_;
   params.lambda_dssim = opt_params_.lambda_dssim_;
-  params.opacity_reset_interval = opt_params_.opacity_reset_interval_;
-  params.densify_grad_th = opt_params_.densify_grad_threshold_;
-  params.densify_interval = opt_params_.densification_interval_;
   params.new_kf_times_of_use = new_keyframe_times_of_use_;
   params.stable_num_iter_existence = stable_num_iter_existence_;
   params.keep_training = keep_training_;
@@ -3123,9 +2965,6 @@ void GaussianMapper::setVaribleParameters(const VariableParameters& params) {
   opt_params_.scaling_lr_ = params.scaling_lr;
   opt_params_.rotation_lr_ = params.rotation_lr;
   opt_params_.lambda_dssim_ = params.lambda_dssim;
-  opt_params_.opacity_reset_interval_ = params.opacity_reset_interval;
-  opt_params_.densify_grad_threshold_ = params.densify_grad_th;
-  opt_params_.densification_interval_ = params.densify_interval;
   new_keyframe_times_of_use_ = params.new_kf_times_of_use;
   stable_num_iter_existence_ = params.stable_num_iter_existence;
   keep_training_ = params.keep_training;

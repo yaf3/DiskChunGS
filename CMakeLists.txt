@@ -370,10 +370,6 @@ target_link_libraries(
 ##  Build the test examples to ${PROJECT_SOURCE_DIR}/bin
 ##################################################################################
 
-# This is a C++ libtorch implementation of gaussian-splatting (https://github.com/graphdeco-inria/gaussian-splatting)
-add_executable(train_colmap examples/train_colmap.cpp)
-target_link_libraries(train_colmap gaussian_viewer gaussian_mapper)
-
 add_executable(view_result examples/view_result.cpp)
 target_link_libraries(view_result gaussian_viewer gaussian_mapper)
 
