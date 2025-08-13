@@ -38,8 +38,8 @@ Mapper.keyframe_selection_strategy: 0 # 0:all, 1:recent k
 
 
 GausPyramid.do: 0  # 0:false, 1 or other integer:true
-GausPyramid.num_sub_levels: 2
-GausPyramid.sub_level_times_of_use: 8
+GausPyramid.num_levels: 2
+GausPyramid.level_times_of_use: 8
 
 Pipeline.convert_SHs: 0  # 0:false, 1 or other integer:true
 Pipeline.compute_cov3D: 0  # 0:false, 1 or other integer:true
@@ -87,7 +87,7 @@ Optimization.densify_from_iter: 500
 Optimization.densify_until_iter: -1
 Optimization.densify_grad_threshold: 0.001
 Optimization.auto_distribute: 4  # 0:false, 1 or other integer:true
-Optimization.appearance_embedding: 0
+Optimization.exposure_optimization: 0
 Optimization.init_proba_scaler: 2.0
 
 #--------------------------------------------------------------------------------------------

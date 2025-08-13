@@ -382,19 +382,13 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
 
   // Model parameters
   model_params_.sh_degree_ = settings_file["Model.sh_degree"].operator int();
-  model_params_.resolution_ =
-      settings_file["Model.resolution"].operator float();
   model_params_.white_background_ =
       (settings_file["Model.white_background"].operator int()) != 0;
-  model_params_.eval_ = (settings_file["Model.eval"].operator int()) != 0;
 
   // Pipeline Parameters
   z_near_ = settings_file["Camera.z_near"].operator float();
   z_far_ = settings_file["Camera.z_far"].operator float();
 
-  stereo_min_disparity_ = settings_file["Stereo.min_disparity"].operator int();
-  stereo_num_disparity_ = settings_file["Stereo.num_disparity"].operator int();
-  do_stereo_loss_ = settings_file["Stereo.do_stereo_loss"].operator int();
   min_depth_ = settings_file["Mapper.min_depth_"].operator float();
   max_depth_ = settings_file["Mapper.max_depth_"].operator float();
 
@@ -415,8 +409,6 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       settings_file["Mapper.large_translation_threshold"].operator float();
   stable_num_iter_existence_ =
       settings_file["Mapper.stable_num_iter_existence"].operator int();
-  keyframe_similarity_threshold_ =
-      settings_file["Mapper.keyframe_similarity_threshold"].operator float();
   keyframe_selection_strategy_ =
       settings_file["Mapper.keyframe_selection_strategy"].operator float();
 
@@ -432,9 +424,9 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
   pipe_params_.compute_cov3D_ =
       (settings_file["Pipeline.compute_cov3D"].operator int()) != 0;
   num_gaus_pyramid_sub_levels_ =
-      settings_file["GausPyramid.num_sub_levels"].operator int();
+      settings_file["GausPyramid.num_levels"].operator int();
   int sub_level_times_of_use =
-      settings_file["GausPyramid.sub_level_times_of_use"].operator int();
+      settings_file["GausPyramid.level_times_of_use"].operator int();
   kf_gaus_pyramid_times_of_use_.resize(num_gaus_pyramid_sub_levels_);
   kf_gaus_pyramid_factors_.resize(num_gaus_pyramid_sub_levels_);
   for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
@@ -1056,7 +1048,6 @@ void GaussianMapper::trainForOneIteration() {
   if ((all_keyframes_record_interval_ &&
        getIteration() % all_keyframes_record_interval_ == 0)) {
     renderAndRecordAllKeyframes();
-    // savePly(result_dir_ / std::to_string(getIteration()) / "ply");
     saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
               "data");
   }
@@ -2726,22 +2717,6 @@ void GaussianMapper::renderAndRecordAllKeyframes(std::string name_suffix) {
   }
 }
 
-void GaussianMapper::savePly(std::filesystem::path result_dir) {
-  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
-  keyframesToJson(result_dir);
-  saveModelParams(result_dir);
-
-  std::filesystem::path ply_dir = result_dir / "point_cloud";
-  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(ply_dir)
-
-  ply_dir = ply_dir / ("iteration_" + std::to_string(getIteration()));
-  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(ply_dir)
-
-  // Todo fix
-  // gaussians_->savePly(ply_dir / "point_cloud.ply");
-  // gaussians_->saveSparsePointsPly(result_dir / "input.ply");
-}
-
 void GaussianMapper::keyframesToJson(std::filesystem::path result_dir) {
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
 
@@ -2824,30 +2799,6 @@ void GaussianMapper::keyframesToJson(std::filesystem::path result_dir) {
   }
 
   writer->write(json_root, &out_stream);
-}
-
-void GaussianMapper::saveModelParams(std::filesystem::path result_dir) {
-  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
-  std::filesystem::path result_path = result_dir / "cfg_args";
-  std::ofstream out_stream;
-  out_stream.open(result_path);
-  if (!out_stream.is_open())
-    throw std::runtime_error("Cannot open file at " + result_path.string());
-
-  out_stream << "Namespace("
-             << "eval=" << (model_params_.eval_ ? "True" : "False") << ", "
-             << "images=" << "\'" << model_params_.images_ << "\', "
-             << "model_path=" << "\'" << model_params_.model_path_.string()
-             << "\', "
-             << "resolution=" << model_params_.resolution_ << ", "
-             << "sh_degree=" << model_params_.sh_degree_ << ", "
-             << "source_path=" << "\'" << model_params_.source_path_.string()
-             << "\', "
-             << "white_background="
-             << (model_params_.white_background_ ? "True" : "False") << ", "
-             << ")";
-
-  out_stream.close();
 }
 
 void GaussianMapper::writeKeyframeUsedTimes(std::filesystem::path result_dir,
@@ -2968,84 +2919,6 @@ void GaussianMapper::setVaribleParameters(const VariableParameters& params) {
   new_keyframe_times_of_use_ = params.new_kf_times_of_use;
   stable_num_iter_existence_ = params.stable_num_iter_existence;
   keep_training_ = params.keep_training;
-}
-
-void GaussianMapper::loadPly(std::filesystem::path ply_path,
-                             std::filesystem::path camera_path) {
-  // this->getGaussians()->loadPly(ply_path);
-
-  // Camera
-  if (!camera_path.empty() && std::filesystem::exists(camera_path)) {
-    cv::FileStorage camera_file(camera_path.string().c_str(),
-                                cv::FileStorage::READ);
-    if (!camera_file.isOpened())
-      throw std::runtime_error(
-          "[Gaussian Mapper]Failed to open settings file at: " +
-          camera_path.string());
-
-    Camera camera;
-    camera.camera_id_ = 0;
-    camera.width_ = camera_file["Camera.w"].operator int();
-    camera.height_ = camera_file["Camera.h"].operator int();
-
-    std::string camera_type = camera_file["Camera.type"].string();
-    if (camera_type == "Pinhole") {
-      camera.setModelId(Camera::CameraModelType::PINHOLE);
-
-      float fx = camera_file["Camera.fx"].operator float();
-      float fy = camera_file["Camera.fy"].operator float();
-      float cx = camera_file["Camera.cx"].operator float();
-      float cy = camera_file["Camera.cy"].operator float();
-
-      float k1 = camera_file["Camera.k1"].operator float();
-      float k2 = camera_file["Camera.k2"].operator float();
-      float p1 = camera_file["Camera.p1"].operator float();
-      float p2 = camera_file["Camera.p2"].operator float();
-      float k3 = camera_file["Camera.k3"].operator float();
-
-      cv::Mat K =
-          (cv::Mat_<float>(3, 3) << fx, 0.f, cx, 0.f, fy, cy, 0.f, 0.f, 1.f);
-
-      camera.params_[0] = fx;
-      camera.params_[1] = fy;
-      camera.params_[2] = cx;
-      camera.params_[3] = cy;
-
-      std::vector<float> dist_coeff = {k1, k2, p1, p2, k3};
-      camera.dist_coeff_ = cv::Mat(5, 1, CV_32F, dist_coeff.data());
-      camera.initUndistortRectifyMapAndMask(
-          K, cv::Size(camera.width_, camera.height_), K, false);
-
-      undistort_mask_[camera.camera_id_] =
-          tensor_utils::cvMat2TorchTensor_Float32(camera.undistort_mask,
-                                                  device_type_);
-
-      cv::Mat viewer_main_undistort_mask;
-      int viewer_image_height_main_ =
-          camera.height_ * rendered_image_viewer_scale_main_;
-      int viewer_image_width_main_ =
-          camera.width_ * rendered_image_viewer_scale_main_;
-      cv::resize(camera.undistort_mask, viewer_main_undistort_mask,
-                 cv::Size(viewer_image_width_main_, viewer_image_height_main_));
-      viewer_main_undistort_mask_[camera.camera_id_] =
-          tensor_utils::cvMat2TorchTensor_Float32(viewer_main_undistort_mask,
-                                                  device_type_);
-
-    } else {
-      throw std::runtime_error("[Gaussian Mapper]Unsupported camera model: " +
-                               camera_path.string());
-    }
-
-    if (!viewer_camera_id_set_) {
-      viewer_camera_id_ = camera.camera_id_;
-      viewer_camera_id_set_ = true;
-    }
-    this->scene_->addCamera(camera);
-  }
-
-  // Ready
-  this->initial_mapped_ = true;
-  increaseIteration();
 }
 
 std::vector<std::shared_ptr<GaussianModel>>
@@ -3451,7 +3324,6 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
 
   // Save camera params and scene metadata
   keyframesToJson(scene_dir);
-  saveModelParams(scene_dir);
 
   // Need to save chunks before saving manifest since we need to update chunks
   // in memory map
@@ -4078,8 +3950,6 @@ void GaussianMapper::run_external_poses() {
   saveTotalGaussians("_shutdown");
   // Save and clear
   renderAndRecordAllKeyframes("_shutdown");
-  // savePly(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
-  // "ply");
   saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
             "data");
   writeKeyframeUsedTimes(result_dir_ / "used_times", "final");

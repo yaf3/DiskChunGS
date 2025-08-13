@@ -188,7 +188,6 @@ add_library(
     include/chunk_types.h
     include/render_flythrough.h
     include/keyframe_selection.h
-    include/nanoflann.hpp
     include/debugging_utils.h
     include/stereo_depth.h
     include/mono_depth.h

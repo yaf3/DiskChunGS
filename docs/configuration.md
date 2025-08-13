@@ -59,8 +59,8 @@ This document explains all available configuration options for DiskChunGS. The c
 | Parameter | Description |
 |-----------|-------------|
 | `GausPyramid.do` | Enables Gaussian pyramid processing. `0`: false, `1` or other integer: true. |
-| `GausPyramid.num_sub_levels` | Number of sub-levels in the Gaussian pyramid. |
-| `GausPyramid.sub_level_times_of_use` | Number of times to use each sub-level. |
+| `GausPyramid.num_levels` | Number of sub-levels in the Gaussian pyramid. |
+| `GausPyramid.level_times_of_use` | Number of times to use each sub-level. |
 
 ## Pipeline Settings
 

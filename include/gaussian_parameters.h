@@ -25,20 +25,16 @@ class GaussianModelParams {
                       std::filesystem::path exec_path = "",
                       int sh_degree = 3,
                       std::string images = "images",
-                      float resolution = -1.0f,
                       bool white_background = false,
-                      std::string data_device = "cuda",
-                      bool eval = false);
+                      std::string data_device = "cuda");
 
  public:
   int sh_degree_;
   std::filesystem::path source_path_;
   std::filesystem::path model_path_;
   std::string images_;
-  float resolution_;
   bool white_background_;
   std::string data_device_;
-  bool eval_;
 };
 
 class GaussianPipelineParams {

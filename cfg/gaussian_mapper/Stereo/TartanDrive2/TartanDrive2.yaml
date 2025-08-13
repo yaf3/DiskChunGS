@@ -23,8 +23,8 @@ Mapper.large_rotation_threshold: 1.0
 Mapper.large_translation_threshold: 0.1
 Mapper.stable_num_iter_existence: 1000
 GausPyramid.do: 0  # 0:false, 1 or other integer:true
-GausPyramid.num_sub_levels: 1
-GausPyramid.sub_level_times_of_use: 10000
+GausPyramid.num_levels: 1
+GausPyramid.level_times_of_use: 10000
 Pipeline.convert_SHs: 0  # 0:false, 1 or other integer:true
 Pipeline.compute_cov3D: 0  # 0:false, 1 or other integer:true
 Record.keyframe_record_interval: 0 # 0:never, 1:always, others:periodically
@@ -69,4 +69,4 @@ Optimization.densification_interval: 50
 Optimization.densify_min_opacity: 0.05
 Optimization.densify_grad_threshold: 0.05 
 Optimization.opacity_reg: 0.001
-Optimization.appearance_embedding: 0
+Optimization.exposure_optimization: 0

@@ -20,16 +20,12 @@ GaussianModelParams::GaussianModelParams(std::filesystem::path source_path,
                                          std::filesystem::path exec_path,
                                          int sh_degree,
                                          std::string images,
-                                         float resolution,
                                          bool white_background,
-                                         std::string data_device,
-                                         bool eval)
+                                         std::string data_device)
     : sh_degree_(sh_degree),
       images_(images),
-      resolution_(resolution),
       white_background_(white_background),
-      data_device_(data_device),
-      eval_(eval) {
+      data_device_(data_device) {
   if (source_path.is_absolute())
     source_path_ = source_path;
   else

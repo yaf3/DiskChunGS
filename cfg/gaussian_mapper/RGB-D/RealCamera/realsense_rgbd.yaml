@@ -33,8 +33,8 @@ Mapper.large_translation_threshold: 1.0
 Mapper.stable_num_iter_existence: 1
 
 GausPyramid.do: 1  # 0:false, 1 or other integer:true
-GausPyramid.num_sub_levels: 2
-GausPyramid.sub_level_times_of_use: 8
+GausPyramid.num_levels: 2
+GausPyramid.level_times_of_use: 8
 
 Pipeline.convert_SHs: 0  # 0:false, 1 or other integer:true
 Pipeline.compute_cov3D: 0  # 0:false, 1 or other integer:true

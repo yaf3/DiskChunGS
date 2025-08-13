@@ -1,18 +1,13 @@
 %YAML:1.0
 
-Model.resolution: -1
 Model.white_background: 0  # 0:false, 1 or other integer:true
-Model.eval: 0  # 0:false, 1 or other integer:true
-Monocular.inactive_geo_densify_max_pixel_dist: 1.0 # (squared distance)
-Stereo.min_disparity: 0
-Stereo.num_disparity: 128
-Stereo.do_stereo_loss: 0  # 0:false, 1 or other integer:true
+Model.sh_degree: 3
+
+Camera.z_near: 0.1
+Camera.z_far: 100.0
+
 Mapper.min_depth_: 0.01
 Mapper.max_depth_: 100.0
-Mapper.inactive_geo_densify: 0  # 0:false, 1 or other integer:true
-Mapper.depth_densify: 1  # 0:false, 1 or other integer:true
-Mapper.depth_cache: 0
-Mapper.keyframe_similarity_threshold: 30.0
 Mapper.keyframe_selection_strategy: 1 # 0:all, 1:recent k
 Mapper.min_num_initial_map_kfs: 10
 Mapper.new_keyframe_times_of_use: 8
@@ -21,39 +16,29 @@ Mapper.loop_closure_increased_times_of_use_: 2
 Mapper.cull_keyframes: 0  # 0:false, 1 or other integer:true
 Mapper.large_rotation_threshold: 1.0
 Mapper.large_translation_threshold: 0.1
-Mapper.stable_num_iter_existence: 1000
-GausPyramid.do: 1  # 0:false, 1 or other integer:true
-GausPyramid.num_sub_levels: 2
-GausPyramid.sub_level_times_of_use: 8
+Mapper.stable_num_iter_existence: 1
+
+GausPyramid.num_levels: 1
+GausPyramid.level_times_of_use: 5
+
 Pipeline.convert_SHs: 0  # 0:false, 1 or other integer:true
 Pipeline.compute_cov3D: 0  # 0:false, 1 or other integer:true
+
 Record.keyframe_record_interval: 0 # 0:never, 1:always, others:periodically
 Record.all_keyframes_record_interval: 0 # 0:never, 1:always, others:periodically
 Record.record_rendered_image: 0 # 0:false, 1 or other integer:true
 Record.record_ground_truth_image: 0 # 0:false, 1 or other integer:true
 Record.record_loss_image: 0 # 0:false, 1 or other integer:true
 Record.training_report_interval: 0 # 0:never, 1:always, others:periodically
-Record.record_loop_ply: 1 # 0:false, 1 or other integer:trues
+Record.record_loop_ply: 0 # 0:false, 1 or other integer:trues
 Record.render_fly_through: 0 # 0:false, 1 or other integer:true
 Record.render_fly_through_speed: 5.0 # 0:false, 1 or other integer:true
+
+Chunking.chunk_size: 20.0
+
+Optimization.auto_distribute: 4  # 0:false, 1 or other integer:true
 Optimization.max_num_iterations: -1
 Optimization.smooth_l1: 0  # 0:false, 1:true
-Chunking.chunk_size: 50.0
-Chunking.max_chunks: 40
-Optimization.opacity_reset_interval: 0  # 0:never, 1:always, others:periodically
-Optimization.prune_big_point_after_iter: -1
-Optimization.densify_from_iter: 100
-Optimization.densify_until_iter: -1
-Optimization.auto_distribute: 4  # 0:false, 1 or other integer:true
-GaussianViewer.glfw_window_width: 1862
-GaussianViewer.glfw_window_height: 564
-GaussianViewer.image_scale: 0.5
-GaussianViewer.image_scale_main: 1.0
-GaussianViewer.camera_watch_dist: 0.000001
-Camera.z_near: 0.1
-Camera.z_far: 300.0
-Model.sh_degree: 3
-Mapper.depth_densify_subsample_ratio: 0.1
 Optimization.position_lr_init: 0.001
 Optimization.position_lr_decay: 0.998
 Optimization.feature_lr: 0.005
@@ -63,12 +48,14 @@ Optimization.rotation_lr: 0.002
 Optimization.pose_lr: 0.0000
 Optimization.exposure_lr: 0.00
 Optimization.depth_scale_bias_lr: 0.0001
-Optimization.percent_dense: 0.018072950932851207
 Optimization.lambda_dssim: 0.2
-Optimization.lambda_depth: 0.0
-Optimization.densification_interval: 500
-Optimization.densify_min_opacity: 0.05
-Optimization.densify_grad_threshold: 0.05 
-Optimization.opacity_reg: 0.000
-Optimization.appearance_embedding: 1
+Optimization.lambda_depth: 0.1
+Optimization.opacity_reg: 0.001
+Optimization.exposure_optimization: 0 # 0:false, 1 or other integer:true
 Optimization.init_proba_scaler: 2.0
+
+GaussianViewer.glfw_window_width: 1862
+GaussianViewer.glfw_window_height: 564
+GaussianViewer.image_scale: 0.5
+GaussianViewer.image_scale_main: 1.0
+GaussianViewer.camera_watch_dist: 0.000001

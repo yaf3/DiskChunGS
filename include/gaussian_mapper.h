@@ -161,9 +161,6 @@ class GaussianMapper {
     this->sensor_type_ = sensor_type;
   }
 
-  void loadPly(std::filesystem::path ply_path,
-               std::filesystem::path camera_path = "");
-
   void testTransferGaussiansAcrossChunks();
 
  protected:
@@ -252,9 +249,7 @@ class GaussianMapper {
                                std::string name_suffix = "");
   void renderAndRecordAllKeyframes(std::string name_suffix = "");
 
-  void savePly(std::filesystem::path result_dir);
   void keyframesToJson(std::filesystem::path result_dir);
-  void saveModelParams(std::filesystem::path result_dir);
   void writeKeyframeUsedTimes(std::filesystem::path result_dir,
                               std::string name_suffix = "");
 
@@ -393,7 +388,6 @@ class GaussianMapper {
  public:
   std::map<std::size_t, float> kfs_loss_;
   std::map<std::size_t, int> kfs_used_times_;
-  float keyframe_similarity_threshold_ = 0.30f;
   int keyframe_selection_strategy_ = 0;  // 0: all, 1: recent k
 
   // Status
@@ -411,10 +405,6 @@ class GaussianMapper {
   SystemSensorType sensor_type_;
 
   float stereo_baseline_length_ = 0.0f;
-  int stereo_min_disparity_ = 0;
-  int stereo_num_disparity_ = 128;
-  bool do_stereo_loss_ = false;
-
   cv::Mat stereo_Q_;
   std::shared_ptr<StereoDepth> stereo_depth_estimator_;
   std::shared_ptr<MonoDepth> monocular_depth_estimator_;

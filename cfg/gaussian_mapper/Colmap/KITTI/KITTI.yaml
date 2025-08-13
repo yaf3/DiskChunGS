@@ -44,8 +44,8 @@ Mapper.min_num_initial_map_kfs: 27
 Mapper.new_keyframe_times_of_use: 21
 Mapper.large_rotation_threshold: 10.073531886728608
 Mapper.large_translation_threshold: 0.11459473595653123
-GausPyramid.num_sub_levels: 2
-GausPyramid.sub_level_times_of_use: 14
+GausPyramid.num_levels: 2
+GausPyramid.level_times_of_use: 14
 Optimization.position_lr_init: 0.0009479224255732749
 Optimization.position_lr_final: 4.522122041067081e-07
 Optimization.position_lr_delay_mult: 0.014781476091136166

@@ -33,8 +33,8 @@ Mapper.large_translation_threshold: 0.0 # NOT used
 Mapper.stable_num_iter_existence: 0 # NOT used
 
 GausPyramid.do: 0 # NOT used
-GausPyramid.num_sub_levels: 2 # NOT used
-GausPyramid.sub_level_times_of_use: 8 # NOT used
+GausPyramid.num_levels: 2 # NOT used
+GausPyramid.level_times_of_use: 8 # NOT used
 
 Pipeline.convert_SHs: 0 # NOT used
 Pipeline.compute_cov3D: 0 # NOT used
