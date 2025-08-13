@@ -83,7 +83,6 @@ class SparseGaussianAdam;
 
 class GaussianModel {
  public:
-  explicit GaussianModel(const int sh_degree);
   explicit GaussianModel(const GaussianModelParams& model_params,
                          std::string storage_base_path = "",
                          float chunk_size = 20.0f);
@@ -173,11 +172,8 @@ class GaussianModel {
   float chunk_size_;
 
   // LoD system parameters
-  float base_scale_threshold_;    // Threshold for LoD 0 (large gaussians) -
-                                  // default 6.0
-  float detail_scale_threshold_;  // Threshold for LoD 1 (medium gaussians) -
-                                  // default 3.0 Small gaussians automatically
-                                  // go to LoD 2
+  bool enable_lod_;
+  float lod_distance_multiplier_;
 
   std::vector<ChunkCoord> frustumCullChunks(
       std::shared_ptr<GaussianKeyframe> keyframe,
@@ -186,8 +182,11 @@ class GaussianModel {
       std::shared_ptr<GaussianKeyframe> keyframe);
 
   // LoD system methods
-  torch::Tensor assignLoDByScale(const torch::Tensor& scale_magnitudes);
-  torch::Tensor assignLoDByDensity(const torch::Tensor& nearest_distances);
+  torch::Tensor assignLoDByPercentiles(
+      const torch::Tensor& nearest_distances,
+      float lod0_percentile = 75.0f,  // Top 25% get LoD 0
+      float lod2_percentile = 25.0f   // Bottom 25% get LoD 2
+  );
   torch::Tensor selectCumulativeLoD(const torch::Tensor& visible_gaussian_mask,
                                     const torch::Tensor& camera_position);
 

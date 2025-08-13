@@ -26,7 +26,9 @@ class GaussianModelParams {
                       int sh_degree = 3,
                       std::string images = "images",
                       bool white_background = false,
-                      std::string data_device = "cuda");
+                      std::string data_device = "cuda",
+                      bool enable_lod_ = false,
+                      float lod_distance_multiplier_ = 2.0f);
 
  public:
   int sh_degree_;
@@ -35,6 +37,8 @@ class GaussianModelParams {
   std::string images_;
   bool white_background_;
   std::string data_device_;
+  bool enable_lod_;
+  float lod_distance_multiplier_;
 };
 
 class GaussianPipelineParams {

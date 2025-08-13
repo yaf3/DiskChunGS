@@ -21,11 +21,15 @@ GaussianModelParams::GaussianModelParams(std::filesystem::path source_path,
                                          int sh_degree,
                                          std::string images,
                                          bool white_background,
-                                         std::string data_device)
+                                         std::string data_device,
+                                         bool enable_lod,
+                                         float lod_distance_multiplier)
     : sh_degree_(sh_degree),
       images_(images),
       white_background_(white_background),
-      data_device_(data_device) {
+      data_device_(data_device),
+      enable_lod_(enable_lod_),
+      lod_distance_multiplier_(lod_distance_multiplier) {
   if (source_path.is_absolute())
     source_path_ = source_path;
   else

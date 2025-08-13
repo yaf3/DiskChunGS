@@ -384,6 +384,10 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
   model_params_.sh_degree_ = settings_file["Model.sh_degree"].operator int();
   model_params_.white_background_ =
       (settings_file["Model.white_background"].operator int()) != 0;
+  model_params_.enable_lod_ =
+      (settings_file["Model.enable_lod"].operator int()) != 0;
+  model_params_.lod_distance_multiplier_ =
+      (settings_file["Model.lod_distance_multiplier"].operator int()) != 0;
 
   // Pipeline Parameters
   z_near_ = settings_file["Camera.z_near"].operator float();

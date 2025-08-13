@@ -18,37 +18,6 @@
 
 #include "include/gaussian_rasterizer.h"
 
-GaussianModel::GaussianModel(const int sh_degree)
-    : sh_degree_(0),
-      spatial_lr_scale_(0.0),
-      position_lr_init_(0.00005),
-      position_lr_decay_(0.99998),
-      local_iteration_(0),
-      base_scale_threshold_(6.0f),
-      detail_scale_threshold_(3.0f) {
-  this->sh_degree_ = sh_degree;
-
-  // Device
-  if (torch::cuda::is_available())
-    this->device_type_ = torch::kCUDA;
-  else
-    this->device_type_ = torch::kCPU;
-
-  GAUSSIAN_MODEL_INIT_TENSORS(this->device_type_)
-
-  chunks_on_disk_ = torch::empty(
-      {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
-
-  chunks_loaded_from_disk_ = torch::empty(
-      {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
-
-  chunk_gaussian_counts_ = torch::empty(
-      {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
-
-  gaussian_ids_ = torch::empty(
-      0, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
-}
-
 GaussianModel::GaussianModel(const GaussianModelParams& model_params,
                              std::string storage_base_path,
                              float chunk_size)
@@ -59,8 +28,8 @@ GaussianModel::GaussianModel(const GaussianModelParams& model_params,
       position_lr_init_(0.00005),
       position_lr_decay_(0.99998),
       local_iteration_(0),
-      base_scale_threshold_(6.0f),
-      detail_scale_threshold_(3.0f) {
+      enable_lod_(model_params.enable_lod_),
+      lod_distance_multiplier_(model_params.lod_distance_multiplier_) {
   this->sh_degree_ = model_params.sh_degree_;
 
   // Device
@@ -701,7 +670,7 @@ torch::Tensor GaussianModel::cullVisibleGaussians(
 
   updateChunkAccess(visible_chunk_ids);
 
-  return chunk_visibility_mask;
+  if (!enable_lod_) return chunk_visibility_mask;
 
   // Apply LoD filtering based on distance
   torch::Tensor camera_position = keyframe->getCenter().squeeze();
@@ -950,7 +919,7 @@ void GaussianModel::initializeFromPoints(const torch::Tensor& initial_xyz,
   torch::Tensor dist2 =
       torch::clamp_min(distCUDA2(point_cloud_copy), 0.0000001);
   torch::Tensor nearest_distances = torch::sqrt(dist2);
-  gaussian_lod_levels_ = assignLoDByDensity(nearest_distances);
+  gaussian_lod_levels_ = assignLoDByPercentiles(nearest_distances);
 
   gaussian_ids_ = torch::arange(
       next_gaussian_id_, next_gaussian_id_ + initial_xyz.size(0),
@@ -1039,7 +1008,7 @@ void GaussianModel::appendPoints(const torch::Tensor& new_xyzs,
   torch::Tensor dist2 =
       torch::clamp_min(distCUDA2(new_xyzs.clone()), 0.0000001);
   torch::Tensor nearest_distances = torch::sqrt(dist2);
-  torch::Tensor new_lod_levels = assignLoDByDensity(nearest_distances);
+  torch::Tensor new_lod_levels = assignLoDByPercentiles(nearest_distances);
 
   // Debug: Print LoD assignment statistics
   auto lod_counts = torch::bincount(new_lod_levels, torch::Tensor(), 3);
@@ -2533,80 +2502,29 @@ void GaussianModel::deleteSparseChunkFiles(const torch::Tensor& chunk_ids) {
   }
 }
 
-torch::Tensor GaussianModel::assignLoDByScale(
-    const torch::Tensor& scale_magnitudes) {
-  int n_gaussians = scale_magnitudes.size(0);
-  torch::Tensor lod_levels = torch::zeros(
-      {n_gaussians},
-      torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
-
-  // Debug: Print thresholds (only once per session)
-  static bool printed_thresholds = false;
-  if (!printed_thresholds) {
-    // std::cout << "[LoD Debug] Scale thresholds - LoD0: >="
-    //           << base_scale_threshold_ << ", LoD1: [" <<
-    //           detail_scale_threshold_
-    //           << " - " << base_scale_threshold_ << "), LoD2: <"
-    //           << detail_scale_threshold_ << std::endl;
-    printed_thresholds = true;
-  }
-
-  // LoD 0: Large gaussians (base structure)
-  torch::Tensor large_mask = scale_magnitudes >= base_scale_threshold_;
-  lod_levels.masked_fill_(large_mask, 0);
-
-  // LoD 1: Medium gaussians (details)
-  torch::Tensor medium_mask = (scale_magnitudes >= detail_scale_threshold_) &
-                              (scale_magnitudes < base_scale_threshold_);
-  lod_levels.masked_fill_(medium_mask, 1);
-
-  // LoD 2: Small gaussians (fine details) - default assignment (already 0)
-  torch::Tensor small_mask = scale_magnitudes < detail_scale_threshold_;
-  lod_levels.masked_fill_(small_mask, 2);
-
-  return lod_levels;
-}
-
-torch::Tensor GaussianModel::assignLoDByDensity(
-    const torch::Tensor& nearest_distances) {
+torch::Tensor GaussianModel::assignLoDByPercentiles(
+    const torch::Tensor& nearest_distances,
+    float lod0_percentile,
+    float lod2_percentile) {
   int n_gaussians = nearest_distances.size(0);
-  torch::Tensor lod_levels = torch::zeros(
+  torch::Tensor lod_levels = torch::ones(  // Default to LoD 1
       {n_gaussians},
-      torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
+      torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA));
 
-  // Calculate density thresholds based on distance distribution
-  // Larger distances = sparser areas = should be LoD 0/1 (visible from far)
-  // Smaller distances = denser areas = can be LoD 2 (only visible close up)
+  // Calculate actual percentile thresholds
+  torch::Tensor sorted_distances = std::get<0>(torch::sort(nearest_distances));
 
-  float mean_dist = nearest_distances.mean().item<float>();
-  float dense_threshold = mean_dist * 0.5f;   // Bottom 25% (very dense areas)
-  float sparse_threshold = mean_dist * 1.5f;  // Top 25% (sparse areas)
+  int sparse_idx = static_cast<int>(n_gaussians * lod0_percentile / 100.0f);
+  int dense_idx = static_cast<int>(n_gaussians * lod2_percentile / 100.0f);
 
-  // Debug: Print density thresholds (only once per session)
-  static bool printed_density_thresholds = false;
-  if (!printed_density_thresholds) {
-    // std::cout << "[LoD Debug] Density thresholds - LoD0: >=" <<
-    // sparse_threshold
-    //           << ", LoD1: [" << dense_threshold << " - " <<
-    //           sparse_threshold
-    //           << "), LoD2: <" << dense_threshold << " (mean dist: " <<
-    //           mean_dist
-    //           << ")" << std::endl;
-    printed_density_thresholds = true;
-  }
+  float sparse_threshold = sorted_distances[sparse_idx].item<float>();
+  float dense_threshold = sorted_distances[dense_idx].item<float>();
 
-  // LoD 0: Sparse areas (large distances between points) - visible from far
+  // Assign LoD levels
   torch::Tensor sparse_mask = nearest_distances >= sparse_threshold;
   lod_levels.masked_fill_(sparse_mask, 0);
 
-  // LoD 1: Medium density areas
-  torch::Tensor medium_mask = (nearest_distances >= dense_threshold) &
-                              (nearest_distances < sparse_threshold);
-  lod_levels.masked_fill_(medium_mask, 1);
-
-  // LoD 2: Dense areas (small distances between points) - only visible close
-  // up
-  torch::Tensor dense_mask = nearest_distances < dense_threshold;
+  torch::Tensor dense_mask = nearest_distances <= dense_threshold;
   lod_levels.masked_fill_(dense_mask, 2);
 
   return lod_levels;
@@ -2628,7 +2546,7 @@ torch::Tensor GaussianModel::selectCumulativeLoD(
       visible_positions - camera_position.unsqueeze(0), /*p=*/2, /*dim=*/1);
 
   // Logarithmic LoD level calculation
-  float d_max = 2.0f * chunk_size_;
+  float d_max = lod_distance_multiplier_ * chunk_size_;
   torch::Tensor required_lod = torch::clamp(
       torch::log2(d_max / torch::clamp_min(distances, 0.1f)), 0.0f, 2.0f);
 
