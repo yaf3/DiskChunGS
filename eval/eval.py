@@ -132,7 +132,7 @@ for gt_dataset_name in gt_dataset:
             for scene in scenes:
                 # T	R PSNR SSIM	LPIPS Tracking speed Rendering speed
                 vram_usage = -1.0
-                vram_usage_path = os.path.join(scene_result_path, "GpuPeakUsageMB.txt")
+                vram_usage_path = os.path.join(result, scene, "GpuPeakUsageMB.txt")
                 if os.path.exists(vram_usage_path):
                     with open(vram_usage_path, "r") as f:
                         for line in f:

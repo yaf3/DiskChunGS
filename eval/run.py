@@ -289,7 +289,7 @@ if __name__ == "__main__":
     # Load slowdown factor (if exists)
     slowdown_factor = load_slowdown_factor(args.result_path)
     
-    training_time_path = os.path.join(result_path, "training_time.txt")
+    training_time_path = os.path.join(args.result_path, "training_time.txt")
     training_time = 0.0
     with open(training_time_path, "r") as f:
         training_time_path = float(f.readline().strip())
