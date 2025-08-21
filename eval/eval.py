@@ -58,8 +58,6 @@ gt_dataset = {
             "08",
             "09",
             "10",
-            "11",
-            "12"
                 
         ],
     },
@@ -155,7 +153,7 @@ for gt_dataset_name in gt_dataset:
                         ape_R = lines[17].split()
                         assert ape_R[0] == "rmse", result
                         R = ape_R[-1]
-                PSNR, SSIM, LPIPS, Tracking_fps, Rendering_fps, Num_Gaussians = (
+                PSNR, SSIM, LPIPS, Time, Rendering_fps, Num_Gaussians = (
                     None,
                     None,
                     None,
