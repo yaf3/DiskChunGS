@@ -4,6 +4,7 @@ Model.white_background: 0  # 0:false, 1 or other integer:true
 Model.sh_degree: 3
 Model.enable_lod: 0
 Model.lod_distance_multiplier: 2.0
+Model.max_gaussians_in_memory: 1000000
 
 Camera.z_near: 0.1
 Camera.z_far: 100.0
