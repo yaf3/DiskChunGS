@@ -288,6 +288,11 @@ if __name__ == "__main__":
         
     # Load slowdown factor (if exists)
     slowdown_factor = load_slowdown_factor(args.result_path)
+    
+    training_time_path = os.path.join(result_path, "training_time.txt")
+    training_time = 0.0
+    with open(training_time_path, "r") as f:
+        training_time_path = float(f.readline().strip())
 
     # If not skipping trajectory eval, load estimated poses and evaluate them
     if not args.skip_trajectory_eval:
@@ -520,13 +525,7 @@ if __name__ == "__main__":
         fout.write("psnr: {}\n".format(np.mean(psnr_list)))
         fout.write("ssim: {}\n".format(np.mean(ssim_list)))
         fout.write("lpips: {}\n".format(np.mean(lpips_list)))
-        
-        if not args.skip_trajectory_eval:
-            fout.write("tracking s: {}\n".format(np.mean(tracking_time)))
-            fout.write("tracking FPS: {}\n".format(tracking_fps))
-        else:
-            fout.write("tracking evaluation skipped (using ground truth poses)\n")
-
+        fout.write("time s: {}\n".format(training_time))
         fout.write("rendering ms: {}\n".format(np.mean(render_time)))
         fout.write("rendering FPS: {}\n".format(1000 / np.mean(render_time)))
         fout.write("num gaussians: {}\n".format(num_gaussians))

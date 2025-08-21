@@ -101,7 +101,7 @@ for result in results:
             skip_tracking_eval = "--skip_trajectory_eval --skip_error_vis"
         if "mono" in result.lower():
             os.system(
-                "python3 run.py {} {} --correct_scale {}".format(
+                "python3 run.py {} {} --correct_scale {} --skip_error_vis".format(
                     result_path, gt_path, skip_tracking_eval
                 )
             )
@@ -131,6 +131,15 @@ for gt_dataset_name in gt_dataset:
             logs.append(result + "\n")
             for scene in scenes:
                 # T	R PSNR SSIM	LPIPS Tracking speed Rendering speed
+                vram_usage = -1.0
+                vram_usage_path = os.path.join(scene_result_path, "GpuPeakUsageMB.txt")
+                if os.path.exists(vram_usage_path):
+                    with open(vram_usage_path, "r") as f:
+                        for line in f:
+                            if "Peak allocated (MB):" in line:
+                                vram_usage = float(line.split(":")[1].strip())
+                                break
+                        
                 T, R, T_std = None, None, None
                 if os.path.exists(
                     os.path.join(result, scene, "metrics_traj.txt")
@@ -159,8 +168,7 @@ for gt_dataset_name in gt_dataset:
                         PSNR = fin.readline().split()[-1]
                         SSIM = fin.readline().split()[-1]
                         LPIPS = fin.readline().split()[-1]
-                        Tracking_time = fin.readline().split()[-1]
-                        Tracking_fps = fin.readline().split()[-1]
+                        Time = fin.readline().split()[-1]
                         Rendering_time = fin.readline().split()[-1]
                         Rendering_fps = fin.readline().split()[-1]
                         Num_Gaussians = fin.readline().split()[-1]
@@ -182,10 +190,10 @@ for gt_dataset_name in gt_dataset:
                     PSNR,
                     SSIM,
                     LPIPS,
-                    Tracking_fps,
+                    Time,
                     Rendering_fps,
                     Num_Gaussians,
-                    T_std,
+                    vram_usage,
                 )
                 print(result_str)
                 logs.append(result_str)
@@ -201,14 +209,14 @@ with open(os.path.join(result_main_folder, "log.csv"), "w") as out_file:
         (
             "scene",
             "T",
-            "R",
+            "R", 
             "PSNR",
             "SSIM",
             "LPIPS",
-            "Tracking FPS",
+            "Time",
             "Rendering FPS",
             "Num Gaussians",
-            "T_std",
+            "VRAM Usage"
         )
     )
     for log in logs:
