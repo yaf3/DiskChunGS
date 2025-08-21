@@ -292,7 +292,7 @@ if __name__ == "__main__":
     training_time_path = os.path.join(args.result_path, "training_time.txt")
     training_time = 0.0
     with open(training_time_path, "r") as f:
-        training_time_path = float(f.readline().strip())
+        training_time = float(f.readline().strip())
 
     # If not skipping trajectory eval, load estimated poses and evaluate them
     if not args.skip_trajectory_eval:
