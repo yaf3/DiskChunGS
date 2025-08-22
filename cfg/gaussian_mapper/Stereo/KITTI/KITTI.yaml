@@ -4,7 +4,7 @@ Model.white_background: 0  # 0:false, 1 or other integer:true
 Model.sh_degree: 3
 Model.enable_lod: 0
 Model.lod_distance_multiplier: 2.0
-Model.max_gaussians_in_memory: 1000000
+Model.max_gaussians_in_memory: 3000000
 
 Camera.z_near: 0.1
 Camera.z_far: 100.0
@@ -17,8 +17,8 @@ Mapper.new_keyframe_times_of_use: 8
 Mapper.local_BA_increased_times_of_use: 0
 Mapper.loop_closure_increased_times_of_use_: 2
 Mapper.cull_keyframes: 0  # 0:false, 1 or other integer:true
-Mapper.large_rotation_threshold: 1.0
-Mapper.large_translation_threshold: 0.1
+Mapper.large_rotation_threshold: 20.0
+Mapper.large_translation_threshold: 0.5
 Mapper.stable_num_iter_existence: 1
 
 GausPyramid.num_levels: 1

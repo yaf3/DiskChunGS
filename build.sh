@@ -60,14 +60,15 @@ echo "ORB-SLAM3 built successfully!"
 # --- Build main application ---
 echo "Building DiskChunGS application..."
 cmake -B build -G Ninja \
-      -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
-      -DCMAKE_CUDA_ARCHITECTURES="86" \
-      -DTorch_DIR=/workspace/third_party/libtorch/share/cmake/Torch \
-      -DOpenCV_DIR=/workspace/third_party/install/opencv/lib/cmake/opencv4 \
-      -DCMAKE_CXX_FLAGS="-fopenmp" \
-      -DCMAKE_CUDA_FLAGS="-Xcompiler -fopenmp" \
-      -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++
+ -DCMAKE_BUILD_TYPE=Release \
+ -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+ -DCMAKE_CUDA_ARCHITECTURES="86" \
+ -DTorch_DIR=/workspace/third_party/libtorch/share/cmake/Torch \
+ -DOpenCV_DIR=/workspace/third_party/install/opencv/lib/cmake/opencv4 \
+ -DCMAKE_CXX_FLAGS="-O3 -march=native -mtune=native -ffast-math -fopenmp -DWITH_CUDA" \
+ -DCMAKE_CUDA_FLAGS="-O3 -use_fast_math" \
+ -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++
+
 cmake --build build
 
 echo "✓ Build completed successfully!"

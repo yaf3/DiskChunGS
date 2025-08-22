@@ -6,8 +6,8 @@ Model.enable_lod: 0
 Model.lod_distance_multiplier: 2.0
 Model.max_gaussians_in_memory: 3000000
 
-Camera.z_near: 0.1
-Camera.z_far: 100.0
+Camera.z_near: 0.01
+Camera.z_far: 10.0
 
 Mapper.min_depth_: 0.01
 Mapper.max_depth_: 100.0
@@ -37,7 +37,7 @@ Record.record_loop_ply: 0 # 0:false, 1 or other integer:trues
 Record.render_fly_through: 0 # 0:false, 1 or other integer:true
 Record.render_fly_through_speed: 5.0 # 0:false, 1 or other integer:true
 
-Chunking.chunk_size: 20.0
+Chunking.chunk_size: 5.0
 
 Optimization.auto_distribute: 4  # 0:false, 1 or other integer:true
 Optimization.max_num_iterations: -1
@@ -48,7 +48,7 @@ Optimization.feature_lr: 0.005
 Optimization.opacity_lr: 0.1
 Optimization.scaling_lr: 0.01
 Optimization.rotation_lr: 0.002
-Optimization.pose_lr: 0.0001
+Optimization.pose_lr: 0.000
 Optimization.exposure_lr: 0.00
 Optimization.depth_scale_bias_lr: 0.0001
 Optimization.lambda_dssim: 0.2

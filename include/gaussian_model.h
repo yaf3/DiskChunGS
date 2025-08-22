@@ -178,8 +178,8 @@ class GaussianModel {
   std::vector<ChunkCoord> frustumCullChunks(
       std::shared_ptr<GaussianKeyframe> keyframe,
       bool use_cache);
-  torch::Tensor cullVisibleGaussians(
-      std::shared_ptr<GaussianKeyframe> keyframe);
+  torch::Tensor cullVisibleGaussians(std::shared_ptr<GaussianKeyframe> keyframe,
+                                     bool use_lod = true);
 
   // LoD system methods
   torch::Tensor assignLoDByPercentiles(
@@ -197,6 +197,7 @@ class GaussianModel {
                                 const torch::Tensor& visible_gaussian_mask);
 
   torch::Tensor computeChunkIds(const torch::Tensor& positions);
+  void updateChunkIDs();
 
   // Recompute chunk IDs for gaussians after loop closure transformations
   void recomputeChunkIdsAfterLoopClosure();
@@ -238,6 +239,9 @@ class GaussianModel {
   float max_memory_gb_ = 8.0f;  // Configurable
   int64_t max_gaussians_in_memory_ = 3000000;
   std::chrono::steady_clock::time_point last_memory_check_;
+
+  int64_t debug_expected_gaussian_count_ = 0;
+  std::unordered_map<int64_t, int64_t> debug_chunk_gaussian_counts_;
 
   torch::Tensor
       chunk_last_used_;  // [N] - float tensor of timestamps (as float seconds)
@@ -317,8 +321,15 @@ class GaussianModel {
   torch::Tensor decodeChunkCoordsTensor(const torch::Tensor& encoded_ids);
   torch::Tensor chunkCoordVectorToTensor(const std::vector<ChunkCoord>& coords);
 
-  void handleChunkRedistribution(int64_t processed_chunk_id);
   void handleBatchChunkRedistribution(const torch::Tensor& processed_chunk_ids);
+
+  void assertChunkTrackingConsistency(const std::string& location);
+  void assertGaussianCountInvariant(const std::string& location,
+                                    bool should_increase = false);
+  void assertChunkGaussianCounts(const std::string& location);
+  void assertNoDuplicateGaussians(const std::string& location);
+  void assertTensorSizesConsistent(const std::string& location);
+  void runFullConsistencyCheck(const std::string& location);
 
   // Cache for keyframe visibility results
   struct VisibilityCacheEntry {

@@ -23,6 +23,7 @@ GaussianModel::GaussianModel(const GaussianModelParams& model_params,
                              float chunk_size)
     : storage_base_path_(storage_base_path),
       chunk_size_(chunk_size),
+      max_gaussians_in_memory_(model_params.max_gaussians_in_memory_),
       sh_degree_(0),
       spatial_lr_scale_(0.0),
       position_lr_init_(0.00005),
@@ -642,7 +643,8 @@ std::vector<ChunkCoord> GaussianModel::frustumCullChunks(
 }
 
 torch::Tensor GaussianModel::cullVisibleGaussians(
-    std::shared_ptr<GaussianKeyframe> keyframe) {
+    std::shared_ptr<GaussianKeyframe> keyframe,
+    bool use_lod) {
   torch::NoGradGuard no_grad;
 
   // Frustum cull chunks
@@ -668,9 +670,14 @@ torch::Tensor GaussianModel::cullVisibleGaussians(
   torch::Tensor chunk_visibility_mask =
       createGaussianMaskFromChunks(visible_chunk_ids);
 
+  //  Update access times for all visible chunks
   updateChunkAccess(visible_chunk_ids);
 
-  if (!enable_lod_) return chunk_visibility_mask;
+  // std::cout << "[Culling Debug] Culling stats - Total: " << xyz_.size(0)
+  //           << ", Chunk visible: " << chunk_visibility_mask.sum().item<int>()
+  //           << std::endl;
+
+  if (!use_lod || !enable_lod_) return chunk_visibility_mask;
 
   // Apply LoD filtering based on distance
   torch::Tensor camera_position = keyframe->getCenter().squeeze();
@@ -691,8 +698,6 @@ torch::Tensor GaussianModel::cullVisibleGaussians(
   //           << ", LoD visible: " << lod_visible << " (reduction: " <<
   //           reduction
   //           << "%)" << std::endl;
-
-  //  Update access times for all visible chunks
 
   return lod_filtered_mask;
 }
@@ -762,6 +767,9 @@ void GaussianModel::pruneLowOpacityGaussians(
   // 3. Create pruning mask (invert valid_mask since prunePoints expects
   // "points to remove")
   torch::Tensor prune_mask = ~valid_mask;  // [N] - true for points to remove
+
+  // std::cout << "Pruning: " << prune_mask.sum().item<int>() << " points"
+  //           << std::endl;
 
   torch::Tensor full_model_prune_mask = torch::zeros(
       {getXYZ().size(0)},
@@ -2580,115 +2588,6 @@ torch::Tensor GaussianModel::selectCumulativeLoD(
   return final_mask;
 }
 
-void GaussianModel::handleChunkRedistribution(int64_t processed_chunk_id) {
-  torch::NoGradGuard no_grad;
-
-  // Step 1: Find gaussians that were in the processed chunk
-  torch::Tensor processed_chunk_mask =
-      (gaussian_chunk_ids_ == processed_chunk_id);
-  torch::Tensor processed_indices = torch::where(processed_chunk_mask)[0];
-
-  if (processed_indices.size(0) == 0) {
-    return;  // No gaussians in this chunk
-  }
-
-  std::cout << "[Redistribution] Processing " << processed_indices.size(0)
-            << " gaussians from chunk " << processed_chunk_id << std::endl;
-
-  // Step 2: Recompute actual chunk IDs based on current positions
-  torch::Tensor processed_positions = xyz_.index({processed_indices});
-  torch::Tensor actual_chunk_ids = computeChunkIds(processed_positions);
-
-  // Step 3: Find gaussians that have moved to different chunks
-  torch::Tensor old_chunk_ids = gaussian_chunk_ids_.index({processed_indices});
-  torch::Tensor moved_mask = (actual_chunk_ids != old_chunk_ids);
-
-  if (!moved_mask.any().item<bool>()) {
-    std::cout << "[Redistribution] No gaussians moved from chunk "
-              << processed_chunk_id << std::endl;
-    return;  // No redistributions needed
-  }
-
-  // Get local indices (within the processed_indices array) of gaussians that
-  // moved
-  torch::Tensor moved_indices_local = torch::where(moved_mask)[0];
-
-  // Convert local indices to global model indices by indexing into
-  // processed_indices where processed_indices contains global indices of
-  // gaussians from the processed chunk
-  // This maps: local_idx_in_processed_chunk -> global_idx_in_entire_model
-  torch::Tensor moved_indices_global =
-      processed_indices.index({moved_indices_local});
-
-  // Get the new chunk IDs that the moved gaussians should belong to
-  // actual_chunk_ids contains recomputed chunk IDs for all processed gaussians
-  // This extracts only the chunk IDs for gaussians that actually moved
-  torch::Tensor destination_chunk_ids =
-      actual_chunk_ids.index({moved_indices_local});
-
-  std::cout << "[Redistribution] " << moved_indices_local.size(0)
-            << " gaussians moved to different chunks" << std::endl;
-
-  // Step 4: Get unique destination chunks that gaussians moved to
-  torch::Tensor unique_destinations =
-      std::get<0>(torch::_unique2(destination_chunk_ids));
-
-  // Step 6: Pre-load destination chunks to prevent spillover classification
-  if (unique_destinations.size(0) > 0) {
-    std::cout << "[Redistribution] Pre-loading destination chunks to prevent "
-                 "spillover"
-              << std::endl;
-
-    // Load destination chunks (loadChunks handles all filtering internally)
-    loadChunks(unique_destinations);
-  }
-
-  // Step 6: CRITICAL - Recompute indices after loadChunks() as eviction may
-  // have invalidated them
-  torch::Tensor updated_processed_chunk_mask =
-      (gaussian_chunk_ids_ == processed_chunk_id);
-  torch::Tensor updated_processed_indices =
-      torch::where(updated_processed_chunk_mask)[0];
-
-  if (updated_processed_indices.size(0) == 0) {
-    std::cout << "[Redistribution] WARNING: All gaussians from chunk "
-              << processed_chunk_id << " were evicted during loading!"
-              << std::endl;
-    return;
-  }
-
-  // Step 7: Recompute which gaussians moved (using updated indices)
-  torch::Tensor updated_processed_positions =
-      xyz_.index({updated_processed_indices});
-  torch::Tensor updated_actual_chunk_ids =
-      computeChunkIds(updated_processed_positions);
-  torch::Tensor updated_old_chunk_ids =
-      gaussian_chunk_ids_.index({updated_processed_indices});
-  torch::Tensor updated_moved_mask =
-      (updated_actual_chunk_ids != updated_old_chunk_ids);
-
-  if (!updated_moved_mask.any().item<bool>()) {
-    std::cout << "[Redistribution] No gaussians moved after recomputation"
-              << std::endl;
-    return;
-  }
-
-  torch::Tensor updated_moved_indices_local =
-      torch::where(updated_moved_mask)[0];
-  torch::Tensor updated_moved_indices_global =
-      updated_processed_indices.index({updated_moved_indices_local});
-  torch::Tensor updated_destination_chunk_ids =
-      updated_actual_chunk_ids.index({updated_moved_indices_local});
-
-  std::cout << "[Redistribution] After recomputation: "
-            << updated_moved_indices_local.size(0)
-            << " gaussians still need redistribution" << std::endl;
-
-  // Step 8: Update gaussian_chunk_ids_ for moved gaussians (now safe!)
-  gaussian_chunk_ids_.index_put_({updated_moved_indices_global},
-                                 updated_destination_chunk_ids);
-}
-
 void GaussianModel::handleBatchChunkRedistribution(
     const torch::Tensor& processed_chunk_ids) {
   torch::NoGradGuard no_grad;
@@ -2731,9 +2630,9 @@ void GaussianModel::handleBatchChunkRedistribution(
   torch::Tensor moved_mask = (actual_chunk_ids != old_chunk_ids);
 
   if (!moved_mask.any().item<bool>()) {
-    std::cout
-        << "[Batch Redistribution] No gaussians moved from any processed chunks"
-        << std::endl;
+    std::cout << "[Batch Redistribution] No gaussians moved from any "
+                 "processed chunks"
+              << std::endl;
     return;  // No redistributions needed
   }
 
@@ -2794,7 +2693,6 @@ void GaussianModel::handleBatchChunkRedistribution(
   if (!updated_moved_mask.any().item<bool>()) {
     std::cout << "[Batch Redistribution] No gaussians moved after recomputation"
               << std::endl;
-    return;
   }
 
   torch::Tensor updated_moved_indices_local =
@@ -2811,4 +2709,82 @@ void GaussianModel::handleBatchChunkRedistribution(
   // Step 8: Update gaussian_chunk_ids_ for moved gaussians (now safe!)
   gaussian_chunk_ids_.index_put_({updated_moved_indices_global},
                                  updated_destination_chunk_ids);
+}
+
+void GaussianModel::assertChunkTrackingConsistency(
+    const std::string& location) {
+  // Check that tracking tensors are in sync
+  assert(chunks_on_disk_.size(0) == chunk_gaussian_counts_.size(0) &&
+         "chunks_on_disk_ and chunk_gaussian_counts_ size mismatch");
+
+  // Check that loaded chunks are subset of on-disk chunks
+  torch::Tensor not_on_disk =
+      ~torch::isin(chunks_loaded_from_disk_, chunks_on_disk_);
+  assert(!torch::any(not_on_disk).item<bool>() &&
+         ("Loaded chunks not marked as on-disk at: " + location).c_str());
+
+  std::cout << "[ASSERT] " << location << " - Chunk tracking OK" << std::endl;
+}
+
+void GaussianModel::assertGaussianCountInvariant(const std::string& location,
+                                                 bool should_increase) {
+  int64_t current_count = xyz_.size(0);
+
+  if (!should_increase && debug_expected_gaussian_count_ > 0) {
+    assert(current_count <= debug_expected_gaussian_count_ &&
+           ("Unexpected Gaussian count increase at: " + location +
+            " (was: " + std::to_string(debug_expected_gaussian_count_) +
+            ", now: " + std::to_string(current_count) + ")")
+               .c_str());
+  }
+
+  debug_expected_gaussian_count_ = current_count;
+  std::cout << "[ASSERT] " << location << " - Gaussian count: " << current_count
+            << std::endl;
+}
+
+void GaussianModel::assertNoDuplicateGaussians(const std::string& location) {
+  if (gaussian_ids_.size(0) > 0) {
+    torch::Tensor unique_ids = std::get<0>(torch::_unique2(gaussian_ids_));
+    assert(unique_ids.size(0) == gaussian_ids_.size(0) &&
+           ("Duplicate Gaussian IDs found at: " + location).c_str());
+  }
+
+  std::cout << "[ASSERT] " << location << " - No duplicate gaussians"
+            << std::endl;
+}
+
+void GaussianModel::assertTensorSizesConsistent(const std::string& location) {
+  int64_t n = xyz_.size(0);
+
+  assert(features_dc_.size(0) == n && "features_dc_ size mismatch");
+  assert(features_rest_.size(0) == n && "features_rest_ size mismatch");
+  assert(scaling_.size(0) == n && "scaling_ size mismatch");
+  assert(rotation_.size(0) == n && "rotation_ size mismatch");
+  assert(opacity_.size(0) == n && "opacity_ size mismatch");
+  assert(exist_since_iter_.size(0) == n && "exist_since_iter_ size mismatch");
+  assert(gaussian_chunk_ids_.size(0) == n &&
+         "gaussian_chunk_ids_ size mismatch");
+  assert(gaussian_lod_levels_.size(0) == n &&
+         "gaussian_lod_levels_ size mismatch");
+  assert(gaussian_ids_.size(0) == n && "gaussian_ids_ size mismatch");
+  assert(position_lrs_.size(0) == n && "position_lrs_ size mismatch");
+
+  std::cout << "[ASSERT] " << location << " - Tensor sizes consistent: " << n
+            << std::endl;
+}
+
+void GaussianModel::runFullConsistencyCheck(const std::string& location) {
+  std::cout << "\n=== FULL CONSISTENCY CHECK: " << location
+            << " ===" << std::endl;
+  assertTensorSizesConsistent(location);
+  assertChunkTrackingConsistency(location);
+  assertNoDuplicateGaussians(location);
+  assertGaussianCountInvariant(location);
+  std::cout << "=== CONSISTENCY CHECK PASSED: " << location << " ===\n"
+            << std::endl;
+}
+
+void GaussianModel::updateChunkIDs() {
+  gaussian_chunk_ids_ = computeChunkIds(getXYZ());
 }
