@@ -567,6 +567,8 @@ void ImGuiViewer::run() {
         ImGui::Text("Speed: %.1f iter/s", iterations_per_second_);
         if (pGausMapper_->gaussians_ &&
             pGausMapper_->gaussians_->is_initialized_) {
+          ImGui::Text("Gaussians in VRAM: %d",
+                      static_cast<int>(pGausMapper_->gaussians_->xyz_.size(0)));
           ImGui::Text(
               "Chunks loaded: %d",
               static_cast<int>(
@@ -576,6 +578,7 @@ void ImGuiViewer::run() {
                           pGausMapper_->gaussians_->chunks_on_disk_.size(0)));
 
         } else {
+          ImGui::Text("Gaussians in VRAM: Not initialized");
           ImGui::Text("Active Chunks: Not initialized");
           ImGui::Text("Total Chunks: Not initialized");
         }
