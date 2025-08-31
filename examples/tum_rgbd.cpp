@@ -42,9 +42,6 @@ void LoadImages(const std::string &strAssociationFilename,
 void saveTrackingTime(std::vector<float> &vTimesTrack,
                       const std::string &strSavePath);
 void saveGpuPeakMemoryUsage(std::filesystem::path pathSave);
-void saveTrainingTime(std::chrono::steady_clock::time_point start_time,
-                      std::chrono::steady_clock::time_point end_time,
-                      const std::filesystem::path &output_dir);
 
 int main(int argc, char **argv) {
   if (argc != 7 && argc != 8) {
@@ -59,9 +56,6 @@ int main(int argc, char **argv) {
               << std::endl;
     return 1;
   }
-
-  std::chrono::steady_clock::time_point training_start =
-      std::chrono::steady_clock::now();
 
   bool use_viewer = true;
   if (argc == 8)
@@ -200,13 +194,6 @@ int main(int argc, char **argv) {
                         .count();
 
   std::cout << "FPS: " << nImages / duration << std::endl;
-
-  // End timing after all processing is complete
-  std::chrono::steady_clock::time_point training_end =
-      std::chrono::steady_clock::now();
-
-  // Save training time
-  saveTrainingTime(training_start, training_end, output_dir);
 
   // GPU peak usage
   saveGpuPeakMemoryUsage(output_dir / "GpuPeakUsageMB.txt");

@@ -219,6 +219,10 @@ class GaussianMapper {
   std::shared_ptr<GaussianKeyframe> useRecentKeyframe();
   void generateKfidRandomShuffle();
 
+  // Chunk-based optimization methods
+  std::shared_ptr<GaussianKeyframe> getNextKeyframeByChunk();
+  void updateChunkKeyframeMapping(std::shared_ptr<GaussianKeyframe> keyframe);
+
  public:
   void increaseKeyframeTimesOfUse(std::shared_ptr<GaussianKeyframe> pkf,
                                   int times);
@@ -391,7 +395,15 @@ class GaussianMapper {
  public:
   std::map<std::size_t, float> kfs_loss_;
   std::map<std::size_t, int> kfs_used_times_;
-  int keyframe_selection_strategy_ = 0;  // 0: all, 1: recent k
+  int keyframe_selection_strategy_ = 0;  // 0: all, 1: recent k, 2: chunk-based
+
+  // Chunk-based optimization data structures
+  std::unordered_map<int64_t, std::vector<int>>
+      chunk_to_keyframes_;         // chunk_id -> keyframe_ids
+  int64_t current_chunk_id_ = -1;  // Currently active chunk (-1 = none)
+  int chunk_iterations_remaining_ =
+      0;  // How many more iterations on current chunk
+  int chunk_iterations_per_chunk_ = 10;  // How long to optimize each chunk
 
   // Status
   bool initial_mapped_;

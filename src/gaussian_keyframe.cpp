@@ -502,19 +502,21 @@ torch::Tensor GaussianKeyframe::getCenter() {
 }
 
 void GaussianKeyframe::setupStereoData(
+    const cv::Mat& img_undist,
+    const cv::Mat& img_auxiliary_undist,
     float baseline,
     torch::DeviceType device_type,
     std::shared_ptr<StereoDepth> depth_estimator,
     float min_depth,
     float max_depth) {
-  if (img_auxiliary_undist_.empty()) {
+  if (img_auxiliary_undist.empty()) {
     return;  // No stereo image available
   }
 
   // FIX: Convert float32 [0,1] images to uint8 [0,255] images
   cv::Mat left_img_uint8, right_img_uint8;
-  this->img_undist_.convertTo(left_img_uint8, CV_8UC3, 255.0);
-  this->img_auxiliary_undist_.convertTo(right_img_uint8, CV_8UC3, 255.0);
+  img_undist.convertTo(left_img_uint8, CV_8UC3, 255.0);
+  img_auxiliary_undist.convertTo(right_img_uint8, CV_8UC3, 255.0);
 
   // Verify conversion worked
   // std::cout << "Converted left image - Type: " << left_img_uint8.type()
@@ -668,12 +670,13 @@ GaussianKeyframe::extractValidKeypointsForDepthAlignment() const {
   return std::make_tuple(valid_pixel_coords, valid_depths);
 }
 
-void GaussianKeyframe::setupMonoData(torch::DeviceType device_type,
+void GaussianKeyframe::setupMonoData(const cv::Mat& img_undist,
+                                     torch::DeviceType device_type,
                                      std::shared_ptr<MonoDepth> depth_estimator,
                                      float min_depth,
                                      float max_depth) {
   auto [relative_depth, depth_confidence] =
-      depth_estimator->estimate_depth(img_undist_, intr_[0]);
+      depth_estimator->estimate_depth(img_undist, intr_[0]);
 
   // std::cout << "Depth info right after prediction" << std::endl;
   // std::cout << relative_depth.sizes() << std::endl;
@@ -774,8 +777,8 @@ void GaussianKeyframe::setupMonoData(torch::DeviceType device_type,
   generateInverseDepthPyramid(inverted_depth_mat);
 }
 
-void GaussianKeyframe::setupRGBDData() {
-  cv::Mat depth = img_auxiliary_undist_;
+void GaussianKeyframe::setupRGBDData(const cv::Mat& img_auxiliary_undist) {
+  cv::Mat depth = img_auxiliary_undist;
 
   // Clamp minimum to 1e-8
   cv::Mat clamped_depth;
@@ -847,9 +850,10 @@ GaussianKeyframe::getTrainingData(
 }
 
 // In GaussianKeyframe class
-void GaussianKeyframe::generateImagePyramid() {
+void GaussianKeyframe::generateImagePyramid(const cv::Mat& img_undist) {
+  assert(!img_undist.empty());
   cv::cuda::GpuMat img_gpu;
-  img_gpu.upload(img_undist_);
+  img_gpu.upload(img_undist);
   gaus_pyramid_original_image_.resize(num_gaus_pyramid_sub_levels_);
 
   for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
@@ -894,23 +898,13 @@ void GaussianKeyframe::saveDataToDisk() {
   // Save heavy image/depth tensors
   torch::serialize::OutputArchive archive;
 
-  torch::Tensor img_undist_tensor =
-      tensor_utils::cvMat2TorchTensor_Float32(img_undist_, torch::kCUDA);
-  if (img_undist_tensor.defined()) {
-    archive.write("img_undist_", img_undist_tensor);
-  }
-  img_undist_.release();
-
-  torch::Tensor img_auxiliary_undist_tensor =
-      tensor_utils::cvMat2TorchTensor_Float32(img_auxiliary_undist_,
-                                              torch::kCUDA);
-  if (img_auxiliary_undist_tensor.defined()) {
-    archive.write("img_auxiliary_undist_", img_auxiliary_undist_tensor);
-  }
-  img_auxiliary_undist_.release();
-
   if (depth_confidence_.defined()) {
     archive.write("depth_confidence_", depth_confidence_);
+  }
+
+  // Save feature map
+  if (feature_map_.defined()) {
+    archive.write("feature_map_", feature_map_);
   }
 
   // Save pyramid image data (these can be large)
@@ -946,6 +940,11 @@ void GaussianKeyframe::saveDataToDisk() {
     depth_confidence_.reset();
   }
 
+  // Clear feature map
+  if (feature_map_.defined()) {
+    feature_map_.reset();
+  }
+
   // Clear pyramid data
   for (auto& img : gaus_pyramid_original_image_) {
     if (img.defined()) {
@@ -961,7 +960,7 @@ void GaussianKeyframe::saveDataToDisk() {
   }
   gaus_pyramid_inv_depth_image_.clear();
 
-  // c10::cuda::CUDACachingAllocator::emptyCache();
+  c10::cuda::CUDACachingAllocator::emptyCache();
 
   loaded_ = false;
 
@@ -997,25 +996,16 @@ void GaussianKeyframe::loadDataFromDisk() {
     archive.load_from(data_path.string());
 
     try {
-      torch::Tensor img_undist_tensor;
-      archive.read("img_undist_", img_undist_tensor);
-      img_undist_ = tensor_utils::torchTensor2CvMat_Float32(img_undist_tensor);
-    } catch (const std::exception& e) {
-      // Silent fail
-    }
-
-    try {
-      torch::Tensor img_auxiliary_undist_tensor;
-      archive.read("img_auxiliary_undist_", img_auxiliary_undist_tensor);
-      img_auxiliary_undist_ =
-          tensor_utils::torchTensor2CvMat_Float32(img_auxiliary_undist_tensor);
-    } catch (const std::exception& e) {
-      // Silent fail
-    }
-
-    try {
       archive.read("depth_confidence_", depth_confidence_);
       depth_confidence_ = depth_confidence_.to(torch::kCUDA);
+    } catch (const std::exception& e) {
+      // Silent fail
+    }
+
+    // Load feature map
+    try {
+      archive.read("feature_map_", feature_map_);
+      feature_map_ = feature_map_.to(torch::kCUDA);
     } catch (const std::exception& e) {
       // Silent fail
     }

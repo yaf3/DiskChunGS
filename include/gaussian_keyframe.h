@@ -115,7 +115,9 @@ class GaussianKeyframe {
 
   void updatePoseFromParameters();
 
-  void setupStereoData(float baseline,
+  void setupStereoData(const cv::Mat& img_undist,
+                       const cv::Mat& img_auxiliary_undist,
+                       float baseline,
                        torch::DeviceType device_type,
                        std::shared_ptr<StereoDepth> depth_estimator,
                        float min_depth,
@@ -124,18 +126,19 @@ class GaussianKeyframe {
   std::tuple<std::vector<float>, std::vector<float>>
   extractValidKeypointsForDepthAlignment() const;
 
-  void setupMonoData(torch::DeviceType device_type,
+  void setupMonoData(const cv::Mat& img_undist,
+                     torch::DeviceType device_type,
                      std::shared_ptr<MonoDepth> depth_estimator,
                      float min_depth,
                      float max_depth);
 
-  void setupRGBDData();
+  void setupRGBDData(const cv::Mat& img_auxiliary_undist);
 
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, int, int>
   getTrainingData(const torch::Tensor& undistort_mask,
                   const std::vector<torch::Tensor>& pyramid_masks);
 
-  void generateImagePyramid();
+  void generateImagePyramid(const cv::Mat& img_undist);
   void generateInverseDepthPyramid(const cv::Mat& depth_mat);
 
   // Save only memory-heavy data to disk and clear from memory
@@ -155,7 +158,6 @@ class GaussianKeyframe {
   int camera_model_id_ = 0;
 
   std::string img_filename_;
-  cv::Mat img_undist_, img_auxiliary_undist_;
   int image_width_;   ///< image
   int image_height_;  ///< image
 

@@ -101,6 +101,10 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   override_color_ =
       torch::empty(0, torch::TensorOptions().device(device_type_));
 
+  // Initialize Gaussian model
+  gaussians_ = std::make_shared<GaussianModel>(
+      model_params_, chunk_save_dir_.string(), chunk_size_);
+
   // Initialize scene
   scene_ = std::make_shared<GaussianScene>(model_params_);
 
@@ -505,308 +509,286 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
 }
 
 void GaussianMapper::run() {
-  try {
-    std::cout << "[MAPPER DEBUG] GaussianMapper::run() started" << std::endl;
-    // Delete existing chunks since training
-    std::filesystem::remove_all(chunk_save_dir_);
-    CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
+  std::cout << "[MAPPER DEBUG] GaussianMapper::run() started" << std::endl;
 
-    std::filesystem::remove_all(keyframe_save_dir_);
-    CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(keyframe_save_dir_)
+  std::chrono::steady_clock::time_point training_start =
+      std::chrono::steady_clock::now();
 
-    std::cout << "[MAPPER DEBUG] Starting initial mapping phase" << std::endl;
-    // First loop: Initial gaussian mapping
-    while (!isStopped()) {
-      // Check conditions for initial mapping
-      if (hasMetInitialMappingConditions()) {
-        std::cout << "[MAPPER DEBUG] Initial mapping completed, breaking to "
-                     "next phase"
-                  << std::endl;
-        pSLAM_->getAtlas()->clearMappingOperation();
+  // Delete existing chunks since training
+  std::filesystem::remove_all(chunk_save_dir_);
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
 
-        // Get initial sparse map
-        auto pMap = pSLAM_->getAtlas()->GetCurrentMap();
-        std::vector<ORB_SLAM3::KeyFrame*> vpKFs;
-        std::vector<ORB_SLAM3::MapPoint*> vpMPs;
-        torch::Tensor initialSparsePoints, initialSparseColors,
-            initialOpacities;
-        {
-          std::unique_lock<std::mutex> lock_map(pMap->mMutexMapUpdate);
-          vpKFs = pMap->GetAllKeyFrames();
+  std::filesystem::remove_all(keyframe_save_dir_);
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(keyframe_save_dir_)
 
-          for (const auto& pKF : vpKFs) {
-            std::shared_ptr<GaussianKeyframe> new_kf =
-                std::make_shared<GaussianKeyframe>(pKF->mnId, getIteration(),
-                                                   keyframe_save_dir_);
-            new_kf->zfar_ = z_far_;
-            new_kf->znear_ = z_near_;
-            // Pose
-            auto pose = pKF->GetPose();
-            new_kf->setPose(pose.unit_quaternion().cast<double>(),
-                            pose.translation().cast<double>());
-            cv::Mat imgRGB_undistorted, imgAux_undistorted;
-            try {
-              // Camera
-              Camera& camera = scene_->cameras_.at(pKF->mpCamera->GetId());
-              new_kf->setCameraParams(camera);
+  std::cout << "[MAPPER DEBUG] Starting initial mapping phase" << std::endl;
+  // First loop: Initial gaussian mapping
+  while (!isStopped()) {
+    // Check conditions for initial mapping
+    if (hasMetInitialMappingConditions()) {
+      std::cout << "[MAPPER DEBUG] Initial mapping completed, breaking to "
+                   "next phase"
+                << std::endl;
+      pSLAM_->getAtlas()->clearMappingOperation();
 
-              imgRGB_undistorted = pKF->imgLeftRGB;
-              imgAux_undistorted = pKF->imgAuxiliary;
+      // Get initial sparse map
+      auto pMap = pSLAM_->getAtlas()->GetCurrentMap();
+      std::vector<ORB_SLAM3::KeyFrame*> vpKFs;
+      std::vector<ORB_SLAM3::MapPoint*> vpMPs;
+      {
+        std::unique_lock<std::mutex> lock_map(pMap->mMutexMapUpdate);
+        vpKFs = pMap->GetAllKeyFrames();
 
-              new_kf->img_filename_ = pKF->mNameFile;
-              new_kf->gaus_pyramid_height_ = camera.gaus_pyramid_height_;
-              new_kf->gaus_pyramid_width_ = camera.gaus_pyramid_width_;
-              new_kf->gaus_pyramid_times_of_use_ =
-                  kf_gaus_pyramid_times_of_use_;
-            } catch (std::out_of_range) {
-              throw std::runtime_error(
-                  "[GaussianMapper::run]KeyFrame Camera not found!");
-            }
-            new_kf->computeTransformTensors();
-            scene_->addKeyframe(new_kf);
-            new_kf->initOptimizer(device_type_, opt_params_.pose_lr_,
-                                  opt_params_.exposure_lr_,
-                                  opt_params_.depth_scale_bias_lr_);
-            kfid_shuffled_ = false;
+        for (const auto& pKF : vpKFs) {
+          std::shared_ptr<GaussianKeyframe> new_kf =
+              std::make_shared<GaussianKeyframe>(pKF->mnId, getIteration(),
+                                                 keyframe_save_dir_);
+          new_kf->zfar_ = z_far_;
+          new_kf->znear_ = z_near_;
+          // Pose
+          auto pose = pKF->GetPose();
+          new_kf->setPose(pose.unit_quaternion().cast<double>(),
+                          pose.translation().cast<double>());
+          cv::Mat imgRGB_undistorted, imgAux_undistorted;
+          try {
+            // Camera
+            Camera& camera = scene_->cameras_.at(pKF->mpCamera->GetId());
+            new_kf->setCameraParams(camera);
 
-            // Only update it if we are actually using it
-            if (keyframe_selection_strategy_ == 1) {
-              keyframe_queue_->notifyNewKeyframeAdded(new_kf);
-            }
+            assert(!pKF->imgLeftRGB.empty() && !pKF->imgAuxiliary.empty());
+            imgRGB_undistorted = pKF->imgLeftRGB;
+            imgAux_undistorted = pKF->imgAuxiliary;
 
-            increaseKeyframeTimesOfUse(new_kf, newKeyframeTimesOfUse());
-
-            // Features
-            std::vector<float> pixels;
-            std::vector<float> pointsLocal;
-            pKF->GetKeypointInfo(pixels, pointsLocal);
-            new_kf->kps_pixel_ = std::move(pixels);
-            new_kf->kps_point_local_ = std::move(pointsLocal);
-            new_kf->img_undist_ = imgRGB_undistorted;
-            new_kf->img_auxiliary_undist_ = imgAux_undistorted;
-
-            torch::Tensor input_tensor =
-                feat_extractor_->parseInput(new_kf->img_undist_);
-            new_kf->feature_map_ =
-                feat_extractor_->extractDenseFeatures(input_tensor);
-            // std::cout << "Features Sizes: " << new_kf->feature_map_.sizes()
-            //           << std::endl;
+            new_kf->img_filename_ = pKF->mNameFile;
+            new_kf->gaus_pyramid_height_ = camera.gaus_pyramid_height_;
+            new_kf->gaus_pyramid_width_ = camera.gaus_pyramid_width_;
+            new_kf->gaus_pyramid_times_of_use_ = kf_gaus_pyramid_times_of_use_;
+          } catch (std::out_of_range) {
+            throw std::runtime_error(
+                "[GaussianMapper::run]KeyFrame Camera not found!");
           }
-        }
+          new_kf->computeTransformTensors();
+          scene_->addKeyframe(new_kf);
+          new_kf->initOptimizer(device_type_, opt_params_.pose_lr_,
+                                opt_params_.exposure_lr_,
+                                opt_params_.depth_scale_bias_lr_);
+          kfid_shuffled_ = false;
 
-        // Prepare multi resolution images for training
-        for (auto& kfit : scene_->keyframes()) {
-          auto pkf = kfit.second;
-          pkf->generateImagePyramid();
+          // Only update it if we are actually using it
+          if (keyframe_selection_strategy_ == 1) {
+            keyframe_queue_->notifyNewKeyframeAdded(new_kf);
+          }
+          // Update chunk-keyframe mapping for chunk-based strategy
+          if (keyframe_selection_strategy_ == 2) {
+            updateChunkKeyframeMapping(new_kf);
+          }
+
+          increaseKeyframeTimesOfUse(new_kf, newKeyframeTimesOfUse());
+
+          // Features
+          std::vector<float> pixels;
+          std::vector<float> pointsLocal;
+          pKF->GetKeypointInfo(pixels, pointsLocal);
+          new_kf->kps_pixel_ = std::move(pixels);
+          new_kf->kps_point_local_ = std::move(pointsLocal);
+          torch::Tensor input_tensor =
+              feat_extractor_->parseInput(imgRGB_undistorted);
+          new_kf->feature_map_ =
+              feat_extractor_->extractDenseFeatures(input_tensor);
+          // std::cout << "Features Sizes: " << new_kf->feature_map_.sizes()
+          //           << std::endl;
+
+          new_kf->generateImagePyramid(imgRGB_undistorted);
 
           if (sensor_type_ == MONOCULAR) {
-            pkf->setupMonoData(device_type_, monocular_depth_estimator_,
-                               min_depth_, max_depth_);
-          } else if (sensor_type_ == STEREO &&
-                     !pkf->img_auxiliary_undist_.empty()) {
-            pkf->setupStereoData(stereo_baseline_length_, device_type_,
-                                 stereo_depth_estimator_, min_depth_,
-                                 max_depth_);
-          } else if (sensor_type_ == RGBD &&
-                     !pkf->img_auxiliary_undist_.empty()) {
-            pkf->setupRGBDData();
+            new_kf->setupMonoData(imgRGB_undistorted, device_type_,
+                                  monocular_depth_estimator_, min_depth_,
+                                  max_depth_);
+          } else if (sensor_type_ == STEREO && !imgAux_undistorted.empty()) {
+            new_kf->setupStereoData(
+                imgRGB_undistorted, imgAux_undistorted, stereo_baseline_length_,
+                device_type_, stereo_depth_estimator_, min_depth_, max_depth_);
+          } else if (sensor_type_ == RGBD && !imgAux_undistorted.empty()) {
+            new_kf->setupRGBDData(imgAux_undistorted);
           }
 
-          pkf->loaded_ = true;
+          new_kf->loaded_ = true;
 
-          if (!initial_mapped_) {
-            scene_->cameras_extent_ = std::get<1>(scene_->getNerfppNorm());
-            scene_->cameras_extent_ =
-                1.0;  // For debugging, maybe its better without;
-            std::cout << "Extent: " << scene_->cameras_extent_ << std::endl;
+          pSLAM_->getAtlas()->ReleaseKeyFrameImages(pKF->mnId);
 
-            // Initialize Gaussian model
-            gaussians_ = std::make_shared<GaussianModel>(
-                model_params_, chunk_save_dir_.string(),
-                chunk_size_ * scene_->cameras_extent_);
-
-            std::unique_lock<std::mutex> lock_render(mutex_render_);
-            sampleGaussians(pkf);
-            gaussians_->trainingSetup(opt_params_);
-            std::cout << "Inital mapped!\n";
-            initial_mapped_ = true;
-          } else {
-            std::unique_lock<std::mutex> lock_render(mutex_render_);
-            sampleGaussians(pkf);
-          }
+          // imgRGB_undistorted.release();
+          // imgAux_undistorted.release();
         }
-
-        // Invoke training once
-        trainForOneIteration();
-
-        // Kind of a hack
-        for (auto& kfit : scene_->keyframes()) {
-          kfit.second->allow_eviction_ = true;
-        }
-
-        // Finish initial mapping loop
-        break;
-      } else if (pSLAM_->isShutDown()) {
-        std::cout << "[MAPPER DEBUG] SLAM shutdown during initial mapping"
-                  << std::endl;
-        break;
-      } else {
-        // Initial conditions not satisfied
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
-    }
-    std::cout << "[MAPPER DEBUG] Exited initial mapping phase" << std::endl;
 
-    // Enable memory history recording using the second overload
-    // torch::cuda::_record_memory_history("all",    // enabled
-    //                                     "all",    // context
-    //                                     "all",    // stacks
-    //                                     SIZE_MAX  // max_entries
-    // );
+      // Prepare multi resolution images for training
+      for (auto& kfit : scene_->keyframes()) {
+        auto pkf = kfit.second;
 
-    std::cout << "[MAPPER DEBUG] Starting incremental mapping phase"
-              << std::endl;
-    // Second loop: Incremental gaussian mapping
-    int SLAM_stop_iter = 0;
-    while (!isStopped()) {
-      try {
-        auto timer_TotalLoop = ProfilingUtils::Timer("TotalLoop");
+        if (!initial_mapped_) {
+          scene_->cameras_extent_ = std::get<1>(scene_->getNerfppNorm());
+          scene_->cameras_extent_ =
+              1.0;  // For debugging, maybe its better without;
+          std::cout << "Extent: " << scene_->cameras_extent_ << std::endl;
 
-        // Check conditions for incremental mapping
-        if (hasMetIncrementalMappingConditions()) {
-          combineMappingOperations();
-          if (cull_keyframes_) cullKeyframes();
+          std::unique_lock<std::mutex> lock_render(mutex_render_);
+          sampleGaussians(pkf);
+          gaussians_->trainingSetup(opt_params_);
+          std::cout << "Inital mapped!\n";
+          initial_mapped_ = true;
+        } else {
+          std::unique_lock<std::mutex> lock_render(mutex_render_);
+          sampleGaussians(pkf);
         }
-
-        // Invoke training once
-        trainForOneIteration();
-        timer_TotalLoop.stop();
-
-        // if (getIteration() % 10 == 0) {
-        //   // chunk_manager_->testMemoryUsagePattern();
-
-        //   // Get the pickled snapshot
-        //   std::string snapshot_data =
-        //   torch::cuda::_memory_snapshot_pickled();
-
-        //   // Write to file
-        //   std::ofstream file("./memory_snapshot.pickle", std::ios::binary);
-        //   file.write(snapshot_data.data(), snapshot_data.size());
-        //   file.close();
-
-        //   std::cout << "Memory snapshot saved to memory_snapshot.pickle"
-        //             << std::endl;
-        // }
-
-        // if (getIteration() % 2000 == 0) {
-        //   chunk_manager_->testMemoryUsagePattern();
-        // }
-
-        if (pSLAM_->isShutDown()) {
-          SLAM_stop_iter = getIteration();
-          SLAM_ended_ = true;
-          std::cout << "[MAPPER DEBUG] SLAM shutdown at iteration "
-                    << SLAM_stop_iter << std::endl;
-        }
-
-        if (SLAM_ended_) {
-          std::cout << "[MAPPER DEBUG] Breaking from incremental mapping"
-                    << std::endl;
-          break;
-        }
-
-        // if (getIteration() == 3000) {
-        //   testTransferGaussiansAcrossChunks();
-        // }
-
-        // if (getIteration() % 1000 == 0) {
-        //   gaussians_->testSaveLoadEvictCycle();
-        // }
-      } catch (const std::exception& e) {
-        std::cerr << "[MAPPER ERROR] Exception in incremental mapping: "
-                  << e.what() << std::endl;
-        break;  // Break but continue to cleanup
+        pkf->allow_eviction_ = true;
       }
+
+      // Invoke training once
+      trainForOneIteration();
+
+      // // Kind of a hack
+      // for (auto& kfit : scene_->keyframes()) {
+      //   kfit.second->allow_eviction_ = true;
+      // }
+
+      // Finish initial mapping loop
+      break;
+    } else if (pSLAM_->isShutDown()) {
+      std::cout << "[MAPPER DEBUG] SLAM shutdown during initial mapping"
+                << std::endl;
+      break;
+    } else {
+      // Initial conditions not satisfied
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    std::cout << "[MAPPER DEBUG] Exited incremental mapping phase" << std::endl;
-  } catch (const std::exception& e) {
-    std::cerr << "[MAPPER FATAL ERROR] Unhandled exception in run(): "
-              << e.what() << std::endl;
-  } catch (...) {
-    std::cerr << "[MAPPER FATAL ERROR] Unknown exception in run()" << std::endl;
   }
+  std::cout << "[MAPPER DEBUG] Exited initial mapping phase" << std::endl;
+
+  // Enable memory history recording using the second overload
+  // torch::cuda::_record_memory_history("all",    // enabled
+  //                                     "all",    // context
+  //                                     "all",    // stacks
+  //                                     SIZE_MAX  // max_entries
+  // );
+
+  std::cout << "[MAPPER DEBUG] Starting incremental mapping phase" << std::endl;
+  // Second loop: Incremental gaussian mapping
+  int SLAM_stop_iter = 0;
+  while (!isStopped()) {
+    auto timer_TotalLoop = ProfilingUtils::Timer("TotalLoop");
+
+    // Check conditions for incremental mapping
+    if (hasMetIncrementalMappingConditions()) {
+      combineMappingOperations();
+      if (cull_keyframes_) cullKeyframes();
+    }
+
+    // Invoke training once
+    trainForOneIteration();
+    timer_TotalLoop.stop();
+
+    // if (getIteration() % 10 == 0) {
+    //   // chunk_manager_->testMemoryUsagePattern();
+
+    //   // Get the pickled snapshot
+    //   std::string snapshot_data =
+    //   torch::cuda::_memory_snapshot_pickled();
+
+    //   // Write to file
+    //   std::ofstream file("./memory_snapshot.pickle", std::ios::binary);
+    //   file.write(snapshot_data.data(), snapshot_data.size());
+    //   file.close();
+
+    //   std::cout << "Memory snapshot saved to memory_snapshot.pickle"
+    //             << std::endl;
+    // }
+
+    // if (getIteration() % 2000 == 0) {
+    //   chunk_manager_->testMemoryUsagePattern();
+    // }
+
+    if (pSLAM_->isShutDown()) {
+      SLAM_stop_iter = getIteration();
+      SLAM_ended_ = true;
+      std::cout << "[MAPPER DEBUG] SLAM shutdown at iteration "
+                << SLAM_stop_iter << std::endl;
+    }
+
+    if (SLAM_ended_) {
+      std::cout << "[MAPPER DEBUG] Breaking from incremental mapping"
+                << std::endl;
+      break;
+    }
+
+    // if (getIteration() == 3000) {
+    //   testTransferGaussiansAcrossChunks();
+    // }
+
+    // if (getIteration() % 1000 == 0) {
+    //   gaussians_->testSaveLoadEvictCycle();
+    // }
+  }
+
+  std::cout << "[MAPPER DEBUG] Exited incremental mapping phase" << std::endl;
+
+  std::chrono::steady_clock::time_point training_end =
+      std::chrono::steady_clock::now();
+  double total_time_seconds =
+      std::chrono::duration_cast<std::chrono::duration<double>>(training_end -
+                                                                training_start)
+          .count();
+  std::ofstream out((result_dir_ / "training_time.txt").string());
+  if (out.is_open()) {
+    out << std::fixed << std::setprecision(4) << total_time_seconds
+        << std::endl;
+    out.close();
+    std::cout << "Saved training time: " << std::fixed << std::setprecision(4)
+              << total_time_seconds << " seconds to "
+              << (result_dir_ / "training_time.txt").string() << std::endl;
+  } else {
+    std::cerr << "Warning: Could not save training time to "
+              << (result_dir_ / "training_time.txt").string() << std::endl;
+  }
+
+  // while (getIteration() < 30000) {
+  //   trainForOneIteration();
+  // }
 
   std::cout << "[MAPPER DEBUG] ===== STARTING CLEANUP SECTION ====="
             << std::endl;
 
-  try {
-    if (render_fly_through_) {
-      std::cout << "[MAPPER DEBUG] Rendering fly-through video" << std::endl;
-      auto video_dir = result_dir_ / "flythrough";
-      CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
-      renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30,
-                            render_fly_through_speed_, 0.8f, 2);
-    }
-  } catch (const std::exception& e) {
-    std::cerr << "[MAPPER ERROR] Exception in renderFlyThroughVideo: "
-              << e.what() << std::endl;
+  if (render_fly_through_) {
+    std::cout << "[MAPPER DEBUG] Rendering fly-through video" << std::endl;
+    auto video_dir = result_dir_ / "flythrough";
+    CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
+    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30,
+                          render_fly_through_speed_, 0.8f, 2);
   }
 
-  try {
-    std::cout << "[MAPPER DEBUG] Saving total gaussians" << std::endl;
-    saveTotalGaussians("_shutdown");
-  } catch (const std::exception& e) {
-    std::cerr << "[MAPPER ERROR] Exception in saveTotalGaussians: " << e.what()
-              << std::endl;
-  }
+  std::cout << "[MAPPER DEBUG] Saving total gaussians" << std::endl;
+  saveTotalGaussians("_shutdown");
 
-  try {
-    std::cout << "[MAPPER DEBUG] Rendering and recording all keyframes"
-              << std::endl;
-    renderAndRecordAllKeyframes("_shutdown");
-  } catch (const std::exception& e) {
-    std::cerr << "[MAPPER ERROR] Exception in renderAndRecordAllKeyframes: "
-              << e.what() << std::endl;
-  }
+  std::cout << "[MAPPER DEBUG] Rendering and recording all keyframes"
+            << std::endl;
+  renderAndRecordAllKeyframes("_shutdown");
 
-  try {
-    std::cout << "[MAPPER DEBUG] Saving scene" << std::endl;
-    saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
-              "data");
-  } catch (const std::exception& e) {
-    std::cerr << "[MAPPER ERROR] Exception in saveScene: " << e.what()
-              << std::endl;
-  }
+  std::cout << "[MAPPER DEBUG] Saving scene" << std::endl;
+  saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
+            "data");
 
-  try {
-    std::cout << "[MAPPER DEBUG] Writing keyframe used times" << std::endl;
-    writeKeyframeUsedTimes(result_dir_ / "used_times", "final");
-  } catch (const std::exception& e) {
-    std::cerr << "[MAPPER ERROR] Exception in writeKeyframeUsedTimes: "
-              << e.what() << std::endl;
-  }
+  std::cout << "[MAPPER DEBUG] Writing keyframe used times" << std::endl;
+  writeKeyframeUsedTimes(result_dir_ / "used_times", "final");
 
-  try {
-    std::cout << "[MAPPER DEBUG] Cleaning up temporary directories"
-              << std::endl;
-    std::filesystem::remove_all(chunk_save_dir_);
-    std::filesystem::remove_all(keyframe_save_dir_);
-  } catch (const std::exception& e) {
-    std::cerr << "[MAPPER ERROR] Exception in cleanup: " << e.what()
-              << std::endl;
-  }
+  std::cout << "[MAPPER DEBUG] Cleaning up temporary directories" << std::endl;
+  std::filesystem::remove_all(chunk_save_dir_);
+  std::filesystem::remove_all(keyframe_save_dir_);
 
   std::cout << "[MAPPER DEBUG] Signaling stop" << std::endl;
   signalStop();
 
   if (completion_callback_) {
-    try {
-      std::cout << "[MAPPER DEBUG] Calling completion callback" << std::endl;
-      completion_callback_();
-    } catch (const std::exception& e) {
-      std::cerr << "[MAPPER ERROR] Exception in completion callback: "
-                << e.what() << std::endl;
-    }
+    std::cout << "[MAPPER DEBUG] Calling completion callback" << std::endl;
+    completion_callback_();
   }
 
   std::cout << "[MAPPER DEBUG] ===== GaussianMapper::run() COMPLETED ====="
@@ -863,6 +845,10 @@ void GaussianMapper::trainForOneIteration(
       // Recent k keyframes (old ones get saved to disk)
       case 1: {
         viewpoint_cam = keyframe_queue_->getNextKeyframe();
+      } break;
+      // Chunk-based optimization
+      case 2: {
+        viewpoint_cam = getNextKeyframeByChunk();
       } break;
       default: {
         throw std::runtime_error(
@@ -1029,6 +1015,8 @@ void GaussianMapper::trainForOneIteration(
   }
   gaussians_->optimizer_->zero_grad(true);
   timer_optimizer_step.stop();
+
+  // gaussians_->pruneLowOpacityGaussians(viewpoint_cam, visible_gaussian_mask);
 
   // gaussians_->updateChunkIDs();
 
@@ -1361,6 +1349,30 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
     total_transformed =
         processSequentialLoopClosure(associated_kfs, loop_kf_scale);
   }
+
+  if (keyframe_selection_strategy_ == 2) {
+    // Clear and rebuild chunk-keyframe mapping since chunks have changed
+    std::cout << "[Loop Closure] Rebuilding chunk-keyframe mapping"
+              << std::endl;
+    chunk_to_keyframes_.clear();
+
+    // Rebuild from scratch
+    for (const auto& [kf_id, keyframe] : scene_->keyframes()) {
+      updateChunkKeyframeMapping(keyframe);
+    }
+
+    // Reset current chunk selection to force reselection
+    current_chunk_id_ = -1;
+    chunk_iterations_remaining_ = 0;
+  }
+
+  // if (keyframe_selection_strategy_ == 1) {
+  //   for (auto& kf : associated_kfs) {
+  //     auto kfid = std::get<0>(kf);
+  //     std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
+  //     keyframe_queue_->updateKeyframeInGrid(pkf);
+  //   }
+  // }
 
   // for (auto& kf : associated_kfs) {
   //   auto kfid = std::get<0>(kf);
@@ -1751,22 +1763,19 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   if (keyframe_selection_strategy_ == 1) {
     keyframe_queue_->notifyNewKeyframeAdded(pkf);
   }
+  // Update chunk-keyframe mapping for chunk-based strategy
+  if (keyframe_selection_strategy_ == 2) {
+    updateChunkKeyframeMapping(pkf);
+  }
 
   // Give new keyframes times of use and add it to the training sliding window
   increaseKeyframeTimesOfUse(pkf, newKeyframeTimesOfUse());
 
   // Get dense point cloud from the new keyframe to accelerate training
-  pkf->img_undist_ = imgRGB_undistorted;
-  pkf->img_auxiliary_undist_ = imgAux_undistorted;
   pkf->kps_pixel_ = std::move(std::get<6>(kf));
   pkf->kps_point_local_ = std::move(std::get<7>(kf));
 
-  // std::cout << "Image sizes: " << pkf->original_image_.sizes() <<
-  // std::endl; std::cout << "Img undistrorted sizes: " <<
-  // pkf->img_undist_.size()
-  //           << std::endl;
-
-  torch::Tensor input_tensor = feat_extractor_->parseInput(pkf->img_undist_);
+  torch::Tensor input_tensor = feat_extractor_->parseInput(imgRGB_undistorted);
   pkf->feature_map_ = feat_extractor_->extractDenseFeatures(input_tensor);
 
   pkf->initOptimizer(device_type_, opt_params_.pose_lr_,
@@ -1774,22 +1783,32 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
                      opt_params_.depth_scale_bias_lr_);
 
   // Prepare multi resolution images for training
-  pkf->generateImagePyramid();
+  pkf->generateImagePyramid(imgRGB_undistorted);
 
   if (sensor_type_ == MONOCULAR) {
-    pkf->setupMonoData(device_type_, monocular_depth_estimator_, min_depth_,
-                       max_depth_);
-  } else if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
-    pkf->setupStereoData(stereo_baseline_length_, device_type_,
+    pkf->setupMonoData(imgRGB_undistorted, device_type_,
+                       monocular_depth_estimator_, min_depth_, max_depth_);
+  } else if (sensor_type_ == STEREO && !imgAux_undistorted.empty()) {
+    pkf->setupStereoData(imgRGB_undistorted, imgAux_undistorted,
+                         stereo_baseline_length_, device_type_,
                          stereo_depth_estimator_, min_depth_, max_depth_);
-  } else if (sensor_type_ == RGBD && !pkf->img_auxiliary_undist_.empty()) {
-    pkf->setupRGBDData();
+  } else if (sensor_type_ == RGBD && !imgAux_undistorted.empty()) {
+    pkf->setupRGBDData(imgAux_undistorted);
   }
+
+  pkf->loaded_ = true;
+  std::cout << "[Gaussian Mapper] New keyframe " << pkf->fid_
+            << " added to the scene. Total keyframes: "
+            << scene_->keyframes().size() << std::endl;
+
+  // imgRGB_undistorted.release();
+  // imgAux_undistorted.release();
 
   std::unique_lock<std::mutex> lock_render(mutex_render_);
   sampleGaussians(pkf);
 
-  pkf->loaded_ = true;
+  pSLAM_->getAtlas()->ReleaseKeyFrameImages(pkf->fid_);
+
   pkf->allow_eviction_ = true;
 }
 
@@ -1872,6 +1891,100 @@ GaussianMapper::useOneRandomSlidingWindowKeyframe() {
   // std::chrono::duration_cast<std::chrono::nanoseconds>(t2-t1).count();
   // std::cout<<t21 <<" ns"<<std::endl;
   return viewpoint_cam;
+}
+
+std::shared_ptr<GaussianKeyframe> GaussianMapper::getNextKeyframeByChunk() {
+  if (scene_->keyframes().empty()) return nullptr;
+
+  // If no current chunk or chunk iterations are exhausted, select a new chunk
+  if (current_chunk_id_ == -1 || chunk_iterations_remaining_ <= 0) {
+    // Get most recent keyframe to determine visible chunks
+    auto most_recent_kf = scene_->keyframes().rbegin()->second;
+    std::vector<ChunkCoord> visible_chunk_coords =
+        gaussians_->frustumCullChunks(most_recent_kf, /*use_cache=*/true);
+
+    if (visible_chunk_coords.empty()) {
+      // Fallback to random keyframe if no chunks visible
+      return useOneRandomKeyframe();
+    }
+
+    // Convert to chunk IDs
+    torch::Tensor visible_chunk_coords_tensor =
+        gaussians_->chunkCoordVectorToTensor(visible_chunk_coords);
+    torch::Tensor visible_chunk_ids =
+        gaussians_->encodeChunkCoordsTensor(visible_chunk_coords_tensor);
+
+    // Randomly select one of the visible chunks
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> distrib(0, visible_chunk_ids.size(0) - 1);
+    int selected_idx = distrib(gen);
+    current_chunk_id_ = visible_chunk_ids[selected_idx].item<int64_t>();
+
+    // Reset iterations for this chunk
+    chunk_iterations_remaining_ = chunk_iterations_per_chunk_;
+  }
+
+  // Get keyframes that can see the current chunk
+  auto chunk_keyframes_it = chunk_to_keyframes_.find(current_chunk_id_);
+  if (chunk_keyframes_it == chunk_to_keyframes_.end() ||
+      chunk_keyframes_it->second.empty()) {
+    throw std::runtime_error(
+        "[GaussianMapper::getNextKeyframeByChunk] No keyframes found for "
+        "current chunk!");
+  }
+
+  // Randomly select one keyframe from those that can see this chunk
+  const auto& keyframe_ids = chunk_keyframes_it->second;
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_int_distribution<> distrib(0, keyframe_ids.size() - 1);
+  int selected_kf_id = keyframe_ids[distrib(gen)];
+
+  auto kf_it = scene_->keyframes().find(selected_kf_id);
+  if (kf_it == scene_->keyframes().end()) {
+    throw std::runtime_error(
+        "[GaussianMapper::getNextKeyframeByChunk] Keyframe ID not found in "
+        "scene!");
+  }
+
+  // Decrement chunk iterations remaining
+  chunk_iterations_remaining_--;
+
+  return kf_it->second;
+}
+
+void GaussianMapper::updateChunkKeyframeMapping(
+    std::shared_ptr<GaussianKeyframe> keyframe) {
+  if (!keyframe) return;
+
+  std::cout << "[Chunk-Keyframe Mapping] Updating mapping for keyframe "
+            << keyframe->fid_ << std::endl;
+
+  // Get visible chunks from this keyframe
+  std::vector<ChunkCoord> visible_chunk_coords =
+      gaussians_->frustumCullChunks(keyframe, /*use_cache=*/true);
+
+  if (visible_chunk_coords.empty()) return;
+
+  // Convert to chunk IDs
+  torch::Tensor visible_chunk_coords_tensor =
+      gaussians_->chunkCoordVectorToTensor(visible_chunk_coords);
+  torch::Tensor visible_chunk_ids =
+      gaussians_->encodeChunkCoordsTensor(visible_chunk_coords_tensor);
+
+  // Add this keyframe to all visible chunks
+  for (int i = 0; i < visible_chunk_ids.size(0); ++i) {
+    int64_t chunk_id = visible_chunk_ids[i].item<int64_t>();
+    auto& keyframe_list = chunk_to_keyframes_[chunk_id];
+
+    // Add keyframe ID if not already present
+    int kf_id = static_cast<int>(keyframe->fid_);
+    if (std::find(keyframe_list.begin(), keyframe_list.end(), kf_id) ==
+        keyframe_list.end()) {
+      keyframe_list.push_back(kf_id);
+    }
+  }
 }
 
 std::shared_ptr<GaussianKeyframe> GaussianMapper::useOneRandomKeyframe() {
@@ -1997,7 +2110,7 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   // Step 1: Get RGB image and depth data
   torch::Tensor rgb = pkf->gaus_pyramid_original_image_[0];
 
-  bool downsample = true;
+  bool downsample = false;
   if (downsample) {
     // Step 1: Downsample by factor of 2 using average pooling
     // avg_pool2d expects [N, C, H, W], so add batch dimension
@@ -2082,23 +2195,40 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   std::vector<std::shared_ptr<GaussianKeyframe>> prev_keyframes =
       getClosestKeyframes(pkf, guided_mvs_->getNumCams(), 6);
 
+  std::vector<std::shared_ptr<GaussianKeyframe>> newly_loaded_keyframes;
+  for (const auto& kf : prev_keyframes) {
+    if (!kf->loaded_) {
+      std::cout << "Loading keyframe " << std::to_string(kf->fid_)
+                << " from disk for training" << std::endl;
+      kf->loadDataFromDisk();
+      newly_loaded_keyframes.push_back(kf);
+    }
+  }
+
+  torch::Tensor accurate_mask, depth;
+
   if (prev_keyframes.size() != guided_mvs_->getNumCams()) {
     std::cout << "No enough previous keyframes found for MVS." << std::endl;
-    return;
+
+    torch::Tensor depth_map =
+        1 / pkf->gaus_pyramid_inv_depth_image_[0].clamp_min(1e-8);
+    torch::Tensor sample_indices = torch::nonzero(flat_sample_mask).squeeze(-1);
+    torch::Tensor depth_map_flat = depth_map.flatten();
+    depth = depth_map_flat.index({sample_indices});
+    // Set accurate mask to all ones (since we're not using MVS)
+    torch::Tensor accurate_mask = torch::ones_like(depth, torch::kBool);
+
+  } else {
+    // Apply guided MVS - returns depth and accurate mask for sampled points
+    auto start_time_mvs = std::chrono::steady_clock::now();
+
+    std::tie(depth, accurate_mask) =
+        (*guided_mvs_)(sampled_uv, pkf, prev_keyframes);
+    auto end_time_mvs = std::chrono::steady_clock::now();
+    auto duration_mvs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        end_time_mvs - start_time_mvs);
   }
 
-  if (prev_keyframes.empty()) {
-    std::cout << "No previous keyframes found for MVS." << std::endl;
-    return;
-  }
-
-  // Apply guided MVS - returns depth and accurate mask for sampled points
-  auto start_time_mvs = std::chrono::steady_clock::now();
-
-  auto [depth, accurate_mask] = (*guided_mvs_)(sampled_uv, pkf, prev_keyframes);
-  auto end_time_mvs = std::chrono::steady_clock::now();
-  auto duration_mvs = std::chrono::duration_cast<std::chrono::milliseconds>(
-      end_time_mvs - start_time_mvs);
   // std::cout << "MVS completed in " << duration_mvs.count() << "ms" <<
   // std::endl;
 
@@ -2106,18 +2236,6 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   //     sampled_uv, pkf, prev_keyframes, true, "kitti_scene_10");
 
   // guided_mvs_->debug_specific_point(sampled_uv, pkf, prev_keyframes, 420);
-
-  // torch::Tensor depth_map = 1 / pkf->depth_image_.clamp_min(1e-8);
-
-  // // Sample depths at the sample mask locations
-
-  // torch::Tensor sample_indices =
-  // torch::nonzero(flat_sample_mask).squeeze(-1); torch::Tensor
-  // depth_map_flat = depth_map.flatten(); torch::Tensor depth =
-  // depth_map_flat.index({sample_indices});
-
-  // // Set accurate mask to all ones (since we're not using MVS)
-  // torch::Tensor accurate_mask = torch::ones_like(depth, torch::kBool);
 
   // Apply confidence filtering exactly like Python
   torch::Tensor sampled_confidence = sampleConf(
@@ -2509,6 +2627,13 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   auto end_time = std::chrono::steady_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_time - start_time);
+
+  // Later, save only the keyframes that were loaded
+  for (const auto& kf : newly_loaded_keyframes) {
+    std::cout << "Saving keyframe " << std::to_string(kf->fid_)
+              << " back to disk" << std::endl;
+    kf->saveDataToDisk();
+  }
   // std::cout << "sampleGaussians completed in " << duration.count() << "ms"
   //           << std::endl;
 }
@@ -3805,6 +3930,10 @@ void GaussianMapper::loadCamerasFromJson(std::filesystem::path json_path) {
     if (keyframe_selection_strategy_ == 1) {
       keyframe_queue_->notifyNewKeyframeAdded(pkf);
     }
+    // Update chunk-keyframe mapping for chunk-based strategy
+    if (keyframe_selection_strategy_ == 2) {
+      updateChunkKeyframeMapping(pkf);
+    }
 
     break;
   }
@@ -4109,15 +4238,17 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
   if (keyframe_selection_strategy_ == 1) {
     keyframe_queue_->notifyNewKeyframeAdded(pkf);
   }
+  // Update chunk-keyframe mapping for chunk-based strategy
+  if (keyframe_selection_strategy_ == 2) {
+    updateChunkKeyframeMapping(pkf);
+  }
 
   // Give new keyframes times of use and add it to the training sliding window
   increaseKeyframeTimesOfUse(pkf, newKeyframeTimesOfUse());
 
   cv::Mat rgb_undistorted = rgb_image;
-  pkf->img_undist_ = rgb_undistorted;
-  pkf->img_auxiliary_undist_ = depth_or_right_image;
 
-  torch::Tensor input_tensor = feat_extractor_->parseInput(pkf->img_undist_);
+  torch::Tensor input_tensor = feat_extractor_->parseInput(rgb_undistorted);
   pkf->feature_map_ = feat_extractor_->extractDenseFeatures(input_tensor);
 
   pkf->initOptimizer(device_type_, opt_params_.pose_lr_,
@@ -4125,16 +4256,17 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
                      opt_params_.depth_scale_bias_lr_);
 
   // Prepare multi resolution images for training
-  pkf->generateImagePyramid();
+  pkf->generateImagePyramid(rgb_undistorted);
 
   if (sensor_type_ == MONOCULAR) {
-    pkf->setupMonoData(device_type_, monocular_depth_estimator_, min_depth_,
-                       max_depth_);
-  } else if (sensor_type_ == STEREO && !pkf->img_auxiliary_undist_.empty()) {
-    pkf->setupStereoData(stereo_baseline_length_, device_type_,
+    pkf->setupMonoData(rgb_undistorted, device_type_,
+                       monocular_depth_estimator_, min_depth_, max_depth_);
+  } else if (sensor_type_ == STEREO && depth_or_right_image.empty()) {
+    pkf->setupStereoData(rgb_undistorted, depth_or_right_image,
+                         stereo_baseline_length_, device_type_,
                          stereo_depth_estimator_, min_depth_, max_depth_);
-  } else if (sensor_type_ == RGBD && !pkf->img_auxiliary_undist_.empty()) {
-    pkf->setupRGBDData();
+  } else if (sensor_type_ == RGBD && depth_or_right_image.empty()) {
+    pkf->setupRGBDData(depth_or_right_image);
   }
 
   std::unique_lock<std::mutex> lock(mutex_render_);
@@ -4163,149 +4295,6 @@ GaussianMapper::getRecentExternalData() {
 
 void GaussianMapper::setCompletionCallback(std::function<void()> callback) {
   completion_callback_ = callback;
-}
-void GaussianMapper::visualizeDepthReconstruction(
-    std::shared_ptr<GaussianKeyframe> pkf,
-    const torch::Tensor& points3D,
-    const torch::Tensor& valid_points,
-    const std::string& save_path) {
-  // Step 1: Get the original image dimensions
-  int height = pkf->img_undist_.rows;
-  int width = pkf->img_undist_.cols;
-
-  // Step 2: Create empty depth map tensor (initialize with zero values)
-  torch::Tensor depth_map = torch::zeros(
-      {height, width},
-      torch::TensorOptions().dtype(torch::kFloat32).device(device_type_));
-
-  // Step 3: Project 3D points back to 2D using camera parameters
-  torch::Tensor camera_points = points3D.clone();
-
-  // Get camera intrinsics
-  float fx = pkf->intr_[0];
-  float fy = pkf->intr_[1];
-  float cx = pkf->intr_[2];
-  float cy = pkf->intr_[3];
-
-  // Calculate pixel coordinates and depths
-  torch::Tensor z = camera_points.index({torch::indexing::Slice(), 2});
-  torch::Tensor x = camera_points.index({torch::indexing::Slice(), 0});
-  torch::Tensor y = camera_points.index({torch::indexing::Slice(), 1});
-
-  // Project to pixel coordinates: u = fx * x / z + cx, v = fy * y / z + cy
-  torch::Tensor u = fx * x.div(z) + cx;
-  torch::Tensor v = fy * y.div(z) + cy;
-
-  // Convert to integer pixel coordinates
-  torch::Tensor u_int = u.round().to(torch::kInt64);
-  torch::Tensor v_int = v.round().to(torch::kInt64);
-
-  // Step 4: Filter out points outside the image boundaries
-  torch::Tensor in_bounds = (u_int >= 0) & (u_int < width) & (v_int >= 0) &
-                            (v_int < height) & (z > 0);
-
-  // Apply the valid_points mask (from our filtering steps)
-  in_bounds = in_bounds & valid_points;
-
-  // Get points that are in bounds
-  torch::Tensor valid_u = u_int.index({in_bounds});
-  torch::Tensor valid_v = v_int.index({in_bounds});
-  torch::Tensor valid_z = z.index({in_bounds});
-
-  // Step 5: Create depth map by filling in valid depth values
-  // Note: This might have conflicts where multiple 3D points project to same
-  // pixel In that case, we take the closest point (minimum z value)
-
-  // Convert to CPU for processing
-  torch::Tensor valid_u_cpu = valid_u.to(torch::kCPU);
-  torch::Tensor valid_v_cpu = valid_v.to(torch::kCPU);
-  torch::Tensor valid_z_cpu = valid_z.to(torch::kCPU);
-
-  // Get size as int for loop
-  int num_valid_points = valid_u_cpu.size(0);
-
-  // Create depth map on CPU and fill
-  cv::Mat depth_map_cv(height, width, CV_32FC1, 0.0f);
-
-  for (int i = 0; i < num_valid_points; i++) {
-    int u = valid_u_cpu[i].item<int64_t>();
-    int v = valid_v_cpu[i].item<int64_t>();
-    float depth = valid_z_cpu[i].item<float>();
-
-    // If pixel is empty or new depth is closer
-    if (depth_map_cv.at<float>(v, u) == 0.0f ||
-        depth < depth_map_cv.at<float>(v, u)) {
-      depth_map_cv.at<float>(v, u) = depth;
-    }
-  }
-
-  // Step 6: Create a colorized visualization using JET colormap
-  cv::Mat depth_colored;
-  double min_depth = min_depth_;
-  double max_depth = max_depth_;
-
-  // Normalize the depth map to 0-1 range for visualization
-  cv::Mat depth_normalized;
-  cv::Mat valid_mask = (depth_map_cv > 0);
-
-  // Find actual min/max in the valid depth values
-  double actual_min, actual_max;
-  cv::minMaxLoc(depth_map_cv, &actual_min, &actual_max, nullptr, nullptr,
-                valid_mask);
-
-  // Use actual min/max values with clamping
-  min_depth = std::max(min_depth_, static_cast<float>(actual_min));
-  max_depth = std::min(max_depth_, static_cast<float>(actual_max));
-
-  // Normalize between the clamped min/max values
-  depth_map_cv = (depth_map_cv - min_depth) / (max_depth - min_depth);
-  depth_map_cv.setTo(0, ~valid_mask);  // Set invalid regions to 0
-
-  // Apply JET colormap for better visualization
-  // Normalize depth_map_cv to the range [0, 255] and convert to 8-bit
-  cv::Mat depth_norm255;
-  depth_map_cv.convertTo(depth_norm255, CV_8UC1, 255.0);
-
-  // Apply the JET colormap
-  cv::applyColorMap(depth_norm255, depth_colored, cv::COLORMAP_JET);
-
-  // Add original image as background where depth is not available
-  cv::Mat rgb_display;
-  pkf->img_undist_.convertTo(rgb_display, CV_8UC3, 255.0);
-  cv::cvtColor(rgb_display, rgb_display, cv::COLOR_RGB2BGR);
-
-  cv::Mat mask_8uc1 = (depth_map_cv > 0) * 255;
-  mask_8uc1.convertTo(mask_8uc1, CV_8UC1);
-
-  // Blend the colored depth map with the original image
-  cv::Mat blended = rgb_display.clone();
-  depth_colored.copyTo(blended, mask_8uc1);
-
-  // Step 7: Add information overlay
-  float coverage =
-      100.0f * cv::countNonZero(valid_mask) / (float)(width * height);
-
-  std::stringstream ss;
-  ss << "Depth " << std::fixed << std::setprecision(1) << min_depth << "m - "
-     << max_depth << "m | Coverage: " << std::setprecision(1) << coverage
-     << "%";
-
-  cv::putText(blended, ss.str(), cv::Point(20, 30), cv::FONT_HERSHEY_SIMPLEX,
-              0.7, cv::Scalar(255, 255, 255), 2);
-
-  // Save the visualization
-  cv::imwrite(save_path, blended);
-
-  // Create a pure depth map visualization as well
-  cv::Mat depth_only;
-  cv::Mat depth_normalized_8u;
-  depth_map_cv.convertTo(depth_normalized_8u, CV_8UC1, 255.0);
-  cv::applyColorMap(depth_normalized_8u, depth_only, cv::COLORMAP_JET);
-  cv::imwrite(
-      save_path.substr(0, save_path.find_last_of('.')) + "_depth_only.png",
-      depth_only);
-
-  std::cout << "Saved depth visualization to " << save_path << std::endl;
 }
 
 torch::Tensor GaussianMapper::computeLoGProbability(

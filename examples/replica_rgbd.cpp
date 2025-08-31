@@ -42,10 +42,6 @@ void saveTrackingTime(std::vector<float> &vTimesTrack,
                       const std::string &strSavePath);
 void saveGpuPeakMemoryUsage(std::filesystem::path pathSave);
 
-void saveTrainingTime(std::chrono::steady_clock::time_point start_time,
-                      std::chrono::steady_clock::time_point end_time,
-                      const std::filesystem::path &output_dir);
-
 int main(int argc, char **argv) {
   if (argc != 6 && argc != 7) {
     std::cerr << std::endl
@@ -58,9 +54,6 @@ int main(int argc, char **argv) {
               << std::endl;
     return 1;
   }
-
-  std::chrono::steady_clock::time_point training_start =
-      std::chrono::steady_clock::now();
 
   bool use_viewer = true;
   if (argc == 7)
@@ -187,13 +180,6 @@ int main(int argc, char **argv) {
 
   std::cout << "FPS: " << nImages / duration << std::endl;
 
-  // End timing after all processing is complete
-  std::chrono::steady_clock::time_point training_end =
-      std::chrono::steady_clock::now();
-
-  // Save training time
-  saveTrainingTime(training_start, training_end, output_dir);
-
   // GPU peak usage
   saveGpuPeakMemoryUsage(output_dir / "GpuPeakUsageMB.txt");
 
@@ -267,26 +253,4 @@ void saveGpuPeakMemoryUsage(std::filesystem::path pathSave) {
   out << "Peak reserved (MB): " << max_reserved_MB << std::endl;
   out << "Peak allocated (MB): " << max_alloc_MB << std::endl;
   out.close();
-}
-
-void saveTrainingTime(std::chrono::steady_clock::time_point start_time,
-                      std::chrono::steady_clock::time_point end_time,
-                      const std::filesystem::path &output_dir) {
-  double total_time_seconds =
-      std::chrono::duration_cast<std::chrono::duration<double>>(end_time -
-                                                                start_time)
-          .count();
-
-  std::ofstream out((output_dir / "training_time.txt").string());
-  if (out.is_open()) {
-    out << std::fixed << std::setprecision(4) << total_time_seconds
-        << std::endl;
-    out.close();
-    std::cout << "Saved training time: " << std::fixed << std::setprecision(4)
-              << total_time_seconds << " seconds to "
-              << (output_dir / "training_time.txt").string() << std::endl;
-  } else {
-    std::cerr << "Warning: Could not save training time to "
-              << (output_dir / "training_time.txt").string() << std::endl;
-  }
 }
