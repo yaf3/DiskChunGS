@@ -91,7 +91,8 @@ Optimization.densify_until_iter: -1
 Optimization.densify_grad_threshold: 0.05
 Optimization.auto_distribute: 4  # 0:false, 1 or other integer:true
 Optimization.exposure_optimization: 0
-Optimization.init_proba_scaler: 0.3
+Model.init_proba_scaler: 0.3
+Model.downsample_for_sampling: 0
 
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters

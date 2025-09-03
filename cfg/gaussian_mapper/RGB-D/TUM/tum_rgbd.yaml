@@ -55,7 +55,8 @@ Optimization.lambda_dssim: 0.2
 Optimization.lambda_depth: 0.1
 Optimization.opacity_reg: 0.001
 Optimization.exposure_optimization: 0 # 0:false, 1 or other integer:true
-Optimization.init_proba_scaler: 2.0
+Model.init_proba_scaler: 2.0
+Model.downsample_for_sampling: 0
 
 GaussianViewer.glfw_window_width: 1400
 GaussianViewer.glfw_window_height: 1050

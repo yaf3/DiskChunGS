@@ -5,6 +5,8 @@ Model.sh_degree: 3
 Model.enable_lod: 0
 Model.lod_distance_multiplier: 2.0
 Model.max_gaussians_in_memory: 3000000
+Model.init_proba_scaler: 2.0
+Model.downsample_for_sampling: 0
 
 Camera.z_near: 0.01
 Camera.z_far: 10.0
@@ -55,7 +57,6 @@ Optimization.lambda_dssim: 0.2
 Optimization.lambda_depth: 0.1
 Optimization.opacity_reg: 0.001
 Optimization.exposure_optimization: 0 # 0:false, 1 or other integer:true
-Optimization.init_proba_scaler: 2.0
 
 GaussianViewer.glfw_window_width: 1862
 GaussianViewer.glfw_window_height: 564
