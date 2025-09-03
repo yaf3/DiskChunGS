@@ -894,7 +894,7 @@ void GaussianMapper::trainForOneIteration(
   timer_waitForMutex.stop();
 
   auto timer_deleteSparseChunks = ProfilingUtils::Timer("deleteSparseChunks");
-  int min_gaussians_per_chunk = 1000;
+  int min_gaussians_per_chunk = 100;
   if (getIteration() % 100 == 0) {
     gaussians_->deleteSparseChunks(min_gaussians_per_chunk);
   }
@@ -2198,20 +2198,38 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   std::vector<std::shared_ptr<GaussianKeyframe>> prev_keyframes =
       getClosestKeyframes(pkf, guided_mvs_->getNumCams(), 6);
 
-  std::vector<std::shared_ptr<GaussianKeyframe>> newly_loaded_keyframes;
+  // Filter out keyframes that are currently being saved
+  std::vector<std::shared_ptr<GaussianKeyframe>> available_keyframes;
   for (const auto& kf : prev_keyframes) {
+    if (kf->saving_) {
+      std::cout << "Keyframe " << std::to_string(kf->fid_)
+                << " is currently being saved, excluding from sampling"
+                << std::endl;
+    } else {
+      available_keyframes.push_back(kf);
+    }
+  }
+
+  std::vector<std::shared_ptr<GaussianKeyframe>> newly_loaded_keyframes;
+  for (const auto& kf : available_keyframes) {
     if (!kf->loaded_) {
       std::cout << "Loading keyframe " << std::to_string(kf->fid_)
                 << " from disk for sampling" << std::endl;
       kf->loadDataFromDisk();
       newly_loaded_keyframes.push_back(kf);
+    } else {
+      std::cout << "Keyframe " << std::to_string(kf->fid_)
+                << " already marked as loaded for sampling" << std::endl;
     }
   }
+
+  // Update prev_keyframes to only include available ones
+  prev_keyframes = available_keyframes;
 
   torch::Tensor accurate_mask, depth;
 
   if (prev_keyframes.size() != guided_mvs_->getNumCams()) {
-    std::cout << "No enough previous keyframes found for MVS." << std::endl;
+    std::cout << "Not enough previous keyframes found for MVS." << std::endl;
 
     torch::Tensor depth_map =
         1 / pkf->gaus_pyramid_inv_depth_image_[0].clamp_min(1e-8);
@@ -2219,7 +2237,7 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
     torch::Tensor depth_map_flat = depth_map.flatten();
     depth = depth_map_flat.index({sample_indices});
     // Set accurate mask to all ones (since we're not using MVS)
-    torch::Tensor accurate_mask = torch::ones_like(depth, torch::kBool);
+    accurate_mask = torch::ones_like(depth, torch::kBool);
 
   } else {
     // Apply guided MVS - returns depth and accurate mask for sampled points
