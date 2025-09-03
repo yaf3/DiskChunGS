@@ -108,7 +108,8 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   // Initialize scene
   scene_ = std::make_shared<GaussianScene>(model_params_);
 
-  keyframe_queue_ = std::make_shared<KeyframeQueue>(scene_, 40, &kfs_loss_);
+  keyframe_queue_ =
+      std::make_shared<KeyframeQueue>(scene_, 40, &kfs_loss_, &kfs_used_times_);
 
   // Initialize Laplacian of Gaussian kernel
   initializeLaplacianOfGaussianKernel();
@@ -363,7 +364,8 @@ GaussianMapper::GaussianMapper(std::filesystem::path gaussian_config_file_path,
   // Initialize scene
   scene_ = std::make_shared<GaussianScene>(model_params_);
 
-  keyframe_queue_ = std::make_shared<KeyframeQueue>(scene_, 40, &kfs_loss_);
+  keyframe_queue_ =
+      std::make_shared<KeyframeQueue>(scene_, 40, &kfs_loss_, &kfs_used_times_);
 
   // Initialize Laplacian of Gaussian kernel
   initializeLaplacianOfGaussianKernel();
@@ -394,6 +396,10 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       (settings_file["Model.lod_distance_multiplier"].operator int());
   model_params_.max_gaussians_in_memory_ =
       settings_file["Model.max_gaussians_in_memory"].operator int();
+  init_proba_scaler_ =
+      settings_file["Model.init_proba_scaler"].operator float();
+  downsample_for_sampling_ =
+      (settings_file["Model.downsample_for_sampling"].operator int()) != 0;
 
   // Pipeline Parameters
   z_near_ = settings_file["Camera.z_near"].operator float();
@@ -496,8 +502,6 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       settings_file["Optimization.auto_distribute"].operator int();
   exposure_optimization_ =
       settings_file["Optimization.exposure_optimization"].operator int();
-  init_proba_scaler_ =
-      settings_file["Optimization.init_proba_scaler"].operator float();
 
   // Viewer Parameters
   rendered_image_viewer_scale_ =
@@ -2110,8 +2114,7 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   // Step 1: Get RGB image and depth data
   torch::Tensor rgb = pkf->gaus_pyramid_original_image_[0];
 
-  bool downsample = false;
-  if (downsample) {
+  if (downsample_for_sampling_) {
     // Step 1: Downsample by factor of 2 using average pooling
     // avg_pool2d expects [N, C, H, W], so add batch dimension
     rgb = rgb.unsqueeze(0);           // [1, 3, H, W]
@@ -2199,7 +2202,7 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   for (const auto& kf : prev_keyframes) {
     if (!kf->loaded_) {
       std::cout << "Loading keyframe " << std::to_string(kf->fid_)
-                << " from disk for training" << std::endl;
+                << " from disk for sampling" << std::endl;
       kf->loadDataFromDisk();
       newly_loaded_keyframes.push_back(kf);
     }

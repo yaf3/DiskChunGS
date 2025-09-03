@@ -456,6 +456,7 @@ class GaussianMapper {
 
   int exposure_optimization_ = 0;
   float init_proba_scaler_ = 2.0;
+  bool downsample_for_sampling_ = false;
 
   // Tools
   std::random_device rd_;
