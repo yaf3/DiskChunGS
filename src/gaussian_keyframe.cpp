@@ -995,69 +995,47 @@ void GaussianKeyframe::loadDataFromDisk() {
   try {
     archive.load_from(data_path.string());
 
-    try {
-      archive.read("depth_confidence_", depth_confidence_);
-      depth_confidence_ = depth_confidence_.to(torch::kCUDA);
-    } catch (const std::exception& e) {
-      // Silent fail
+    // Load depth confidence - throw on failure
+    archive.read("depth_confidence_", depth_confidence_);
+    depth_confidence_ = depth_confidence_.to(torch::kCUDA);
+
+    // Load feature map - throw on failure
+    archive.read("feature_map_", feature_map_);
+    feature_map_ = feature_map_.to(torch::kCUDA);
+
+    // Load pyramid images - throw on failure
+    torch::Tensor pyramid_size_tensor;
+    archive.read("pyramid_size", pyramid_size_tensor);
+    int pyramid_size = pyramid_size_tensor.item<int64_t>();
+
+    gaus_pyramid_original_image_.resize(pyramid_size);
+    for (int i = 0; i < pyramid_size; ++i) {
+      archive.read("pyramid_image_" + std::to_string(i),
+                   gaus_pyramid_original_image_[i]);
+      gaus_pyramid_original_image_[i] =
+          gaus_pyramid_original_image_[i].to(torch::kCUDA);
     }
 
-    // Load feature map
-    try {
-      archive.read("feature_map_", feature_map_);
-      feature_map_ = feature_map_.to(torch::kCUDA);
-    } catch (const std::exception& e) {
-      // Silent fail
-    }
+    // Load pyramid depths - throw on failure
+    torch::Tensor pyramid_depth_size_tensor;
+    archive.read("pyramid_depth_size", pyramid_depth_size_tensor);
+    int pyramid_depth_size = pyramid_depth_size_tensor.item<int64_t>();
 
-    // Load pyramid images
-    try {
-      torch::Tensor pyramid_size_tensor;
-      archive.read("pyramid_size", pyramid_size_tensor);
-      int pyramid_size = pyramid_size_tensor.item<int64_t>();
-
-      gaus_pyramid_original_image_.resize(pyramid_size);
-      for (int i = 0; i < pyramid_size; ++i) {
-        try {
-          archive.read("pyramid_image_" + std::to_string(i),
-                       gaus_pyramid_original_image_[i]);
-          gaus_pyramid_original_image_[i] =
-              gaus_pyramid_original_image_[i].to(torch::kCUDA);
-        } catch (const std::exception& e) {
-          // Silent fail for individual pyramid levels
-        }
-      }
-    } catch (const std::exception& e) {
-      // Silent fail
-    }
-
-    // Load pyramid depths
-    try {
-      torch::Tensor pyramid_depth_size_tensor;
-      archive.read("pyramid_depth_size", pyramid_depth_size_tensor);
-      int pyramid_depth_size = pyramid_depth_size_tensor.item<int64_t>();
-
-      gaus_pyramid_inv_depth_image_.resize(pyramid_depth_size);
-      for (int i = 0; i < pyramid_depth_size; ++i) {
-        try {
-          archive.read("pyramid_depth_" + std::to_string(i),
-                       gaus_pyramid_inv_depth_image_[i]);
-          gaus_pyramid_inv_depth_image_[i] =
-              gaus_pyramid_inv_depth_image_[i].to(torch::kCUDA);
-        } catch (const std::exception& e) {
-          // Silent fail for individual pyramid levels
-        }
-      }
-    } catch (const std::exception& e) {
-      // Silent fail
+    gaus_pyramid_inv_depth_image_.resize(pyramid_depth_size);
+    for (int i = 0; i < pyramid_depth_size; ++i) {
+      archive.read("pyramid_depth_" + std::to_string(i),
+                   gaus_pyramid_inv_depth_image_[i]);
+      gaus_pyramid_inv_depth_image_[i] =
+          gaus_pyramid_inv_depth_image_[i].to(torch::kCUDA);
     }
 
     // std::cout << "Data loaded from disk for keyframe " << fid_ << std::endl;
 
+    loaded_ = true;
   } catch (const std::exception& e) {
     std::cerr << "Error loading data for keyframe " << fid_ << ": " << e.what()
               << std::endl;
+    loaded_ = false; // Ensure loaded status reflects failure
+    throw; // Re-throw the exception
   }
-
-  loaded_ = true;
 }

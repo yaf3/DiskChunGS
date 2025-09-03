@@ -108,10 +108,19 @@ std::pair<torch::Tensor, torch::Tensor> GuidedMVS::operator()(
 
   // std::cout << "=== END C++ POSE DEBUG ===" << std::endl;
 
-  // Get feature maps
+  // Get feature maps - check for proper initialization
+  TORCH_CHECK(refKeyframe->feature_map_.defined(), 
+              "Reference keyframe " + std::to_string(refKeyframe->fid_) + " feature_map_ is not defined");
+  TORCH_CHECK(refKeyframe->feature_map_.device().is_cuda(), 
+              "Reference keyframe " + std::to_string(refKeyframe->fid_) + " feature_map_ is not on CUDA device");
+  
   auto refFeatMap = refKeyframe->feature_map_.contiguous().cuda();
   std::vector<torch::Tensor> featMaps_list;
   for (const auto& keyframe : keyframes) {
+    TORCH_CHECK(keyframe->feature_map_.defined(), 
+                "Keyframe " + std::to_string(keyframe->fid_) + " feature_map_ is not defined");
+    TORCH_CHECK(keyframe->feature_map_.device().is_cuda(), 
+                "Keyframe " + std::to_string(keyframe->fid_) + " feature_map_ is not on CUDA device");
     featMaps_list.push_back(keyframe->feature_map_.cuda().contiguous());
   }
   auto featMaps = torch::stack(featMaps_list, 0);
@@ -138,7 +147,14 @@ std::pair<torch::Tensor, torch::Tensor> GuidedMVS::operator()(
                         .contiguous()
                         .cuda();
 
-  // Get monocular inverse depth
+  // Get monocular inverse depth - check for proper initialization
+  TORCH_CHECK(!refKeyframe->gaus_pyramid_inv_depth_image_.empty(), 
+              "Reference keyframe " + std::to_string(refKeyframe->fid_) + " gaus_pyramid_inv_depth_image_ is empty");
+  TORCH_CHECK(refKeyframe->gaus_pyramid_inv_depth_image_[0].defined(), 
+              "Reference keyframe " + std::to_string(refKeyframe->fid_) + " gaus_pyramid_inv_depth_image_[0] is not defined");
+  TORCH_CHECK(refKeyframe->gaus_pyramid_inv_depth_image_[0].device().is_cuda(), 
+              "Reference keyframe " + std::to_string(refKeyframe->fid_) + " gaus_pyramid_inv_depth_image_[0] is not on CUDA device");
+  
   auto mono_idepth = refKeyframe->gaus_pyramid_inv_depth_image_[0]
                          .unsqueeze(0)
                          .unsqueeze(0)
@@ -207,6 +223,14 @@ std::pair<torch::Tensor, torch::Tensor> GuidedMVS::operator()(
   // validateFeatureQuality(refKeyframe, keyframes, uv_cuda);
 
   if (P != 0) {
+    // Check original image pyramid before accessing
+    TORCH_CHECK(!refKeyframe->gaus_pyramid_original_image_.empty(), 
+                "Reference keyframe " + std::to_string(refKeyframe->fid_) + " gaus_pyramid_original_image_ is empty");
+    TORCH_CHECK(refKeyframe->gaus_pyramid_original_image_[0].defined(), 
+                "Reference keyframe " + std::to_string(refKeyframe->fid_) + " gaus_pyramid_original_image_[0] is not defined");
+    TORCH_CHECK(refKeyframe->gaus_pyramid_original_image_[0].device().is_cuda(), 
+                "Reference keyframe " + std::to_string(refKeyframe->fid_) + " gaus_pyramid_original_image_[0] is not on CUDA device");
+
     // Type checks to match Python version and kernel expectations
     // TORCH_CHECK(uv_cuda.scalar_type() == torch::kFloat32,
     //             "uv must be float32 ");
