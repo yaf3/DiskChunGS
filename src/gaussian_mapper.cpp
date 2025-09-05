@@ -1231,6 +1231,9 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
     }
   }
 
+  // Make space by unloading all keyframes
+  keyframe_queue_->unloadAllKeyframes();
+
   // === ADAPTIVE BATCHING STRATEGY ===
 
   // Step 1: Estimate total gaussians needed for all keyframes
@@ -1342,7 +1345,8 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
   bool use_batched_strategy =
       (projected_total <= gaussians_->max_gaussians_in_memory_);
 
-  if (use_batched_strategy) {
+  // Force batched strategy for now
+  if (true || use_batched_strategy) {
     std::cout << "[Loop Closure] Using BATCHED strategy - sufficient memory"
               << std::endl;
     total_transformed = processBatchedLoopClosure(

@@ -1,3 +1,5 @@
+#pragma once
+
 #include <Eigen/Dense>
 #include <functional>
 #include <vector>
@@ -7,7 +9,7 @@
 enum FrustumTestResult { OUTSIDE = 0, INTERSECT = 1, INSIDE = 2 };
 
 class FrustumCuller {
- private:
+ public:
   Eigen::Vector4f planes_[6];
 
  public:

@@ -215,5 +215,6 @@ class GaussianKeyframe {
 
   std::filesystem::path keyframe_save_dir_;
   bool loaded_ = false;
+  bool saving_ = false;
   bool allow_eviction_ = false;
 };
