@@ -84,23 +84,23 @@ inline AABB getRegionAABB(const ChunkCoord &min_coord,
 }
 
 // Encode/decode single chunk coordinates
-inline int64_t encodeChunkCoord(const ChunkCoord& coord) {
+inline int64_t encodeChunkCoord(const ChunkCoord &coord) {
   const int32_t OFFSET = 2048;
-  
+
   int64_t x = coord.x + OFFSET;
   int64_t y = coord.y + OFFSET;
   int64_t z = coord.z + OFFSET;
-  
+
   // 12 bits per coordinate = 36 total bits
   return x * (1 << 24) + y * (1 << 12) + z;
 }
 
 inline ChunkCoord decodeChunkCoord(int64_t chunk_id) {
   const int32_t OFFSET = 2048;
-  
+
   int64_t z = (chunk_id % (1 << 12)) - OFFSET;
   int64_t y = ((chunk_id / (1 << 12)) % (1 << 12)) - OFFSET;
   int64_t x = (chunk_id / (1 << 24)) - OFFSET;
-  
+
   return ChunkCoord{x, y, z};
 }

@@ -109,7 +109,7 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   scene_ = std::make_shared<GaussianScene>(model_params_);
 
   keyframe_queue_ =
-      std::make_shared<KeyframeQueue>(scene_, 40, &kfs_loss_, &kfs_used_times_);
+      std::make_shared<KeyframeQueue>(scene_, 200, &kfs_loss_, 0.2f, 20);
 
   // Initialize Laplacian of Gaussian kernel
   initializeLaplacianOfGaussianKernel();
@@ -365,7 +365,7 @@ GaussianMapper::GaussianMapper(std::filesystem::path gaussian_config_file_path,
   scene_ = std::make_shared<GaussianScene>(model_params_);
 
   keyframe_queue_ =
-      std::make_shared<KeyframeQueue>(scene_, 40, &kfs_loss_, &kfs_used_times_);
+      std::make_shared<KeyframeQueue>(scene_, 200, &kfs_loss_, 0.2f, 20);
 
   // Initialize Laplacian of Gaussian kernel
   initializeLaplacianOfGaussianKernel();
@@ -1230,9 +1230,6 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
       handleNewKeyframe(kf);  // This modifies chunks!
     }
   }
-
-  // Make space by unloading all keyframes
-  keyframe_queue_->unloadAllKeyframes();
 
   // === ADAPTIVE BATCHING STRATEGY ===
 
@@ -2217,13 +2214,13 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   std::vector<std::shared_ptr<GaussianKeyframe>> newly_loaded_keyframes;
   for (const auto& kf : available_keyframes) {
     if (!kf->loaded_) {
-      std::cout << "Loading keyframe " << std::to_string(kf->fid_)
-                << " from disk for sampling" << std::endl;
+      // std::cout << "Loading keyframe " << std::to_string(kf->fid_)
+      //           << " from disk for sampling" << std::endl;
       kf->loadDataFromDisk();
       newly_loaded_keyframes.push_back(kf);
     } else {
-      std::cout << "Keyframe " << std::to_string(kf->fid_)
-                << " already marked as loaded for sampling" << std::endl;
+      // std::cout << "Keyframe " << std::to_string(kf->fid_)
+      //           << " already marked as loaded for sampling" << std::endl;
     }
   }
 

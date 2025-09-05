@@ -576,16 +576,10 @@ void ImGuiViewer::run() {
           ImGui::Text("Chunks on disk: %d",
                       static_cast<int>(
                           pGausMapper_->gaussians_->chunks_on_disk_.size(0)));
-          ImGui::Text(
-              "Loaded keyframes: %d",
-              static_cast<int>(
-                  pGausMapper_->keyframe_queue_->getNumberOfLoadedKeyframes()));
-
         } else {
           ImGui::Text("Gaussians in VRAM: Not initialized");
           ImGui::Text("Active Chunks: Not initialized");
           ImGui::Text("Total Chunks: Not initialized");
-          ImGui::Text("Loaded keyframes: Not initialized");
         }
 
         ImGui::Checkbox("Keep training after stop", &keep_training_);
