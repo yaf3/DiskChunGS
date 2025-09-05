@@ -18,7 +18,6 @@ class KeyframeQueue {
                 const std::map<std::size_t, float>* loss_map = nullptr,
                 float use_last_frame_proba = 0.2f,
                 size_t n_kept_frames = 20);
-  ~KeyframeQueue();
 
   std::shared_ptr<GaussianKeyframe> getNextKeyframe();
   void notifyNewKeyframeAdded(std::shared_ptr<GaussianKeyframe> keyframe);
@@ -56,8 +55,4 @@ class KeyframeQueue {
   void moveRandomKeyframeToCPU();
   void moveRandomKeyframeToGPU();
   void performReshuffling();
-
-  // Existing methods
-  void saveWorker();
-  void queueForSaving(std::shared_ptr<GaussianKeyframe> keyframe);
 };

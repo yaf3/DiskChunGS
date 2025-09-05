@@ -967,8 +967,8 @@ void GaussianKeyframe::saveDataToDisk() {
   auto end_time = std::chrono::steady_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_time - start_time);
-  // std::cout << "Keyframe " << fid_ << " saved. Save completed in "
-  //           << duration.count() << "ms" << std::endl;
+  std::cout << "Keyframe " << fid_ << " saved. Save completed in "
+            << duration.count() << "ms" << std::endl;
 
   // std::cout << "Keyframe data saved and cleared from memory for keyframe "
   //           << fid_ << std::endl;
@@ -977,6 +977,7 @@ void GaussianKeyframe::saveDataToDisk() {
 void GaussianKeyframe::loadDataFromDisk() {
   // std::cout << "Trying to load keyframe_data " + std::to_string(fid_)
   //           << std::endl;
+  auto start_time = std::chrono::steady_clock::now();
   if (loaded_) {
     std::cout << "WARN: Loading keyframe that is already marked as loaded!"
               << std::endl;
@@ -1035,7 +1036,160 @@ void GaussianKeyframe::loadDataFromDisk() {
   } catch (const std::exception& e) {
     std::cerr << "Error loading data for keyframe " << fid_ << ": " << e.what()
               << std::endl;
-    loaded_ = false; // Ensure loaded status reflects failure
-    throw; // Re-throw the exception
+    loaded_ = false;  // Ensure loaded status reflects failure
+    throw;            // Re-throw the exception
   }
+
+  auto end_time = std::chrono::steady_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+      end_time - start_time);
+
+  std::cout << "Keyframe " << fid_ << " loaded. Load completed in "
+            << duration.count() << "ms" << std::endl;
+}
+
+void GaussianKeyframe::transferToCPU() {
+  auto start_time = std::chrono::steady_clock::now();
+
+  if (!loaded_) {
+    std::cout << "WARN: Tried to transfer keyframe to CPU that isn't loaded!"
+              << std::endl;
+    return;
+  }
+
+  // Transfer depth confidence to CPU
+  if (depth_confidence_.defined() && depth_confidence_.device().is_cuda()) {
+    depth_confidence_ = depth_confidence_.to(torch::kCPU);
+  }
+
+  // Transfer feature map to CPU
+  if (feature_map_.defined() && feature_map_.device().is_cuda()) {
+    feature_map_ = feature_map_.to(torch::kCPU);
+  }
+
+  // Transfer pyramid image data to CPU
+  for (auto& img : gaus_pyramid_original_image_) {
+    if (img.defined() && img.device().is_cuda()) {
+      img = img.to(torch::kCPU);
+    }
+  }
+
+  // Transfer pyramid depth data to CPU
+  for (auto& depth : gaus_pyramid_inv_depth_image_) {
+    if (depth.defined() && depth.device().is_cuda()) {
+      depth = depth.to(torch::kCPU);
+    }
+  }
+
+  // Transfer pose parameters to CPU
+  if (rW2C_.defined() && rW2C_.device().is_cuda()) {
+    rW2C_ = rW2C_.to(torch::kCPU);
+  }
+  if (tW2C_.defined() && tW2C_.device().is_cuda()) {
+    tW2C_ = tW2C_.to(torch::kCPU);
+  }
+
+  // Transfer optimization parameters to CPU
+  if (exposure_transform_.defined() && exposure_transform_.device().is_cuda()) {
+    exposure_transform_ = exposure_transform_.to(torch::kCPU);
+  }
+  if (depth_scale_.defined() && depth_scale_.device().is_cuda()) {
+    depth_scale_ = depth_scale_.to(torch::kCPU);
+  }
+  if (depth_bias_.defined() && depth_bias_.device().is_cuda()) {
+    depth_bias_ = depth_bias_.to(torch::kCPU);
+  }
+
+  loaded_ = false;
+
+  // Clear GPU cache after transfer
+  c10::cuda::CUDACachingAllocator::emptyCache();
+
+  auto end_time = std::chrono::steady_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+      end_time - start_time);
+
+  std::cout << "Keyframe " << fid_ << " transferred to CPU in "
+            << duration.count() << "ms" << std::endl;
+}
+
+void GaussianKeyframe::transferToGPU() {
+  auto start_time = std::chrono::steady_clock::now();
+
+  if (loaded_) {
+    std::cout
+        << "WARN: Tried to transfer keyframe to GPU that's already loaded!"
+        << std::endl;
+    return;
+  }
+
+  // Transfer depth confidence to GPU
+  if (depth_confidence_.defined() && !depth_confidence_.device().is_cuda()) {
+    depth_confidence_ = depth_confidence_.to(torch::kCUDA);
+  }
+
+  // Transfer feature map to GPU
+  if (feature_map_.defined() && !feature_map_.device().is_cuda()) {
+    feature_map_ = feature_map_.to(torch::kCUDA);
+  }
+
+  // Transfer pyramid image data to GPU
+  for (auto& img : gaus_pyramid_original_image_) {
+    if (img.defined() && !img.device().is_cuda()) {
+      img = img.to(torch::kCUDA);
+    }
+  }
+
+  // Transfer pyramid depth data to GPU
+  for (auto& depth : gaus_pyramid_inv_depth_image_) {
+    if (depth.defined() && !depth.device().is_cuda()) {
+      depth = depth.to(torch::kCUDA);
+    }
+  }
+
+  // Transfer pose parameters to GPU
+  if (rW2C_.defined() && !rW2C_.device().is_cuda()) {
+    rW2C_ = rW2C_.to(torch::kCUDA);
+    rW2C_.requires_grad_(true);  // Restore gradient requirement
+  }
+  if (tW2C_.defined() && !tW2C_.device().is_cuda()) {
+    tW2C_ = tW2C_.to(torch::kCUDA);
+    tW2C_.requires_grad_(true);  // Restore gradient requirement
+  }
+
+  // Transfer optimization parameters to GPU
+  if (exposure_transform_.defined() &&
+      !exposure_transform_.device().is_cuda()) {
+    exposure_transform_ = exposure_transform_.to(torch::kCUDA);
+    exposure_transform_.requires_grad_(true);  // Restore gradient requirement
+  }
+  if (depth_scale_.defined() && !depth_scale_.device().is_cuda()) {
+    depth_scale_ = depth_scale_.to(torch::kCUDA);
+    depth_scale_.requires_grad_(true);  // Restore gradient requirement
+  }
+  if (depth_bias_.defined() && !depth_bias_.device().is_cuda()) {
+    depth_bias_ = depth_bias_.to(torch::kCUDA);
+    depth_bias_.requires_grad_(true);  // Restore gradient requirement
+  }
+
+  // Update tensor vectors for optimizer if they exist
+  if (optimizer_) {
+    Tensor_vec_rW2C_ = {rW2C_};
+    Tensor_vec_tW2C_ = {tW2C_};
+    Tensor_vec_exposure_ = {exposure_transform_};
+    Tensor_vec_depth_scale_ = {depth_scale_};
+    Tensor_vec_depth_bias_ = {depth_bias_};
+
+    // Note: You may need to reinitialize the optimizer with the new GPU tensors
+    // depending on your optimizer implementation
+  }
+
+  loaded_ = true;
+
+  auto end_time = std::chrono::steady_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+      end_time - start_time);
+
+  std::cout << "Keyframe " << fid_ << " transferred to GPU in "
+            << duration.count() << "ms" << std::endl;
 }

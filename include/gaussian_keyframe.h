@@ -147,6 +147,9 @@ class GaussianKeyframe {
   // Load memory-heavy data from disk back into memory
   void loadDataFromDisk();
 
+  void transferToCPU();
+  void transferToGPU();
+
  public:
   std::size_t fid_;
   int creation_iter_;
@@ -215,6 +218,5 @@ class GaussianKeyframe {
 
   std::filesystem::path keyframe_save_dir_;
   bool loaded_ = false;
-  bool saving_ = false;
   bool allow_eviction_ = false;
 };

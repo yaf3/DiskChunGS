@@ -23,24 +23,6 @@ KeyframeQueue::KeyframeQueue(std::shared_ptr<GaussianScene> scene,
   std::cout << "Created KeyframeQueue with max_active_keyframes="
             << max_active_keyframes_ << ", n_kept_frames=" << n_kept_frames_
             << ", use_last_frame_proba=" << use_last_frame_proba_ << std::endl;
-
-  // Start the save worker thread
-  save_worker_ = std::thread(&KeyframeQueue::saveWorker, this);
-}
-
-// Destructor
-KeyframeQueue::~KeyframeQueue() {
-  // Signal worker to stop
-  {
-    std::unique_lock<std::mutex> lock(save_mutex_);
-    save_worker_stop_ = true;
-  }
-  save_cv_.notify_all();
-
-  // Wait for worker to finish
-  if (save_worker_.joinable()) {
-    save_worker_.join();
-  }
 }
 
 // Move random keyframe from GPU to CPU (with protection)
@@ -60,7 +42,7 @@ void KeyframeQueue::moveRandomKeyframeToCPU() {
   auto it = scene_->keyframes().find(frame_id);
   if (it != scene_->keyframes().end()) {
     // Save data to disk
-    queueForSaving(it->second);
+    it->second->transferToCPU();
     std::cout << "Moved keyframe " << frame_id << " to CPU/disk" << std::endl;
   }
 
@@ -85,7 +67,7 @@ void KeyframeQueue::moveRandomKeyframeToGPU() {
   auto it = scene_->keyframes().find(frame_id);
   if (it != scene_->keyframes().end()) {
     // Load data from disk
-    it->second->loadDataFromDisk();
+    it->second->transferToGPU();
     std::cout << "Moved keyframe " << frame_id << " back to GPU" << std::endl;
   }
 
@@ -153,44 +135,4 @@ std::shared_ptr<GaussianKeyframe> KeyframeQueue::getNextKeyframe() {
 
   auto it = scene_->keyframes().find(kf_id);
   return it->second;
-}
-
-void KeyframeQueue::saveWorker() {
-  while (true) {
-    std::shared_ptr<GaussianKeyframe> keyframe_to_save;
-
-    {
-      std::unique_lock<std::mutex> lock(save_mutex_);
-      save_cv_.wait(
-          lock, [this] { return !save_queue_.empty() || save_worker_stop_; });
-
-      if (save_worker_stop_ && save_queue_.empty()) {
-        break;
-      }
-
-      if (!save_queue_.empty()) {
-        keyframe_to_save = save_queue_.front();
-        save_queue_.pop();
-      }
-    }
-
-    if (keyframe_to_save) {
-      keyframe_to_save->saving_ = true;
-      try {
-        keyframe_to_save->saveDataToDisk();
-      } catch (const std::exception& e) {
-        std::cerr << "Error saving keyframe " << keyframe_to_save->fid_ << ": "
-                  << e.what() << std::endl;
-      }
-    }
-    keyframe_to_save->saving_ = false;
-  }
-}
-
-void KeyframeQueue::queueForSaving(std::shared_ptr<GaussianKeyframe> keyframe) {
-  {
-    std::unique_lock<std::mutex> lock(save_mutex_);
-    save_queue_.push(keyframe);
-  }
-  save_cv_.notify_one();
 }

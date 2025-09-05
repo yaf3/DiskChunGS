@@ -872,8 +872,8 @@ void GaussianMapper::trainForOneIteration(
   bool had_to_load = false;
   if (!viewpoint_cam->loaded_) {
     std::cout << "Loading keyframe " << std::to_string(viewpoint_cam->fid_)
-              << "from disk for training" << std::endl;
-    viewpoint_cam->loadDataFromDisk();
+              << "from GPU for training" << std::endl;
+    viewpoint_cam->transferToGPU();
     had_to_load = true;
   }
   timer_loadKeyframe.stop();
@@ -1062,7 +1062,7 @@ void GaussianMapper::trainForOneIteration(
 
   auto timer_saveKeyframe = ProfilingUtils::Timer("SaveKeyframe");
   if (had_to_load) {
-    viewpoint_cam->saveDataToDisk();
+    viewpoint_cam->transferToCPU();
   }
   timer_saveKeyframe.stop();
 
@@ -1802,9 +1802,9 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   }
 
   pkf->loaded_ = true;
-  std::cout << "[Gaussian Mapper] New keyframe " << pkf->fid_
-            << " added to the scene. Total keyframes: "
-            << scene_->keyframes().size() << std::endl;
+  // std::cout << "[Gaussian Mapper] New keyframe " << pkf->fid_
+  //           << " added to the scene. Total keyframes: "
+  //           << scene_->keyframes().size() << std::endl;
 
   // imgRGB_undistorted.release();
   // imgAux_undistorted.release();
@@ -2199,33 +2199,18 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   std::vector<std::shared_ptr<GaussianKeyframe>> prev_keyframes =
       getClosestKeyframes(pkf, guided_mvs_->getNumCams(), 6);
 
-  // Filter out keyframes that are currently being saved
-  std::vector<std::shared_ptr<GaussianKeyframe>> available_keyframes;
-  for (const auto& kf : prev_keyframes) {
-    if (kf->saving_) {
-      std::cout << "Keyframe " << std::to_string(kf->fid_)
-                << " is currently being saved, excluding from sampling"
-                << std::endl;
-    } else {
-      available_keyframes.push_back(kf);
-    }
-  }
-
   std::vector<std::shared_ptr<GaussianKeyframe>> newly_loaded_keyframes;
-  for (const auto& kf : available_keyframes) {
+  for (const auto& kf : prev_keyframes) {
     if (!kf->loaded_) {
-      // std::cout << "Loading keyframe " << std::to_string(kf->fid_)
-      //           << " from disk for sampling" << std::endl;
-      kf->loadDataFromDisk();
+      std::cout << "Loading keyframe " << std::to_string(kf->fid_)
+                << " from CPU for sampling" << std::endl;
+      kf->transferToGPU();
       newly_loaded_keyframes.push_back(kf);
     } else {
-      // std::cout << "Keyframe " << std::to_string(kf->fid_)
-      //           << " already marked as loaded for sampling" << std::endl;
+      std::cout << "Keyframe " << std::to_string(kf->fid_)
+                << " already marked as loaded for sampling" << std::endl;
     }
   }
-
-  // Update prev_keyframes to only include available ones
-  prev_keyframes = available_keyframes;
 
   torch::Tensor accurate_mask, depth;
 
@@ -2653,8 +2638,8 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   // Later, save only the keyframes that were loaded
   for (const auto& kf : newly_loaded_keyframes) {
     std::cout << "Saving keyframe " << std::to_string(kf->fid_)
-              << " back to disk" << std::endl;
-    kf->saveDataToDisk();
+              << " back to CPU" << std::endl;
+    kf->transferToCPU();
   }
   // std::cout << "sampleGaussians completed in " << duration.count() << "ms"
   //           << std::endl;
@@ -2788,7 +2773,7 @@ void GaussianMapper::renderAndRecordKeyframe(
 
   bool had_to_load = false;
   if (!pkf->loaded_) {
-    pkf->loadDataFromDisk();
+    pkf->transferToGPU();
     had_to_load = true;
   }
 
@@ -2820,7 +2805,7 @@ void GaussianMapper::renderAndRecordKeyframe(
                          result_gt_dir, result_loss_dir, name_suffix);
 
   if (had_to_load) {
-    pkf->saveDataToDisk();
+    pkf->transferToCPU();
   }
 }
 
