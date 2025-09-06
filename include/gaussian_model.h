@@ -187,6 +187,12 @@ class GaussianModel {
       float lod0_percentile = 75.0f,  // Top 25% get LoD 0
       float lod2_percentile = 25.0f   // Bottom 25% get LoD 2
   );
+
+  torch::Tensor selectScreenSpaceLoD(const torch::Tensor& visible_gaussian_mask,
+                                     const torch::Tensor& camera_position,
+                                     float focal_length,
+                                     int image_width);
+
   torch::Tensor selectCumulativeLoD(const torch::Tensor& visible_gaussian_mask,
                                     const torch::Tensor& camera_position);
 

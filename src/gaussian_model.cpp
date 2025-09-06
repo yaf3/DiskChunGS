@@ -682,7 +682,8 @@ torch::Tensor GaussianModel::cullVisibleGaussians(
   // Apply LoD filtering based on distance
   torch::Tensor camera_position = keyframe->getCenter().squeeze();
   torch::Tensor lod_filtered_mask =
-      selectCumulativeLoD(chunk_visibility_mask, camera_position);
+      selectScreenSpaceLoD(chunk_visibility_mask, camera_position,
+                           keyframe->intr_[0], keyframe->image_width_);
 
   // Debug: Print culling statistics
   // int chunk_visible = chunk_visibility_mask.sum().item<int>();
@@ -2536,6 +2537,79 @@ torch::Tensor GaussianModel::assignLoDByPercentiles(
   lod_levels.masked_fill_(dense_mask, 2);
 
   return lod_levels;
+}
+
+torch::Tensor GaussianModel::selectScreenSpaceLoD(
+    const torch::Tensor& visible_gaussian_mask,
+    const torch::Tensor& camera_position,
+    float focal_length,
+    int image_width) {
+  // Get visible indices and their data
+  torch::Tensor visible_indices = torch::where(visible_gaussian_mask)[0];
+  if (visible_indices.size(0) == 0) {
+    return visible_gaussian_mask;
+  }
+
+  torch::Tensor visible_positions = xyz_.index({visible_indices});
+  torch::Tensor visible_scalings =
+      getScalingActivation().index({visible_indices});
+
+  // Compute distances and max scaling per Gaussian
+  torch::Tensor distances = torch::norm(
+      visible_positions - camera_position.unsqueeze(0), /*p=*/2, /*dim=*/1);
+  torch::Tensor max_scalings =
+      std::get<0>(torch::max(visible_scalings, /*dim=*/1));
+
+  // Calculate screen-space size: focal_length * scale / distance
+  torch::Tensor screen_sizes =
+      focal_length * max_scalings / torch::clamp_min(distances, 0.1f);
+
+  // Simple culling based on projected size
+  float min_pixel_size = 0.5f;  // Cull if smaller than 0.5 pixels
+  float max_pixel_size = static_cast<float>(image_width) *
+                         0.3f;  // Always keep if larger than 30% of screen
+
+  // Create retention mask based on screen size
+  torch::Tensor size_mask = screen_sizes >= min_pixel_size;
+
+  // For medium-to-far distances, use stable subsampling based on Gaussian ID
+  torch::Tensor visible_ids = gaussian_ids_.index({visible_indices});
+
+  // Distance-based culling thresholds
+  float close_distance = chunk_size_ * 2.0f;   // Always keep if closer
+  float medium_distance = chunk_size_ * 5.0f;  // Subsample at medium distance
+  float far_distance =
+      chunk_size_ * 10.0f;  // Heavy subsampling at far distance
+
+  // Create distance-based masks
+  torch::Tensor close_mask = distances < close_distance;
+  torch::Tensor medium_mask =
+      (distances >= close_distance) & (distances < medium_distance);
+  torch::Tensor far_mask =
+      (distances >= medium_distance) & (distances < far_distance);
+  torch::Tensor very_far_mask = distances >= far_distance;
+
+  // Stable subsampling patterns using Gaussian IDs
+  torch::Tensor keep_all = torch::ones_like(close_mask);
+  torch::Tensor keep_half = (visible_ids % 2) == 0;     // Keep every 2nd
+  torch::Tensor keep_quarter = (visible_ids % 4) == 0;  // Keep every 4th
+  torch::Tensor keep_eighth = (visible_ids % 8) == 0;   // Keep every 8th
+
+  // Apply distance-based subsampling
+  torch::Tensor distance_keep_mask =
+      (close_mask & keep_all) |       // Keep all close Gaussians
+      (medium_mask & keep_half) |     // Keep half at medium distance
+      (far_mask & keep_quarter) |     // Keep quarter at far distance
+      (very_far_mask & keep_eighth);  // Keep eighth at very far distance
+
+  // Combine with screen-size culling
+  size_mask = size_mask & distance_keep_mask;
+
+  // Create final mask
+  torch::Tensor final_mask = torch::zeros_like(visible_gaussian_mask);
+  final_mask.index_put_({visible_indices}, size_mask);
+
+  return final_mask;
 }
 
 torch::Tensor GaussianModel::selectCumulativeLoD(
