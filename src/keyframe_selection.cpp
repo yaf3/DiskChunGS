@@ -9,130 +9,95 @@
 
 // Constructor
 KeyframeQueue::KeyframeQueue(std::shared_ptr<GaussianScene> scene,
-                             size_t max_active_keyframes,
-                             const std::map<std::size_t, float>* loss_map,
-                             float use_last_frame_proba,
-                             size_t n_kept_frames)
+                             float chunk_size)
     : scene_(scene),
-      max_active_keyframes_(max_active_keyframes),
-      n_kept_frames_(n_kept_frames),
-      use_last_frame_proba_(use_last_frame_proba),
-      cpu_offload_count_(0),
+      chunk_size_(chunk_size),
       rng_(std::random_device{}()),
-      uniform_dist_(0.0f, 1.0f) {
-  std::cout << "Created KeyframeQueue with max_active_keyframes="
-            << max_active_keyframes_ << ", n_kept_frames=" << n_kept_frames_
-            << ", use_last_frame_proba=" << use_last_frame_proba_ << std::endl;
-}
-
-// Move random keyframe from GPU to CPU (with protection)
-void KeyframeQueue::moveRandomKeyframeToCPU() {
-  if (active_frames_gpu_.size() <= n_kept_frames_) {
-    return;  // Not enough frames to move any
-  }
-
-  // Select from all except the last n_kept_frames_ (protected frames)
-  size_t selectable_count = active_frames_gpu_.size() - n_kept_frames_;
-  std::uniform_int_distribution<size_t> dist(0, selectable_count - 1);
-  size_t random_idx = dist(rng_);
-
-  std::size_t frame_id = active_frames_gpu_[random_idx];
-
-  // Move keyframe data to disk/CPU
-  auto it = scene_->keyframes().find(frame_id);
-  if (it != scene_->keyframes().end()) {
-    // Save data to disk
-    it->second->transferToCPU();
-    std::cout << "Moved keyframe " << frame_id << " to CPU/disk" << std::endl;
-  }
-
-  // Update lists
-  active_frames_cpu_.push_back(frame_id);
-  active_frames_gpu_.erase(active_frames_gpu_.begin() + random_idx);
-
-  cpu_offload_count_++;
-}
-
-// Move random keyframe from CPU back to GPU
-void KeyframeQueue::moveRandomKeyframeToGPU() {
-  if (active_frames_cpu_.empty()) {
-    return;
-  }
-
-  std::uniform_int_distribution<size_t> dist(0, active_frames_cpu_.size() - 1);
-  size_t random_idx = dist(rng_);
-  std::size_t frame_id = active_frames_cpu_[random_idx];
-
-  // Load keyframe data from disk
-  auto it = scene_->keyframes().find(frame_id);
-  if (it != scene_->keyframes().end()) {
-    // Load data from disk
-    it->second->transferToGPU();
-    std::cout << "Moved keyframe " << frame_id << " back to GPU" << std::endl;
-  }
-
-  // Insert at front
-  active_frames_gpu_.push_front(frame_id);
-  active_frames_cpu_.erase(active_frames_cpu_.begin() + random_idx);
-}
-
-// Perform reshuffling (every 5th CPU offload)
-void KeyframeQueue::performReshuffling() {
-  std::cout << "Performing memory reshuffling..." << std::endl;
-
-  // Additional CPU offload
-  moveRandomKeyframeToCPU();
-
-  // Move one frame back from CPU to GPU
-  moveRandomKeyframeToGPU();
-
-  std::cout << "Memory reshuffling complete" << std::endl;
+      uniform_dist_(0.0f, 1.0f),
+      level_dist_({0.5, 0.3, 0.2}) {
+  chunk_sizes_[0] = 2 * chunk_size_;  // FINE
+  chunk_sizes_[1] = 4 * chunk_size_;  // MEDIUM
+  chunk_sizes_[2] = 8 * chunk_size_;  // COARSE
 }
 
 void KeyframeQueue::notifyNewKeyframeAdded(
     std::shared_ptr<GaussianKeyframe> keyframe) {
   if (!keyframe) return;
 
-  std::unique_lock<std::mutex> lock(mutex_memory_mgmt_);
+  latest_keyframe_ = keyframe;
 
-  // Add new keyframe to GPU list
-  active_frames_gpu_.push_back(keyframe->fid_);
+  torch::Tensor center_tensor = keyframe->getCenter();
+  Eigen::Vector3f position = tensorToEigen(center_tensor);
 
-  // Check if we exceed the memory limit
-  if (active_frames_gpu_.size() > max_active_keyframes_) {
-    moveRandomKeyframeToCPU();
-
-    // Reshuffling logic: every 5th CPU offload
-    if (cpu_offload_count_ % 5 == 0) {
-      performReshuffling();
-    }
+  for (int level = 0; level < 3; ++level) {
+    ChunkCoord chunk_coord = getChunkCoord(position, chunk_sizes_[level]);
+    int64_t chunk_id = encodeChunkCoord(chunk_coord);
+    chunk_to_keyframes_[level][chunk_id].push_back(keyframe);
   }
-
-  std::cout << "Added keyframe " << keyframe->fid_
-            << " (GPU: " << active_frames_gpu_.size()
-            << ", CPU: " << active_frames_cpu_.size() << ")" << std::endl;
 }
 
 // Updated keyframe selection using active_frames_gpu_
 std::shared_ptr<GaussianKeyframe> KeyframeQueue::getNextKeyframe() {
-  std::unique_lock<std::mutex> lock(mutex_memory_mgmt_);
-
-  if (active_frames_gpu_.empty()) return nullptr;
-
-  std::size_t kf_id;
-
-  // Same probabilistic logic: 20% latest, 80% random from GPU frames
-  if (uniform_dist_(rng_) <= use_last_frame_proba_) {
-    // Use the most recent keyframe (last in GPU list)
-    kf_id = active_frames_gpu_.back();
-  } else {
-    // Randomly select from all GPU keyframes
-    std::uniform_int_distribution<size_t> distrib(
-        0, active_frames_gpu_.size() - 1);
-    size_t randomIndex = distrib(rng_);
-    kf_id = active_frames_gpu_[randomIndex];
+  if (!latest_keyframe_) {
+    return nullptr;
   }
 
-  auto it = scene_->keyframes().find(kf_id);
-  return it->second;
+  torch::Tensor latest_center = latest_keyframe_->getCenter();
+  Eigen::Vector3f latest_position = tensorToEigen(latest_center);
+
+  int level = level_dist_(rng_);
+  ChunkCoord chunk_coord = getChunkCoord(latest_position, chunk_sizes_[level]);
+  int64_t chunk_id = encodeChunkCoord(chunk_coord);
+
+  auto it = chunk_to_keyframes_[level].find(chunk_id);
+  if (it != chunk_to_keyframes_[level].end() && !it->second.empty()) {
+    const auto& keyframes_in_chunk = it->second;
+    std::uniform_int_distribution<size_t> dist(0,
+                                               keyframes_in_chunk.size() - 1);
+    size_t random_index = dist(rng_);
+    std::shared_ptr<GaussianKeyframe> selected_keyframe =
+        keyframes_in_chunk[random_index];
+
+    // Check if already on GPU to avoid redundant transfer
+    if (!selected_keyframe->loaded_) {
+      selected_keyframe->loadDataFromDisk();
+    }
+
+    // More efficient GPU queue management
+    // Remove the keyframe if it's already in the queue (avoid duplicates)
+    auto queue_it =
+        std::find(gpu_queue.begin(), gpu_queue.end(), selected_keyframe);
+    if (queue_it != gpu_queue.end()) {
+      gpu_queue.erase(queue_it);
+    }
+
+    // Add to front (most recently used)
+    gpu_queue.push_front(selected_keyframe);
+
+    // Clean up oldest keyframes more efficiently
+    while (gpu_queue.size() > max_gpu_keyframes_) {
+      std::shared_ptr<GaussianKeyframe> oldest = gpu_queue.back();
+      gpu_queue.pop_back();
+
+      // Only transfer to CPU if it's actually loaded and not the selected one
+      if (oldest->loaded_ && oldest != selected_keyframe) {
+        oldest->saveDataToDisk();
+      }
+    }
+
+    return selected_keyframe;
+  }
+
+  return nullptr;
+}
+
+Eigen::Vector3f KeyframeQueue::tensorToEigen(
+    const torch::Tensor& tensor) const {
+  // Ensure tensor is on CPU and contiguous
+  torch::Tensor cpu_tensor = tensor.cpu().contiguous();
+
+  // Get pointer to data
+  float* data_ptr = cpu_tensor.data_ptr<float>();
+
+  return Eigen::Vector3f(data_ptr[0], data_ptr[1], data_ptr[2]);
 }
