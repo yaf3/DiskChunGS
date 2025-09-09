@@ -450,10 +450,10 @@ void GaussianModel::prunePoints(torch::Tensor& mask) {
           static_cast<torch::optim::AdamParamState&>(*state[key]);
       auto new_state = std::make_unique<torch::optim::AdamParamState>();
       new_state->step(stored_state.step());
-      new_state->exp_avg(
-          stored_state.exp_avg().index({valid_points_mask}).clone());
+      auto valid_indices = torch::nonzero(valid_points_mask).squeeze(1);
+      new_state->exp_avg(stored_state.exp_avg().index_select(0, valid_indices));
       new_state->exp_avg_sq(
-          stored_state.exp_avg_sq().index({valid_points_mask}).clone());
+          stored_state.exp_avg_sq().index_select(0, valid_indices));
       // new_state->max_exp_avg_sq(stored_state.max_exp_avg_sq().clone()); //
       // needed only when options.amsgrad(true), which is false by default
 
@@ -2861,4 +2861,19 @@ void GaussianModel::runFullConsistencyCheck(const std::string& location) {
 
 void GaussianModel::updateChunkIDs() {
   gaussian_chunk_ids_ = computeChunkIds(getXYZ());
+}
+
+void GaussianModel::prune(float min_opacity,
+                          float extent,
+                          int max_screen_size) {
+  auto prune_mask = (this->getOpacityActivation() < min_opacity).squeeze();
+  if (max_screen_size) {
+    auto big_points_ws =
+        std::get<0>(this->getScalingActivation().max(/*dim=*/1)) >
+        0.1f * extent;
+    prune_mask = torch::logical_or(prune_mask, big_points_ws);
+  }
+  this->prunePoints(prune_mask);
+
+  c10::cuda::CUDACachingAllocator::emptyCache();  // torch.cuda.empty_cache()
 }

@@ -337,6 +337,8 @@ class GaussianModel {
   void assertTensorSizesConsistent(const std::string& location);
   void runFullConsistencyCheck(const std::string& location);
 
+  void prune(float min_opacity, float extent, int max_screen_size);
+
   // Cache for keyframe visibility results
   struct VisibilityCacheEntry {
     Sophus::SE3d pose;  // Keyframe pose when visibility was calculated
