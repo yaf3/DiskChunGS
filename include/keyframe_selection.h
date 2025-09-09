@@ -13,7 +13,10 @@
 
 class KeyframeQueue {
  public:
-  KeyframeQueue(std::shared_ptr<GaussianScene> scene, float chunk_size = 20.0f);
+  KeyframeQueue(std::shared_ptr<GaussianScene> scene,
+                float chunk_size = 20.0f,
+                const std::map<std::size_t, float>* loss_map = nullptr,
+                std::map<std::size_t, int>* used_times_map = nullptr);
 
   std::shared_ptr<GaussianKeyframe> getNextKeyframe();
   void notifyNewKeyframeAdded(std::shared_ptr<GaussianKeyframe> keyframe);
@@ -23,6 +26,9 @@ class KeyframeQueue {
   float chunk_size_;
   float chunk_sizes_[3];  // Different levels: FINE, MEDIUM, COARSE
   int64_t current_active_chunk_id_;
+
+  const std::map<std::size_t, float>* loss_map_;
+  std::map<std::size_t, int>* used_times_map_;
 
   std::shared_ptr<GaussianKeyframe> latest_keyframe_;
 
@@ -35,7 +41,10 @@ class KeyframeQueue {
       chunk_to_keyframes_[3];
 
   std::deque<std::shared_ptr<GaussianKeyframe>> gpu_queue;
-  size_t max_gpu_keyframes_ = 200;
+  size_t max_gpu_keyframes_ = 400;
 
   Eigen::Vector3f tensorToEigen(const torch::Tensor& tensor) const;
+
+  void increaseKeyframeTimesOfUse(std::shared_ptr<GaussianKeyframe> keyframe,
+                                  int additional_uses);
 };
