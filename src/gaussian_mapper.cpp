@@ -108,8 +108,8 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   // Initialize scene
   scene_ = std::make_shared<GaussianScene>(model_params_);
 
-  keyframe_queue_ =
-      std::make_shared<KeyframeQueue>(scene_, 200, &kfs_loss_, 0.2f, 20);
+  keyframe_queue_ = std::make_shared<KeyframeQueue>(
+      scene_, chunk_size_, &kfs_loss_, &kfs_used_times_);
 
   // Initialize Laplacian of Gaussian kernel
   initializeLaplacianOfGaussianKernel();
@@ -364,8 +364,8 @@ GaussianMapper::GaussianMapper(std::filesystem::path gaussian_config_file_path,
   // Initialize scene
   scene_ = std::make_shared<GaussianScene>(model_params_);
 
-  keyframe_queue_ =
-      std::make_shared<KeyframeQueue>(scene_, 200, &kfs_loss_, 0.2f, 20);
+  keyframe_queue_ = std::make_shared<KeyframeQueue>(
+      scene_, chunk_size_, &kfs_loss_, &kfs_used_times_);
 
   // Initialize Laplacian of Gaussian kernel
   initializeLaplacianOfGaussianKernel();
@@ -872,8 +872,8 @@ void GaussianMapper::trainForOneIteration(
   bool had_to_load = false;
   if (!viewpoint_cam->loaded_) {
     std::cout << "Loading keyframe " << std::to_string(viewpoint_cam->fid_)
-              << "from GPU for training" << std::endl;
-    viewpoint_cam->transferToGPU();
+              << " to GPU for training" << std::endl;
+    viewpoint_cam->loadDataFromDisk();
     had_to_load = true;
   }
   timer_loadKeyframe.stop();
@@ -899,6 +899,15 @@ void GaussianMapper::trainForOneIteration(
     gaussians_->deleteSparseChunks(min_gaussians_per_chunk);
   }
   timer_deleteSparseChunks.stop();
+
+  if (getIteration() % 1000 == 0) {
+    int loaded_cout = 0;
+    for (const auto& [index, keyframe] : scene_->keyframes_) {
+      if (keyframe->loaded_) loaded_cout++;
+    }
+    std::cout << "Loaded keyframes: " << loaded_cout << " / "
+              << scene_->keyframes().size() << std::endl;
+  }
 
   size_t keyframe_lookahead = 3;
   // std::vector<std::shared_ptr<GaussianKeyframe>> upcoming_keyframes =
@@ -1020,9 +1029,16 @@ void GaussianMapper::trainForOneIteration(
   gaussians_->optimizer_->zero_grad(true);
   timer_optimizer_step.stop();
 
-  // gaussians_->pruneLowOpacityGaussians(viewpoint_cam, visible_gaussian_mask);
-
+  auto timer_prune = ProfilingUtils::Timer("prune");
+  if (getIteration() % 10 == 0) {
+    gaussians_->pruneLowOpacityGaussians(viewpoint_cam, visible_gaussian_mask);
+  }
+  timer_prune.stop();
   // gaussians_->updateChunkIDs();
+
+  // if (getIteration() % 100 == 0) {
+  //   gaussians_->prune(0.005, 1.0, 0);
+  // }
 
   auto timer_densification = ProfilingUtils::Timer("densification");
   {
@@ -1062,7 +1078,7 @@ void GaussianMapper::trainForOneIteration(
 
   auto timer_saveKeyframe = ProfilingUtils::Timer("SaveKeyframe");
   if (had_to_load) {
-    viewpoint_cam->transferToCPU();
+    viewpoint_cam->saveDataToDisk();
   }
   timer_saveKeyframe.stop();
 
@@ -1070,10 +1086,10 @@ void GaussianMapper::trainForOneIteration(
 
   // Chunks automatically released by ChunkOptimizationGuard destructor
   timer_trainForOneIteration.stop();
-  // if (getIteration() % 500 == 0) {
-  //   ProfilingUtils::getInstance().printStats();
-  //   ProfilingUtils::getInstance().reset();
-  // }
+  if (getIteration() % 500 == 0) {
+    ProfilingUtils::getInstance().printStats();
+    ProfilingUtils::getInstance().reset();
+  }
 }
 
 bool GaussianMapper::isStopped() {
@@ -1342,6 +1358,12 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
   bool use_batched_strategy =
       (projected_total <= gaussians_->max_gaussians_in_memory_);
 
+  gaussians_->max_gaussians_in_memory_ = 100000000000;
+
+  for (const auto& [index, keyframe] : scene_->keyframes_) {
+    if (keyframe->loaded_) keyframe->saveDataToDisk();
+  }
+
   // Force batched strategy for now
   if (true || use_batched_strategy) {
     std::cout << "[Loop Closure] Using BATCHED strategy - sufficient memory"
@@ -1354,6 +1376,8 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
     total_transformed =
         processSequentialLoopClosure(associated_kfs, loop_kf_scale);
   }
+
+  gaussians_->max_gaussians_in_memory_ = 2500000;
 
   if (keyframe_selection_strategy_ == 2) {
     // Clear and rebuild chunk-keyframe mapping since chunks have changed
@@ -2202,13 +2226,13 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   std::vector<std::shared_ptr<GaussianKeyframe>> newly_loaded_keyframes;
   for (const auto& kf : prev_keyframes) {
     if (!kf->loaded_) {
-      std::cout << "Loading keyframe " << std::to_string(kf->fid_)
-                << " from CPU for sampling" << std::endl;
-      kf->transferToGPU();
+      // std::cout << "Loading keyframe " << std::to_string(kf->fid_)
+      //           << " from CPU for sampling" << std::endl;
+      kf->loadDataFromDisk();
       newly_loaded_keyframes.push_back(kf);
     } else {
-      std::cout << "Keyframe " << std::to_string(kf->fid_)
-                << " already marked as loaded for sampling" << std::endl;
+      // std::cout << "Keyframe " << std::to_string(kf->fid_)
+      //           << " already marked as loaded for sampling" << std::endl;
     }
   }
 
@@ -2637,9 +2661,9 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
 
   // Later, save only the keyframes that were loaded
   for (const auto& kf : newly_loaded_keyframes) {
-    std::cout << "Saving keyframe " << std::to_string(kf->fid_)
-              << " back to CPU" << std::endl;
-    kf->transferToCPU();
+    // std::cout << "Saving keyframe " << std::to_string(kf->fid_)
+    //           << " back to CPU" << std::endl;
+    kf->saveDataToDisk();
   }
   // std::cout << "sampleGaussians completed in " << duration.count() << "ms"
   //           << std::endl;
@@ -2773,7 +2797,7 @@ void GaussianMapper::renderAndRecordKeyframe(
 
   bool had_to_load = false;
   if (!pkf->loaded_) {
-    pkf->transferToGPU();
+    pkf->loadDataFromDisk();
     had_to_load = true;
   }
 
@@ -2805,7 +2829,7 @@ void GaussianMapper::renderAndRecordKeyframe(
                          result_gt_dir, result_loss_dir, name_suffix);
 
   if (had_to_load) {
-    pkf->transferToCPU();
+    pkf->saveDataToDisk();
   }
 }
 

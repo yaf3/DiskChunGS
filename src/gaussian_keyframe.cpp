@@ -892,49 +892,54 @@ void GaussianKeyframe::saveDataToDisk() {
   if (!loaded_) {
     throw std::runtime_error("Can't save keyframe to disk that isn't loaded");
   }
-  // Create directory if it doesn't exist
-  std::filesystem::create_directories(keyframe_save_dir_);
 
-  // Save heavy image/depth tensors
-  torch::serialize::OutputArchive archive;
+  if (!on_disk_) {
+    // Create directory if it doesn't exist
+    std::filesystem::create_directories(keyframe_save_dir_);
 
-  if (depth_confidence_.defined()) {
-    archive.write("depth_confidence_", depth_confidence_);
-  }
+    // Save heavy image/depth tensors
+    torch::serialize::OutputArchive archive;
 
-  // Save feature map
-  if (feature_map_.defined()) {
-    archive.write("feature_map_", feature_map_);
-  }
+    if (depth_confidence_.defined()) {
+      archive.write("depth_confidence_", depth_confidence_);
+    }
 
-  // Save pyramid image data (these can be large)
-  if (!gaus_pyramid_original_image_.empty()) {
-    archive.write("pyramid_size", torch::tensor(static_cast<int64_t>(
-                                      gaus_pyramid_original_image_.size())));
-    for (size_t i = 0; i < gaus_pyramid_original_image_.size(); ++i) {
-      if (gaus_pyramid_original_image_[i].defined()) {
-        archive.write("pyramid_image_" + std::to_string(i),
-                      gaus_pyramid_original_image_[i]);
+    // Save feature map
+    if (feature_map_.defined()) {
+      archive.write("feature_map_", feature_map_);
+    }
+
+    // Save pyramid image data (these can be large)
+    if (!gaus_pyramid_original_image_.empty()) {
+      archive.write("pyramid_size", torch::tensor(static_cast<int64_t>(
+                                        gaus_pyramid_original_image_.size())));
+      for (size_t i = 0; i < gaus_pyramid_original_image_.size(); ++i) {
+        if (gaus_pyramid_original_image_[i].defined()) {
+          archive.write("pyramid_image_" + std::to_string(i),
+                        gaus_pyramid_original_image_[i]);
+        }
       }
     }
-  }
 
-  // Save pyramid depth data
-  if (!gaus_pyramid_inv_depth_image_.empty()) {
-    archive.write("pyramid_depth_size",
-                  torch::tensor(static_cast<int64_t>(
-                      gaus_pyramid_inv_depth_image_.size())));
-    for (size_t i = 0; i < gaus_pyramid_inv_depth_image_.size(); ++i) {
-      if (gaus_pyramid_inv_depth_image_[i].defined()) {
-        archive.write("pyramid_depth_" + std::to_string(i),
-                      gaus_pyramid_inv_depth_image_[i]);
+    // Save pyramid depth data
+    if (!gaus_pyramid_inv_depth_image_.empty()) {
+      archive.write("pyramid_depth_size",
+                    torch::tensor(static_cast<int64_t>(
+                        gaus_pyramid_inv_depth_image_.size())));
+      for (size_t i = 0; i < gaus_pyramid_inv_depth_image_.size(); ++i) {
+        if (gaus_pyramid_inv_depth_image_[i].defined()) {
+          archive.write("pyramid_depth_" + std::to_string(i),
+                        gaus_pyramid_inv_depth_image_[i]);
+        }
       }
     }
-  }
 
-  std::filesystem::path data_path =
-      keyframe_save_dir_ / ("keyframe_data_" + std::to_string(fid_) + ".pt");
-  archive.save_to(data_path.string());
+    std::filesystem::path data_path =
+        keyframe_save_dir_ / ("keyframe_data_" + std::to_string(fid_) + ".pt");
+    archive.save_to(data_path.string());
+
+    on_disk_ = true;
+  }
 
   if (depth_confidence_.defined()) {
     depth_confidence_.reset();
@@ -1109,8 +1114,8 @@ void GaussianKeyframe::transferToCPU() {
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_time - start_time);
 
-  std::cout << "Keyframe " << fid_ << " transferred to CPU in "
-            << duration.count() << "ms" << std::endl;
+  // std::cout << "Keyframe " << fid_ << " transferred to CPU in "
+  //           << duration.count() << "ms" << std::endl;
 }
 
 void GaussianKeyframe::transferToGPU() {
@@ -1190,6 +1195,6 @@ void GaussianKeyframe::transferToGPU() {
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_time - start_time);
 
-  std::cout << "Keyframe " << fid_ << " transferred to GPU in "
-            << duration.count() << "ms" << std::endl;
+  // std::cout << "Keyframe " << fid_ << " transferred to GPU in "
+  //           << duration.count() << "ms" << std::endl;
 }
