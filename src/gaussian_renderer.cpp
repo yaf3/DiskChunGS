@@ -18,7 +18,7 @@ GaussianRenderer::render(std::shared_ptr<GaussianModel> model,
                          torch::Tensor& world_view_transform,
                          torch::Tensor& projection_matrix) {
   // std::cout << "[DEBUG] Rendering with GaussianRenderer" << std::endl;
-  int active_sh_degree = 3;
+  int active_sh_degree = model->sh_degree_;
 
   torch::Tensor camera_center = viewpoint_camera->getCenter();
 
