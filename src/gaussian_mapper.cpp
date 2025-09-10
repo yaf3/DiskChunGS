@@ -1395,13 +1395,13 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
     chunk_iterations_remaining_ = 0;
   }
 
-  // if (keyframe_selection_strategy_ == 1) {
-  //   for (auto& kf : associated_kfs) {
-  //     auto kfid = std::get<0>(kf);
-  //     std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
-  //     keyframe_queue_->updateKeyframeInGrid(pkf);
-  //   }
-  // }
+  if (keyframe_selection_strategy_ == 1) {
+    for (auto& kf : associated_kfs) {
+      auto kfid = std::get<0>(kf);
+      std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
+      keyframe_queue_->updateKeyframeAssociation(pkf);
+    }
+  }
 
   // for (auto& kf : associated_kfs) {
   //   auto kfid = std::get<0>(kf);
@@ -1410,6 +1410,9 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
   //     trainForOneIteration(pkf);
   //   }
   // }
+
+  // Delete any mapping BA operations that accumulated during loop closure
+  // pSLAM_->getAtlas()->clearMappingOperation();
 
   if (record_loop_ply_) {
     saveScene(result_dir_ /
