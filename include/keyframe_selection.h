@@ -21,6 +21,8 @@ class KeyframeQueue {
   std::shared_ptr<GaussianKeyframe> getNextKeyframe();
   void notifyNewKeyframeAdded(std::shared_ptr<GaussianKeyframe> keyframe);
 
+  void updateKeyframeAssociation(std::shared_ptr<GaussianKeyframe> keyframe);
+
  private:
   std::shared_ptr<GaussianScene> scene_;
   float chunk_size_;

@@ -226,3 +226,29 @@ void KeyframeQueue::increaseKeyframeTimesOfUse(
   if (!keyframe) return;
   keyframe->remaining_times_of_use_ += additional_uses;
 }
+
+void KeyframeQueue::updateKeyframeAssociation(
+    std::shared_ptr<GaussianKeyframe> keyframe) {
+  if (!keyframe) return;
+
+  // Remove old associations first
+  for (int level = 0; level < 3; ++level) {
+    auto& level_map = chunk_to_keyframes_[level];
+    for (auto& chunk_pair : level_map) {
+      auto& keyframe_list = chunk_pair.second;
+      keyframe_list.erase(
+          std::remove(keyframe_list.begin(), keyframe_list.end(), keyframe),
+          keyframe_list.end());
+    }
+  }
+
+  // Add new associations based on current position
+  torch::Tensor center_tensor = keyframe->getCenter();
+  Eigen::Vector3f position = tensorToEigen(center_tensor);
+
+  for (int level = 0; level < 3; ++level) {
+    ChunkCoord chunk_coord = getChunkCoord(position, chunk_sizes_[level]);
+    int64_t chunk_id = encodeChunkCoord(chunk_coord);
+    chunk_to_keyframes_[level][chunk_id].push_back(keyframe);
+  }
+}
