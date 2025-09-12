@@ -18,7 +18,7 @@ KeyframeQueue::KeyframeQueue(std::shared_ptr<GaussianScene> scene,
       used_times_map_(used_times_map),
       rng_(std::random_device{}()),
       uniform_dist_(0.0f, 1.0f),
-      level_dist_({0.5, 0.3, 0.2}) {
+      level_dist_({0.3, 0.4, 0.3}) {
   chunk_sizes_[0] = 4 * chunk_size_;   // FINE
   chunk_sizes_[1] = 8 * chunk_size_;   // MEDIUM
   chunk_sizes_[2] = 12 * chunk_size_;  // COARSE
