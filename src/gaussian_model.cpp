@@ -2133,115 +2133,16 @@ void GaussianModel::saveAllChunks() {
 }
 
 int64_t GaussianModel::countAllGaussians() {
-  std::cout << "[Gaussian Count] Starting lightweight count..." << std::endl;
-
-  int64_t total_count = 0;
-
   // Count gaussians in memory
   int64_t in_memory_count = xyz_.size(0);
-  total_count += in_memory_count;
 
-  std::cout << "[Gaussian Count] Gaussians in memory: " << in_memory_count
-            << std::endl;
-
-  // Count gaussians on disk by reading chunk headers only
-  int64_t disk_count = 0;
-  int disk_chunks_read = 0;
-
-  // Filter chunks_on_disk_ to exclude those already loaded in memory
-  // We need to avoid double-counting loaded chunks
-  torch::Tensor not_loaded_mask =
+  // Count only unloaded gaussians on disk
+  torch::Tensor unloaded_mask =
       ~torch::isin(chunks_on_disk_, chunks_loaded_from_disk_);
-  torch::Tensor disk_only_chunks = chunks_on_disk_.index({not_loaded_mask});
+  torch::Tensor unloaded_counts = chunk_gaussian_counts_.index({unloaded_mask});
+  int64_t disk_count = torch::sum(unloaded_counts).item<int64_t>();
 
-  std::cout << "[Gaussian Count] Checking " << disk_only_chunks.size(0)
-            << " disk-only chunks (excluding "
-            << chunks_loaded_from_disk_.size(0) << " loaded chunks)"
-            << std::endl;
-
-  if (disk_only_chunks.size(0) == 0) {
-    std::cout << "[Gaussian Count] No disk-only chunks to check" << std::endl;
-    std::cout << "[Gaussian Count] Total gaussians: " << total_count
-              << std::endl;
-    return total_count;
-  }
-
-  // Read headers for disk-only chunks (file operations still need to be
-  // sequential)
-  auto chunks_cpu = disk_only_chunks.cpu();
-  auto accessor = chunks_cpu.accessor<int64_t, 1>();
-
-  for (int i = 0; i < chunks_cpu.size(0); ++i) {
-    int64_t chunk_id = accessor[i];
-
-    // Read just the header to get point count
-    std::string chunk_filename = getChunkFilename(decodeChunkCoord(chunk_id));
-
-    if (!std::filesystem::exists(chunk_filename)) {
-      std::cerr << "[Gaussian Count] Warning: Chunk " << chunk_id
-                << " tracked as on-disk but file doesn't exist: "
-                << chunk_filename << std::endl;
-      continue;
-    }
-
-    try {
-      std::ifstream file(chunk_filename, std::ios::binary);
-      if (!file.is_open()) {
-        continue;
-      }
-
-      // Read magic and version
-      uint32_t magic, version;
-      file.read(reinterpret_cast<char*>(&magic), sizeof(magic));
-      file.read(reinterpret_cast<char*>(&version), sizeof(version));
-
-      if (magic != 0x43484E4B) {  // "CHNK"
-        std::cerr << "[Gaussian Count] Invalid file format for chunk "
-                  << chunk_id << std::endl;
-        file.close();
-        continue;
-      }
-
-      // Read chunk ID and point count from header
-      int64_t stored_chunk_id;
-      uint32_t num_points;
-      file.read(reinterpret_cast<char*>(&stored_chunk_id),
-                sizeof(stored_chunk_id));
-      file.read(reinterpret_cast<char*>(&num_points), sizeof(num_points));
-
-      file.close();
-
-      if (stored_chunk_id == chunk_id) {
-        disk_count += num_points;
-        disk_chunks_read++;
-      } else {
-        std::cerr << "[Gaussian Count] Chunk ID mismatch in file "
-                  << chunk_filename << ": expected " << chunk_id << ", got "
-                  << stored_chunk_id << std::endl;
-      }
-
-    } catch (const std::exception& e) {
-      std::cerr << "[Gaussian Count] Error reading chunk header for chunk "
-                << chunk_id << ": " << e.what() << std::endl;
-      continue;
-    }
-  }
-
-  total_count += disk_count;
-
-  std::cout << "[Gaussian Count] Gaussians on disk: " << disk_count << " (from "
-            << disk_chunks_read << " chunks)" << std::endl;
-  std::cout << "[Gaussian Count] Total gaussians: " << total_count << std::endl;
-
-  // Optional: Show breakdown for clarity
-  std::cout << "[Gaussian Count] Breakdown:" << std::endl;
-  std::cout << "  - In memory: " << in_memory_count << std::endl;
-  std::cout << "  - Loaded chunks: " << chunks_loaded_from_disk_.size(0)
-            << " (already counted in memory)" << std::endl;
-  std::cout << "  - Disk-only chunks: " << disk_chunks_read << " with "
-            << disk_count << " gaussians" << std::endl;
-
-  return total_count;
+  return in_memory_count + disk_count;
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>

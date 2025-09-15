@@ -259,6 +259,7 @@ class GaussianMapper {
   void keyframesToJson(std::filesystem::path result_dir);
   void writeKeyframeUsedTimes(std::filesystem::path result_dir,
                               std::string name_suffix = "");
+  void writeTrainingMetricsCSV(std::filesystem::path result_dir);
 
   std::vector<std::shared_ptr<GaussianModel>> selectRandomModelSubset(
       const std::vector<std::shared_ptr<GaussianModel>> &allModels,
@@ -453,6 +454,22 @@ class GaussianMapper {
 
   int training_report_interval_;
   bool record_loop_ply_;
+
+  // Training metrics collection
+  int metrics_collection_interval_ =
+      1000;  // Collect metrics every N iterations
+  struct TrainingMetrics {
+    int iteration;
+    double elapsed_time_seconds;
+    int active_gaussian_count;
+    int total_gaussian_count;
+    float reserved_memory_mb;
+    float allocated_memory_mb;
+    float ram_usage_mb;
+    int queue_keyframes;
+  };
+  std::vector<TrainingMetrics> training_metrics_;
+  std::chrono::steady_clock::time_point training_start_time_;
 
   int exposure_optimization_ = 0;
   float init_proba_scaler_ = 2.0;

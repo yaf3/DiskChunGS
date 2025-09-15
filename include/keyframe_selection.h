@@ -23,6 +23,8 @@ class KeyframeQueue {
 
   void updateKeyframeAssociation(std::shared_ptr<GaussianKeyframe> keyframe);
 
+  int getQueueSize() const;
+
  private:
   std::shared_ptr<GaussianScene> scene_;
   float chunk_size_;

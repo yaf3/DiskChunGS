@@ -20,12 +20,29 @@
 
 #include <torch/csrc/cuda/memory_snapshot.h>
 
+#include <fstream>
+#include <sstream>
+
 #include "include/debugging_utils.h"
 #include "include/gaussian_rasterizer.h"
 #include "include/gaussian_renderer.h"
 #include "include/loss_utils.h"
 #include "include/profiling.h"
 #include "include/render_flythrough.h"
+
+float getCurrentRAMUsageMB() {
+  std::ifstream status_file("/proc/self/status");
+  std::string line;
+  while (std::getline(status_file, line)) {
+    if (line.substr(0, 6) == "VmRSS:") {
+      std::istringstream iss(line);
+      std::string name, value, unit;
+      iss >> name >> value >> unit;
+      return std::stof(value) / 1024.0f;  // Convert from KB to MB
+    }
+  }
+  return 0.0f;  // Return 0 if unable to read
+}
 
 void trainingReport(int iteration,
                     int num_iterations,
@@ -517,6 +534,7 @@ void GaussianMapper::run() {
 
   std::chrono::steady_clock::time_point training_start =
       std::chrono::steady_clock::now();
+  training_start_time_ = training_start;
 
   // Delete existing chunks since training
   std::filesystem::remove_all(chunk_save_dir_);
@@ -783,6 +801,9 @@ void GaussianMapper::run() {
   std::cout << "[MAPPER DEBUG] Writing keyframe used times" << std::endl;
   writeKeyframeUsedTimes(result_dir_ / "used_times", "final");
 
+  std::cout << "[MAPPER DEBUG] Writing training metrics CSV" << std::endl;
+  writeTrainingMetricsCSV(result_dir_);
+
   std::cout << "[MAPPER DEBUG] Cleaning up temporary directories" << std::endl;
   std::filesystem::remove_all(chunk_save_dir_);
   std::filesystem::remove_all(keyframe_save_dir_);
@@ -809,6 +830,45 @@ void GaussianMapper::trainForOneIteration(
       ProfilingUtils::Timer("trainForOneIteration");
 
   increaseIteration(1);
+
+  // Collect training metrics at regular intervals
+  int current_iteration = getIteration();
+  if (current_iteration % metrics_collection_interval_ == 0) {
+    auto current_time = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        current_time - training_start_time_);
+    double elapsed_seconds = elapsed.count() / 1000.0;
+
+    int totalGaussians = gaussians_->countAllGaussians();
+    int activeGaussians = int(gaussians_->getXYZ().size(0));
+
+    // Get VRAM usage
+    namespace c10Alloc = c10::cuda::CUDACachingAllocator;
+    c10Alloc::DeviceStats mem_stats = c10Alloc::getDeviceStats(0);
+
+    c10Alloc::Stat reserved_bytes =
+        mem_stats
+            .reserved_bytes[static_cast<int>(c10Alloc::StatType::AGGREGATE)];
+    float reserved_MB = reserved_bytes.current / (1024.0 * 1024.0);
+
+    c10Alloc::Stat alloc_bytes =
+        mem_stats
+            .allocated_bytes[static_cast<int>(c10Alloc::StatType::AGGREGATE)];
+    float alloc_MB = alloc_bytes.current / (1024.0 * 1024.0);
+
+    // Store metrics
+    TrainingMetrics metrics;
+    metrics.iteration = current_iteration;
+    metrics.elapsed_time_seconds = elapsed_seconds;
+    metrics.active_gaussian_count = activeGaussians;
+    metrics.total_gaussian_count = totalGaussians;
+    metrics.reserved_memory_mb = reserved_MB;
+    metrics.allocated_memory_mb = alloc_MB;
+    metrics.ram_usage_mb = getCurrentRAMUsageMB();
+    metrics.queue_keyframes = keyframe_queue_->getQueueSize();
+
+    training_metrics_.push_back(metrics);
+  }
 
   // if (getIteration() % 100 == 0) {
   //   updateORBSLAMPoses();
@@ -1360,8 +1420,10 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
 
   gaussians_->max_gaussians_in_memory_ = 100000000000;
 
-  for (const auto& [index, keyframe] : scene_->keyframes_) {
-    if (keyframe->loaded_) keyframe->saveDataToDisk();
+  if (keyframe_selection_strategy_ == 1) {
+    for (const auto& [index, keyframe] : scene_->keyframes_) {
+      if (keyframe->loaded_) keyframe->saveDataToDisk();
+    }
   }
 
   // Force batched strategy for now
@@ -3005,6 +3067,34 @@ void GaussianMapper::writeKeyframeUsedTimes(std::filesystem::path result_dir,
   //   out_stream.close();
 }
 
+void GaussianMapper::writeTrainingMetricsCSV(std::filesystem::path result_dir) {
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
+  std::filesystem::path result_path = result_dir / "training_metrics.csv";
+  std::ofstream out_stream;
+  out_stream.open(result_path);
+  if (!out_stream.is_open())
+    throw std::runtime_error("Cannot open CSV at " + result_path.string());
+
+  // Write CSV header
+  out_stream << "iteration,elapsed_time_seconds,active_gaussian_count,total_"
+                "gaussian_count,reserved_memory_"
+                "mb,allocated_memory_mb,ram_usage_mb,queue_keyframes\n";
+
+  // Write data
+  for (const auto& metrics : training_metrics_) {
+    out_stream << metrics.iteration << "," << metrics.elapsed_time_seconds
+               << "," << metrics.active_gaussian_count << ","
+               << metrics.total_gaussian_count << ","
+               << metrics.reserved_memory_mb << ","
+               << metrics.allocated_memory_mb << "," << metrics.ram_usage_mb
+               << "," << metrics.queue_keyframes << "\n";
+  }
+
+  out_stream.close();
+  std::cout << "[GaussianMapper] Training metrics saved to " << result_path
+            << std::endl;
+}
+
 int GaussianMapper::getIteration() {
   std::unique_lock<std::mutex> lock(mutex_status_);
   return iteration_;
@@ -4135,6 +4225,7 @@ void GaussianMapper::run_external_poses() {
   saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
             "data");
   writeKeyframeUsedTimes(result_dir_ / "used_times", "final");
+  writeTrainingMetricsCSV(result_dir_);
 
   signalStop();
   if (completion_callback_) {

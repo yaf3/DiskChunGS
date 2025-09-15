@@ -252,3 +252,5 @@ void KeyframeQueue::updateKeyframeAssociation(
     chunk_to_keyframes_[level][chunk_id].push_back(keyframe);
   }
 }
+
+int KeyframeQueue::getQueueSize() const { return gpu_queue.size(); }
