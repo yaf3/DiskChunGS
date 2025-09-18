@@ -2335,31 +2335,33 @@ void GaussianModel::deleteSparseChunks(int min_gaussians_per_chunk) {
 // Vectorized encoding - much faster than loop
 torch::Tensor GaussianModel::encodeChunkCoordsTensor(
     const torch::Tensor& chunk_coords) {
-  // chunk_coords: [N, 3] with coordinates roughly in range [-500, 500]
+  // chunk_coords: [N, 3] with coordinates in range [-1M, +1M]
 
-  // For 10km range with 20m chunks: 10000m ÷ 20m = 500 chunks per axis
-  // Use 12 bits per coordinate = 4096 range = [-2048, +2047] chunks
-  // That's 40km+ range per axis - plenty of headroom
-  const int32_t OFFSET = 2048;  // Supports [-2048, +2047] range
+  // Use 21 bits per coordinate = 2M range = [-1,048,576, +1,048,575] chunks
+  // Total: 63 bits used out of 64 available - maximum efficiency
+  // Supports ±20,971 km range per axis with 20m chunks
+  const int64_t OFFSET = 1048576;  // 2^20
 
   auto x = chunk_coords.index({torch::indexing::Slice(), 0}) + OFFSET;
   auto y = chunk_coords.index({torch::indexing::Slice(), 1}) + OFFSET;
   auto z = chunk_coords.index({torch::indexing::Slice(), 2}) + OFFSET;
 
-  // 12 bits per coordinate = 36 total bits
-  torch::Tensor encoded = x * (1 << 24) + y * (1 << 12) + z;
+  // Pack: 21 bits each for x, y, z coordinates
+  torch::Tensor encoded = x * (1LL << 42) + y * (1LL << 21) + z;
 
-  return encoded;  // Max value: ~8 billion instead of 16 trillion
+  return encoded;  // Range: 0 to ~9.2 × 10^18
 }
 
 // Vectorized decoding
 torch::Tensor GaussianModel::decodeChunkCoordsTensor(
     const torch::Tensor& encoded_ids) {
-  const int32_t OFFSET = 2048;
+  const int64_t OFFSET = 1048576;        // 2^20
+  const int64_t FIELD_SIZE = 1LL << 21;  // 2^21 = 2,097,152
 
-  torch::Tensor z = (encoded_ids % (1 << 12)) - OFFSET;
-  torch::Tensor y = ((encoded_ids / (1 << 12)) % (1 << 12)) - OFFSET;
-  torch::Tensor x = (encoded_ids / (1 << 24)) - OFFSET;
+  // Extract 21-bit fields using modulo and integer division
+  torch::Tensor z = (encoded_ids % FIELD_SIZE) - OFFSET;
+  torch::Tensor y = ((encoded_ids / FIELD_SIZE) % FIELD_SIZE) - OFFSET;
+  torch::Tensor x = (encoded_ids / (FIELD_SIZE * FIELD_SIZE)) - OFFSET;
 
   return torch::stack({x, y, z}, /*dim=*/1);
 }
