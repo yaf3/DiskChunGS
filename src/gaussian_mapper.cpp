@@ -61,6 +61,8 @@ void trainingReport(int iteration,
             << ", num_points:" << gaussians.xyz_.size(0) << std::endl;
 }
 
+// Main GaussianMapper initialiation. Used both by examples and ROS wrapper.
+// ORB-SLAM ptr is optional e.g. omited in external mode
 GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
                                std::filesystem::path gaussian_config_file_path,
                                std::filesystem::path result_dir,
@@ -325,6 +327,8 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   }
 }
 
+// Initialization for viewer example (also used for evaluation). Don't need to
+// set up training infrastructure
 GaussianMapper::GaussianMapper(std::filesystem::path gaussian_config_file_path,
                                std::filesystem::path result_dir,
                                int seed,
@@ -1051,6 +1055,7 @@ void GaussianMapper::trainForOneIteration(
     // gt_depth);
     torch::Tensor depth_loss = (rendered_inv_depth - gt_inv_depth).abs().mean();
     loss += viewpoint_cam->depth_loss_weight * depth_loss;
+    // loss += 0.2 * depth_loss;
   }
 
   timer_loss_calculation.stop();
@@ -1575,6 +1580,7 @@ int GaussianMapper::processBatchedLoopClosure(
                   .transpose(0, 1);
 
           int gaussians_transformed_by_this_kf = 0;
+          loop_kf_scale = 1.0;
 
           // All chunks are already loaded, so this should be fast
           gaussians_->scaledTransformVisiblePointsOfKeyframe(
@@ -1742,6 +1748,7 @@ int GaussianMapper::processSequentialLoopClosure(
 }
 
 void GaussianMapper::processScaleRefinement(ORB_SLAM3::MappingOperation& opr) {
+  throw std::runtime_error("Scale refinement not implemented!");
   // Existing scale refinement code...
   // std::cout << "[Gaussian Mapper]Scale refinement Detected. Transforming "
   //              "all kfs and points..."
@@ -2305,14 +2312,23 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
 
   if (prev_keyframes.size() != guided_mvs_->getNumCams()) {
     std::cout << "Not enough previous keyframes found for MVS." << std::endl;
+    assert(pkf->gaus_pyramid_inv_depth_image_[0].defined());
 
     torch::Tensor depth_map =
         1 / pkf->gaus_pyramid_inv_depth_image_[0].clamp_min(1e-8);
+    // std::cout << "Depth map size: " << depth_map.sizes() << std::endl;
     torch::Tensor sample_indices = torch::nonzero(flat_sample_mask).squeeze(-1);
+    // std::cout << "sample_indices size: " << sample_indices.sizes() <<
+    // std::endl;
     torch::Tensor depth_map_flat = depth_map.flatten();
+    // std::cout << "depth_map_flat size: " << depth_map_flat.sizes() <<
+    // std::endl;
     depth = depth_map_flat.index({sample_indices});
+    // std::cout << "depth size: " << depth.sizes() << std::endl;
     // Set accurate mask to all ones (since we're not using MVS)
     accurate_mask = torch::ones_like(depth, torch::kBool);
+    // std::cout << "accurate_mask size: " << accurate_mask.sizes() <<
+    // std::endl;
 
   } else {
     // Apply guided MVS - returns depth and accurate mask for sampled points
@@ -2492,8 +2508,7 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   // Check if we have valid keypoints with 3D coordinates
   if (!pkf->kps_pixel_.empty() && !pkf->kps_point_local_.empty()) {
     int num_keypoints = pkf->kps_pixel_.size() / 2;
-    // std::cout << "Processing " << num_keypoints << " keypoints" <<
-    // std::endl;
+    // std::cout << "Processing " << num_keypoints << " keypoints" << std::endl;
 
     // Convert vectors to tensors directly on GPU for vectorized operations
     torch::Tensor kps_pixel_tensor =
@@ -2632,7 +2647,7 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
     all_init_proba = sampled_init_proba;
 
     // std::cout << "Using only " << sampled_points3D.size(0) << " sampled
-    // points"
+    // points "
     //           << std::endl;
   }
 
@@ -2691,8 +2706,7 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
         matched_opacities;
   }
 
-  // std::cout << "All opacities size: " << all_opacities.sizes() <<
-  // std::endl;
+  // std::cout << "All opacities size: " << all_opacities.sizes() << std::endl;
 
   // Step 14: Add all points to the scene in a single call
   // std::unique_lock lock_render(mutex_render_);
@@ -2700,6 +2714,7 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   auto start_time_prune = std::chrono::steady_clock::now();
 
   if (initial_mapped_) {
+    // std::cout << "Pruning low opacity gaussians" << std::endl;
     gaussians_->pruneLowOpacityGaussians(pkf, visible_gaussian_mask);
   }
 
@@ -2723,6 +2738,8 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   auto end_time = std::chrono::steady_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_time - start_time);
+
+  // std::cout << "addPoints complete" << std::endl;
 
   // Later, save only the keyframes that were loaded
   for (const auto& kf : newly_loaded_keyframes) {
@@ -4154,12 +4171,18 @@ void GaussianMapper::handleNewFrameExternal(const cv::Mat& rgb_image,
 }
 
 void GaussianMapper::run_external_poses() {
+  std::cout << "[MAPPER DEBUG] GaussianMapper::run_external_poses() started"
+            << std::endl;
+
+  std::chrono::steady_clock::time_point training_start =
+      std::chrono::steady_clock::now();
+  training_start_time_ = training_start;
+
   std::filesystem::remove_all(chunk_save_dir_);
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
 
-  // Initialize Gaussian model
-  gaussians_ = std::make_shared<GaussianModel>(
-      model_params_, chunk_save_dir_.string(), chunk_size_);
+  std::filesystem::remove_all(keyframe_save_dir_);
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(keyframe_save_dir_)
 
   scene_->cameras_extent_ = 1.0f;
 
@@ -4173,13 +4196,10 @@ void GaussianMapper::run_external_poses() {
                     frame.timestamp);
     std::cout << "Num keyframes: " << scene_->keyframes().size() << std::endl;
 
-    if (!initial_mapped_ &&
-        scene_->keyframes().size() >= min_num_initial_map_kfs_) {
-      std::unique_lock<std::mutex> lock_render(mutex_render_);
-      gaussians_->trainingSetup(opt_params_);
-      std::cout << "Inital mapped!\n";
-      break;
-    }
+    std::unique_lock<std::mutex> lock_render(mutex_render_);
+    std::cout << "Calling training setup!" << std::endl;
+    gaussians_->trainingSetup(opt_params_);
+    initial_mapped_ = true;
   }
 
   int SLAM_stop_iter = 0;
@@ -4380,18 +4400,24 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
                      opt_params_.exposure_lr_,
                      opt_params_.depth_scale_bias_lr_);
 
+  // std::cout << "Creating image pyramid" << std::endl;
   // Prepare multi resolution images for training
   pkf->generateImagePyramid(rgb_undistorted);
 
   if (sensor_type_ == MONOCULAR) {
+    // std::cout << "Setup mono data" << std::endl;
     pkf->setupMonoData(rgb_undistorted, device_type_,
                        monocular_depth_estimator_, min_depth_, max_depth_);
-  } else if (sensor_type_ == STEREO && depth_or_right_image.empty()) {
+  } else if (sensor_type_ == STEREO && !depth_or_right_image.empty()) {
+    // std::cout << "Setup stereo data" << std::endl;
     pkf->setupStereoData(rgb_undistorted, depth_or_right_image,
                          stereo_baseline_length_, device_type_,
                          stereo_depth_estimator_, min_depth_, max_depth_);
-  } else if (sensor_type_ == RGBD && depth_or_right_image.empty()) {
+  } else if (sensor_type_ == RGBD && !depth_or_right_image.empty()) {
+    // std::cout << "Setup rgbd data" << std::endl;
     pkf->setupRGBDData(depth_or_right_image);
+  } else {
+    throw std::runtime_error("Unsupported sensor_type");
   }
 
   std::unique_lock<std::mutex> lock(mutex_render_);
