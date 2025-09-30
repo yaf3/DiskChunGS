@@ -147,6 +147,10 @@ class ImGuiViewer {
   int last_iteration_ = 0;
   double last_time_ = 0.0;
 
+  // FPS control
+  float target_viewer_fps_ = 20.0f;
+  double last_render_time_ = 0.0;
+
   // Status
   bool stopped_ = false;
   bool external_mode_;

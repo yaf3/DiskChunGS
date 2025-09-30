@@ -537,6 +537,7 @@ void ImGuiViewer::run() {
         ImGui::Checkbox("Show depth view", &show_depth_view_);
       }
 
+      ImGui::SliderFloat("Target FPS", &target_viewer_fps_, 1.0f, 120.0f, "%.1f");
       ImGui::Text("Viewer average FPS %.1f", io.Framerate);
       ImGui::End();
     }
@@ -659,6 +660,23 @@ void ImGuiViewer::run() {
 
     glfwSwapBuffers(window);
     glfwPollEvents();
+
+    // Frame rate limiting
+    if (target_viewer_fps_ > 0.0f) {
+      double current_time = glfwGetTime();
+      double target_frame_time = 1.0 / target_viewer_fps_;
+      double elapsed = current_time - last_render_time_;
+      double sleep_time = target_frame_time - elapsed;
+
+      if (sleep_time > 0.0) {
+        // Use busy wait for more accurate timing
+        double target_wake = current_time + sleep_time;
+        while (glfwGetTime() < target_wake) {
+          // Busy wait
+        }
+      }
+      last_render_time_ = glfwGetTime();
+    }
 
     if (!keep_training_ && pGausMapper_->isStopped()) signalStop();
   }
