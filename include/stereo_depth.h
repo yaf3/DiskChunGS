@@ -92,6 +92,16 @@ class StereoDepth {
   cudaStream_t stream_;
   float* output_data_;
 
+  // Pinned host memory for faster transfers
+  float* pinned_left_input_;
+  float* pinned_right_input_;
+
+  // GPU preprocessing buffers
+  cv::cuda::GpuMat gpu_resized_;
+  cv::cuda::GpuMat gpu_float_;
+  cv::cuda::GpuMat gpu_normalized_;
+  std::vector<cv::cuda::GpuMat> gpu_channels_;
+
   // Results
   cv::Mat disparity_map_;
   cv::Mat depth_map_;
@@ -142,16 +152,13 @@ class StereoDepth {
   /**
    * @brief Prepare input image for inference
    * @param img Input image
-   * @return Preprocessed data as vector
+   * @param output_buffer Pinned memory buffer to write to
    */
-  std::vector<float> prepare_input_optimized(const cv::Mat& img);
+  void prepare_input_optimized(const cv::Mat& img, float* output_buffer);
 
   /**
    * @brief Run TensorRT inference
-   * @param left_input Left image data
-   * @param right_input Right image data
    * @return Disparity map
    */
-  cv::Mat inference_tensorrt(const std::vector<float>& left_input,
-                             const std::vector<float>& right_input);
+  cv::Mat inference_tensorrt();
 };

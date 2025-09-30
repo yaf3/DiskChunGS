@@ -1,29 +1,29 @@
 #include <include/stereo_depth.h>
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <cassert>
 
 // StereoDepth implementation
 StereoDepth::StereoDepth(const std::string& model_path)
-    : output_data_(nullptr) {
+    : output_data_(nullptr),
+      pinned_left_input_(nullptr),
+      pinned_right_input_(nullptr) {
   // Initialize CUDA stream
   cudaStreamCreate(&stream_);
-  
+
   // Initialize buffers to nullptr
   for (int i = 0; i < 3; ++i) {
     buffers_[i] = nullptr;
   }
-  
+
   initialize_model(model_path);
 }
 
-StereoDepth::~StereoDepth() {
-  free_buffers();
-}
+StereoDepth::~StereoDepth() { free_buffers(); }
 
 void StereoDepth::initialize_model(const std::string& model_path) {
   // Check if model file exists
@@ -57,7 +57,7 @@ void StereoDepth::initialize_model(const std::string& model_path) {
 
     // Get model dimensions
     get_model_info();
-    
+
     // Allocate GPU memory buffers
     allocate_buffers();
 
@@ -77,20 +77,25 @@ void StereoDepth::build_engine(const std::string& onnx_path) {
   }
 
   // Create network definition
-  const auto explicit_batch = 1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
+  const auto explicit_batch =
+      1U << static_cast<uint32_t>(
+          nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
   network_.reset(builder_->createNetworkV2(explicit_batch));
   if (!network_) {
     throw std::runtime_error("Failed to create network definition");
   }
 
   // Create ONNX parser
-  auto parser = std::unique_ptr<nvonnxparser::IParser>(nvonnxparser::createParser(*network_, logger_));
+  auto parser = std::unique_ptr<nvonnxparser::IParser>(
+      nvonnxparser::createParser(*network_, logger_));
   if (!parser) {
     throw std::runtime_error("Failed to create ONNX parser");
   }
 
   // Parse ONNX model
-  if (!parser->parseFromFile(onnx_path.c_str(), static_cast<int32_t>(nvinfer1::ILogger::Severity::kWARNING))) {
+  if (!parser->parseFromFile(
+          onnx_path.c_str(),
+          static_cast<int32_t>(nvinfer1::ILogger::Severity::kWARNING))) {
     std::string error_msg = "Failed to parse ONNX file: " + onnx_path + "\n";
     for (int32_t i = 0; i < parser->getNbErrors(); ++i) {
       error_msg += parser->getError(i)->desc();
@@ -106,7 +111,8 @@ void StereoDepth::build_engine(const std::string& onnx_path) {
   }
 
   // Set memory pool limits
-  config_->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 1U << 30);  // 1GB
+  config_->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE,
+                              1U << 30);  // 1GB
 
   // Enable FP16 precision if available
   if (builder_->platformHasFastFp16()) {
@@ -115,7 +121,8 @@ void StereoDepth::build_engine(const std::string& onnx_path) {
   }
 
   // Build serialized network
-  auto serialized_engine = std::unique_ptr<nvinfer1::IHostMemory>(builder_->buildSerializedNetwork(*network_, *config_));
+  auto serialized_engine = std::unique_ptr<nvinfer1::IHostMemory>(
+      builder_->buildSerializedNetwork(*network_, *config_));
   if (!serialized_engine) {
     throw std::runtime_error("Failed to build TensorRT engine");
   }
@@ -126,7 +133,8 @@ void StereoDepth::build_engine(const std::string& onnx_path) {
     throw std::runtime_error("Failed to create TensorRT runtime");
   }
 
-  engine_.reset(runtime_->deserializeCudaEngine(serialized_engine->data(), serialized_engine->size()));
+  engine_.reset(runtime_->deserializeCudaEngine(serialized_engine->data(),
+                                                serialized_engine->size()));
   if (!engine_) {
     throw std::runtime_error("Failed to deserialize TensorRT engine");
   }
@@ -162,7 +170,8 @@ bool StereoDepth::save_engine(const std::string& engine_path) {
     return false;
   }
 
-  auto serialized_engine = std::unique_ptr<nvinfer1::IHostMemory>(engine_->serialize());
+  auto serialized_engine =
+      std::unique_ptr<nvinfer1::IHostMemory>(engine_->serialize());
   if (!serialized_engine) {
     return false;
   }
@@ -172,7 +181,8 @@ bool StereoDepth::save_engine(const std::string& engine_path) {
     return false;
   }
 
-  engine_file.write(static_cast<const char*>(serialized_engine->data()), serialized_engine->size());
+  engine_file.write(static_cast<const char*>(serialized_engine->data()),
+                    serialized_engine->size());
   engine_file.close();
   return true;
 }
@@ -183,8 +193,9 @@ void StereoDepth::get_model_info() {
   input_height_ = input_dims.d[2];
   input_width_ = input_dims.d[3];
   input_size_ = 3 * input_height_ * input_width_;
-  
-  std::cout << "Model input size: " << input_width_ << "x" << input_height_ << std::endl;
+
+  std::cout << "Model input size: " << input_width_ << "x" << input_height_
+            << std::endl;
 }
 
 void StereoDepth::allocate_buffers() {
@@ -192,14 +203,21 @@ void StereoDepth::allocate_buffers() {
   const size_t output_size = input_height_ * input_width_ * sizeof(float);
 
   // Allocate GPU memory for inputs and output
-  cudaMalloc(&buffers_[0], input_size);  // left input
-  cudaMalloc(&buffers_[1], input_size);  // right input
-  cudaMalloc(&buffers_[2], output_size); // output
+  cudaMalloc(&buffers_[0], input_size);   // left input
+  cudaMalloc(&buffers_[1], input_size);   // right input
+  cudaMalloc(&buffers_[2], output_size);  // output
+
+  // Allocate pinned host memory for inputs (faster CPU->GPU transfers)
+  cudaMallocHost(&pinned_left_input_, input_size_ * sizeof(float));
+  cudaMallocHost(&pinned_right_input_, input_size_ * sizeof(float));
 
   // Allocate host memory for output
   output_data_ = new float[input_height_ * input_width_];
 
-  std::cout << "GPU buffers allocated" << std::endl;
+  // Pre-allocate GPU preprocessing buffers
+  gpu_channels_.resize(3);
+
+  std::cout << "GPU buffers allocated (with pinned host memory)" << std::endl;
 }
 
 void StereoDepth::free_buffers() {
@@ -209,76 +227,80 @@ void StereoDepth::free_buffers() {
       buffers_[i] = nullptr;
     }
   }
-  
+
+  if (pinned_left_input_) {
+    cudaFreeHost(pinned_left_input_);
+    pinned_left_input_ = nullptr;
+  }
+
+  if (pinned_right_input_) {
+    cudaFreeHost(pinned_right_input_);
+    pinned_right_input_ = nullptr;
+  }
+
   if (output_data_) {
     delete[] output_data_;
     output_data_ = nullptr;
   }
-  
+
   if (stream_) {
     cudaStreamDestroy(stream_);
   }
 }
 
-// Optimized preprocessing without PyTorch
-std::vector<float> StereoDepth::prepare_input_optimized(const cv::Mat& img) {
-  // Resize image to target dimensions
-  cv::Mat resized_img;
-  cv::resize(img, resized_img, cv::Size(input_width_, input_height_), 0, 0,
-             cv::INTER_LINEAR);
+// GPU-accelerated preprocessing - all operations on GPU
+void StereoDepth::prepare_input_optimized(const cv::Mat& img,
+                                          float* output_buffer) {
+  // Upload to GPU
+  cv::cuda::GpuMat gpu_img;
+  gpu_img.upload(img);
 
-  // Convert to float and scale [0,255] → [0,1] (handles both uint8 and float
-  // inputs)
-  cv::Mat float_img;
-  if (resized_img.type() != CV_32FC3) {
-    resized_img.convertTo(float_img, CV_32FC3, 1.0 / 255.0);  // Scale if uint8
+  // Resize on GPU
+  cv::cuda::resize(gpu_img, gpu_resized_, cv::Size(input_width_, input_height_),
+                   0, 0, cv::INTER_LINEAR);
+
+  // Convert to float and scale [0,255] → [0,1] on GPU
+  if (gpu_resized_.type() != CV_32FC3) {
+    gpu_resized_.convertTo(gpu_float_, CV_32FC3, 1.0 / 255.0);
   } else {
-    float_img = resized_img;  // Already float [0,1]
+    gpu_float_ = gpu_resized_;
   }
 
-  // ImageNet normalization - RGB order (since input is RGB)
-  cv::Scalar mean(0.485, 0.456, 0.406);  // RGB order
-  cv::Scalar std(0.229, 0.224, 0.225);   // RGB order
+  // ImageNet normalization on GPU - RGB order
+  cv::Scalar mean(0.485, 0.456, 0.406);
+  cv::Scalar std(0.229, 0.224, 0.225);
 
-  cv::Mat normalized_img;
-  cv::subtract(float_img, mean, normalized_img);
-  cv::divide(normalized_img, std, normalized_img);
+  cv::cuda::subtract(gpu_float_, mean, gpu_normalized_);
+  cv::cuda::divide(gpu_normalized_, std, gpu_normalized_);
 
-  // Convert from HWC to CHW format and flatten
-  std::vector<cv::Mat> channels(3);
-  cv::split(normalized_img, channels);
+  // Split channels on GPU
+  cv::cuda::split(gpu_normalized_, gpu_channels_);
 
-  std::vector<float> input_data;
-  input_data.reserve(input_width_ * input_height_ * 3);
-
-  // Pack channels in CHW order: R, G, B
+  // Download CHW data directly to pinned memory
+  const int channel_size = input_width_ * input_height_;
   for (int c = 0; c < 3; c++) {
-    cv::Mat flat_channel = channels[c].reshape(1, 1);  // Flatten to 1D
-    std::vector<float> channel_data;
-    flat_channel.copyTo(channel_data);
-    input_data.insert(input_data.end(), channel_data.begin(),
-                      channel_data.end());
+    gpu_channels_[c].download(cv::Mat(input_height_, input_width_, CV_32F,
+                                      output_buffer + c * channel_size));
   }
-
-  return input_data;
 }
 
-cv::Mat StereoDepth::inference_tensorrt(
-    const std::vector<float>& left_input,
-    const std::vector<float>& right_input) {
+cv::Mat StereoDepth::inference_tensorrt() {
   try {
-    const size_t input_size_bytes = left_input.size() * sizeof(float);
+    const size_t input_size_bytes = input_size_ * sizeof(float);
 
-    // Copy input data to GPU
-    cudaMemcpyAsync(buffers_[0], left_input.data(), input_size_bytes, 
-                   cudaMemcpyHostToDevice, stream_);
-    cudaMemcpyAsync(buffers_[1], right_input.data(), input_size_bytes, 
-                   cudaMemcpyHostToDevice, stream_);
+    // Copy input data from pinned memory to GPU (faster transfer)
+    cudaMemcpyAsync(buffers_[0], pinned_left_input_, input_size_bytes,
+                    cudaMemcpyHostToDevice, stream_);
+    cudaMemcpyAsync(buffers_[1], pinned_right_input_, input_size_bytes,
+                    cudaMemcpyHostToDevice, stream_);
 
     // Set tensor addresses for the execution context
-    context_->setTensorAddress(engine_->getIOTensorName(0), buffers_[0]);  // left input
-    context_->setTensorAddress(engine_->getIOTensorName(1), buffers_[1]);  // right input
-    context_->setTensorAddress(engine_->getIOTensorName(2), buffers_[2]);  // output
+    context_->setTensorAddress(engine_->getIOTensorName(0),
+                               buffers_[0]);  // left input
+    context_->setTensorAddress(engine_->getIOTensorName(1),
+                               buffers_[1]);  // right input
+    context_->setTensorAddress(engine_->getIOTensorName(2),
+                               buffers_[2]);  // output
 
     // Run inference
     if (!context_->enqueueV3(stream_)) {
@@ -286,19 +308,20 @@ cv::Mat StereoDepth::inference_tensorrt(
     }
 
     // Copy output data back to host
-    const size_t output_size_bytes = input_height_ * input_width_ * sizeof(float);
-    cudaMemcpyAsync(output_data_, buffers_[2], output_size_bytes, 
-                   cudaMemcpyDeviceToHost, stream_);
+    const size_t output_size_bytes =
+        input_height_ * input_width_ * sizeof(float);
+    cudaMemcpyAsync(output_data_, buffers_[2], output_size_bytes,
+                    cudaMemcpyDeviceToHost, stream_);
 
     // Synchronize stream to ensure completion
     cudaStreamSynchronize(stream_);
 
-    // Create result matrix
-    cv::Mat result(input_height_, input_width_, CV_32F, output_data_);
-    return result.clone();  // Return a copy
+    // Create result matrix - no clone needed, output_data_ is persistent
+    return cv::Mat(input_height_, input_width_, CV_32F, output_data_).clone();
 
   } catch (const std::exception& e) {
-    throw std::runtime_error("TensorRT inference error: " + std::string(e.what()));
+    throw std::runtime_error("TensorRT inference error: " +
+                             std::string(e.what()));
   }
 }
 
@@ -307,14 +330,14 @@ cv::Mat StereoDepth::estimate_depth(const cv::Mat& left_img,
   img_height_ = left_img.rows;
   img_width_ = left_img.cols;
 
-  // Use optimized preprocessing and TensorRT inference
+  // Use optimized preprocessing with pinned memory and TensorRT inference
   auto start_prep = std::chrono::high_resolution_clock::now();
-  std::vector<float> left_input = prepare_input_optimized(left_img);
-  std::vector<float> right_input = prepare_input_optimized(right_img);
+  prepare_input_optimized(left_img, pinned_left_input_);
+  prepare_input_optimized(right_img, pinned_right_input_);
   auto end_prep = std::chrono::high_resolution_clock::now();
 
   auto start_inf = std::chrono::high_resolution_clock::now();
-  cv::Mat raw_disparity = inference_tensorrt(left_input, right_input);
+  cv::Mat raw_disparity = inference_tensorrt();
   auto end_inf = std::chrono::high_resolution_clock::now();
 
   // Optional: Print timing breakdown
@@ -327,7 +350,6 @@ cv::Mat StereoDepth::estimate_depth(const cv::Mat& left_img,
 
   return raw_disparity;
 }
-
 
 /**
  * @brief Estimate depth from stereo images and convert to metric depth
