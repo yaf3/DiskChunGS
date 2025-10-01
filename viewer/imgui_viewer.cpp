@@ -31,8 +31,8 @@ ImGuiViewer::ImGuiViewer(std::shared_ptr<ORB_SLAM3::System> pSLAM,
     : glfw_window_width_(1600),
       glfw_window_height_(900),
       panel_width_(372),
-      display_panel_height_(180),
-      training_panel_height_(440),
+      display_panel_height_(220),
+      training_panel_height_(180),
       camera_panel_height_(144),
       SLAM_image_viewer_scale_(1.0f),
       training_(training) {
@@ -537,7 +537,8 @@ void ImGuiViewer::run() {
         ImGui::Checkbox("Show depth view", &show_depth_view_);
       }
 
-      ImGui::SliderFloat("Target FPS", &target_viewer_fps_, 1.0f, 120.0f, "%.1f");
+      ImGui::SliderFloat("Target FPS", &target_viewer_fps_, 1.0f, 120.0f,
+                         "%.1f");
       ImGui::Text("Viewer average FPS %.1f", io.Framerate);
       ImGui::End();
     }
@@ -550,7 +551,7 @@ void ImGuiViewer::run() {
       ImGui::SetNextWindowSize(ImVec2(panel_width_, training_panel_height_),
                                ImGuiCond_Once);
       {
-        ImGui::Begin("Training Options");
+        ImGui::Begin("Training Insight");
 
         // Get current iteration and time
         int current_iteration = pGausMapper_->getIteration();
@@ -582,23 +583,6 @@ void ImGuiViewer::run() {
           ImGui::Text("Active Chunks: Not initialized");
           ImGui::Text("Total Chunks: Not initialized");
         }
-
-        ImGui::Checkbox("Keep training after stop", &keep_training_);
-
-        ImGui::SliderFloat("Position l.r.", &position_lr_init_, 0.00001f,
-                           0.00100f, "%.5f");
-        ImGui::SliderFloat("Feature l.r.", &feature_lr_, 0.0001f, 0.0050f,
-                           "%.5f");
-        ImGui::SliderFloat("Opacity l.r.", &opacity_lr_, 0.01f, 0.10f, "%.5f");
-        ImGui::SliderFloat("Scaling l.r.", &scaling_lr_, 0.001f, 0.010f,
-                           "%.5f");
-        ImGui::SliderFloat("Rotation l.r.", &rotation_lr_, 0.0001f, 0.0100f,
-                           "%.5f");
-        ImGui::SliderFloat("Lambda dssim", &lambda_dssim_, 0.01f, 0.40f,
-                           "%.2f");
-        ImGui::SliderInt("New kf. using", &new_kf_times_of_use_, 0, 10);
-        ImGui::SliderInt("Stable iter.", &stable_num_iter_existence_, 0, 100);
-
         ImGui::End();
       }
     }
