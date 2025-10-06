@@ -844,25 +844,25 @@ void ImGuiViewer::keyboardEvent() {
 }
 
 cv::Mat ImGuiViewer::applyInfernoColormap(const cv::Mat& invdepth_image) {
-  // Convert inverse depth to 8-bit format matching Python: mul(100).clamp(0,
-  // 255)
-  cv::Mat scaled_invdepth;
-  invdepth_image.convertTo(scaled_invdepth, CV_32F, 100.0, 0.0);
+  // Convert inverse depth to actual depth (with clamping to avoid division by
+  // zero)
+  cv::Mat depth;
+  cv::max(invdepth_image, 0.001, depth);  // Clamp min to avoid div by zero
+  depth = 1.0 / depth;
 
-  // Clamp to [0, 255] range
-  cv::Mat clamped;
-  cv::max(scaled_invdepth, 0.0, clamped);
-  cv::min(clamped, 255.0, clamped);
+  // Clamp depth to [0, 100] meter range
+  cv::max(depth, 0.0, depth);
+  cv::min(depth, 100.0, depth);
 
-  // Convert to 8-bit
+  // Scale [0, 100]m range to [0, 255] for colormap
   cv::Mat depth_8u;
-  clamped.convertTo(depth_8u, CV_8U);
+  depth.convertTo(depth_8u, CV_8U, 255.0 / 100.0);
 
-  // Apply INFERNO colormap (matches Python cv2.COLORMAP_INFERNO)
+  // Apply INFERNO colormap
   cv::Mat inferno_colored;
   cv::applyColorMap(depth_8u, inferno_colored, cv::COLORMAP_INFERNO);
 
-  // Convert BGR to RGB (matches Python cv2.cvtColor(..., cv2.COLOR_BGR2RGB))
+  // Convert BGR to RGB
   cv::Mat inferno_rgb;
   cv::cvtColor(inferno_colored, inferno_rgb, cv::COLOR_BGR2RGB);
 

@@ -97,6 +97,8 @@ class GaussianKeyframe {
 
   void step();
 
+  void resetDepthLossWeight();
+
   torch::Tensor applyExposureTransform(torch::Tensor& colors);
 
   torch::Tensor sixD2RotationMatrix(const torch::Tensor& rW2C);

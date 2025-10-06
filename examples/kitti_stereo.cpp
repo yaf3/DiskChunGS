@@ -14,6 +14,7 @@
 
 #include "ORB-SLAM3/include/System.h"
 #include "include/gaussian_mapper.h"
+#include "include/trajectory_viewer.h"
 #include "viewer/imgui_viewer.h"
 
 void LoadImages(const string &strPathToSequence,
@@ -221,11 +222,17 @@ int main(int argc, char **argv) {
   std::thread training_thd(&GaussianMapper::run, pGausMapper.get());
 
   // Create Gaussian Viewer
-  std::thread viewer_thd;
+  std::thread viewer_thd, trajectory_viewer_thd;
   std::shared_ptr<ImGuiViewer> pViewer;
+  std::unique_ptr<TrajectoryViewer> pTrajViewer;
   if (use_viewer) {
     pViewer = std::make_shared<ImGuiViewer>(pSLAM, pGausMapper);
     viewer_thd = std::thread(&ImGuiViewer::run, pViewer.get());
+    // Create Trajectory Viewer
+    pTrajViewer = std::make_unique<TrajectoryViewer>(pGausMapper.get());
+    pGausMapper->setTrajectoryViewer(pTrajViewer.get());
+    trajectory_viewer_thd =
+        std::thread(&TrajectoryViewer::run, pTrajViewer.get());
   }
 
   // Vector for tracking time statistics
@@ -294,6 +301,10 @@ int main(int argc, char **argv) {
 
     std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
 
+    // Check if GaussianMapper wants to pause (e.g., during loop closure
+    // optimization)
+    pGausMapper->waitWhilePaused();
+
     // Pass the images to the SLAM system with scaled timestamp
     pSLAM->TrackStereo(imLeft, imRight, scaled_tframe,
                        std::vector<ORB_SLAM3::IMU::Point>(), vstrImageLeft[ni]);
@@ -321,7 +332,11 @@ int main(int argc, char **argv) {
   // Stop all threads
   pSLAM->Shutdown();
   training_thd.join();
-  if (use_viewer) viewer_thd.join();
+  if (use_viewer) {
+    viewer_thd.join();
+    pTrajViewer->signalStop();
+    trajectory_viewer_thd.join();
+  }
 
   // GPU peak usage
   saveGpuPeakMemoryUsage(output_dir / "GpuPeakUsageMB.txt");

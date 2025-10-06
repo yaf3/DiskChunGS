@@ -19,9 +19,9 @@ class KeyframeQueue {
                 std::map<std::size_t, int>* used_times_map = nullptr);
 
   std::shared_ptr<GaussianKeyframe> getNextKeyframe();
-  void notifyNewKeyframeAdded(std::shared_ptr<GaussianKeyframe> keyframe);
 
-  void updateKeyframeAssociation(std::shared_ptr<GaussianKeyframe> keyframe);
+  void updateChunkKeyframeMapping(std::shared_ptr<GaussianKeyframe> keyframe,
+                                  bool is_new_keyframe = false);
 
   int getQueueSize() const;
 

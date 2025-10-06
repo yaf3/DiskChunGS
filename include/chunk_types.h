@@ -1,5 +1,5 @@
 #pragma once
-
+#include <torch/torch.h>
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
@@ -104,4 +104,72 @@ inline ChunkCoord decodeChunkCoord(int64_t chunk_id) {
   int64_t x = (chunk_id / (FIELD_SIZE * FIELD_SIZE)) - OFFSET;
 
   return ChunkCoord{x, y, z};
+}
+
+// Torch tensor versions of chunk utilities
+
+// Encode chunk coordinates tensor to IDs
+inline torch::Tensor encodeChunkCoordsTensor(const torch::Tensor& chunk_coords) {
+  // chunk_coords: [N, 3] with coordinates in range [-1M, +1M]
+
+  // Use 21 bits per coordinate = 2M range = [-1,048,576, +1,048,575] chunks
+  // Total: 63 bits used out of 64 available - maximum efficiency
+  // Supports ±20,971 km range per axis with 20m chunks
+  const int64_t OFFSET = 1048576;  // 2^20
+
+  auto x = chunk_coords.index({torch::indexing::Slice(), 0}) + OFFSET;
+  auto y = chunk_coords.index({torch::indexing::Slice(), 1}) + OFFSET;
+  auto z = chunk_coords.index({torch::indexing::Slice(), 2}) + OFFSET;
+
+  // Pack: 21 bits each for x, y, z coordinates
+  torch::Tensor encoded = x * (1LL << 42) + y * (1LL << 21) + z;
+
+  return encoded;  // Range: 0 to ~9.2 × 10^18
+}
+
+// Decode chunk IDs to coordinates tensor
+inline torch::Tensor decodeChunkCoordsTensor(const torch::Tensor& encoded_ids) {
+  const int64_t OFFSET = 1048576;        // 2^20
+  const int64_t FIELD_SIZE = 1LL << 21;  // 2^21 = 2,097,152
+
+  // Extract 21-bit fields using modulo and integer division
+  torch::Tensor z = (encoded_ids % FIELD_SIZE) - OFFSET;
+  torch::Tensor y = ((encoded_ids / FIELD_SIZE) % FIELD_SIZE) - OFFSET;
+  torch::Tensor x = (encoded_ids / (FIELD_SIZE * FIELD_SIZE)) - OFFSET;
+
+  return torch::stack({x, y, z}, /*dim=*/1);
+}
+
+// Convert vector of ChunkCoord to tensor
+inline torch::Tensor chunkCoordVectorToTensor(
+    const std::vector<ChunkCoord>& coords,
+    torch::DeviceType device_type = torch::kCUDA) {
+  if (coords.empty()) {
+    return torch::empty(
+        {0, 3}, torch::TensorOptions().dtype(torch::kInt64).device(device_type));
+  }
+
+  // Use from_blob for zero-copy conversion (ChunkCoord is POD with int64_t
+  // x,y,z)
+  torch::Tensor coord_tensor =
+      torch::from_blob(const_cast<ChunkCoord*>(coords.data()),
+                       {static_cast<int64_t>(coords.size()), 3},
+                       torch::TensorOptions().dtype(torch::kInt64))
+          .clone();  // Clone to own the memory
+
+  return coord_tensor.to(device_type);
+}
+
+// Compute chunk IDs from 3D positions
+inline torch::Tensor computeChunkIds(const torch::Tensor& positions,
+                                     float chunk_size) {
+  torch::NoGradGuard no_grad;
+  float half_chunk = chunk_size * 0.5f;
+
+  torch::Tensor shifted_positions = positions + half_chunk;
+  torch::Tensor chunk_coords = torch::floor(shifted_positions / chunk_size);
+  chunk_coords = chunk_coords.to(torch::kInt64);
+
+  // Use the SAME encoding as encodeChunkCoordsTensor
+  return encodeChunkCoordsTensor(chunk_coords);
 }

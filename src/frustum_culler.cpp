@@ -1,9 +1,12 @@
 #include "include/frustum_culler.h"
 
 #include <omp.h>
+#include <torch/torch.h>
 
 #include <cmath>
 #include <mutex>
+
+#include "include/gaussian_keyframe.h"
 
 FrustumCuller::FrustumCuller(const Eigen::Matrix4f& MVP) {
   // Extract frustum planes from MVP matrix
@@ -256,6 +259,62 @@ std::vector<ChunkCoord> cullChunksHierarchical(
                        camera_chunk.z + search_radius};
 
   cullRegion(min_coord, max_coord, 0);
+
+  return visible_chunks;
+}
+
+// Standalone frustumCullChunks function
+std::vector<ChunkCoord> frustumCullChunks(
+    std::shared_ptr<GaussianKeyframe> keyframe,
+    float chunk_size,
+    FrustumCullingCache* cache) {
+  if (!keyframe) {
+    return {};
+  }
+
+  std::size_t keyframe_id = keyframe->fid_;
+  Sophus::SE3d current_pose = keyframe->getPose();
+
+  // Check cache if provided
+  if (cache) {
+    std::vector<ChunkCoord> cached_chunks;
+    if (cache->getCached(keyframe_id, current_pose, cached_chunks)) {
+      return cached_chunks;
+    }
+  }
+
+  // Compute frustum culling
+  Eigen::Matrix4f view_matrix =
+      keyframe->getWorld2View2(keyframe->trans_, keyframe->scale_);
+  torch::Tensor tensor_matrix = keyframe->projection_matrix_;
+
+  // Ensure tensor is on CPU and contiguous
+  tensor_matrix = tensor_matrix.cpu().contiguous();
+
+  // Get data pointer and create Eigen matrix
+  float* data_ptr = tensor_matrix.data_ptr<float>();
+  Eigen::Matrix4f proj_matrix = Eigen::Map<Eigen::Matrix4f>(data_ptr);
+  Eigen::Matrix4f vp_matrix = proj_matrix * view_matrix;
+
+  // Get camera position for chunk search
+  Sophus::SE3d Twc = current_pose.inverse();
+  Eigen::Vector3f camera_position = Twc.translation().cast<float>();
+  ChunkCoord camera_chunk = getChunkCoord(camera_position, chunk_size);
+
+  // Calculate parameters
+  int search_radius =
+      std::ceil(keyframe->zfar_ / chunk_size * std::sqrt(3.0f)) + 2;
+  float max_distance = keyframe->zfar_ + chunk_size * 1.732f;
+
+  // Call hierarchical culling
+  std::vector<ChunkCoord> visible_chunks =
+      cullChunksHierarchical(vp_matrix, camera_position, camera_chunk,
+                             search_radius, chunk_size, max_distance);
+
+  // Update cache if provided
+  if (cache) {
+    cache->updateCache(keyframe_id, current_pose, visible_chunks);
+  }
 
   return visible_chunks;
 }

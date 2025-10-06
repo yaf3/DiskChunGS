@@ -18,31 +18,16 @@ KeyframeQueue::KeyframeQueue(std::shared_ptr<GaussianScene> scene,
       used_times_map_(used_times_map),
       rng_(std::random_device{}()),
       uniform_dist_(0.0f, 1.0f),
-      level_dist_({0.3, 0.4, 0.3}) {
-  chunk_sizes_[0] = 4 * chunk_size_;   // FINE
-  chunk_sizes_[1] = 8 * chunk_size_;   // MEDIUM
-  chunk_sizes_[2] = 12 * chunk_size_;  // COARSE
-}
-
-void KeyframeQueue::notifyNewKeyframeAdded(
-    std::shared_ptr<GaussianKeyframe> keyframe) {
-  if (!keyframe) return;
-
-  latest_keyframe_ = keyframe;
-
-  torch::Tensor center_tensor = keyframe->getCenter();
-  Eigen::Vector3f position = tensorToEigen(center_tensor);
-
-  for (int level = 0; level < 3; ++level) {
-    ChunkCoord chunk_coord = getChunkCoord(position, chunk_sizes_[level]);
-    int64_t chunk_id = encodeChunkCoord(chunk_coord);
-    chunk_to_keyframes_[level][chunk_id].push_back(keyframe);
-  }
+      level_dist_({1.0, 0.0, 0.0}) {
+  chunk_sizes_[0] = 4 * chunk_size_;  // FINE
+  // chunk_sizes_[1] = 8 * chunk_size_;   // MEDIUM
+  // chunk_sizes_[2] = 12 * chunk_size_;  // COARSE
 }
 
 // Updated keyframe selection using active_frames_gpu_
 std::shared_ptr<GaussianKeyframe> KeyframeQueue::getNextKeyframe() {
   if (!latest_keyframe_) {
+    std::cout << "No latest keyframe available." << std::endl;
     return nullptr;
   }
 
@@ -56,7 +41,20 @@ std::shared_ptr<GaussianKeyframe> KeyframeQueue::getNextKeyframe() {
 
   auto it = chunk_to_keyframes_[level].find(chunk_id);
   if (it == chunk_to_keyframes_[level].end() || it->second.empty()) {
-    return nullptr;
+    std::cout << "Keyframe has moved to new chunk " << chunk_id << " at level "
+              << level << ", updating mapping..." << std::endl;
+
+    // Keyframe's position has changed due to pose optimization - update its
+    // chunk mapping
+    updateChunkKeyframeMapping(latest_keyframe_, false);
+
+    // Retry lookup after updating
+    it = chunk_to_keyframes_[level].find(chunk_id);
+    if (it == chunk_to_keyframes_[level].end() || it->second.empty()) {
+      std::cerr << "ERROR: Still no keyframes in chunk " << chunk_id
+                << " after updating mapping!" << std::endl;
+      return nullptr;
+    }
   }
 
   const auto& candidates = it->second;
@@ -227,22 +225,28 @@ void KeyframeQueue::increaseKeyframeTimesOfUse(
   keyframe->remaining_times_of_use_ += additional_uses;
 }
 
-void KeyframeQueue::updateKeyframeAssociation(
-    std::shared_ptr<GaussianKeyframe> keyframe) {
+void KeyframeQueue::updateChunkKeyframeMapping(
+    std::shared_ptr<GaussianKeyframe> keyframe,
+    bool is_new_keyframe) {
   if (!keyframe) return;
 
-  // Remove old associations first
-  for (int level = 0; level < 3; ++level) {
-    auto& level_map = chunk_to_keyframes_[level];
-    for (auto& chunk_pair : level_map) {
-      auto& keyframe_list = chunk_pair.second;
-      keyframe_list.erase(
-          std::remove(keyframe_list.begin(), keyframe_list.end(), keyframe),
-          keyframe_list.end());
+  // Update latest keyframe if this is a new keyframe
+  if (is_new_keyframe) {
+    latest_keyframe_ = keyframe;
+  } else {
+    // Remove old associations for updated keyframes
+    for (int level = 0; level < 3; ++level) {
+      auto& level_map = chunk_to_keyframes_[level];
+      for (auto& chunk_pair : level_map) {
+        auto& keyframe_list = chunk_pair.second;
+        keyframe_list.erase(
+            std::remove(keyframe_list.begin(), keyframe_list.end(), keyframe),
+            keyframe_list.end());
+      }
     }
   }
 
-  // Add new associations based on current position
+  // Add associations based on current position
   torch::Tensor center_tensor = keyframe->getCenter();
   Eigen::Vector3f position = tensorToEigen(center_tensor);
 

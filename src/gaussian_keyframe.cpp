@@ -433,6 +433,13 @@ void GaussianKeyframe::step() {
   local_iterations_++;
 }
 
+void GaussianKeyframe::resetDepthLossWeight() {
+  depth_loss_weight = 1e-2f;  // Reset to initial value
+  std::cout << "[Keyframe " << fid_
+            << "] Depth loss weight reset to: " << depth_loss_weight
+            << std::endl;
+}
+
 // Apply appearance transform to rendered colors
 torch::Tensor GaussianKeyframe::applyExposureTransform(torch::Tensor& colors) {
   if (!exposure_transform_.defined()) {
@@ -965,15 +972,15 @@ void GaussianKeyframe::saveDataToDisk() {
   }
   gaus_pyramid_inv_depth_image_.clear();
 
-  c10::cuda::CUDACachingAllocator::emptyCache();
+  // c10::cuda::CUDACachingAllocator::emptyCache();
 
   loaded_ = false;
 
   auto end_time = std::chrono::steady_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_time - start_time);
-  std::cout << "Keyframe " << fid_ << " saved. Save completed in "
-            << duration.count() << "ms" << std::endl;
+  // std::cout << "Keyframe " << fid_ << " saved. Save completed in "
+  //           << duration.count() << "ms" << std::endl;
 
   // std::cout << "Keyframe data saved and cleared from memory for keyframe "
   //           << fid_ << std::endl;
@@ -1049,8 +1056,8 @@ void GaussianKeyframe::loadDataFromDisk() {
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_time - start_time);
 
-  std::cout << "Keyframe " << fid_ << " loaded. Load completed in "
-            << duration.count() << "ms" << std::endl;
+  // std::cout << "Keyframe " << fid_ << " loaded. Load completed in "
+  //           << duration.count() << "ms" << std::endl;
 }
 
 void GaussianKeyframe::transferToCPU() {
@@ -1108,7 +1115,7 @@ void GaussianKeyframe::transferToCPU() {
   loaded_ = false;
 
   // Clear GPU cache after transfer
-  c10::cuda::CUDACachingAllocator::emptyCache();
+  // c10::cuda::CUDACachingAllocator::emptyCache();
 
   auto end_time = std::chrono::steady_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(

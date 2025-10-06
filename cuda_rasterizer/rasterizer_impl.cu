@@ -204,12 +204,12 @@ __global__ void identifyTileRanges(int L,
   uint32_t currtile = key >> 32;
   bool valid_tile = currtile != (uint32_t)-1;
 
-  if (idx == 0)
-    ranges[currtile].x = 0;
-  else {
+  if (idx == 0) {
+    if (valid_tile) ranges[currtile].x = 0;
+  } else {
     uint32_t prevtile = point_list_keys[idx - 1] >> 32;
     if (currtile != prevtile) {
-      ranges[prevtile].y = idx;
+      if (prevtile != (uint32_t)-1) ranges[prevtile].y = idx;
       if (valid_tile) ranges[currtile].x = idx;
     }
   }

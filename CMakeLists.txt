@@ -303,6 +303,7 @@ add_library(
     include/mono_depth.h
     include/guided_mvs.h
     include/frustum_culler.h
+    include/trajectory_viewer.h
     src/gaussian_keyframe.cpp
     src/gaussian_model.cpp
     src/gaussian_parameters.cpp
@@ -317,6 +318,7 @@ add_library(
     src/mono_depth.cpp
     src/guided_mvs.cpp
     src/frustum_culler.cpp
+    src/trajectory_viewer.cpp
 )
 target_link_libraries(
     gaussian_mapper

@@ -116,6 +116,9 @@ class GaussianModel {
   void optimizerStep(torch::Tensor& visibility, const uint32_t N);
 
   void resetOpacity();
+  void resetOpacityForMask(const torch::Tensor& gaussian_mask);
+  void resetPositionLRAndOptimizerState(const torch::Tensor& gaussian_mask);
+  void maskGradients(const torch::Tensor& keep_mask);
   torch::Tensor replaceTensorToOptimizer(torch::Tensor& t, int tensor_idx);
 
   void prunePoints(torch::Tensor& mask);
@@ -130,7 +133,10 @@ class GaussianModel {
                             torch::Tensor& new_chunk_ids,
                             torch::Tensor& new_position_lrs,
                             torch::Tensor& new_lod_levels,
-                            torch::Tensor& new_gaussian_ids);
+                            torch::Tensor& new_gaussian_ids,
+                            const std::vector<torch::Tensor>& loaded_exp_avg = {},
+                            const std::vector<torch::Tensor>& loaded_exp_avg_sq = {},
+                            const std::vector<int64_t>& loaded_step_counts = {});
 
  protected:
   float exponLrFunc(int step);
@@ -175,11 +181,15 @@ class GaussianModel {
   bool enable_lod_;
   float lod_distance_multiplier_;
 
+  // Cache for keyframe visibility results
+  FrustumCullingCache gaussian_visibility_cache_;
+
   std::vector<ChunkCoord> frustumCullChunks(
       std::shared_ptr<GaussianKeyframe> keyframe,
       bool use_cache);
   torch::Tensor cullVisibleGaussians(std::shared_ptr<GaussianKeyframe> keyframe,
-                                     bool use_lod = true);
+                                     bool use_lod = true,
+                                     bool manage_memory = true);
 
   // LoD system methods
   torch::Tensor assignLoDByPercentiles(
@@ -202,7 +212,6 @@ class GaussianModel {
   void pruneLowOpacityGaussians(std::shared_ptr<GaussianKeyframe> pkf,
                                 const torch::Tensor& visible_gaussian_mask);
 
-  torch::Tensor computeChunkIds(const torch::Tensor& positions);
   void updateChunkIDs();
 
   // Recompute chunk IDs for gaussians after loop closure transformations
@@ -292,12 +301,6 @@ class GaussianModel {
   std::optional<ChunkData> loadSingleChunkFromDisk(int64_t chunk_id);
   void appendLoadedChunks(const std::vector<ChunkData>& chunks_data,
                           const std::vector<int64_t>& chunk_ids);
-  void restoreOptimizerStatesForRange(
-      const std::vector<std::vector<torch::Tensor>>& all_exp_avg,
-      const std::vector<std::vector<torch::Tensor>>& all_exp_avg_sq,
-      const std::vector<int64_t>& max_step_counts,
-      int start_idx,
-      int end_idx);
   void saveChunks(const torch::Tensor& chunk_ids_to_save);
   ChunkData extractChunkData(const torch::Tensor& chunk_mask, int64_t chunk_id);
   void saveAndEvictChunks(const torch::Tensor& chunk_ids);
@@ -323,10 +326,6 @@ class GaussianModel {
 
   int min_chunk_occupancy_for_loaded_ = 50;
 
-  torch::Tensor encodeChunkCoordsTensor(const torch::Tensor& chunk_coords);
-  torch::Tensor decodeChunkCoordsTensor(const torch::Tensor& encoded_ids);
-  torch::Tensor chunkCoordVectorToTensor(const std::vector<ChunkCoord>& coords);
-
   void handleBatchChunkRedistribution(const torch::Tensor& processed_chunk_ids);
 
   void assertChunkTrackingConsistency(const std::string& location);
@@ -338,38 +337,4 @@ class GaussianModel {
   void runFullConsistencyCheck(const std::string& location);
 
   void prune(float min_opacity, float extent, int max_screen_size);
-
-  // Cache for keyframe visibility results
-  struct VisibilityCacheEntry {
-    Sophus::SE3d pose;  // Keyframe pose when visibility was calculated
-    std::vector<ChunkCoord> visible_chunks;  // Visible chunk coordinates
-    std::chrono::steady_clock::time_point
-        timestamp;  // When this cache entry was created/updated
-  };
-
-  // Cache mapping keyframe ID to visibility information
-  std::unordered_map<size_t, VisibilityCacheEntry> visibility_cache_;
-  std::mutex
-      visibility_cache_mutex_;  // Protect the cache during concurrent access
-
-  // Cache expiration time (in seconds)
-  const std::chrono::seconds cache_expiry_time_{
-      10};  // Can be adjusted based on your needs
-
-  // Maximum number of entries in the cache
-  const size_t max_cache_entries_{
-      100};  // Adjust based on expected number of keyframes
-
-  // Helper to compare poses for cache validity
-  bool pose_nearly_equal(const Sophus::SE3d& a, const Sophus::SE3d& b) {
-    // Translation tolerance: small fraction of chunk size
-    const double translation_tol = chunk_size_ * 0.05;  // 5% of chunk size
-
-    // Rotation tolerance: a few degrees
-    const double rotation_tol = 0.05;  // ~3 degrees in radians
-
-    return (a.translation() - b.translation()).norm() < translation_tol &&
-           a.unit_quaternion().angularDistance(b.unit_quaternion()) <
-               rotation_tol;
-  }
 };

@@ -1,10 +1,12 @@
 import os
 import sys
+import time
 import numpy as np
 import torch
 from tqdm import trange
 import json
 import glob
+import gs_render
 from argparse import ArgumentParser
 from scipy.spatial.transform import Rotation
 from PIL import Image
@@ -160,35 +162,58 @@ if __name__ == "__main__":
                         help="Skip creating error visualization images (saves time)")
     args = parser.parse_args()
     dirs = os.listdir(args.result_path)
-    # Find shutdown directory
-    shutdown_name = None
+    # load model
+    ts = []
+    Rs = []
+    width, height = 0, 0
+    render_time = 0
+    shutdown_name = None    
     for file_name in dirs:
         if ("shutdown" in file_name):
             shutdown_name = file_name
             break
     if shutdown_name is None:
         sys.exit("No shutdown dir found, exiting...")
+    model_data_path = os.path.join(
+        args.result_path,
+        shutdown_name,
+        "data",
+            )
+    print(model_data_path)
+    with open(
+        os.path.join(
+            args.result_path, shutdown_name, "data", "cameras.json"
+        ),
+        "r",
+    ) as fin:
+        camera_paras = json.load(fin)
+        print(os.path.join(
+            args.result_path, shutdown_name, "data", "cameras.json"
+        ))
 
-    shutdown_path = os.path.join(args.result_path, shutdown_name)
-    print(f"Found shutdown directory: {shutdown_path}")
-
-    # Load render time statistics
+    width, height = (
+        camera_paras[0]["width"],
+        camera_paras[0]["height"],
+    )
+    config_path = os.path.join(model_data_path, "gaussian_mapper_cfg.yaml")
+    print("Using:", model_data_path, config_path)
+    
+    success = gs_render.initialize(config_path, model_data_path)
     render_time = np.loadtxt(
-        os.path.join(shutdown_path, "render_time.txt"),
+        os.path.join(args.result_path, shutdown_name, "render_time.txt"),
         delimiter=" ",
         dtype=np.str_,
     )
     render_time = render_time[:, 1].astype(np.float32)
-
-    # Load number of gaussians
+    
     num_gaussians = np.loadtxt(
-        os.path.join(shutdown_path, "gaussianCount.txt"),
+        os.path.join(args.result_path, shutdown_name, "gaussianCount.txt"),
         delimiter=" ",
         dtype=np.str_,
     )
     num_gaussians = int(num_gaussians.item())
 
-    # load gt (only need for trajectory evaluation)
+    # load gt
     if "replica" in args.gt_path.lower():
         gt_color_paths, gt_tstamp = loadReplica(args.gt_path)
     elif "kitti" in args.gt_path.lower():
@@ -339,115 +364,131 @@ if __name__ == "__main__":
         with open(out_path, "w") as fp:
             fp.write("Trajectory evaluation skipped - using ground truth poses for rendering\n")
 
-
-    image_dir = os.path.join(shutdown_path, "image")
-    image_gt_dir = os.path.join(shutdown_path, "image_gt")
-
-    # Get all rendered images (format: iteration_kfid_suffix.jpg)
-    rendered_files = sorted(glob.glob(os.path.join(image_dir, "*.jpg")))
-
-    if len(rendered_files) == 0:
-        sys.exit(f"No rendered images found in {image_dir}")
-
+    ## render and evaluation
+    associations = associate_frames(tstamp, gt_tstamp)
+    
     # Create output directories
     os.makedirs(os.path.join(args.result_path, "image"), exist_ok=True)
     if not args.skip_error_vis:
         os.makedirs(os.path.join(args.result_path, "error_analysis"), exist_ok=True)
+    if "_0" in args.result_path:
+        os.makedirs(os.path.join(args.result_path, "gt"), exist_ok=True)
+    
+    # Lists to store results and detailed information
+    psnr_list, ssim_list, lpips_list, time_list = [], [], [], []
+    detailed_results = []  # For CSV output
+    
+    for index in trange(
+        len(associations),
+        desc="rendering {}".format(args.result_path.split("/")[-1]),
+    ):
+        t_start = time.time()
+        (result_indx, gt_indx) = associations[index]
+        w2c = torch.tensor(np.linalg.inv(poses[result_indx]))
+        t0 = time.time()
+        render_image = gs_render.render_from_pose(w2c, width, height).clone().detach().to('cuda')
+        t_render = time.time() - t0  
+        
+        t0 = time.time()
+        render_image = render_image.permute(1, 2, 0)
+        render_image = torch.clamp(render_image, 0.0, 1.0)
+        render_image_torch = render_image.permute([2, 0, 1])[None]
+    
+        pil_image = Image.open(gt_color_paths[gt_indx])
+        gt_image = np.array(pil_image).astype(np.float32) / 255.0
+        gt_image_torch = torch.from_numpy(gt_image).float().permute(2, 0, 1).unsqueeze(0).to('cuda')
+        t_process = time.time() - t0
+        
+        t0 = time.time()
+        val_psnr = calc_psnr(render_image_torch, gt_image_torch).item()
+        val_ssim = calc_ssim(render_image_torch, gt_image_torch).item()
+        val_lpips = calc_lpips(render_image_torch, gt_image_torch).item()
+        t_metrics = time.time() - t0
 
-    # Lists to store results
-    psnr_list, ssim_list, lpips_list = [], [], []
-    detailed_results = []
-
-    for rendered_path in trange(len(rendered_files),
-                                desc=f"Computing metrics"):
-        rendered_path = rendered_files[rendered_path]
-        filename = os.path.basename(rendered_path)
-
-        # Parse filename: iteration_kfid[_suffix].jpg
-        name_no_ext = os.path.splitext(filename)[0]
-        parts = name_no_ext.split('_')
-
-        if len(parts) < 2:
-            print(f"Warning: Could not parse filename {filename}")
-            continue
-
-        try:
-            iteration = int(parts[0])
-            kfid = int(parts[1])
-            suffix = '_'.join(parts[2:]) if len(parts) > 2 else ''
-        except ValueError:
-            print(f"Warning: Could not parse filename {filename}")
-            continue
-
-        # Construct ground truth filename
-        gt_filename = f"{iteration}_{kfid}{('_' + suffix) if suffix else ''}_gt.jpg"
-        gt_path = os.path.join(image_gt_dir, gt_filename)
-
-        if not os.path.exists(gt_path):
-            print(f"Warning: Ground truth not found: {gt_path}")
-            continue
-
-        # Load rendered image
-        rendered_img = cv2.imread(rendered_path)
-        rendered_img = cv2.cvtColor(rendered_img, cv2.COLOR_BGR2RGB)
-        rendered_img = rendered_img.astype(np.float32) / 255.0
-        rendered_torch = torch.from_numpy(rendered_img).float().permute(2, 0, 1).unsqueeze(0).cuda()
-
-        # Load ground truth image
-        gt_img = cv2.imread(gt_path)
-        gt_img = cv2.cvtColor(gt_img, cv2.COLOR_BGR2RGB)
-        gt_img = gt_img.astype(np.float32) / 255.0
-        gt_torch = torch.from_numpy(gt_img).float().permute(2, 0, 1).unsqueeze(0).cuda()
-
-        # Compute metrics
-        val_psnr = calc_psnr(rendered_torch, gt_torch).item()
-        val_ssim = calc_ssim(rendered_torch, gt_torch).item()
-        val_lpips = calc_lpips(rendered_torch, gt_torch).item()
-
-        psnr_list.append(val_psnr)
-        ssim_list.append(val_ssim)
-        lpips_list.append(val_lpips)
-
-        # Store detailed results
+        # Store detailed results for CSV
+        image_name = gt_color_paths[gt_indx].split("/")[-1]
         detailed_results.append({
-            'filename': filename,
-            'iteration': iteration,
-            'kfid': kfid,
-            'suffix': suffix,
+            'image_name': image_name,
+            'frame_index': index,
+            'gt_index': gt_indx,
+            'result_index': result_indx,
             'psnr': val_psnr,
             'ssim': val_ssim,
-            'lpips': val_lpips
+            'lpips': val_lpips,
+            'render_time_ms': t_render * 1000
         })
 
+        t0 = time.time()
+        if "_0" in args.result_path:
+            # Convert floating point (0.0-1.0) to uint8 (0-255)
+            gt_image_uint8 = np.uint8(gt_image * 255)
+            gt_image_bgr = cv2.cvtColor(gt_image_uint8, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(
+                os.path.join(
+                    args.result_path,
+                    "gt",
+                    gt_color_paths[gt_indx].split("/")[-1],
+                ),
+                gt_image_bgr,  # Use uint8 version for saving
+            )
+        predict_image_np = render_image.detach().cpu().numpy()
+        predict_image_img = np.uint8(predict_image_np * 255)
+        predict_image_img = cv2.cvtColor(predict_image_img, cv2.COLOR_BGR2RGB)
+        cv2.imwrite(
+            os.path.join(
+                args.result_path,
+                "image",
+                gt_color_paths[gt_indx].split("/")[-1],
+            ),
+            predict_image_img,
+        )
+        
         # Create error visualization
         if not args.skip_error_vis:
             error_vis_path = os.path.join(
                 args.result_path,
                 "error_analysis",
-                f"error_{filename.replace('.jpg', '.png')}"
+                f"error_{image_name.replace('.jpg', '.png').replace('.png', '.png')}"
             )
             create_error_visualization(
-                rendered_img,
-                gt_img,
+                render_image.detach().cpu().numpy(),
+                gt_image,
                 val_psnr,
                 val_lpips,
                 error_vis_path
             )
+        
+        t_save = time.time() - t0
+
+        psnr_list.append(val_psnr)
+        ssim_list.append(val_ssim)
+        lpips_list.append(val_lpips)
+        time_list.append(t_render)
+        
+        t_total = time.time() - t_start
+        # print(f"Render: {t_render*1000:.1f}ms, Process: {t_process*1000:.1f}ms, " 
+        #     f"Metrics: {t_metrics*1000:.1f}ms, Save: {t_save*1000:.1f}ms, " 
+        #     f"Total: {t_total*1000:.1f}ms")
 
     # Convert results to arrays
     psnr_list = np.array(psnr_list)
     ssim_list = np.array(ssim_list)
     lpips_list = np.array(lpips_list)
-
-    # Save individual metric arrays
-    np.savetxt(os.path.join(shutdown_path, "psnr_recomputed.txt"), psnr_list)
-    np.savetxt(os.path.join(shutdown_path, "ssim_recomputed.txt"), ssim_list)
-    np.savetxt(os.path.join(shutdown_path, "lpips_recomputed.txt"), lpips_list)
-
+    time_list = np.array(time_list)
+    
+    # Save individual metric arrays (existing functionality)
+    np.savetxt(os.path.join(args.result_path, "psnr.txt"), psnr_list)
+    np.savetxt(os.path.join(args.result_path, "ssim.txt"), ssim_list)
+    np.savetxt(os.path.join(args.result_path, "lpips.txt"), lpips_list)
+    
     # Save detailed results as CSV
     detailed_df = pd.DataFrame(detailed_results)
-    detailed_df.to_csv(os.path.join(shutdown_path, "detailed_metrics.csv"), index=False)
-
+    detailed_df.to_csv(os.path.join(args.result_path, "detailed_metrics.csv"), index=False)
+    
+    # Also save a simple PSNR-only file for easy analysis
+    psnr_df = detailed_df[['image_name', 'frame_index', 'psnr']].copy()
+    psnr_df.to_csv(os.path.join(args.result_path, "psnr_per_image.csv"), index=False)
+    
     # Save summary statistics
     summary_stats = {
         'metric': ['psnr', 'ssim', 'lpips'],
@@ -458,47 +499,42 @@ if __name__ == "__main__":
         'median': [np.median(psnr_list), np.median(ssim_list), np.median(lpips_list)]
     }
     summary_df = pd.DataFrame(summary_stats)
-    summary_df.to_csv(os.path.join(shutdown_path, "metrics_summary.csv"), index=False)
-
+    summary_df.to_csv(os.path.join(args.result_path, "metrics_summary.csv"), index=False)
+    
     print(f"\nMetrics Summary:")
-    print(f"PSNR:  {np.mean(psnr_list):.3f} ± {np.std(psnr_list):.3f} dB (range: {np.min(psnr_list):.3f} - {np.max(psnr_list):.3f})")
-    print(f"SSIM:  {np.mean(ssim_list):.3f} ± {np.std(ssim_list):.3f} (range: {np.min(ssim_list):.3f} - {np.max(ssim_list):.3f})")
+    print(f"PSNR: {np.mean(psnr_list):.3f} ± {np.std(psnr_list):.3f} dB (range: {np.min(psnr_list):.3f} - {np.max(psnr_list):.3f})")
+    print(f"SSIM: {np.mean(ssim_list):.3f} ± {np.std(ssim_list):.3f} (range: {np.min(ssim_list):.3f} - {np.max(ssim_list):.3f})")
     print(f"LPIPS: {np.mean(lpips_list):.3f} ± {np.std(lpips_list):.3f} (range: {np.min(lpips_list):.3f} - {np.max(lpips_list):.3f})")
 
-    # For compatibility with eval.py, save results to result_path as well
-    if shutdown_path is not None:
-        np.savetxt(os.path.join(args.result_path, "psnr.txt"), psnr_list)
-        np.savetxt(os.path.join(args.result_path, "ssim.txt"), ssim_list)
-        np.savetxt(os.path.join(args.result_path, "lpips.txt"), lpips_list)
-
-        # Handle tracking time evaluation if file exists
-        tracking_time_path = os.path.join(args.result_path, "TrackingTime.txt")
-        if os.path.exists(tracking_time_path):
-            with open(tracking_time_path, "r") as fin:
-                tracking_time = fin.readlines()
-            if len(tracking_time) > 3:
-                tracking_time = np.array(tracking_time[:-3]).astype(np.float32)
-                tracking_fps = 1 / np.mean(tracking_time) if np.mean(tracking_time) > 0 else 0
-            else:
-                tracking_time = np.array([0])
-                tracking_fps = 0
+    # Handle tracking time evaluation if file exists
+    tracking_time_path = os.path.join(args.result_path, "TrackingTime.txt")
+    if os.path.exists(tracking_time_path):
+        with open(tracking_time_path, "r") as fin:
+            tracking_time = fin.readlines()
+        if len(tracking_time) > 3:  # Check if there's enough data to process
+            tracking_time = np.array(tracking_time[:-3]).astype(np.float32)
+            tracking_fps = 1 / np.mean(tracking_time) if np.mean(tracking_time) > 0 else 0
         else:
             tracking_time = np.array([0])
             tracking_fps = 0
+    else:
+        tracking_time = np.array([0])
+        tracking_fps = 0
 
-        with open(os.path.join(args.result_path, "eval.txt"), "w") as fout:
-            fout.write("psnr: {}\n".format(np.mean(psnr_list)))
-            fout.write("ssim: {}\n".format(np.mean(ssim_list)))
-            fout.write("lpips: {}\n".format(np.mean(lpips_list)))
-            fout.write("time s: {}\n".format(training_time))
-            fout.write("rendering ms: {}\n".format(np.mean(render_time)))
-            fout.write("rendering FPS: {}\n".format(1000 / np.mean(render_time)))
-            fout.write("num gaussians: {}\n".format(num_gaussians))
-
-        print(f"\nFiles saved to {args.result_path}:")
-        print(f"- eval.txt (for eval.py compatibility)")
-        print(f"- Individual metrics: psnr.txt, ssim.txt, lpips.txt")
-        if not args.skip_error_vis:
-            print(f"- Error visualizations: error_analysis/ folder")
-
-    print("\nDone!")
+    with open(os.path.join(args.result_path, "eval.txt"), "w") as fout:
+        fout.write("psnr: {}\n".format(np.mean(psnr_list)))
+        fout.write("ssim: {}\n".format(np.mean(ssim_list)))
+        fout.write("lpips: {}\n".format(np.mean(lpips_list)))
+        fout.write("time s: {}\n".format(training_time))
+        fout.write("rendering ms: {}\n".format(np.mean(render_time)))
+        fout.write("rendering FPS: {}\n".format(1000 / np.mean(render_time)))
+        fout.write("num gaussians: {}\n".format(num_gaussians))
+    
+    print(f"\nFiles saved:")
+    print(f"- Individual metrics: detailed_metrics.csv")
+    print(f"- PSNR per image: psnr_per_image.csv") 
+    print(f"- Summary statistics: metrics_summary.csv")
+    if not args.skip_error_vis:
+        print(f"- Error visualizations: error_analysis/ folder")
+    else:
+        print("- Error visualizations skipped (use --skip_error_vis=False to enable)")

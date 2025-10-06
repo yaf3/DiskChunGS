@@ -61,6 +61,7 @@
 
 class ChunkManager;      // Forward declaration
 class KeyframeSelector;  // Forward declaration
+class TrajectoryViewer;  // Forward declaration
 
 #define CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(dir)                 \
   if (!dir.empty() && !std::filesystem::exists(dir))                  \
@@ -162,6 +163,10 @@ class GaussianMapper {
     this->sensor_type_ = sensor_type;
   }
 
+  void setTrajectoryViewer(TrajectoryViewer *viewer) {
+    trajectory_viewer_ = viewer;
+  }
+
   void testTransferGaussiansAcrossChunks();
 
  protected:
@@ -218,10 +223,6 @@ class GaussianMapper {
       int k = 1);
   std::shared_ptr<GaussianKeyframe> useRecentKeyframe();
   void generateKfidRandomShuffle();
-
-  // Chunk-based optimization methods
-  std::shared_ptr<GaussianKeyframe> getNextKeyframeByChunk();
-  void updateChunkKeyframeMapping(std::shared_ptr<GaussianKeyframe> keyframe);
 
  public:
   void increaseKeyframeTimesOfUse(std::shared_ptr<GaussianKeyframe> pkf,
@@ -398,14 +399,6 @@ class GaussianMapper {
   std::map<std::size_t, int> kfs_used_times_;
   int keyframe_selection_strategy_ = 0;  // 0: all, 1: recent k, 2: chunk-based
 
-  // Chunk-based optimization data structures
-  std::unordered_map<int64_t, std::vector<int>>
-      chunk_to_keyframes_;         // chunk_id -> keyframe_ids
-  int64_t current_chunk_id_ = -1;  // Currently active chunk (-1 = none)
-  int chunk_iterations_remaining_ =
-      0;  // How many more iterations on current chunk
-  int chunk_iterations_per_chunk_ = 10;  // How long to optimize each chunk
-
   // Status
   bool initial_mapped_;
   bool interrupt_training_;
@@ -477,6 +470,7 @@ class GaussianMapper {
 
   // Tools
   std::random_device rd_;
+  TrajectoryViewer *trajectory_viewer_ = nullptr;
 
   cv::Mat external_image_;
   Sophus::SE3f external_pose_;
@@ -540,4 +534,23 @@ class GaussianMapper {
   float min_keyframe_rotation_{0.15f};  // Minimum rotation in radians
   double last_keyframe_timestamp_{0.0};
   float min_keyframe_time_{0.5f};  // Minimum time between keyframes
+
+  // Loop closure pause mechanism
+  bool shouldPauseImageIngestion() const {
+    return pause_image_ingestion_.load(std::memory_order_acquire);
+  }
+
+  void waitWhilePaused() {
+    while (pause_image_ingestion_.load(std::memory_order_acquire)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+
+ private:
+  std::atomic<bool> pause_image_ingestion_{false};
+  int loop_closure_optimization_iterations_ = 5000;
+
+  // Spatial gradient masking for loop closure
+  bool enable_spatial_gradient_masking_ = false;
+  float max_optimization_distance_ = 25.0f;  // meters
 };

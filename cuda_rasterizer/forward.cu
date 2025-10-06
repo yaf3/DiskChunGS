@@ -376,8 +376,15 @@ __global__ void __launch_bounds__(BLOCK_X* BLOCK_Y)
     if (range.x + progress < range.y) {
       int coll_id = point_list[range.x + progress];
       collected_id[block.thread_rank()] = coll_id;
-      collected_xy[block.thread_rank()] = points_xy_image[coll_id];
-      collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+      // Check for invalid indices (should be filtered by tile ranges, but add safety check)
+      if (coll_id >= 0) {
+        collected_xy[block.thread_rank()] = points_xy_image[coll_id];
+        collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+      } else {
+        // Safety: Mark dummy entries as zero opacity so they're skipped
+        collected_xy[block.thread_rank()] = {0, 0};
+        collected_conic_opacity[block.thread_rank()] = {0, 0, 0, 0};
+      }
     }
     block.sync();
 
@@ -397,6 +404,9 @@ __global__ void __launch_bounds__(BLOCK_X* BLOCK_Y)
 
       // Keep track of current position in range
       contributor++;
+
+      // Skip invalid gaussian IDs (safety check for dummy entries)
+      if (collected_id[j] < 0) continue;
 
       // Resample using conic matrix (cf. "Surface
       // Splatting" by Zwicker et al., 2001)
