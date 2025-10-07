@@ -854,9 +854,12 @@ cv::Mat ImGuiViewer::applyInfernoColormap(const cv::Mat& invdepth_image) {
   cv::max(depth, 0.0, depth);
   cv::min(depth, 100.0, depth);
 
-  // Scale [0, 100]m range to [0, 255] for colormap
+  // Invert the mapping: 0m → 255, 100m → 0
+  cv::Mat depth_inverted = 100.0 - depth;
+
+  // Scale [0, 100] range to [0, 255] for colormap
   cv::Mat depth_8u;
-  depth.convertTo(depth_8u, CV_8U, 255.0 / 100.0);
+  depth_inverted.convertTo(depth_8u, CV_8U, 255.0 / 100.0);
 
   // Apply INFERNO colormap
   cv::Mat inferno_colored;
