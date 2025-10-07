@@ -333,13 +333,18 @@ void GaussianModel::optimizerStep(torch::Tensor& visibility, const uint32_t N) {
                  std::get<0>(options.betas()), std::get<1>(options.betas()),
                  options.eps(), N, M);
     } else {
-      // ALL OTHER GROUPS: Use basic optimizer with scalar learning rates
+      // ALL OTHER GROUPS: Use sparse optimizer with scalar learning rates
+      const uint32_t M = param.numel() / N;  // Parameters per Gaussian
       float scalar_lr = group.options().get_lr();
 
-      adamUpdateBasic(param, param.grad(), param_state.exp_avg(),
-                      param_state.exp_avg_sq(), scalar_lr,
-                      std::get<0>(options.betas()),
-                      std::get<1>(options.betas()), options.eps());
+      // Convert scalar learning rate to tensor for adamUpdate
+      torch::Tensor lr_tensor = torch::tensor({scalar_lr},
+          torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
+
+      adamUpdate(param, param.grad(), param_state.exp_avg(),
+                 param_state.exp_avg_sq(), visibility, lr_tensor,
+                 std::get<0>(options.betas()), std::get<1>(options.betas()),
+                 options.eps(), N, M);
     }
   }
 
@@ -793,10 +798,14 @@ torch::Tensor GaussianModel::cullVisibleGaussians(
 
   // Apply LoD filtering based on distance
   torch::Tensor camera_position = keyframe->getCenter().squeeze();
+  // torch::Tensor lod_filtered_mask =
+  //     selectScreenSpaceLoD(chunk_visibility_mask, camera_position,
+  //                          keyframe->intr_[0], keyframe->image_width_);
+  // torch::Tensor lod_filtered_mask =
+  //     selectCumulativeLoD(chunk_visibility_mask, camera_position);
   torch::Tensor lod_filtered_mask =
-      selectScreenSpaceLoD(chunk_visibility_mask, camera_position,
-                           keyframe->intr_[0], keyframe->image_width_);
-
+      cullByScreenSpaceSize(chunk_visibility_mask, camera_position,
+                            keyframe->intr_[0], keyframe->image_width_);
   // Debug: Print culling statistics
   // int chunk_visible = chunk_visibility_mask.sum().item<int>();
   // int lod_visible = lod_filtered_mask.sum().item<int>();
@@ -2504,18 +2513,33 @@ torch::Tensor GaussianModel::selectScreenSpaceLoD(
   torch::Tensor visible_opacities =
       getOpacityActivation().index({visible_indices});
 
-  // Compute distances and max scaling
+  // Compute distances and geometric mean scaling
   torch::Tensor distances =
       torch::norm(visible_positions - camera_position.unsqueeze(0), 2, 1);
-  torch::Tensor max_scalings = std::get<0>(torch::max(visible_scalings, 1));
+  torch::Tensor geom_mean_scale =
+      torch::pow(visible_scalings.prod(1), 1.0 / 3.0);
 
   // Screen-space size (in pixels)
   torch::Tensor screen_sizes =
-      focal_length * max_scalings / torch::clamp_min(distances, 0.1f);
+      focal_length * geom_mean_scale / torch::clamp_min(distances, 0.1f);
 
-  // === Unified Importance Score ===
-  torch::Tensor importance = screen_sizes * visible_opacities.squeeze() /
-                             torch::sqrt(distances / chunk_size_);
+  // === Importance Score ===
+  // screen_sizes already accounts for distance, so just multiply by opacity
+  torch::Tensor importance = screen_sizes * visible_opacities.squeeze();
+
+  // === Early Culling ===
+  // Remove gaussians that contribute negligibly (opacity < 0.01 or < 1 pixel)
+  torch::Tensor cull_mask =
+      (visible_opacities.squeeze() > 0.01f) & (screen_sizes > 1.0f);
+  torch::Tensor culled_indices = torch::where(cull_mask)[0];
+
+  if (culled_indices.size(0) == 0) {
+    return torch::zeros_like(visible_gaussian_mask);
+  }
+
+  // Apply culling to our data
+  visible_indices = visible_indices.index({culled_indices});
+  importance = importance.index({culled_indices});
 
   // === Fixed Budget Selection ===
   int num_visible = visible_indices.size(0);
@@ -2534,15 +2558,43 @@ torch::Tensor GaussianModel::selectScreenSpaceLoD(
     final_keep.index_put_({sort_indices.slice(0, 0, max_gaussians)}, true);
   }
 
-  // Optional: Hard cutoffs for clearly invisible Gaussians
-  // (This ensures we don't waste budget on invisible splats)
-  // torch::Tensor hard_cull =
-  //     (screen_sizes < 0.3f) | (visible_opacities.squeeze() < 0.01f);
-  // final_keep = final_keep & ~hard_cull;
-
   // Update visible mask
   torch::Tensor result = torch::zeros_like(visible_gaussian_mask);
   result.index_put_({visible_indices}, final_keep);
+
+  return result;
+}
+
+torch::Tensor GaussianModel::cullByScreenSpaceSize(
+    const torch::Tensor& visible_gaussian_mask,
+    const torch::Tensor& camera_position,
+    float focal_length,
+    float min_pixel_size) {
+  torch::Tensor visible_indices = torch::where(visible_gaussian_mask)[0];
+  if (visible_indices.size(0) == 0) {
+    return visible_gaussian_mask;
+  }
+
+  torch::Tensor visible_positions = xyz_.index({visible_indices});
+  torch::Tensor visible_scalings =
+      getScalingActivation().index({visible_indices});
+
+  // Compute distances and geometric mean scaling
+  torch::Tensor distances =
+      torch::norm(visible_positions - camera_position.unsqueeze(0), 2, 1);
+  torch::Tensor geom_mean_scale =
+      torch::pow(visible_scalings.prod(1), 1.0 / 3.0);
+
+  // Screen-space size (in pixels)
+  torch::Tensor screen_sizes =
+      focal_length * geom_mean_scale / torch::clamp_min(distances, 0.1f);
+
+  // Cull gaussians smaller than threshold
+  torch::Tensor keep_mask = screen_sizes > min_pixel_size;
+
+  // Update visible mask
+  torch::Tensor result = torch::zeros_like(visible_gaussian_mask);
+  result.index_put_({visible_indices.index({keep_mask})}, true);
 
   return result;
 }

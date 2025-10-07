@@ -203,6 +203,11 @@ class GaussianModel {
                                      float focal_length,
                                      int image_width);
 
+  torch::Tensor cullByScreenSpaceSize(const torch::Tensor& visible_gaussian_mask,
+                                      const torch::Tensor& camera_position,
+                                      float focal_length,
+                                      float min_pixel_size = 1.0f);
+
   torch::Tensor selectCumulativeLoD(const torch::Tensor& visible_gaussian_mask,
                                     const torch::Tensor& camera_position);
 
