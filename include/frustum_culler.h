@@ -1,7 +1,6 @@
 #pragma once
 
 #include <Eigen/Dense>
-#include <chrono>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -40,30 +39,19 @@ class FrustumCullingCache {
   struct CacheEntry {
     Sophus::SE3d pose;  // Keyframe pose when visibility was calculated
     std::vector<ChunkCoord> visible_chunks;  // Visible chunk coordinates
-    std::chrono::steady_clock::time_point
-        timestamp;  // When this cache entry was created/updated
   };
 
-  FrustumCullingCache(float chunk_size,
-                      std::chrono::seconds expiry_time = std::chrono::seconds(10),
-                      size_t max_entries = 100)
-      : chunk_size_(chunk_size),
-        cache_expiry_time_(expiry_time),
-        max_cache_entries_(max_entries) {}
+  explicit FrustumCullingCache(float chunk_size) : chunk_size_(chunk_size) {}
 
   // Try to get cached result
   bool getCached(size_t keyframe_id,
                  const Sophus::SE3d& current_pose,
                  std::vector<ChunkCoord>& out_chunks) {
-    std::lock_guard<std::mutex> lock(cache_mutex_);
-    auto now = std::chrono::steady_clock::now();
     auto cache_it = cache_.find(keyframe_id);
 
     if (cache_it != cache_.end()) {
       auto& entry = cache_it->second;
-      if ((now - entry.timestamp) < cache_expiry_time_ &&
-          poseNearlyEqual(current_pose, entry.pose)) {
-        entry.timestamp = now;  // Update timestamp
+      if (poseNearlyEqual(current_pose, entry.pose)) {
         out_chunks = entry.visible_chunks;
         return true;
       }
@@ -75,37 +63,17 @@ class FrustumCullingCache {
   void updateCache(size_t keyframe_id,
                    const Sophus::SE3d& pose,
                    const std::vector<ChunkCoord>& visible_chunks) {
-    std::lock_guard<std::mutex> lock(cache_mutex_);
     CacheEntry entry;
     entry.pose = pose;
     entry.visible_chunks = visible_chunks;
-    entry.timestamp = std::chrono::steady_clock::now();
     cache_[keyframe_id] = entry;
-
-    // Limit cache size
-    if (cache_.size() > max_cache_entries_) {
-      // Remove oldest entry
-      auto oldest = cache_.begin();
-      for (auto it = cache_.begin(); it != cache_.end(); ++it) {
-        if (it->second.timestamp < oldest->second.timestamp) {
-          oldest = it;
-        }
-      }
-      cache_.erase(oldest);
-    }
   }
 
-  void clearCache() {
-    std::lock_guard<std::mutex> lock(cache_mutex_);
-    cache_.clear();
-  }
+  void clearCache() { cache_.clear(); }
 
  private:
   float chunk_size_;
-  std::chrono::seconds cache_expiry_time_;
-  size_t max_cache_entries_;
   std::unordered_map<size_t, CacheEntry> cache_;
-  std::mutex cache_mutex_;
 
   // Helper to compare poses for cache validity
   bool poseNearlyEqual(const Sophus::SE3d& a, const Sophus::SE3d& b) {
