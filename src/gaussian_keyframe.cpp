@@ -427,8 +427,8 @@ void GaussianKeyframe::step() {
 
   depth_loss_weight *= depth_loss_weight_decay_;
 
-  optimizer_->step();
-  optimizer_->zero_grad();
+  // optimizer_->step();
+  // optimizer_->zero_grad();
 
   local_iterations_++;
 }
