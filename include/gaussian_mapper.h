@@ -548,7 +548,7 @@ class GaussianMapper {
 
  private:
   std::atomic<bool> pause_image_ingestion_{false};
-  int loop_closure_optimization_iterations_ = 5000;
+  int loop_closure_optimization_iterations_ = 1000;
 
   // Spatial gradient masking for loop closure
   bool enable_spatial_gradient_masking_ = false;
