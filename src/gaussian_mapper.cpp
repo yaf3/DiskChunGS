@@ -942,6 +942,23 @@ void GaussianMapper::trainForOneIteration(
           scene_->cameras_.at(viewpoint_cam->camera_id_)
               .gaus_pyramid_undistort_mask_);
 
+  // Save depth for debugging
+  // if (gt_inv_depth.defined()) {
+  //   std::filesystem::create_directories("./debug_depth");
+
+  //   // Clip inverse depth: depth > 50m means inv_depth < 0.02, set those to 0
+  //   float max_depth_threshold = 50.0f;
+  //   float min_inv_depth_threshold = 1.0f / max_depth_threshold;
+  //   torch::Tensor gt_inv_depth_clipped =
+  //       torch::where(gt_inv_depth < min_inv_depth_threshold,
+  //                    torch::zeros_like(gt_inv_depth), gt_inv_depth);
+
+  //   std::string depth_filename =
+  //       "./debug_depth/" + std::to_string(viewpoint_cam->fid_) + ".png";
+  //   colorize_and_save_depth(gt_inv_depth_clipped.detach().cpu(),
+  //                           depth_filename);
+  // }
+
   auto timer_waitForMutex = ProfilingUtils::Timer("waitForMutex");
   // Mutex lock for usage of the gaussian model
   std::unique_lock<std::mutex> lock_render(mutex_render_);
@@ -970,11 +987,6 @@ void GaussianMapper::trainForOneIteration(
   torch::Tensor visible_gaussian_mask =
       gaussians_->cullVisibleGaussians(viewpoint_cam);
 
-  torch::Tensor visible_gaussian_indices =
-      torch::nonzero(visible_gaussian_mask).squeeze(1);
-
-  int num_visible = visible_gaussian_mask.sum().item<int>();
-
   // Compute spatial optimization mask if enabled
   torch::Tensor optimization_mask;
   if (enable_spatial_gradient_masking_) {
@@ -984,16 +996,12 @@ void GaussianMapper::trainForOneIteration(
         torch::norm(gaussians_->xyz_ - keyframe_pos, 2, /*dim=*/1);  // [N]
 
     optimization_mask = distances <= max_optimization_distance_;  // [N] bool
-
-    int num_in_radius = optimization_mask.sum().item<int>();
-    // std::cout << "[Spatial Masking] " << num_in_radius << " / "
-    //           << gaussians_->xyz_.size(0) << " gaussians within "
+    // std::cout << "[Spatial Masking] " << optimization_mask.sum().item<int>()
+    //           << " / " << gaussians_->xyz_.size(0) << " gaussians within "
     //           << max_optimization_distance_ << "m radius" << std::endl;
   } else {
-    // Default: optimize all gaussians
-    optimization_mask = torch::ones(
-        {gaussians_->xyz_.size(0)},
-        torch::TensorOptions().dtype(torch::kBool).device(device_type_));
+    // Default: optimize all gaussians (reuse visible mask to avoid allocation)
+    optimization_mask = visible_gaussian_mask;
   }
   // std::cout << "[DEBUG] visible gaussians=" << num_visible << " / "
   //           << visible_gaussian_mask.size(0) << std::endl;
@@ -1044,16 +1052,39 @@ void GaussianMapper::trainForOneIteration(
   auto Ll1 = l1_loss(rendered_image, gt_image, 1.0f);
   auto Lssim = loss_utils::fast_ssim(rendered_image, gt_image);
   float lambda_dssim = lambdaDssim();
-  float lambda_depth = lambdaDepth();
   auto loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - Lssim);
+  // if (opt_params_.opacity_reg_) {
+  //   loss += opt_params_.opacity_reg_ *
+  //           gaussians_->getOpacityActivation().abs().mean();
+  // }
+
+  // if (gt_inv_depth.defined()) {
+  //   torch::Tensor rendered_inv_depth = std::get<0>(render_pkg);
+
+  //   // Clip inverse depth: depth > 50m means inv_depth < 0.02, set those to 0
+  //   float max_depth_threshold = 50.0f;
+  //   float min_inv_depth_threshold = 1.0f / max_depth_threshold;
+  //   torch::Tensor gt_inv_depth_clipped =
+  //       torch::where(gt_inv_depth < min_inv_depth_threshold,
+  //                    torch::zeros_like(gt_inv_depth), gt_inv_depth);
+
+  //   // Compute loss with masking for 0 values (sky/far regions)
+  //   torch::Tensor depth_diff =
+  //       (rendered_inv_depth - gt_inv_depth_clipped).abs();
+  //   depth_diff = depth_diff.masked_fill(gt_inv_depth_clipped == 0, 0);
+  //   torch::Tensor depth_loss = depth_diff.mean();
+
+  //   loss += 1.0 * depth_loss;
+  // }
 
   if (gt_inv_depth.defined()) {
+    float lambda_depth = lambdaDepth();
     torch::Tensor rendered_inv_depth = std::get<0>(render_pkg);
     // depth_loss = loss_utils::smooth_l1_depth_loss(rendered_depth,
     // gt_depth);
     torch::Tensor depth_loss = (rendered_inv_depth - gt_inv_depth).abs().mean();
-    loss += viewpoint_cam->depth_loss_weight * depth_loss;
-    // loss += 0.2 * depth_loss;
+    // loss += viewpoint_cam->depth_loss_weight * depth_loss;
+    loss += lambda_depth * depth_loss;
   }
 
   timer_loss_calculation.stop();
@@ -1088,12 +1119,16 @@ void GaussianMapper::trainForOneIteration(
         {gaussians_->getXYZ().size(0)},
         torch::TensorOptions().dtype(torch::kBool).device(torch::kCUDA));
 
+    // Compute indices only when needed for mapping radii back to full model
+    torch::Tensor visible_gaussian_indices =
+        torch::nonzero(visible_gaussian_mask).squeeze(1);
+
     // Set true for gaussians that were both visible AND had radii > 0
     full_model_contributed.index_put_({visible_gaussian_indices},
                                       subset_contributed);
 
-    // Only optimize gaussians that BOTH contributed AND are within optimization
-    // radius
+    // Only optimize gaussians that BOTH contributed AND are within
+    // optimization radius
     torch::Tensor final_optimization_mask =
         full_model_contributed & optimization_mask;
 
@@ -1670,12 +1705,12 @@ int GaussianMapper::processBatchedLoopClosure(
         torch::Tensor visible_gaussians =
             gaussians_->cullVisibleGaussians(pkf, false, false);
         if (torch::any(visible_gaussians).item<bool>()) {
-          gaussians_->resetOpacityForMask(visible_gaussians);
+          // gaussians_->resetOpacityForMask(visible_gaussians);
           gaussians_->resetPositionLRAndOptimizerState(visible_gaussians);
         }
         // Reset depth loss weight for keyframe that underwent large
         // transformation
-        pkf->resetDepthLossWeight();
+        // pkf->resetDepthLossWeight();
       }
 
       if (large_rot || large_trans) {
