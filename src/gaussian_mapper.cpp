@@ -865,9 +865,11 @@ void GaussianMapper::trainForOneIteration(
     metrics.reserved_memory_mb = reserved_MB;
     metrics.allocated_memory_mb = alloc_MB;
     metrics.ram_usage_mb = getCurrentRAMUsageMB();
-    // metrics.queue_keyframes = keyframe_queue_->getQueueSize();
-    metrics.queue_keyframes = 0;
-
+    if (keyframe_selection_strategy_ == 1)
+      metrics.queue_keyframes = keyframe_queue_->getQueueSize();
+    else {
+      metrics.queue_keyframes = 0;
+    }
     training_metrics_.push_back(metrics);
   }
 
@@ -1300,7 +1302,7 @@ void GaussianMapper::combineMappingOperations() {
               << std::endl;
 
     // Enable spatial gradient masking during loop closure
-    enable_spatial_gradient_masking_ = true;
+    enable_spatial_gradient_masking_ = false;
 
     for (int i = 0; i < loop_closure_optimization_iterations_; i++) {
       trainForOneIteration();
@@ -2176,6 +2178,31 @@ GaussianMapper::useOneRandomSlidingWindowKeyframe() {
 
   // Handle times of use
   --(viewpoint_cam->remaining_times_of_use_);
+
+  // Efficient GPU memory management
+  if (!viewpoint_cam->loaded_) {
+    viewpoint_cam->loadDataFromDisk();
+  }
+
+  // Remove keyframe if already in queue to avoid duplicates
+  auto queue_it = std::find(gpu_queue.begin(), gpu_queue.end(), viewpoint_cam);
+  if (queue_it != gpu_queue.end()) {
+    gpu_queue.erase(queue_it);
+  }
+
+  // Add to front (most recently used)
+  gpu_queue.push_front(viewpoint_cam);
+
+  // Clean up oldest keyframes
+  while (gpu_queue.size() > max_gpu_keyframes_) {
+    std::shared_ptr<GaussianKeyframe> oldest = gpu_queue.back();
+    gpu_queue.pop_back();
+
+    // Only transfer to CPU if it's loaded and not the selected one
+    if (oldest->loaded_ && oldest != viewpoint_cam) {
+      oldest->saveDataToDisk();
+    }
+  }
 
   // auto t2 = std::chrono::steady_clock::now();
   // auto t21 =

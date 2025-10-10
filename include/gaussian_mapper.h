@@ -553,4 +553,7 @@ class GaussianMapper {
   // Spatial gradient masking for loop closure
   bool enable_spatial_gradient_masking_ = false;
   float max_optimization_distance_ = 25.0f;  // meters
+
+  std::deque<std::shared_ptr<GaussianKeyframe>> gpu_queue;
+  size_t max_gpu_keyframes_ = 400;
 };
