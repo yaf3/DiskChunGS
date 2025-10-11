@@ -783,8 +783,10 @@ void GaussianMapper::run() {
     std::cout << "[MAPPER DEBUG] Rendering fly-through video" << std::endl;
     auto video_dir = result_dir_ / "flythrough";
     CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
-    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30,
+    renderFlyThroughVideo(video_dir / "output_video", 2452, 740, 30,
                           render_fly_through_speed_, 0.8f, 2);
+    // renderFlyThroughVideo(video_dir / "output_video_2", 1226, 360, 30,
+    //                       render_fly_through_speed_, 0.8f, 2);
   }
 
   std::cout << "[MAPPER DEBUG] Saving total gaussians" << std::endl;
@@ -4360,7 +4362,9 @@ void GaussianMapper::run_external_poses() {
   if (render_fly_through_) {
     auto video_dir = result_dir_ / "flythrough";
     CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
-    renderFlyThroughVideo(video_dir / "output_video", 1920, 1080, 30,
+    renderFlyThroughVideo(video_dir / "output_video", 2452, 740, 30,
+                          render_fly_through_speed_, 0.8f, 2);
+    renderFlyThroughVideo(video_dir / "output_video_2", 1226, 360, 30,
                           render_fly_through_speed_, 0.8f, 2);
     // render3DExplorationVideo(video_dir / "3d_exploration", 1920, 1080, 30,
     //                          20.0f, 0.05f, false);
@@ -4657,17 +4661,22 @@ void GaussianMapper::initializeLaplacianOfGaussianKernel() {
 
 void GaussianMapper::initializeStereoDepthEstimator() {
   cv::Size model_resolution(1280, 384);
+
+  // ONNX model in Docker image (rebuilt on each Docker build)
   std::string model_path =
-      "/workspace/repo/models/fast_acvnet_plus_onnx_gridsample/"
+      "/workspace/models/fast_acvnet_plus_onnx_gridsample/"
       "fast_acvnet_plus_kitti_2015_opset16_" +
       std::to_string(model_resolution.height) + "x" +
       std::to_string(model_resolution.width) + ".onnx";
 
+  // Engine will be saved to /workspace/repo/engines/ (persistent)
+  // by StereoDepth::initialize_model()
+
   // std::string model_path =
-  //     "/workspace/repo/models/crestereo/"
+  //     "/workspace/models/crestereo/"
   //     "crestereo_init_iter20_720x1280.onnx";
   // std::string model_path =
-  //     "/workspace/repo/models/IGEV-plusplus/"
+  //     "/workspace/models/IGEV-plusplus/"
   //     "IGEVplusplusRT_fp32_iter6_kitti.onnx";
   this->stereo_depth_estimator_ = std::make_shared<StereoDepth>(model_path);
 }
@@ -4679,25 +4688,64 @@ void GaussianMapper::initializeMonocularDepthEstimator() {
   // "/workspace/repo/models/depth_anything/"
   // "depth_anything_v2_vitl.onnx";
 
+  // ONNX model in Docker image (rebuilt on each Docker build)
   std::string onnx_path =
       "/workspace/models/"
       "depth_anything_v2_vitl.onnx";
 
-  // Create engine path by replacing .onnx with .engine
-  std::string engine_path =
-      onnx_path.substr(0, onnx_path.find_last_of(".")) + ".engine";
+  // Engine in persistent volume mount (survives Docker rebuilds)
+  std::string persistent_engine_path =
+      "/workspace/repo/engines/depth_anything_v2_vitl.engine";
+
+  // Temporary engine path (where DepthAnything initially saves it)
+  std::string temp_engine_path =
+      "/workspace/models/depth_anything_v2_vitl.engine";
 
   std::string model_path;
 
-  // Check if engine file exists
-  if (std::filesystem::exists(engine_path)) {
-    std::cout << "Using cached TensorRT engine: " << engine_path << std::endl;
-    model_path = engine_path;
-  } else {
-    std::cout << "Engine file not found. Building from ONNX: " << onnx_path
+  // Check if persistent engine file exists
+  if (std::filesystem::exists(persistent_engine_path)) {
+    std::cout << "Using cached TensorRT engine: " << persistent_engine_path
               << std::endl;
-    std::cout << "This will create: " << engine_path << std::endl;
-    model_path = onnx_path;
+    model_path = persistent_engine_path;
+  } else {
+    std::cout << "Persistent engine not found. Building from ONNX: "
+              << onnx_path << std::endl;
+
+    // Check if temporary engine exists from previous run
+    if (std::filesystem::exists(temp_engine_path)) {
+      std::cout << "Found temporary engine, moving to persistent location..."
+                << std::endl;
+      // Create engines directory if it doesn't exist
+      std::filesystem::create_directories("/workspace/repo/engines");
+      std::filesystem::copy_file(
+          temp_engine_path, persistent_engine_path,
+          std::filesystem::copy_options::overwrite_existing);
+      model_path = persistent_engine_path;
+    } else {
+      // Build from ONNX (DepthAnything will save to temp location)
+      std::cout << "Building TensorRT engine from ONNX (this may take a few "
+                   "minutes)..."
+                << std::endl;
+      model_path = onnx_path;
+
+      // Initialize with ONNX to trigger build
+      this->monocular_depth_estimator_ =
+          std::make_shared<MonoDepth>(model_path);
+
+      // Copy the built engine to persistent location
+      if (std::filesystem::exists(temp_engine_path)) {
+        std::cout << "Saving engine to persistent location: "
+                  << persistent_engine_path << std::endl;
+        std::filesystem::create_directories("/workspace/repo/engines");
+        std::filesystem::copy_file(
+            temp_engine_path, persistent_engine_path,
+            std::filesystem::copy_options::overwrite_existing);
+        std::cout << "Engine saved! Future runs will use the cached engine."
+                  << std::endl;
+      }
+      return;  // Already initialized
+    }
   }
 
   this->monocular_depth_estimator_ = std::make_shared<MonoDepth>(model_path);
