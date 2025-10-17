@@ -4519,6 +4519,10 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
   // Give new keyframes times of use and add it to the training sliding window
   increaseKeyframeTimesOfUse(pkf, newKeyframeTimesOfUse());
 
+  if (keyframe_selection_strategy_ == 1) {
+    keyframe_queue_->updateChunkKeyframeMapping(pkf, true);
+  }
+
   cv::Mat rgb_undistorted = rgb_image;
 
   torch::Tensor input_tensor = feat_extractor_->parseInput(rgb_undistorted);
@@ -4547,11 +4551,10 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
   } else {
     throw std::runtime_error("Unsupported sensor_type");
   }
+  pkf->loaded_ = true;
 
   std::unique_lock<std::mutex> lock(mutex_render_);
   sampleGaussians(pkf);
-
-  pkf->loaded_ = true;
   pkf->allow_eviction_ = true;
 
   // std::cout << "[ProcessFrame] Successfully completed" << std::endl;
