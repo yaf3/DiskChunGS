@@ -544,6 +544,11 @@ void GaussianMapper::run() {
       std::chrono::steady_clock::now();
   training_start_time_ = training_start;
 
+  // Set cameras extent early so it's available for all keyframe processing
+  scene_->cameras_extent_ = std::get<1>(scene_->getNerfppNorm());
+  scene_->cameras_extent_ = 1.0;  // For debugging, maybe its better without;
+  std::cout << "Extent: " << scene_->cameras_extent_ << std::endl;
+
   // Delete existing chunks since training
   std::filesystem::remove_all(chunk_save_dir_);
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
@@ -570,103 +575,36 @@ void GaussianMapper::run() {
         vpKFs = pMap->GetAllKeyFrames();
 
         for (const auto& pKF : vpKFs) {
-          std::shared_ptr<GaussianKeyframe> new_kf =
-              std::make_shared<GaussianKeyframe>(pKF->mnId, getIteration(),
-                                                 keyframe_save_dir_);
-          new_kf->zfar_ = z_far_;
-          new_kf->znear_ = z_near_;
-          // Pose
-          auto pose = pKF->GetPose();
-          new_kf->setPose(pose.unit_quaternion().cast<double>(),
-                          pose.translation().cast<double>());
-          cv::Mat imgRGB_undistorted, imgAux_undistorted;
-          try {
-            // Camera
-            Camera& camera = scene_->cameras_.at(pKF->mpCamera->GetId());
-            new_kf->setCameraParams(camera);
-
-            assert(!pKF->imgLeftRGB.empty() && !pKF->imgAuxiliary.empty());
-            imgRGB_undistorted = pKF->imgLeftRGB;
-            imgAux_undistorted = pKF->imgAuxiliary;
-
-            new_kf->img_filename_ = pKF->mNameFile;
-            new_kf->gaus_pyramid_height_ = camera.gaus_pyramid_height_;
-            new_kf->gaus_pyramid_width_ = camera.gaus_pyramid_width_;
-            new_kf->gaus_pyramid_times_of_use_ = kf_gaus_pyramid_times_of_use_;
-          } catch (std::out_of_range) {
-            throw std::runtime_error(
-                "[GaussianMapper::run]KeyFrame Camera not found!");
-          }
-          new_kf->computeTransformTensors();
-          scene_->addKeyframe(new_kf);
-          new_kf->initOptimizer(device_type_, opt_params_.pose_lr_,
-                                opt_params_.exposure_lr_,
-                                opt_params_.depth_scale_bias_lr_);
-          kfid_shuffled_ = false;
-
-          // Update chunk-keyframe mapping
-          if (keyframe_selection_strategy_ == 1) {
-            keyframe_queue_->updateChunkKeyframeMapping(new_kf, true);
-          }
-
-          increaseKeyframeTimesOfUse(new_kf, newKeyframeTimesOfUse());
-
-          // Features
+          // Get keypoint info
           std::vector<float> pixels;
           std::vector<float> pointsLocal;
           pKF->GetKeypointInfo(pixels, pointsLocal);
-          new_kf->kps_pixel_ = std::move(pixels);
-          new_kf->kps_point_local_ = std::move(pointsLocal);
-          torch::Tensor input_tensor =
-              feat_extractor_->parseInput(imgRGB_undistorted);
-          new_kf->feature_map_ =
-              feat_extractor_->extractDenseFeatures(input_tensor);
-          // std::cout << "Features Sizes: " << new_kf->feature_map_.sizes()
-          //           << std::endl;
 
-          new_kf->generateImagePyramid(imgRGB_undistorted);
+          // Create tuple matching handleNewKeyframeFromORBSLAM signature
+          std::tuple<unsigned long, unsigned long, Sophus::SE3f, cv::Mat, bool,
+                     cv::Mat, std::vector<float>, std::vector<float>, std::string>
+              kf_tuple = std::make_tuple(
+                  pKF->mnId,                  // Id
+                  pKF->mpCamera->GetId(),     // CameraId
+                  pKF->GetPose(),             // pose
+                  pKF->imgLeftRGB,            // image
+                  false,                      // isLoopClosure
+                  pKF->imgAuxiliary,          // auxiliaryImage
+                  std::move(pixels),          // keypoint pixels
+                  std::move(pointsLocal),     // keypoint points local
+                  pKF->mNameFile              // filename
+              );
 
-          if (sensor_type_ == MONOCULAR) {
-            new_kf->setupMonoData(imgRGB_undistorted, device_type_,
-                                  monocular_depth_estimator_, min_depth_,
-                                  max_depth_);
-          } else if (sensor_type_ == STEREO && !imgAux_undistorted.empty()) {
-            new_kf->setupStereoData(
-                imgRGB_undistorted, imgAux_undistorted, stereo_baseline_length_,
-                device_type_, stereo_depth_estimator_, min_depth_, max_depth_);
-          } else if (sensor_type_ == RGBD && !imgAux_undistorted.empty()) {
-            new_kf->setupRGBDData(imgAux_undistorted);
+          // Use the common keyframe handling function
+          handleNewKeyframeFromORBSLAM(kf_tuple);
+
+          // Setup training on first keyframe
+          if (!initial_mapped_) {
+            gaussians_->trainingSetup(opt_params_);
+            std::cout << "Inital mapped!\n";
+            initial_mapped_ = true;
           }
-
-          new_kf->loaded_ = true;
-
-          pSLAM_->getAtlas()->ReleaseKeyFrameImages(pKF->mnId);
-
-          // imgRGB_undistorted.release();
-          // imgAux_undistorted.release();
         }
-      }
-
-      // Prepare multi resolution images for training
-      for (auto& kfit : scene_->keyframes()) {
-        auto pkf = kfit.second;
-
-        if (!initial_mapped_) {
-          scene_->cameras_extent_ = std::get<1>(scene_->getNerfppNorm());
-          scene_->cameras_extent_ =
-              1.0;  // For debugging, maybe its better without;
-          std::cout << "Extent: " << scene_->cameras_extent_ << std::endl;
-
-          std::unique_lock<std::mutex> lock_render(mutex_render_);
-          sampleGaussians(pkf);
-          gaussians_->trainingSetup(opt_params_);
-          std::cout << "Inital mapped!\n";
-          initial_mapped_ = true;
-        } else {
-          std::unique_lock<std::mutex> lock_render(mutex_render_);
-          sampleGaussians(pkf);
-        }
-        pkf->allow_eviction_ = true;
       }
 
       // Invoke training once
@@ -1400,7 +1338,7 @@ void GaussianMapper::processLocalMappingBABatch(
         // }
       } else {
         // Create a new keyframe
-        handleNewKeyframe(kf);
+        handleNewKeyframeFromORBSLAM(kf);
       }
     }
   }
@@ -1433,7 +1371,7 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
 
     if (!pkf) {
       std::cout << "New frame in loop-closure" << std::endl;
-      handleNewKeyframe(kf);  // This modifies chunks!
+      handleNewKeyframeFromORBSLAM(kf);  // This modifies chunks!
     }
   }
 
@@ -2016,49 +1954,30 @@ void GaussianMapper::processScaleRefinement(ORB_SLAM3::MappingOperation& opr) {
   // chunk_manager_->transferGaussiansAcrossChunks();
 }
 
-void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
-                                                  unsigned long /*CameraId*/,
-                                                  Sophus::SE3f /*pose*/,
-                                                  cv::Mat /*image*/,
-                                                  bool /*isLoopClosure*/,
-                                                  cv::Mat /*auxiliaryImage*/,
-                                                  std::vector<float>,
-                                                  std::vector<float>,
-                                                  std::string>& kf) {
-  std::shared_ptr<GaussianKeyframe> pkf = std::make_shared<GaussianKeyframe>(
-      std::get<0>(kf), getIteration(), keyframe_save_dir_);
+// Common keyframe initialization logic used by both ORB-SLAM and external modes
+void GaussianMapper::createAndInitializeKeyframe(
+    std::shared_ptr<GaussianKeyframe>& pkf,
+    cv::Mat& rgb_image,
+    cv::Mat& aux_image,
+    const Camera& camera,
+    const std::string& filename) {
+  // Set z clipping planes
   pkf->zfar_ = z_far_ * scene_->cameras_extent_;
   pkf->znear_ = z_near_ * scene_->cameras_extent_;
 
-  // std::cout << "Zfar: " << pkf->zfar_ << " Znear: " << pkf->znear_ <<
-  // std::endl; Pose
-  auto& pose = std::get<2>(kf);
-  pkf->setPose(pose.unit_quaternion().cast<double>(),
-               pose.translation().cast<double>());
-  cv::Mat imgRGB_undistorted, imgAux_undistorted;
-  try {
-    // Camera
-    Camera& camera = scene_->cameras_.at(std::get<1>(kf));
-    pkf->setCameraParams(camera);
+  // Set camera parameters
+  pkf->setCameraParams(camera);
+  pkf->img_filename_ = filename;
+  pkf->gaus_pyramid_height_ = camera.gaus_pyramid_height_;
+  pkf->gaus_pyramid_width_ = camera.gaus_pyramid_width_;
+  pkf->gaus_pyramid_times_of_use_ = kf_gaus_pyramid_times_of_use_;
 
-    imgRGB_undistorted = std::get<3>(kf);
-    imgAux_undistorted = std::get<5>(kf);
-
-    pkf->img_filename_ = std::get<8>(kf);
-    pkf->gaus_pyramid_height_ = camera.gaus_pyramid_height_;
-    pkf->gaus_pyramid_width_ = camera.gaus_pyramid_width_;
-    pkf->gaus_pyramid_times_of_use_ = kf_gaus_pyramid_times_of_use_;
-  } catch (std::out_of_range) {
-    throw std::runtime_error(
-        "[GaussianMapper::combineMappingOperations]KeyFrame Camera not "
-        "found!");
-  }
   // Add the new keyframe to the scene
   pkf->computeTransformTensors();
   scene_->addKeyframe(pkf);
   kfid_shuffled_ = false;
-  // Only update it if we are actually using it
-  // Update chunk-keyframe mapping
+
+  // Update chunk-keyframe mapping if using strategy 1
   if (keyframe_selection_strategy_ == 1) {
     keyframe_queue_->updateChunkKeyframeMapping(pkf, true);
   }
@@ -2066,45 +1985,82 @@ void GaussianMapper::handleNewKeyframe(std::tuple<unsigned long /*Id*/,
   // Give new keyframes times of use and add it to the training sliding window
   increaseKeyframeTimesOfUse(pkf, newKeyframeTimesOfUse());
 
-  // Get dense point cloud from the new keyframe to accelerate training
-  pkf->kps_pixel_ = std::move(std::get<6>(kf));
-  pkf->kps_point_local_ = std::move(std::get<7>(kf));
-
-  torch::Tensor input_tensor = feat_extractor_->parseInput(imgRGB_undistorted);
+  // Extract dense features
+  torch::Tensor input_tensor = feat_extractor_->parseInput(rgb_image);
   pkf->feature_map_ = feat_extractor_->extractDenseFeatures(input_tensor);
 
+  // Initialize optimizer
   pkf->initOptimizer(device_type_, opt_params_.pose_lr_,
                      opt_params_.exposure_lr_,
                      opt_params_.depth_scale_bias_lr_);
 
   // Prepare multi resolution images for training
-  pkf->generateImagePyramid(imgRGB_undistorted);
+  pkf->generateImagePyramid(rgb_image);
 
+  // Setup depth data based on sensor type
   if (sensor_type_ == MONOCULAR) {
-    pkf->setupMonoData(imgRGB_undistorted, device_type_,
-                       monocular_depth_estimator_, min_depth_, max_depth_);
-  } else if (sensor_type_ == STEREO && !imgAux_undistorted.empty()) {
-    pkf->setupStereoData(imgRGB_undistorted, imgAux_undistorted,
-                         stereo_baseline_length_, device_type_,
-                         stereo_depth_estimator_, min_depth_, max_depth_);
-  } else if (sensor_type_ == RGBD && !imgAux_undistorted.empty()) {
-    pkf->setupRGBDData(imgAux_undistorted);
+    pkf->setupMonoData(rgb_image, device_type_, monocular_depth_estimator_,
+                       min_depth_, max_depth_);
+  } else if (sensor_type_ == STEREO && !aux_image.empty()) {
+    pkf->setupStereoData(rgb_image, aux_image, stereo_baseline_length_,
+                         device_type_, stereo_depth_estimator_, min_depth_,
+                         max_depth_);
+  } else if (sensor_type_ == RGBD && !aux_image.empty()) {
+    pkf->setupRGBDData(aux_image);
   }
 
   pkf->loaded_ = true;
-  // std::cout << "[Gaussian Mapper] New keyframe " << pkf->fid_
-  //           << " added to the scene. Total keyframes: "
-  //           << scene_->keyframes().size() << std::endl;
 
-  // imgRGB_undistorted.release();
-  // imgAux_undistorted.release();
-
+  // Sample gaussians (requires render lock)
   std::unique_lock<std::mutex> lock_render(mutex_render_);
   sampleGaussians(pkf);
 
-  pSLAM_->getAtlas()->ReleaseKeyFrameImages(pkf->fid_);
-
   pkf->allow_eviction_ = true;
+}
+
+void GaussianMapper::handleNewKeyframeFromORBSLAM(
+    std::tuple<unsigned long /*Id*/,
+               unsigned long /*CameraId*/,
+               Sophus::SE3f /*pose*/,
+               cv::Mat /*image*/,
+               bool /*isLoopClosure*/,
+               cv::Mat /*auxiliaryImage*/,
+               std::vector<float>,
+               std::vector<float>,
+               std::string>& kf) {
+  // Create keyframe
+  std::shared_ptr<GaussianKeyframe> pkf = std::make_shared<GaussianKeyframe>(
+      std::get<0>(kf), getIteration(), keyframe_save_dir_);
+
+  // Set pose from ORB-SLAM data
+  auto& pose = std::get<2>(kf);
+  pkf->setPose(pose.unit_quaternion().cast<double>(),
+               pose.translation().cast<double>());
+
+  // Extract images and camera from ORB-SLAM tuple
+  cv::Mat imgRGB_undistorted = std::get<3>(kf);
+  cv::Mat imgAux_undistorted = std::get<5>(kf);
+
+  try {
+    Camera& camera = scene_->cameras_.at(std::get<1>(kf));
+    std::string filename = std::get<8>(kf);
+
+    // Store ORB-SLAM specific keypoints
+    pkf->kps_pixel_ = std::move(std::get<6>(kf));
+    pkf->kps_point_local_ = std::move(std::get<7>(kf));
+
+    // Call common initialization logic
+    createAndInitializeKeyframe(pkf, imgRGB_undistorted, imgAux_undistorted,
+                                 camera, filename);
+
+    // Release ORB-SLAM resources
+    pSLAM_->getAtlas()->ReleaseKeyFrameImages(pkf->fid_);
+
+  } catch (std::out_of_range) {
+    throw std::runtime_error(
+        "[GaussianMapper::handleNewKeyframeFromORBSLAM] KeyFrame Camera not "
+        "found!");
+  }
 }
 
 void GaussianMapper::generateKfidRandomShuffle() {
@@ -4326,8 +4282,8 @@ void GaussianMapper::run_external_poses() {
     if (!maybe_frame) continue;
 
     auto& frame = *maybe_frame;
-    processNewFrame(frame.rgb_image, frame.depth_image, frame.pose,
-                    frame.timestamp);
+    handleNewKeyframeFromExternal(frame.rgb_image, frame.depth_image,
+                                  frame.pose, frame.timestamp);
     std::cout << "Num keyframes: " << scene_->keyframes().size() << std::endl;
 
     std::unique_lock<std::mutex> lock_render(mutex_render_);
@@ -4342,8 +4298,9 @@ void GaussianMapper::run_external_poses() {
   while (!isExternalDataStopped() && !isStopped()) {
     // Process any pending frames
     while (auto maybe_frame = frame_queue_.pop(false)) {
-      processNewFrame(maybe_frame->rgb_image, maybe_frame->depth_image,
-                      maybe_frame->pose, maybe_frame->timestamp);
+      handleNewKeyframeFromExternal(maybe_frame->rgb_image,
+                                    maybe_frame->depth_image, maybe_frame->pose,
+                                    maybe_frame->timestamp);
     }
 
     trainForOneIteration();
@@ -4477,15 +4434,17 @@ size_t GaussianMapper::LeakyFrameQueue::size() const {
   return queue_.size();
 }
 
-void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
-                                     const cv::Mat& depth_or_right_image,
-                                     const Sophus::SE3f& pose,
-                                     const double timestamp) {
-  std::cout << "[ProcessFrame] Updating external data..." << std::endl;
+void GaussianMapper::handleNewKeyframeFromExternal(
+    cv::Mat& rgb_image,
+    cv::Mat& depth_or_right_image,
+    const Sophus::SE3f& pose,
+    const double timestamp) {
+  std::cout << "[External Mode] Updating external data..." << std::endl;
   setRecentExternalData(rgb_image, pose);
 
+  // Check if this frame should be a keyframe
   if (!isKeyframe(pose, timestamp)) {
-    std::cout << "[ProcessFrame] Not a keyframe, returning" << std::endl;
+    std::cout << "[External Mode] Not a keyframe, returning" << std::endl;
     return;
   }
 
@@ -4493,71 +4452,22 @@ void GaussianMapper::processNewFrame(const cv::Mat& rgb_image,
   last_keyframe_pose_ = pose;
   last_keyframe_timestamp_ = timestamp;
 
-  // std::cout << "[ProcessFrame] Creating new keyframe..." << std::endl;
+  // Create keyframe
   std::shared_ptr<GaussianKeyframe> pkf = std::make_shared<GaussianKeyframe>(
       scene_->keyframes().size(), getIteration(), keyframe_save_dir_);
   std::cout << "New kf. fid: " << pkf->fid_ << std::endl;
 
-  pkf->zfar_ = z_far_ * scene_->cameras_extent_;
-  pkf->znear_ = z_near_ * scene_->cameras_extent_;
-
+  // Set pose from external data
   pkf->setPose(pose.unit_quaternion().cast<double>(),
                pose.translation().cast<double>());
 
-  Camera camera = scene_->cameras_.at(0);
-  pkf->setCameraParams(camera);
+  // External mode always uses camera 0
+  Camera& camera = scene_->cameras_.at(0);
 
-  pkf->gaus_pyramid_height_ = camera.gaus_pyramid_height_;
-  pkf->gaus_pyramid_width_ = camera.gaus_pyramid_width_;
-  pkf->gaus_pyramid_times_of_use_ = kf_gaus_pyramid_times_of_use_;
+  // Call common initialization logic
+  createAndInitializeKeyframe(pkf, rgb_image, depth_or_right_image, camera);
 
-  // Add the new keyframe to the scene
-  pkf->computeTransformTensors();
-  scene_->addKeyframe(pkf);
-  kfid_shuffled_ = false;
-
-  // Give new keyframes times of use and add it to the training sliding window
-  increaseKeyframeTimesOfUse(pkf, newKeyframeTimesOfUse());
-
-  if (keyframe_selection_strategy_ == 1) {
-    keyframe_queue_->updateChunkKeyframeMapping(pkf, true);
-  }
-
-  cv::Mat rgb_undistorted = rgb_image;
-
-  torch::Tensor input_tensor = feat_extractor_->parseInput(rgb_undistorted);
-  pkf->feature_map_ = feat_extractor_->extractDenseFeatures(input_tensor);
-
-  pkf->initOptimizer(device_type_, opt_params_.pose_lr_,
-                     opt_params_.exposure_lr_,
-                     opt_params_.depth_scale_bias_lr_);
-
-  // std::cout << "Creating image pyramid" << std::endl;
-  // Prepare multi resolution images for training
-  pkf->generateImagePyramid(rgb_undistorted);
-
-  if (sensor_type_ == MONOCULAR) {
-    // std::cout << "Setup mono data" << std::endl;
-    pkf->setupMonoData(rgb_undistorted, device_type_,
-                       monocular_depth_estimator_, min_depth_, max_depth_);
-  } else if (sensor_type_ == STEREO && !depth_or_right_image.empty()) {
-    // std::cout << "Setup stereo data" << std::endl;
-    pkf->setupStereoData(rgb_undistorted, depth_or_right_image,
-                         stereo_baseline_length_, device_type_,
-                         stereo_depth_estimator_, min_depth_, max_depth_);
-  } else if (sensor_type_ == RGBD && !depth_or_right_image.empty()) {
-    // std::cout << "Setup rgbd data" << std::endl;
-    pkf->setupRGBDData(depth_or_right_image);
-  } else {
-    throw std::runtime_error("Unsupported sensor_type");
-  }
-  pkf->loaded_ = true;
-
-  std::unique_lock<std::mutex> lock(mutex_render_);
-  sampleGaussians(pkf);
-  pkf->allow_eviction_ = true;
-
-  // std::cout << "[ProcessFrame] Successfully completed" << std::endl;
+  std::cout << "[External Mode] Successfully completed" << std::endl;
 }
 
 void GaussianMapper::setRecentExternalData(const cv::Mat& rgb_image,

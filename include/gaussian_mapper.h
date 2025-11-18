@@ -204,15 +204,23 @@ class GaussianMapper {
       float loop_kf_scale);
   void processScaleRefinement(ORB_SLAM3::MappingOperation &opr);
 
-  void handleNewKeyframe(std::tuple<unsigned long,
-                                    unsigned long,
-                                    Sophus::SE3f,
-                                    cv::Mat,
-                                    bool,
-                                    cv::Mat,
-                                    std::vector<float>,
-                                    std::vector<float>,
-                                    std::string> &kf);
+  // Common keyframe initialization used by both ORB-SLAM and external modes
+  void createAndInitializeKeyframe(std::shared_ptr<GaussianKeyframe> &pkf,
+                                   cv::Mat &rgb_image,
+                                   cv::Mat &aux_image,
+                                   const Camera &camera,
+                                   const std::string &filename = "");
+
+  // Handle new keyframe from ORB-SLAM (formerly handleNewKeyframe)
+  void handleNewKeyframeFromORBSLAM(std::tuple<unsigned long,
+                                               unsigned long,
+                                               Sophus::SE3f,
+                                               cv::Mat,
+                                               bool,
+                                               cv::Mat,
+                                               std::vector<float>,
+                                               std::vector<float>,
+                                               std::string> &kf);
   std::shared_ptr<GaussianKeyframe> useOneRandomSlidingWindowKeyframe();
   std::vector<std::shared_ptr<GaussianKeyframe>> getUpcomingKeyframes(
       size_t count);
@@ -485,10 +493,11 @@ class GaussianMapper {
 
  public:
   bool isKeyframe(const Sophus::SE3f &current_pose, double current_time);
-  void processNewFrame(const cv::Mat &rgb_image,
-                       const cv::Mat &depth_or_right_image,
-                       const Sophus::SE3f &pose,
-                       const double timestamp);
+  // Handle new keyframe from external mode (formerly processNewFrame)
+  void handleNewKeyframeFromExternal(cv::Mat &rgb_image,
+                                     cv::Mat &depth_or_right_image,
+                                     const Sophus::SE3f &pose,
+                                     const double timestamp);
   void handleNewFrameExternal(const cv::Mat &rgb_image,
                               const cv::Mat &depth_or_right_image,
                               const Sophus::SE3f &pose,
