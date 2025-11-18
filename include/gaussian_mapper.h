@@ -49,6 +49,7 @@
 #include "ORB-SLAM3/include/System.h"
 #include "chunk_types.h"
 #include "gaussian_keyframe.h"
+#include "gaussian_mapper_external.h"
 #include "gaussian_scene.h"
 #include "guided_mvs.h"
 #include "keyframe_selection.h"
@@ -85,23 +86,6 @@ struct UndistortParams {
 };
 
 enum SystemSensorType { INVALID = 0, MONOCULAR = 1, STEREO = 2, RGBD = 3 };
-
-struct VariableParameters {
-  float position_lr_init;
-  float feature_lr;
-  float opacity_lr;
-  float scaling_lr;
-  float rotation_lr;
-  float lambda_dssim;
-  int opacity_reset_interval;
-  float densify_grad_th;
-  int densify_interval;
-  int new_kf_times_of_use;
-  int stable_num_iter_existence;  ///< loop closure correction
-
-  bool keep_training;
-  bool do_gaus_pyramid_training;
-};
 
 void copyFolder(const std::filesystem::path &source,
                 const std::filesystem::path &destination);
@@ -154,9 +138,6 @@ class GaussianMapper {
   void setNewKeyframeTimesOfUse(const int times);
   void setStableNumIterExistence(const int niter);
   void setKeepTraining(const bool keep);
-
-  VariableParameters getVaribleParameters();
-  void setVaribleParameters(const VariableParameters &params);
 
   GaussianModelParams &getGaussianModelParams() { return this->model_params_; }
   void setSensorType(SystemSensorType sensor_type) {
@@ -270,26 +251,6 @@ class GaussianMapper {
                               std::string name_suffix = "");
   void writeTrainingMetricsCSV(std::filesystem::path result_dir);
 
-  std::vector<std::shared_ptr<GaussianModel>> selectRandomModelSubset(
-      const std::vector<std::shared_ptr<GaussianModel>> &allModels,
-      size_t subset_size);
-
-  void renderFlyThroughVideo(const std::string &output_path,
-                             int width,
-                             int height,
-                             int fps,
-                             float duration_seconds,
-                             float smoothness_factor = 0.5,
-                             int keyframe_subsample = 1);
-
-  void render3DExplorationVideo(const std::string &output_path,
-                                int width,
-                                int height,
-                                int fps,
-                                float duration_seconds,
-                                float deviation_scale = 0.15f,
-                                bool look_around = true);
-
   void saveChunkManifest(std::filesystem::path scene_dir);
   void loadChunkManifest(std::filesystem::path scene_dir);
   void loadCamerasFromJson(std::filesystem::path json_path);
@@ -320,37 +281,6 @@ class GaussianMapper {
   std::vector<std::shared_ptr<GaussianKeyframe>> predictUpcomingKeyframes(
       int count = 5);
   void initializeChunkManagement();
-
- private:
-  // Frame structure for the queue
-  struct Frame {
-    cv::Mat rgb_image;
-    cv::Mat depth_image;
-    Sophus::SE3f pose;
-    double timestamp;
-
-    Frame(const cv::Mat &rgb,
-          const cv::Mat &depth,
-          const Sophus::SE3f &p,
-          double ts);
-  };
-
-  class LeakyFrameQueue {
-   public:
-    explicit LeakyFrameQueue(size_t max_size = 20);
-    void push(Frame &&frame);
-    std::optional<Frame> pop(bool wait = true);
-    void stop();
-    bool empty() const;
-    size_t size() const;
-
-   private:
-    std::deque<Frame> queue_;
-    mutable std::mutex mutex_;
-    std::condition_variable cv_;
-    const size_t max_size_;
-    bool stopped_{false};
-  };
 
  public:
   // Parameters

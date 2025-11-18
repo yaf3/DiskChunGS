@@ -296,7 +296,6 @@ add_library(
     include/types.h
     include/profiling.h
     include/chunk_types.h
-    include/render_flythrough.h
     include/keyframe_selection.h
     include/debugging_utils.h
     include/stereo_depth.h
@@ -310,8 +309,14 @@ add_library(
     src/gaussian_rasterizer.cpp
     src/gaussian_renderer.cpp
     src/gaussian_scene.cpp
-    src/gaussian_mapper.cpp
-    src/render_flythrough.cpp
+    src/gaussian_mapper_config.cpp
+    src/gaussian_mapper_initialization.cpp
+    src/gaussian_mapper_core.cpp
+    src/gaussian_mapper_operations.cpp
+    src/gaussian_mapper_io.cpp
+    src/gaussian_mapper_parameters.cpp
+    src/gaussian_mapper_external.cpp
+    src/gaussian_mapper_depth.cpp
     src/keyframe_selection.cpp
     src/debugging_utils.cpp
     src/stereo_depth.cpp

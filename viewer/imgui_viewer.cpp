@@ -506,18 +506,6 @@ void ImGuiViewer::run() {
                            ImVec2(glfw_window_width_, glfw_window_height_));
       }
     }
-    //--------------Get current parameters--------------
-    VariableParameters params_in = pGausMapper_->getVaribleParameters();
-    position_lr_init_ = params_in.position_lr_init;
-    feature_lr_ = params_in.feature_lr;
-    opacity_lr_ = params_in.opacity_lr;
-    scaling_lr_ = params_in.scaling_lr;
-    rotation_lr_ = params_in.rotation_lr;
-    lambda_dssim_ = params_in.lambda_dssim;
-    new_kf_times_of_use_ = params_in.new_kf_times_of_use;
-    stable_num_iter_existence_ = params_in.stable_num_iter_existence;
-    keep_training_ = params_in.keep_training;
-
     //--------------Display mode panel--------------
     ImGui::SetNextWindowPos(ImVec2(glfw_window_width_ - panel_width_, 0),
                             ImGuiCond_Once);
@@ -586,18 +574,6 @@ void ImGuiViewer::run() {
         ImGui::End();
       }
     }
-    VariableParameters params_out;
-    params_out.position_lr_init = position_lr_init_;
-    params_out.feature_lr = feature_lr_;
-    params_out.opacity_lr = opacity_lr_;
-    params_out.scaling_lr = scaling_lr_;
-    params_out.rotation_lr = rotation_lr_;
-    params_out.lambda_dssim = lambda_dssim_;
-    params_out.new_kf_times_of_use = new_kf_times_of_use_;
-    params_out.stable_num_iter_existence = stable_num_iter_existence_;
-    params_out.keep_training = keep_training_;
-    pGausMapper_->setVaribleParameters(params_out);
-
     //--------------Camera view panel--------------
     ImGui::SetNextWindowPos(
         ImVec2(glfw_window_width_ - panel_width_,
