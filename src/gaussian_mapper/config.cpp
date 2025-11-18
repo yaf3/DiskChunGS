@@ -16,10 +16,10 @@
  * CaRtGS. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "gaussian_mapper.h"
-
 #include <filesystem>
 #include <iostream>
+
+#include "gaussian_mapper.h"
 
 void copyFolder(const std::filesystem::path& source,
                 const std::filesystem::path& destination) {
@@ -59,10 +59,6 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
   model_params_.sh_degree_ = settings_file["Model.sh_degree"].operator int();
   model_params_.white_background_ =
       (settings_file["Model.white_background"].operator int()) != 0;
-  model_params_.enable_lod_ =
-      (settings_file["Model.enable_lod"].operator int()) != 0;
-  model_params_.lod_distance_multiplier_ =
-      (settings_file["Model.lod_distance_multiplier"].operator int());
   model_params_.max_gaussians_in_memory_ =
       settings_file["Model.max_gaussians_in_memory"].operator int();
   init_proba_scaler_ =

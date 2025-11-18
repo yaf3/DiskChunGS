@@ -84,8 +84,7 @@ std::tuple<cv::Mat, cv::Mat> GaussianMapper::renderFromPose(
 
   // std::cout << width << " " << height << std::endl;
 
-  torch::Tensor visible_gaussian_mask =
-      gaussians_->cullVisibleGaussians(pkf, true);
+  torch::Tensor visible_gaussian_mask = gaussians_->cullVisibleGaussians(pkf);
 
   // Render
   torch::Tensor view_matrix = pkf->getRT().transpose(0, 1);
@@ -135,8 +134,7 @@ void GaussianMapper::renderAndRecordKeyframe(
     had_to_load = true;
   }
 
-  torch::Tensor visible_gaussian_mask =
-      gaussians_->cullVisibleGaussians(pkf, true);
+  torch::Tensor visible_gaussian_mask = gaussians_->cullVisibleGaussians(pkf);
 
   torch::Tensor view_matrix = pkf->getRT().transpose(0, 1);
   auto render_pkg = GaussianRenderer::render(

@@ -29,8 +29,6 @@ GaussianModel::GaussianModel(const GaussianModelParams& model_params,
       position_lr_init_(0.00005),
       position_lr_decay_(0.99998),
       local_iteration_(0),
-      enable_lod_(model_params.enable_lod_),
-      lod_distance_multiplier_(model_params.lod_distance_multiplier_),
       gaussian_visibility_cache_(chunk_size) {
   this->sh_degree_ = model_params.sh_degree_;
 
@@ -143,50 +141,17 @@ void GaussianModel::scaledTransformVisiblePointsOfKeyframe(
     const float scale) {
   torch::NoGradGuard no_grad;
 
-  // std::cout << "[DEBUG-STPV] Starting with flag tensor size: "
-  //           << point_not_transformed_flags.size(0)
-  //           << ", xyz size: " << this->xyz_.size(0) << std::endl;
-
   torch::Tensor points = this->getXYZ();
   torch::Tensor rots = this->getRotationActivation();
-
-  // std::cout << "[DEBUG-STPV] Got points and rotations" << std::endl;
-  // torch::Tensor scales = this->scaling_;// * scale;
-
-  // int n_elements = 3;
-  // std::cout << "First " << n_elements << " exist_since_iter_ elements: ";
-  // for (int i = 0; i < std::min(n_elements, (int)exist_since_iter_.size(0));
-  //      i++) {
-  //   std::cout << exist_since_iter_[i].item<float>() << " ";
-  // }
-  // std::cout << std::endl;
-
-  // std::cout << "Creation iter: " << kf_creation_iter << std::endl;
 
   torch::Tensor point_unstable_flags =
       torch::where(torch::abs(this->exist_since_iter_ - kf_creation_iter) <
                        stable_num_iter_existence,
                    true, false);
 
-  // std::cout << "[DEBUG] Points unstable mask true count: "
-  //           << point_unstable_flags.sum().item<int>() << std::endl;
-
-  // std::cout << "[DEBUG-STPV] Created unstable flags" << std::endl;
-
-  // std::cout << "[DEBUG-STPV] Calling transform function" << std::endl;
-
   scaleAndTransformThenMarkVisiblePoints(
       points, rots, point_transformed_flags, point_unstable_flags, diff_pose,
       kf_world_view_transform, kf_full_proj_transform, num_transformed, scale);
-
-  // std::cout << "[DEBUG-STPV] Transform complete, transformed "
-  //           << num_transformed << " points" << std::endl;
-
-  // torch::Tensor point_cloud_copy = points.clone();
-  // torch::Tensor dist2 = torch::clamp_min(distCUDA2(point_cloud_copy),
-  // 0.0000001); torch::Tensor scales = torch::log(torch::sqrt(dist2)); auto
-  // scales_ndimension = scales.ndimension(); scales =
-  // scales.unsqueeze(scales_ndimension).repeat({1, 3});
 
   // Postfix
   // ==================================
@@ -199,32 +164,14 @@ void GaussianModel::scaledTransformVisiblePointsOfKeyframe(
   // ==================================
 
   if (num_transformed > 0) {
-    try {
-      // std::cout << "[DEBUG-STPV] About to replace xyz tensor" << std::endl;
-      torch::Tensor optimizable_xyz = this->replaceTensorToOptimizer(points, 0);
-      // std::cout << "[DEBUG-STPV] Successfully replaced xyz tensor" <<
-      // std::endl;
+    torch::Tensor optimizable_xyz = this->replaceTensorToOptimizer(points, 0);
+    torch::Tensor optimizable_rots = this->replaceTensorToOptimizer(rots, 5);
 
-      // std::cout << "[DEBUG-STPV] About to replace rotation tensor" <<
-      // std::endl;
-      torch::Tensor optimizable_rots = this->replaceTensorToOptimizer(rots, 5);
-      // std::cout << "[DEBUG-STPV] Successfully replaced rotation tensor"
-      //           << std::endl;
+    this->xyz_ = optimizable_xyz;
+    this->rotation_ = optimizable_rots;
 
-      this->xyz_ = optimizable_xyz;
-      this->rotation_ = optimizable_rots;
-
-      this->Tensor_vec_xyz_ = {this->xyz_};
-      this->Tensor_vec_rotation_ = {this->rotation_};
-
-      // std::cout << "[DEBUG-STPV] Updated tensors in-place" << std::endl;
-    } catch (const std::exception& e) {
-      std::cerr << "ERROR during optimizer tensor replacement: " << e.what()
-                << std::endl;
-      // Recover gracefully instead of crashing
-      std::cerr << "Skipping optimizer update for this transformation"
-                << std::endl;
-    }
+    this->Tensor_vec_xyz_ = {this->xyz_};
+    this->Tensor_vec_rotation_ = {this->rotation_};
   }
 }
 
@@ -273,27 +220,14 @@ void GaussianModel::trainingSetup(
 }
 
 void GaussianModel::updateLearningRates(const torch::Tensor& visibility) {
-  // Check if visibility tensor size matches position_lrs_ size
-  // This can happen when pruning occurs between radii computation and optimizer
-  // step
   if (visibility.size(0) != position_lrs_.size(0)) {
     throw std::runtime_error(
         "[WARNING] Visibility tensor size doesn't match position_lrs_ size");
   }
 
-  // std::cout << "[DEBUG-Optimizer] Pre-update position learning rates: "
-  //           << "max =" << position_lrs_.max().item<float>()
-  //           << ", min =" << position_lrs_.min().item<float>()
-  //           << ", mean =" << position_lrs_.mean().item<float>() << std::endl;
-
   position_lrs_.index_put_(
       {visibility}, position_lrs_.index({visibility}) * position_lr_decay_);
   position_lrs_.clamp_min_(position_lr_min_);
-
-  // std::cout << "[DEBUG-Optimizer] Updated position learning rates: "
-  //           << "max =" << position_lrs_.max().item<float>()
-  //           << ", min =" << position_lrs_.min().item<float>()
-  //           << ", mean =" << position_lrs_.mean().item<float>() << std::endl;
 }
 
 void GaussianModel::optimizerStep(torch::Tensor& visibility, const uint32_t N) {
@@ -338,7 +272,8 @@ void GaussianModel::optimizerStep(torch::Tensor& visibility, const uint32_t N) {
       float scalar_lr = group.options().get_lr();
 
       // Convert scalar learning rate to tensor for adamUpdate
-      torch::Tensor lr_tensor = torch::tensor({scalar_lr},
+      torch::Tensor lr_tensor = torch::tensor(
+          {scalar_lr},
           torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
 
       adamUpdate(param, param.grad(), param_state.exp_avg(),
@@ -474,18 +409,10 @@ void GaussianModel::maskGradients(const torch::Tensor& keep_mask) {
 
 torch::Tensor GaussianModel::replaceTensorToOptimizer(torch::Tensor& tensor,
                                                       int tensor_idx) {
-  // std::cout
-  //     << "[DEBUG-Optimizer] Starting replaceTensorToOptimizer for tensor_idx:
-  //     "
-  //     << tensor_idx << std::endl;
-
   if (!this->optimizer_) {
     std::cerr << "ERROR: Optimizer is null!" << std::endl;
     throw std::runtime_error("Null optimizer in replaceTensorToOptimizer");
   }
-
-  // std::cout << "[DEBUG-Optimizer] Param groups size: "
-  //           << this->optimizer_->param_groups().size() << std::endl;
 
   if (tensor_idx >= this->optimizer_->param_groups().size()) {
     std::cerr << "ERROR: tensor_idx " << tensor_idx << " out of bounds!"
@@ -503,7 +430,6 @@ torch::Tensor GaussianModel::replaceTensorToOptimizer(torch::Tensor& tensor,
   auto& state = optimizer_->state();
   auto key = param.unsafeGetTensorImpl();
 
-  // std::cout << "[DEBUG-Optimizer] Checking state for key..." << std::endl;
   if (state.find(key) == state.end()) {
     std::cerr << "WARNING: No optimizer state found for tensor_idx "
               << tensor_idx << std::endl;
@@ -513,36 +439,25 @@ torch::Tensor GaussianModel::replaceTensorToOptimizer(torch::Tensor& tensor,
     new_state->exp_avg(torch::zeros_like(tensor));
     new_state->exp_avg_sq(torch::zeros_like(tensor));
     state[key] = std::move(new_state);
-    // std::cout << "[DEBUG-Optimizer] Created new state" << std::endl;
   }
 
   try {
     auto& stored_state =
         static_cast<torch::optim::AdamParamState&>(*state[key]);
-    // std::cout << "[DEBUG-Optimizer] Got stored state with step: "
-    //           << stored_state.step() << std::endl;
 
     auto new_state = std::make_unique<torch::optim::AdamParamState>();
     new_state->step(stored_state.step());
 
-    // std::cout << "[DEBUG-Optimizer] Creating exp_avg and exp_avg_sq..."
-    //           << std::endl;
     new_state->exp_avg(torch::zeros_like(tensor));
     new_state->exp_avg_sq(torch::zeros_like(tensor));
 
-    // std::cout << "[DEBUG-Optimizer] Erasing old state..." << std::endl;
     state.erase(key);
 
-    // std::cout << "[DEBUG-Optimizer] Setting requires_grad..." << std::endl;
     param = tensor.requires_grad_();
     key = param.unsafeGetTensorImpl();
 
-    // std::cout << "[DEBUG-Optimizer] Storing new state..." << std::endl;
     state[key] = std::move(new_state);
 
-    // std::cout << "[DEBUG-Optimizer] Completed replaceTensorToOptimizer for "
-    //              "tensor_idx: "
-    //           << tensor_idx << std::endl;
     return param;
   } catch (const std::exception& e) {
     std::cerr << "ERROR in replaceTensorToOptimizer: " << e.what() << std::endl;
@@ -605,8 +520,6 @@ void GaussianModel::prunePoints(torch::Tensor& mask) {
   this->position_lrs_ = this->position_lrs_.index({valid_points_mask});
   this->gaussian_chunk_ids_ =
       this->gaussian_chunk_ids_.index({valid_points_mask});
-  this->gaussian_lod_levels_ =
-      this->gaussian_lod_levels_.index({valid_points_mask});
   this->gaussian_ids_ = this->gaussian_ids_.index({valid_points_mask});
 
   // c10::cuda::CUDACachingAllocator::emptyCache();
@@ -622,7 +535,6 @@ void GaussianModel::densificationPostfix(
     torch::Tensor& new_exist_since_iter,
     torch::Tensor& new_chunk_ids,
     torch::Tensor& new_position_lrs,
-    torch::Tensor& new_lod_levels,
     torch::Tensor& new_gaussian_ids,
     const std::vector<torch::Tensor>& loaded_exp_avg,
     const std::vector<torch::Tensor>& loaded_exp_avg_sq,
@@ -735,8 +647,6 @@ void GaussianModel::densificationPostfix(
   position_lrs_ = torch::cat({position_lrs_, new_position_lrs}, 0);
   gaussian_chunk_ids_ =
       torch::cat({gaussian_chunk_ids_, new_chunk_ids}, /*dim=*/0);
-  // Append LoD levels
-  gaussian_lod_levels_ = torch::cat({gaussian_lod_levels_, new_lod_levels}, 0);
   this->gaussian_ids_ =
       torch::cat({this->gaussian_ids_, new_gaussian_ids}, /*dim=*/0);
 }
@@ -752,7 +662,6 @@ std::vector<ChunkCoord> GaussianModel::frustumCullChunks(
 
 torch::Tensor GaussianModel::cullVisibleGaussians(
     std::shared_ptr<GaussianKeyframe> keyframe,
-    bool use_lod,
     bool manage_memory) {
   torch::NoGradGuard no_grad;
 
@@ -783,45 +692,11 @@ torch::Tensor GaussianModel::cullVisibleGaussians(
   //  Update access times for all visible chunks
   updateChunkAccess(visible_chunk_ids);
 
-  // If no gaussians are visible, return early
-  if (chunk_visibility_mask.sum().item<int>() == 0) {
-    std::cout << "[WARNING] No Gaussians visible after chunk culling!"
-              << std::endl;
-    return chunk_visibility_mask;
-  }
-
   // std::cout << "[Culling Debug] Culling stats - Total: " << xyz_.size(0)
   //           << ", Chunk visible: " << chunk_visibility_mask.sum().item<int>()
   //           << std::endl;
 
-  if (!use_lod || !enable_lod_) return chunk_visibility_mask;
-
-  // Apply LoD filtering based on distance
-  torch::Tensor camera_position = keyframe->getCenter().squeeze();
-  // torch::Tensor lod_filtered_mask =
-  //     selectScreenSpaceLoD(chunk_visibility_mask, camera_position,
-  //                          keyframe->intr_[0], keyframe->image_width_);
-  // torch::Tensor lod_filtered_mask =
-  //     selectCumulativeLoD(chunk_visibility_mask, camera_position);
-  torch::Tensor lod_filtered_mask =
-      cullByScreenSpaceSize(chunk_visibility_mask, camera_position,
-                            keyframe->intr_[0], keyframe->image_width_);
-  // Debug: Print culling statistics
-  // int chunk_visible = chunk_visibility_mask.sum().item<int>();
-  // int lod_visible = lod_filtered_mask.sum().item<int>();
-  // int total_gaussians = xyz_.size(0);
-  // float reduction =
-  //     (chunk_visible > 0)
-  //         ? (1.0f - float(lod_visible) / float(chunk_visible)) * 100.0f
-  //         : 0.0f;
-
-  // std::cout << "[LoD Debug] Culling stats - Total: " << total_gaussians
-  //           << ", Chunk visible: " << chunk_visible
-  //           << ", LoD visible: " << lod_visible << " (reduction: " <<
-  //           reduction
-  //           << "%)" << std::endl;
-
-  return lod_filtered_mask;
+  return chunk_visibility_mask;
 }
 
 torch::Tensor GaussianModel::createGaussianMaskFromChunks(
@@ -1032,28 +907,10 @@ void GaussianModel::initializeFromPoints(const torch::Tensor& initial_xyz,
 
   gaussian_chunk_ids_ = computeChunkIds(initial_xyz, chunk_size_);
 
-  // Assign LoD levels based on density (distance to nearest neighbors)
-  torch::Tensor point_cloud_copy = initial_xyz.clone();
-  torch::Tensor dist2 =
-      torch::clamp_min(distCUDA2(point_cloud_copy), 0.0000001);
-  torch::Tensor nearest_distances = torch::sqrt(dist2);
-  gaussian_lod_levels_ = assignLoDByPercentiles(nearest_distances);
-
   gaussian_ids_ = torch::arange(
       next_gaussian_id_, next_gaussian_id_ + initial_xyz.size(0),
       torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
   next_gaussian_id_ += initial_xyz.size(0);
-
-  // Debug: Print initial LoD assignment statistics
-  auto lod_counts = torch::bincount(gaussian_lod_levels_, torch::Tensor(), 3);
-  // std::cout << "[LoD Debug] Initialized " << gaussian_lod_levels_.size(0)
-  //           << " gaussians - "
-  //           << "LoD0: " << lod_counts[0].item<int>() << ", "
-  //           << "LoD1: " << lod_counts[1].item<int>() << ", "
-  //           << "LoD2: " << lod_counts[2].item<int>()
-  //           << " (density range: " << nearest_distances.min().item<float>()
-  //           << " - " << nearest_distances.max().item<float>() << ")"
-  //           << std::endl;
 
   GAUSSIAN_MODEL_TENSORS_TO_VEC
 
@@ -1122,23 +979,6 @@ void GaussianModel::appendPoints(const torch::Tensor& new_xyzs,
       torch::full({new_xyzs.size(0)}, position_lr_init_,
                   torch::TensorOptions().device(device_type_));
 
-  // Assign LoD levels based on density (distance to nearest neighbors)
-  torch::Tensor dist2 =
-      torch::clamp_min(distCUDA2(new_xyzs.clone()), 0.0000001);
-  torch::Tensor nearest_distances = torch::sqrt(dist2);
-  torch::Tensor new_lod_levels = assignLoDByPercentiles(nearest_distances);
-
-  // Debug: Print LoD assignment statistics
-  auto lod_counts = torch::bincount(new_lod_levels, torch::Tensor(), 3);
-  // std::cout << "[LoD Debug] Added " << new_lod_levels.size(0) << " gaussians
-  // - "
-  //           << "LoD0: " << lod_counts[0].item<int>() << ", "
-  //           << "LoD1: " << lod_counts[1].item<int>() << ", "
-  //           << "LoD2: " << lod_counts[2].item<int>()
-  //           << " (density range: " << nearest_distances.min().item<float>()
-  //           << " - " << nearest_distances.max().item<float>() << ")"
-  //           << std::endl;
-
   torch::Tensor new_gaussian_ids = torch::arange(
       next_gaussian_id_, next_gaussian_id_ + new_xyzs.size(0),
       torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
@@ -1149,7 +989,7 @@ void GaussianModel::appendPoints(const torch::Tensor& new_xyzs,
   densificationPostfix(new_xyz_tensor, new_features_dc, new_features_rest,
                        new_opacities_tensor, new_scaling, new_rotation,
                        new_exist_since_iter, new_chunk_ids, new_position_lrs,
-                       new_lod_levels, new_gaussian_ids);
+                       new_gaussian_ids);
 
   // c10::cuda::CUDACachingAllocator::emptyCache();
 }
@@ -1400,7 +1240,6 @@ void GaussianModel::saveSingleChunkToDisk(int64_t chunk_id,
     saveTensorBinary(chunk_data.opacity, file);
     saveTensorBinary(chunk_data.exist_since, file);
     saveTensorBinary(chunk_data.position_lrs, file);
-    saveTensorBinary(chunk_data.lod_levels, file);
     saveTensorBinary(chunk_data.gaussian_ids, file);
 
     // Save optimizer states
@@ -1484,7 +1323,6 @@ std::optional<GaussianModel::ChunkData> GaussianModel::loadSingleChunkFromDisk(
     data.opacity = loadTensorBinary(file);
     data.exist_since = loadTensorBinary(file);
     data.position_lrs = loadTensorBinary(file);
-    data.lod_levels = loadTensorBinary(file);
     data.gaussian_ids = loadTensorBinary(file);
 
     // Load optimizer states
@@ -1584,7 +1422,7 @@ void GaussianModel::appendLoadedChunks(
   std::vector<torch::Tensor> all_xyz, all_features_dc, all_features_rest;
   std::vector<torch::Tensor> all_scaling, all_rotation, all_opacity;
   std::vector<torch::Tensor> all_exist_since, all_chunk_ids, all_position_lrs,
-      all_lod_levels, all_gaussian_ids;
+      all_gaussian_ids;
 
   // NEW: Concatenate optimizer states
   std::vector<std::vector<torch::Tensor>> all_exp_avg(6), all_exp_avg_sq(6);
@@ -1599,7 +1437,6 @@ void GaussianModel::appendLoadedChunks(
     all_opacity.push_back(chunk.opacity);
     all_exist_since.push_back(chunk.exist_since);
     all_position_lrs.push_back(chunk.position_lrs);
-    all_lod_levels.push_back(chunk.lod_levels);
     all_gaussian_ids.push_back(chunk.gaussian_ids);
 
     torch::Tensor chunk_ids = torch::full(
@@ -1627,7 +1464,6 @@ void GaussianModel::appendLoadedChunks(
   torch::Tensor batch_opacity = torch::cat(all_opacity, 0);
   torch::Tensor batch_exist_since = torch::cat(all_exist_since, 0);
   torch::Tensor batch_position_lrs = torch::cat(all_position_lrs, 0);
-  torch::Tensor batch_lod_levels = torch::cat(all_lod_levels, 0);
   torch::Tensor batch_chunk_ids = torch::cat(all_chunk_ids, 0);
   torch::Tensor batch_gaussian_ids = torch::cat(all_gaussian_ids, 0);
 
@@ -1644,8 +1480,8 @@ void GaussianModel::appendLoadedChunks(
   densificationPostfix(batch_xyz, batch_features_dc, batch_features_rest,
                        batch_opacity, batch_scaling, batch_rotation,
                        batch_exist_since, batch_chunk_ids, batch_position_lrs,
-                       batch_lod_levels, batch_gaussian_ids, concat_exp_avg,
-                       concat_exp_avg_sq, max_step_counts);
+                       batch_gaussian_ids, concat_exp_avg, concat_exp_avg_sq,
+                       max_step_counts);
 
   // std::cout << "Loaded " << batch_xyz.size(0) << " gaussians from "
   //           << chunks_data.size() << " chunks with full optimizer states"
@@ -1765,7 +1601,6 @@ GaussianModel::ChunkData GaussianModel::extractChunkData(
   data.opacity = opacity_.index({chunk_mask}).detach().clone();
   data.exist_since = exist_since_iter_.index({chunk_mask}).detach().clone();
   data.position_lrs = position_lrs_.index({chunk_mask}).detach().clone();
-  data.lod_levels = gaussian_lod_levels_.index({chunk_mask}).detach().clone();
   data.gaussian_ids = gaussian_ids_.index({chunk_mask}).detach().clone();
   data.num_points = data.xyz.size(0);
   data.chunk_id = chunk_id;
@@ -2359,8 +2194,6 @@ void GaussianModel::initializeEmpty(float spatial_lr_scale) {
       {0}, torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
   this->gaussian_chunk_ids_ = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
-  this->gaussian_lod_levels_ = torch::empty(
-      {0}, torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
 
   // Initialize tensor vectors for optimizer
   GAUSSIAN_MODEL_TENSORS_TO_VEC
@@ -2465,188 +2298,6 @@ void GaussianModel::deleteSparseChunkFiles(const torch::Tensor& chunk_ids) {
     // std::cout << "[File Deletion] Deleted " << files_deleted
     //           << " chunk files from disk" << std::endl;
   }
-}
-
-torch::Tensor GaussianModel::assignLoDByPercentiles(
-    const torch::Tensor& nearest_distances,
-    float lod0_percentile,
-    float lod2_percentile) {
-  int n_gaussians = nearest_distances.size(0);
-  torch::Tensor lod_levels = torch::ones(  // Default to LoD 1
-      {n_gaussians},
-      torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA));
-
-  // Calculate actual percentile thresholds
-  torch::Tensor sorted_distances = std::get<0>(torch::sort(nearest_distances));
-
-  int sparse_idx = static_cast<int>(n_gaussians * lod0_percentile / 100.0f);
-  int dense_idx = static_cast<int>(n_gaussians * lod2_percentile / 100.0f);
-
-  float sparse_threshold = sorted_distances[sparse_idx].item<float>();
-  float dense_threshold = sorted_distances[dense_idx].item<float>();
-
-  // Assign LoD levels
-  torch::Tensor sparse_mask = nearest_distances >= sparse_threshold;
-  lod_levels.masked_fill_(sparse_mask, 0);
-
-  torch::Tensor dense_mask = nearest_distances <= dense_threshold;
-  lod_levels.masked_fill_(dense_mask, 2);
-
-  return lod_levels;
-}
-
-torch::Tensor GaussianModel::selectScreenSpaceLoD(
-    const torch::Tensor& visible_gaussian_mask,
-    const torch::Tensor& camera_position,
-    float focal_length,
-    int image_width) {
-  int max_gaussians = 300000;  // Fixed budget!
-
-  torch::Tensor visible_indices = torch::where(visible_gaussian_mask)[0];
-  if (visible_indices.size(0) == 0) {
-    return visible_gaussian_mask;
-  }
-
-  torch::Tensor visible_positions = xyz_.index({visible_indices});
-  torch::Tensor visible_scalings =
-      getScalingActivation().index({visible_indices});
-  torch::Tensor visible_opacities =
-      getOpacityActivation().index({visible_indices});
-
-  // Compute distances and geometric mean scaling
-  torch::Tensor distances =
-      torch::norm(visible_positions - camera_position.unsqueeze(0), 2, 1);
-  torch::Tensor geom_mean_scale =
-      torch::pow(visible_scalings.prod(1), 1.0 / 3.0);
-
-  // Screen-space size (in pixels)
-  torch::Tensor screen_sizes =
-      focal_length * geom_mean_scale / torch::clamp_min(distances, 0.1f);
-
-  // === Importance Score ===
-  // screen_sizes already accounts for distance, so just multiply by opacity
-  torch::Tensor importance = screen_sizes * visible_opacities.squeeze();
-
-  // === Early Culling ===
-  // Remove gaussians that contribute negligibly (opacity < 0.01 or < 1 pixel)
-  torch::Tensor cull_mask =
-      (visible_opacities.squeeze() > 0.01f) & (screen_sizes > 1.0f);
-  torch::Tensor culled_indices = torch::where(cull_mask)[0];
-
-  if (culled_indices.size(0) == 0) {
-    return torch::zeros_like(visible_gaussian_mask);
-  }
-
-  // Apply culling to our data
-  visible_indices = visible_indices.index({culled_indices});
-  importance = importance.index({culled_indices});
-
-  // === Fixed Budget Selection ===
-  int num_visible = visible_indices.size(0);
-
-  torch::Tensor final_keep;
-  if (num_visible <= max_gaussians) {
-    // Under budget - keep everything
-    final_keep =
-        torch::ones({num_visible}, torch::kBool).to(importance.device());
-  } else {
-    // Over budget - keep top-k by importance
-    auto [sorted_importance, sort_indices] = torch::sort(importance, -1, true);
-
-    final_keep =
-        torch::zeros({num_visible}, torch::kBool).to(importance.device());
-    final_keep.index_put_({sort_indices.slice(0, 0, max_gaussians)}, true);
-  }
-
-  // Update visible mask
-  torch::Tensor result = torch::zeros_like(visible_gaussian_mask);
-  result.index_put_({visible_indices}, final_keep);
-
-  return result;
-}
-
-torch::Tensor GaussianModel::cullByScreenSpaceSize(
-    const torch::Tensor& visible_gaussian_mask,
-    const torch::Tensor& camera_position,
-    float focal_length,
-    float min_pixel_size) {
-  torch::Tensor visible_indices = torch::where(visible_gaussian_mask)[0];
-  if (visible_indices.size(0) == 0) {
-    return visible_gaussian_mask;
-  }
-
-  torch::Tensor visible_positions = xyz_.index({visible_indices});
-  torch::Tensor visible_scalings =
-      getScalingActivation().index({visible_indices});
-
-  // Compute distances and geometric mean scaling
-  torch::Tensor distances =
-      torch::norm(visible_positions - camera_position.unsqueeze(0), 2, 1);
-  torch::Tensor geom_mean_scale =
-      torch::pow(visible_scalings.prod(1), 1.0 / 3.0);
-
-  // Screen-space size (in pixels)
-  torch::Tensor screen_sizes =
-      focal_length * geom_mean_scale / torch::clamp_min(distances, 0.1f);
-
-  // Cull gaussians smaller than threshold
-  torch::Tensor keep_mask = screen_sizes > min_pixel_size;
-
-  // Update visible mask
-  torch::Tensor result = torch::zeros_like(visible_gaussian_mask);
-  result.index_put_({visible_indices.index({keep_mask})}, true);
-
-  return result;
-}
-
-torch::Tensor GaussianModel::selectCumulativeLoD(
-    const torch::Tensor& visible_gaussian_mask,
-    const torch::Tensor& camera_position) {
-  // Get visible indices and their positions
-  torch::Tensor visible_indices = torch::where(visible_gaussian_mask)[0];
-  if (visible_indices.size(0) == 0) {
-    return visible_gaussian_mask;
-  }
-
-  torch::Tensor visible_positions = xyz_.index({visible_indices});
-
-  // Compute distances for visible gaussians
-  torch::Tensor distances = torch::norm(
-      visible_positions - camera_position.unsqueeze(0), /*p=*/2, /*dim=*/1);
-
-  // Logarithmic LoD level calculation
-  float d_max = lod_distance_multiplier_ * chunk_size_;
-  torch::Tensor required_lod = torch::clamp(
-      torch::log2(d_max / torch::clamp_min(distances, 0.1f)), 0.0f, 2.0f);
-
-  // Get pre-assigned LoD levels for visible gaussians
-  torch::Tensor visible_lod_levels =
-      gaussian_lod_levels_.index({visible_indices});
-
-  // Debug: Print distance and LoD statistics
-  float min_dist = distances.min().item<float>();
-  float max_dist = distances.max().item<float>();
-  float mean_required_lod = required_lod.mean().item<float>();
-
-  auto visible_lod_counts =
-      torch::bincount(visible_lod_levels, torch::Tensor(), 3);
-  // std::cout << "[LoD Debug] Distance range: " << min_dist << " - " <<
-  // max_dist
-  //           << ", Mean required LoD: " << mean_required_lod
-  //           << ", Available LoDs - L0: " << visible_lod_counts[0].item<int>()
-  //           << ", L1: " << visible_lod_counts[1].item<int>()
-  //           << ", L2: " << visible_lod_counts[2].item<int>() << std::endl;
-
-  // Cumulative selection: include gaussian if its assigned LoD >= required
-  // LoD Note: We invert the logic since LoD 0 = large (base), LoD 2 = small
-  // (fine)
-  torch::Tensor lod_mask = visible_lod_levels.to(torch::kFloat) <= required_lod;
-
-  // Create final mask
-  torch::Tensor final_mask = torch::zeros_like(visible_gaussian_mask);
-  final_mask.index_put_({visible_indices}, lod_mask);
-
-  return final_mask;
 }
 
 void GaussianModel::handleBatchChunkRedistribution(
@@ -2771,80 +2422,6 @@ void GaussianModel::handleBatchChunkRedistribution(
   // Step 8: Update gaussian_chunk_ids_ for moved gaussians (now safe!)
   gaussian_chunk_ids_.index_put_({updated_moved_indices_global},
                                  updated_destination_chunk_ids);
-}
-
-void GaussianModel::assertChunkTrackingConsistency(
-    const std::string& location) {
-  // Check that tracking tensors are in sync
-  assert(chunks_on_disk_.size(0) == chunk_gaussian_counts_.size(0) &&
-         "chunks_on_disk_ and chunk_gaussian_counts_ size mismatch");
-
-  // Check that loaded chunks are subset of on-disk chunks
-  torch::Tensor not_on_disk =
-      ~torch::isin(chunks_loaded_from_disk_, chunks_on_disk_);
-  assert(!torch::any(not_on_disk).item<bool>() &&
-         ("Loaded chunks not marked as on-disk at: " + location).c_str());
-
-  std::cout << "[ASSERT] " << location << " - Chunk tracking OK" << std::endl;
-}
-
-void GaussianModel::assertGaussianCountInvariant(const std::string& location,
-                                                 bool should_increase) {
-  int64_t current_count = xyz_.size(0);
-
-  if (!should_increase && debug_expected_gaussian_count_ > 0) {
-    assert(current_count <= debug_expected_gaussian_count_ &&
-           ("Unexpected Gaussian count increase at: " + location +
-            " (was: " + std::to_string(debug_expected_gaussian_count_) +
-            ", now: " + std::to_string(current_count) + ")")
-               .c_str());
-  }
-
-  debug_expected_gaussian_count_ = current_count;
-  std::cout << "[ASSERT] " << location << " - Gaussian count: " << current_count
-            << std::endl;
-}
-
-void GaussianModel::assertNoDuplicateGaussians(const std::string& location) {
-  if (gaussian_ids_.size(0) > 0) {
-    torch::Tensor unique_ids = std::get<0>(torch::_unique2(gaussian_ids_));
-    assert(unique_ids.size(0) == gaussian_ids_.size(0) &&
-           ("Duplicate Gaussian IDs found at: " + location).c_str());
-  }
-
-  std::cout << "[ASSERT] " << location << " - No duplicate gaussians"
-            << std::endl;
-}
-
-void GaussianModel::assertTensorSizesConsistent(const std::string& location) {
-  int64_t n = xyz_.size(0);
-
-  assert(features_dc_.size(0) == n && "features_dc_ size mismatch");
-  assert(features_rest_.size(0) == n && "features_rest_ size mismatch");
-  assert(scaling_.size(0) == n && "scaling_ size mismatch");
-  assert(rotation_.size(0) == n && "rotation_ size mismatch");
-  assert(opacity_.size(0) == n && "opacity_ size mismatch");
-  assert(exist_since_iter_.size(0) == n && "exist_since_iter_ size mismatch");
-  assert(gaussian_chunk_ids_.size(0) == n &&
-         "gaussian_chunk_ids_ size mismatch");
-  assert(gaussian_lod_levels_.size(0) == n &&
-         "gaussian_lod_levels_ size mismatch");
-  assert(gaussian_ids_.size(0) == n && "gaussian_ids_ size mismatch");
-  assert(position_lrs_.size(0) == n && "position_lrs_ size mismatch");
-
-  std::cout << "[ASSERT] " << location << " - Tensor sizes consistent: " << n
-            << std::endl;
-}
-
-void GaussianModel::runFullConsistencyCheck(const std::string& location) {
-  std::cout << "\n=== FULL CONSISTENCY CHECK: " << location
-            << " ===" << std::endl;
-  assertTensorSizesConsistent(location);
-  assertChunkTrackingConsistency(location);
-  assertNoDuplicateGaussians(location);
-  assertGaussianCountInvariant(location);
-  std::cout << "=== CONSISTENCY CHECK PASSED: " << location << " ===\n"
-            << std::endl;
 }
 
 void GaussianModel::updateChunkIDs() {

@@ -27,9 +27,7 @@ class GaussianModelParams {
                       std::string images = "images",
                       bool white_background = false,
                       std::string data_device = "cuda",
-                      bool enable_lod = false,
-                      float lod_distance_multiplier = 2.0f,
-                      long max_gaussians_in_memory = 3000000);
+                      long max_gaussians_in_memory = 1500000);
 
  public:
   int sh_degree_;
@@ -38,8 +36,6 @@ class GaussianModelParams {
   std::string images_;
   bool white_background_;
   std::string data_device_;
-  bool enable_lod_;
-  float lod_distance_multiplier_;
   long max_gaussians_in_memory_;
 };
 

@@ -474,7 +474,7 @@ int GaussianMapper::processBatchedLoopClosure(
                   << std::endl;
         // Reset opacity immediately for visible gaussians
         torch::Tensor visible_gaussians =
-            gaussians_->cullVisibleGaussians(pkf, false, false);
+            gaussians_->cullVisibleGaussians(pkf, false);
         if (torch::any(visible_gaussians).item<bool>()) {
           // gaussians_->resetOpacityForMask(visible_gaussians);
           gaussians_->resetPositionLRAndOptimizerState(visible_gaussians);
@@ -965,7 +965,7 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
 
   if (initial_mapped_) {
     // std::unique_lock<std::mutex> lock_render(mutex_render_);
-    visible_gaussian_mask = gaussians_->cullVisibleGaussians(pkf, false);
+    visible_gaussian_mask = gaussians_->cullVisibleGaussians(pkf);
 
     torch::Tensor view_matrix = pkf->getRT().transpose(0, 1);
     auto render_pkg = GaussianRenderer::render(
@@ -1153,7 +1153,7 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
           full_model_prune_mask.index_put_({gaussians_to_remove_full}, true);
           gaussians_->prunePoints(full_model_prune_mask);
 
-          visible_gaussian_mask = gaussians_->cullVisibleGaussians(pkf, false);
+          visible_gaussian_mask = gaussians_->cullVisibleGaussians(pkf);
 
           torch::Tensor view_matrix = pkf->getRT().transpose(0, 1);
           auto updated_render_pkg = GaussianRenderer::render(

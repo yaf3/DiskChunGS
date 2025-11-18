@@ -41,12 +41,12 @@
 #include "rendering/frustum_culler.h"
 #include "scene/gaussian_keyframe.h"
 #include "scene/gaussian_parameters.h"
+#include "slam_deps/simple-knn/spatial.h"
+#include "slam_deps/tinyply/tinyply.h"
 #include "types.h"
 #include "utils/general_utils.h"
 #include "utils/sh_utils.h"
 #include "utils/tensor_utils.h"
-#include "slam_deps/simple-knn/spatial.h"
-#include "slam_deps/tinyply/tinyply.h"
 
 // Forward declaration to avoid circular dependency
 class SparseGaussianAdam;
@@ -125,7 +125,6 @@ class GaussianModel {
       torch::Tensor& new_exist_since_iter,
       torch::Tensor& new_chunk_ids,
       torch::Tensor& new_position_lrs,
-      torch::Tensor& new_lod_levels,
       torch::Tensor& new_gaussian_ids,
       const std::vector<torch::Tensor>& loaded_exp_avg = {},
       const std::vector<torch::Tensor>& loaded_exp_avg_sq = {},
@@ -147,7 +146,6 @@ class GaussianModel {
   torch::Tensor opacity_;
   torch::Tensor exist_since_iter_;
   torch::Tensor gaussian_chunk_ids_;
-  torch::Tensor gaussian_lod_levels_;  // LoD level assignment for each gaussian
 
   std::vector<torch::Tensor> Tensor_vec_xyz_, Tensor_vec_feature_dc_,
       Tensor_vec_feature_rest_, Tensor_vec_opacity_, Tensor_vec_scaling_,
@@ -170,10 +168,6 @@ class GaussianModel {
  public:
   float chunk_size_;
 
-  // LoD system parameters
-  bool enable_lod_;
-  float lod_distance_multiplier_;
-
   // Cache for keyframe visibility results
   FrustumCullingCache gaussian_visibility_cache_;
 
@@ -181,29 +175,7 @@ class GaussianModel {
       std::shared_ptr<GaussianKeyframe> keyframe,
       bool use_cache);
   torch::Tensor cullVisibleGaussians(std::shared_ptr<GaussianKeyframe> keyframe,
-                                     bool use_lod = true,
                                      bool manage_memory = true);
-
-  // LoD system methods
-  torch::Tensor assignLoDByPercentiles(
-      const torch::Tensor& nearest_distances,
-      float lod0_percentile = 75.0f,  // Top 25% get LoD 0
-      float lod2_percentile = 25.0f   // Bottom 25% get LoD 2
-  );
-
-  torch::Tensor selectScreenSpaceLoD(const torch::Tensor& visible_gaussian_mask,
-                                     const torch::Tensor& camera_position,
-                                     float focal_length,
-                                     int image_width);
-
-  torch::Tensor cullByScreenSpaceSize(
-      const torch::Tensor& visible_gaussian_mask,
-      const torch::Tensor& camera_position,
-      float focal_length,
-      float min_pixel_size = 1.0f);
-
-  torch::Tensor selectCumulativeLoD(const torch::Tensor& visible_gaussian_mask,
-                                    const torch::Tensor& camera_position);
 
   torch::Tensor createGaussianMaskFromChunks(
       const torch::Tensor& visible_chunk_ids);
@@ -212,9 +184,6 @@ class GaussianModel {
                                 const torch::Tensor& visible_gaussian_mask);
 
   void updateChunkIDs();
-
-  // Recompute chunk IDs for gaussians after loop closure transformations
-  void recomputeChunkIdsAfterLoopClosure();
 
   bool is_initialized_ = false;
 
@@ -271,8 +240,7 @@ class GaussianModel {
     // Main tensors
     torch::Tensor xyz, features_dc, features_rest;
     torch::Tensor scaling, rotation, opacity;
-    torch::Tensor exist_since, position_lrs;
-    torch::Tensor lod_levels, gaussian_ids;
+    torch::Tensor exist_since, position_lrs, gaussian_ids;
 
     // Optimizer states
     std::vector<torch::Tensor> exp_avg_states;     // [6] tensors
@@ -323,17 +291,7 @@ class GaussianModel {
   void deleteSparseChunks(int min_gaussians_per_chunk);
   void deleteSparseChunkFiles(const torch::Tensor& chunk_ids);
 
-  int min_chunk_occupancy_for_loaded_ = 50;
-
   void handleBatchChunkRedistribution(const torch::Tensor& processed_chunk_ids);
-
-  void assertChunkTrackingConsistency(const std::string& location);
-  void assertGaussianCountInvariant(const std::string& location,
-                                    bool should_increase = false);
-  void assertChunkGaussianCounts(const std::string& location);
-  void assertNoDuplicateGaussians(const std::string& location);
-  void assertTensorSizesConsistent(const std::string& location);
-  void runFullConsistencyCheck(const std::string& location);
 
   void prune(float min_opacity, float extent, int max_screen_size);
 };
