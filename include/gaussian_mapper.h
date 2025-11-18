@@ -48,19 +48,18 @@
 #include "ORB-SLAM3/include/MapDrawer.h"
 #include "ORB-SLAM3/include/System.h"
 #include "chunk_types.h"
-#include "gaussian_keyframe.h"
+#include "scene/gaussian_keyframe.h"
 #include "gaussian_mapper_external.h"
-#include "gaussian_scene.h"
-#include "guided_mvs.h"
-#include "keyframe_selection.h"
-#include "mono_depth.h"
-#include "operate_points.h"
+#include "scene/gaussian_scene.h"
+#include "depth/guided_mvs.h"
+#include "utils/keyframe_selection.h"
+#include "depth/mono_depth.h"
+#include "geometry/operate_points.h"
 #include "slam_deps/xfeat_cpp/include/XFeat.h"
-#include "stereo_depth.h"
-#include "stereo_vision.h"
-#include "tensor_utils.h"
+#include "depth/stereo_depth.h"
+#include "depth/stereo_vision.h"
+#include "utils/tensor_utils.h"
 
-class ChunkManager;      // Forward declaration
 class KeyframeSelector;  // Forward declaration
 class TrajectoryViewer;  // Forward declaration
 

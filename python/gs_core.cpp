@@ -5,8 +5,8 @@
 #include <memory>
 #include <opencv2/opencv.hpp>
 
-#include "include/gaussian_mapper.h"
-#include "include/types.h"
+#include "gaussian_mapper.h"
+#include "types.h"
 #include "utils.h"
 
 namespace gs {

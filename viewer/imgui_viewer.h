@@ -38,8 +38,8 @@
 #include "imgui/imgui.h"
 #include "imgui/imgui_impl_glfw.h"
 #include "imgui/imgui_impl_opengl3.h"
-#include "include/gaussian_mapper.h"
-#include "include/graphics_utils.h"
+#include "gaussian_mapper.h"
+#include "utils/graphics_utils.h"
 #include "map_drawer.h"
 
 namespace ORB_SLAM3 {

@@ -24,7 +24,7 @@
 #include <iostream>
 #include <memory>
 
-#include "include/gaussian_mapper.h"
+#include "gaussian_mapper.h"
 #include "viewer/imgui_viewer.h"
 
 int main(int argc, char** argv) {

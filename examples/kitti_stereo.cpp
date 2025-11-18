@@ -14,7 +14,7 @@
 
 #include "ORB-SLAM3/include/System.h"
 #include "include/gaussian_mapper.h"
-#include "include/trajectory_viewer.h"
+#include "include/utils/trajectory_viewer.h"
 #include "viewer/imgui_viewer.h"
 
 void LoadImages(const string &strPathToSequence,

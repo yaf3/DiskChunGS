@@ -25,7 +25,7 @@
 #include <vector>
 
 #include "ORB-SLAM3/include/System.h"
-#include "include/gaussian_mapper.h"
+#include "gaussian_mapper.h"
 #include "viewer/imgui_viewer.h"
 
 class GaussianSLAMWrapper {

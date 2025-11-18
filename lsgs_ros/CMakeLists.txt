@@ -106,6 +106,7 @@ include_directories(BEFORE
     include
     ${catkin_INCLUDE_DIRS}
     ${LSGS_MAIN_DIR}
+    ${LSGS_MAIN_DIR}/include
     ${LSGS_MAIN_DIR}/slam_deps
     ${ORB_SLAM3_SOURCE_DIR}
     ${ORB_SLAM3_SOURCE_DIR}/include

@@ -33,7 +33,7 @@
 #include <thread>
 
 #include "ORB-SLAM3/include/System.h"
-#include "include/gaussian_mapper.h"
+#include "gaussian_mapper.h"
 #include "viewer/imgui_viewer.h"
 
 void LoadImages(const string &strSequence,

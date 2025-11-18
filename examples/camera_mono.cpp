@@ -32,7 +32,7 @@
 #include <thread>
 
 #include "ORB-SLAM3/include/System.h"
-#include "include/gaussian_mapper.h"
+#include "gaussian_mapper.h"
 #include "viewer/imgui_viewer.h"
 
 void LoadImages(const std::filesystem::path &pathImageDir,
@@ -58,7 +58,7 @@ int main(int argc, char **argv) {
   if (argc == 7)
     use_viewer = (std::string(argv[6]) == "no_viewer" ? false : true);
 
-  float target_fps = 2.0;
+  float target_fps = 10.0;
 
   std::string output_directory = std::string(argv[5]);
   if (output_directory.back() != '/') output_directory += "/";

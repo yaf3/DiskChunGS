@@ -1,0 +1,83 @@
+/*
+ * Copyright (C) 2023, Inria
+ * GRAPHDECO research group, https://team.inria.fr/graphdeco
+ * All rights reserved.
+ *
+ * This software is free for non-commercial, research and evaluation use
+ * under the terms of the LICENSE.md file.
+ *
+ * For inquiries contact  george.drettakis@inria.fr
+ *
+ * This file is Derivative Works of Gaussian Splatting,
+ * created by Longwei Li, Huajian Huang, Hui Cheng and Sai-Kit Yeung in 2023,
+ * as part of Photo-SLAM and modified by Dapeng Feng in 2024, as part of CaRtGS
+ */
+
+#include "scene/gaussian_parameters.h"
+
+GaussianModelParams::GaussianModelParams(std::filesystem::path source_path,
+                                         std::filesystem::path model_path,
+                                         std::filesystem::path exec_path,
+                                         int sh_degree,
+                                         std::string images,
+                                         bool white_background,
+                                         std::string data_device,
+                                         bool enable_lod,
+                                         float lod_distance_multiplier,
+                                         long max_gaussians_in_memory)
+    : sh_degree_(sh_degree),
+      images_(images),
+      white_background_(white_background),
+      data_device_(data_device),
+      enable_lod_(enable_lod_),
+      lod_distance_multiplier_(lod_distance_multiplier),
+      max_gaussians_in_memory_(max_gaussians_in_memory) {
+  if (source_path.is_absolute())
+    source_path_ = source_path;
+  else
+    source_path_ = exec_path / source_path;
+
+  if (model_path.is_absolute())
+    model_path_ = model_path;
+  else
+    model_path_ = exec_path / model_path;
+}
+
+GaussianPipelineParams::GaussianPipelineParams(bool convert_SHs,
+                                               bool compute_cov3D,
+                                               bool separate_sh)
+    : convert_SHs_(convert_SHs),
+      compute_cov3D_(compute_cov3D),
+      separate_sh_(separate_sh) {}
+
+GaussianOptimizationParams::GaussianOptimizationParams(
+    int iterations,
+    float position_lr_init,
+    float position_lr_decay,
+    float feature_lr,
+    float opacity_lr,
+    float scaling_lr,
+    float rotation_lr,
+    float pose_lr,
+    float exposure_lr,
+    float depth_scale_bias_lr,
+    float lambda_dssim,
+    float lambda_depth,
+    int auto_distribute,
+    bool smooth_l1,
+    float opacity_reg)
+    : iterations_(iterations),
+      position_lr_init_(position_lr_init),
+      position_lr_decay_(position_lr_decay),
+      feature_lr_(feature_lr),
+      opacity_lr_(opacity_lr),
+      scaling_lr_(scaling_lr),
+      rotation_lr_(rotation_lr),
+      pose_lr_(pose_lr),
+      exposure_lr_(exposure_lr),
+      depth_scale_bias_lr_(depth_scale_bias_lr),
+      lambda_dssim_(lambda_dssim),
+      lambda_depth_(lambda_depth),
+      auto_distribute_(auto_distribute),
+      smooth_l1_(smooth_l1),
+      opacity_reg_(opacity_reg) {}

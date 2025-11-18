@@ -152,6 +152,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 
 include_directories(
+    ${PROJECT_SOURCE_DIR}/include
     ${PROJECT_SOURCE_DIR}
     ${PROJECT_SOURCE_DIR}/slam_deps
     ${ORB_SLAM3_SOURCE_DIR}
@@ -210,12 +211,12 @@ target_link_libraries(
 add_library(
     cuda_rasterizer
     SHARED
-    include/operate_points.h
-    src/operate_points.cu
-    include/stereo_vision.h
-    src/stereo_vision.cu
-    src/guided_mvs.cu
-    include/cuda_utils.h
+    include/geometry/operate_points.h
+    src/geometry/operate_points.cu
+    include/depth/stereo_vision.h
+    src/depth/stereo_vision.cu
+    src/depth/guided_mvs.cu
+    include/utils/cuda_utils.h
     cuda_rasterizer/auxiliary.h
     cuda_rasterizer/rasterize_points.h
     cuda_rasterizer/rasterize_points.cu
@@ -277,53 +278,64 @@ add_library(
     SHARED
     slam_deps/tinyply/tinyply.h
     slam_deps/tinyply/tinyply.cpp
-    include/gaussian_keyframe.h
-    include/gaussian_model.h
-    include/gaussian_parameters.h
-    include/gaussian_rasterizer.h
-    include/gaussian_renderer.h
-    include/gaussian_scene.h
+    # Core headers
     include/gaussian_mapper.h
-    include/general_utils.h
-    include/graphics_utils.h
-    include/loss_utils.h
-    include/sh_utils.h
-    include/tensor_utils.h
     include/camera.h
-    include/point_cloud.h
-    include/point2d.h
-    include/point3d.h
     include/types.h
-    include/profiling.h
     include/chunk_types.h
-    include/keyframe_selection.h
-    include/debugging_utils.h
-    include/stereo_depth.h
-    include/mono_depth.h
-    include/guided_mvs.h
-    include/frustum_culler.h
-    include/trajectory_viewer.h
-    src/gaussian_keyframe.cpp
-    src/gaussian_model.cpp
-    src/gaussian_parameters.cpp
-    src/gaussian_rasterizer.cpp
-    src/gaussian_renderer.cpp
-    src/gaussian_scene.cpp
-    src/gaussian_mapper_config.cpp
-    src/gaussian_mapper_initialization.cpp
-    src/gaussian_mapper_core.cpp
-    src/gaussian_mapper_operations.cpp
-    src/gaussian_mapper_io.cpp
-    src/gaussian_mapper_parameters.cpp
-    src/gaussian_mapper_external.cpp
-    src/gaussian_mapper_depth.cpp
-    src/keyframe_selection.cpp
-    src/debugging_utils.cpp
-    src/stereo_depth.cpp
-    src/mono_depth.cpp
-    src/guided_mvs.cpp
-    src/frustum_culler.cpp
-    src/trajectory_viewer.cpp
+    # Scene
+    include/scene/gaussian_keyframe.h
+    include/scene/gaussian_model.h
+    include/scene/gaussian_parameters.h
+    include/scene/gaussian_scene.h
+    # Rendering
+    include/rendering/gaussian_rasterizer.h
+    include/rendering/gaussian_renderer.h
+    include/rendering/frustum_culler.h
+    # Depth
+    include/depth/stereo_depth.h
+    include/depth/mono_depth.h
+    include/depth/guided_mvs.h
+    # Geometry
+    include/geometry/point_cloud.h
+    include/geometry/point2d.h
+    include/geometry/point3d.h
+    # Utils
+    include/utils/general_utils.h
+    include/utils/graphics_utils.h
+    include/utils/loss_utils.h
+    include/utils/sh_utils.h
+    include/utils/tensor_utils.h
+    include/utils/profiling.h
+    include/utils/keyframe_selection.h
+    include/utils/debugging_utils.h
+    include/utils/trajectory_viewer.h
+    # Gaussian mapper implementation
+    src/gaussian_mapper/config.cpp
+    src/gaussian_mapper/initialization.cpp
+    src/gaussian_mapper/core.cpp
+    src/gaussian_mapper/operations.cpp
+    src/gaussian_mapper/io.cpp
+    src/gaussian_mapper/parameters.cpp
+    src/gaussian_mapper/external.cpp
+    src/gaussian_mapper/depth.cpp
+    # Scene implementation
+    src/scene/gaussian_keyframe.cpp
+    src/scene/gaussian_model.cpp
+    src/scene/gaussian_parameters.cpp
+    src/scene/gaussian_scene.cpp
+    # Rendering implementation
+    src/rendering/gaussian_rasterizer.cpp
+    src/rendering/gaussian_renderer.cpp
+    src/rendering/frustum_culler.cpp
+    # Depth implementation
+    src/depth/stereo_depth.cpp
+    src/depth/mono_depth.cpp
+    src/depth/guided_mvs.cpp
+    # Utils implementation
+    src/utils/keyframe_selection.cpp
+    src/utils/debugging_utils.cpp
+    src/utils/trajectory_viewer.cpp
 )
 target_link_libraries(
     gaussian_mapper

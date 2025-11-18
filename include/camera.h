@@ -27,7 +27,7 @@
 #include <opencv2/opencv.hpp>
 #include <vector>
 
-#include "tensor_utils.h"
+#include "utils/tensor_utils.h"
 #include "types.h"
 
 class Camera {
