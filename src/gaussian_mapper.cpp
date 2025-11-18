@@ -582,17 +582,18 @@ void GaussianMapper::run() {
 
           // Create tuple matching handleNewKeyframeFromORBSLAM signature
           std::tuple<unsigned long, unsigned long, Sophus::SE3f, cv::Mat, bool,
-                     cv::Mat, std::vector<float>, std::vector<float>, std::string>
+                     cv::Mat, std::vector<float>, std::vector<float>,
+                     std::string>
               kf_tuple = std::make_tuple(
-                  pKF->mnId,                  // Id
-                  pKF->mpCamera->GetId(),     // CameraId
-                  pKF->GetPose(),             // pose
-                  pKF->imgLeftRGB,            // image
-                  false,                      // isLoopClosure
-                  pKF->imgAuxiliary,          // auxiliaryImage
-                  std::move(pixels),          // keypoint pixels
-                  std::move(pointsLocal),     // keypoint points local
-                  pKF->mNameFile              // filename
+                  pKF->mnId,               // Id
+                  pKF->mpCamera->GetId(),  // CameraId
+                  pKF->GetPose(),          // pose
+                  pKF->imgLeftRGB,         // image
+                  false,                   // isLoopClosure
+                  pKF->imgAuxiliary,       // auxiliaryImage
+                  std::move(pixels),       // keypoint pixels
+                  std::move(pointsLocal),  // keypoint points local
+                  pKF->mNameFile           // filename
               );
 
           // Use the common keyframe handling function
@@ -610,11 +611,6 @@ void GaussianMapper::run() {
       // Invoke training once
       trainForOneIteration();
 
-      // // Kind of a hack
-      // for (auto& kfit : scene_->keyframes()) {
-      //   kfit.second->allow_eviction_ = true;
-      // }
-
       // Finish initial mapping loop
       break;
     } else if (pSLAM_->isShutDown()) {
@@ -627,13 +623,6 @@ void GaussianMapper::run() {
     }
   }
   std::cout << "[MAPPER DEBUG] Exited initial mapping phase" << std::endl;
-
-  // Enable memory history recording using the second overload
-  // torch::cuda::_record_memory_history("all",    // enabled
-  //                                     "all",    // context
-  //                                     "all",    // stacks
-  //                                     SIZE_MAX  // max_entries
-  // );
 
   std::cout << "[MAPPER DEBUG] Starting incremental mapping phase" << std::endl;
   // Second loop: Incremental gaussian mapping
@@ -650,22 +639,6 @@ void GaussianMapper::run() {
     // Invoke training once
     trainForOneIteration();
     timer_TotalLoop.stop();
-
-    // if (getIteration() % 10 == 0) {
-    //   // chunk_manager_->testMemoryUsagePattern();
-
-    //   // Get the pickled snapshot
-    //   std::string snapshot_data =
-    //   torch::cuda::_memory_snapshot_pickled();
-
-    //   // Write to file
-    //   std::ofstream file("./memory_snapshot.pickle", std::ios::binary);
-    //   file.write(snapshot_data.data(), snapshot_data.size());
-    //   file.close();
-
-    //   std::cout << "Memory snapshot saved to memory_snapshot.pickle"
-    //             << std::endl;
-    // }
 
     if (pSLAM_->isShutDown()) {
       SLAM_stop_iter = getIteration();
@@ -723,8 +696,6 @@ void GaussianMapper::run() {
     CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(video_dir)
     renderFlyThroughVideo(video_dir / "output_video", 2452, 740, 30,
                           render_fly_through_speed_, 0.8f, 2);
-    // renderFlyThroughVideo(video_dir / "output_video_2", 1226, 360, 30,
-    //                       render_fly_through_speed_, 0.8f, 2);
   }
 
   std::cout << "[MAPPER DEBUG] Saving total gaussians" << std::endl;
@@ -813,33 +784,20 @@ void GaussianMapper::trainForOneIteration(
     training_metrics_.push_back(metrics);
   }
 
-  // if (getIteration() % 100 == 0) {
-  //   updateORBSLAMPoses();
-  // }
-
   auto iter_start_timing = std::chrono::steady_clock::now();
 
   auto timer_pickKeyframe = ProfilingUtils::Timer("pickKeyframe");
 
-  // if (pSLAM_) {
-  //   ORB_SLAM3::MapDrawer* pSlamMapDrawer = pSLAM_->getMapDrawer();
-  //   Sophus::SE3f slam_Twc = pSlamMapDrawer->GetCurrentCameraPose();
-  //   keyframe_queue_->setCurrentPose(slam_Twc);
-  // } else {
-  //   auto [_, external_Twc] = getRecentExternalData();
-  //   keyframe_queue_->setCurrentPose(external_Twc);
-  // }
   std::shared_ptr<GaussianKeyframe> viewpoint_cam;
   if (selected_keyframe) {
     viewpoint_cam = selected_keyframe;
   } else {
     switch (keyframe_selection_strategy_) {
-      // Random sliding window keyframe (all keyframes so far possible, none are
-      // saved)
+      // Random sliding window keyframe
       case 0: {
         viewpoint_cam = useOneRandomSlidingWindowKeyframe();
       } break;
-      // Recent k keyframes (old ones get saved to disk)
+      // Grid based KF selection
       case 1: {
         viewpoint_cam = keyframe_queue_->getNextKeyframe();
       } break;
@@ -884,30 +842,14 @@ void GaussianMapper::trainForOneIteration(
           scene_->cameras_.at(viewpoint_cam->camera_id_)
               .gaus_pyramid_undistort_mask_);
 
-  // Save depth for debugging
-  // if (gt_inv_depth.defined()) {
-  //   std::filesystem::create_directories("./debug_depth");
-
-  //   // Clip inverse depth: depth > 50m means inv_depth < 0.02, set those to 0
-  //   float max_depth_threshold = 50.0f;
-  //   float min_inv_depth_threshold = 1.0f / max_depth_threshold;
-  //   torch::Tensor gt_inv_depth_clipped =
-  //       torch::where(gt_inv_depth < min_inv_depth_threshold,
-  //                    torch::zeros_like(gt_inv_depth), gt_inv_depth);
-
-  //   std::string depth_filename =
-  //       "./debug_depth/" + std::to_string(viewpoint_cam->fid_) + ".png";
-  //   colorize_and_save_depth(gt_inv_depth_clipped.detach().cpu(),
-  //                           depth_filename);
-  // }
-
   auto timer_waitForMutex = ProfilingUtils::Timer("waitForMutex");
   // Mutex lock for usage of the gaussian model
   std::unique_lock<std::mutex> lock_render(mutex_render_);
   timer_waitForMutex.stop();
 
-  auto timer_deleteSparseChunks = ProfilingUtils::Timer("deleteSparseChunks");
-  int min_gaussians_per_chunk = 100;
+  // auto timer_deleteSparseChunks =
+  // ProfilingUtils::Timer("deleteSparseChunks");
+  // int min_gaussians_per_chunk = 100;
   // if (getIteration() % 100 == 0) {
   //   gaussians_->deleteSparseChunks(min_gaussians_per_chunk);
   // }
@@ -924,44 +866,8 @@ void GaussianMapper::trainForOneIteration(
 
   auto timer_loadVisibleChunks = ProfilingUtils::Timer("loadVisibleChunks");
 
-  // gaussians_->checkMemoryPressure();
-
   torch::Tensor visible_gaussian_mask =
       gaussians_->cullVisibleGaussians(viewpoint_cam);
-
-  // Compute spatial optimization mask if enabled
-  torch::Tensor optimization_mask;
-  if (enable_spatial_gradient_masking_) {
-    torch::Tensor keyframe_pos =
-        viewpoint_cam->getCenter().unsqueeze(0);  // [1, 3]
-    torch::Tensor distances =
-        torch::norm(gaussians_->xyz_ - keyframe_pos, 2, /*dim=*/1);  // [N]
-
-    optimization_mask = distances <= max_optimization_distance_;  // [N] bool
-    // std::cout << "[Spatial Masking] " << optimization_mask.sum().item<int>()
-    //           << " / " << gaussians_->xyz_.size(0) << " gaussians within "
-    //           << max_optimization_distance_ << "m radius" << std::endl;
-  } else {
-    // Default: optimize all gaussians (reuse visible mask to avoid allocation)
-    optimization_mask = visible_gaussian_mask;
-  }
-  // std::cout << "[DEBUG] visible gaussians=" << num_visible << " / "
-  //           << visible_gaussian_mask.size(0) << std::endl;
-
-  // Force chunk switch if too few visible gaussians
-  // Very small gaussian counts (< 5000) can cause degenerate rendering/memory
-  // issues
-  // const int MIN_VISIBLE_GAUSSIANS = 1000;
-  // if (num_visible < MIN_VISIBLE_GAUSSIANS) {
-  //   std::cout << "[WARNING] Too few visible gaussians (" << num_visible << "
-  //   < "
-  //             << MIN_VISIBLE_GAUSSIANS << " forcing chunk switch" <<
-  //             std::endl;
-  //   keyframe_queue_->forceChunkSwitch();
-  //   increaseIteration(-1);
-  //   timer_loadVisibleChunks.stop();
-  //   return;
-  // }
 
   timer_loadVisibleChunks.stop();
 
@@ -995,37 +901,11 @@ void GaussianMapper::trainForOneIteration(
   auto Lssim = loss_utils::fast_ssim(rendered_image, gt_image);
   float lambda_dssim = lambdaDssim();
   auto loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - Lssim);
-  // if (opt_params_.opacity_reg_) {
-  //   loss += opt_params_.opacity_reg_ *
-  //           gaussians_->getOpacityActivation().abs().mean();
-  // }
-
-  // if (gt_inv_depth.defined()) {
-  //   torch::Tensor rendered_inv_depth = std::get<0>(render_pkg);
-
-  //   // Clip inverse depth: depth > 50m means inv_depth < 0.02, set those to 0
-  //   float max_depth_threshold = 50.0f;
-  //   float min_inv_depth_threshold = 1.0f / max_depth_threshold;
-  //   torch::Tensor gt_inv_depth_clipped =
-  //       torch::where(gt_inv_depth < min_inv_depth_threshold,
-  //                    torch::zeros_like(gt_inv_depth), gt_inv_depth);
-
-  //   // Compute loss with masking for 0 values (sky/far regions)
-  //   torch::Tensor depth_diff =
-  //       (rendered_inv_depth - gt_inv_depth_clipped).abs();
-  //   depth_diff = depth_diff.masked_fill(gt_inv_depth_clipped == 0, 0);
-  //   torch::Tensor depth_loss = depth_diff.mean();
-
-  //   loss += 1.0 * depth_loss;
-  // }
 
   if (gt_inv_depth.defined()) {
     float lambda_depth = lambdaDepth();
     torch::Tensor rendered_inv_depth = std::get<0>(render_pkg);
-    // depth_loss = loss_utils::smooth_l1_depth_loss(rendered_depth,
-    // gt_depth);
     torch::Tensor depth_loss = (rendered_inv_depth - gt_inv_depth).abs().mean();
-    // loss += viewpoint_cam->depth_loss_weight * depth_loss;
     loss += lambda_depth * depth_loss;
   }
 
@@ -1033,11 +913,6 @@ void GaussianMapper::trainForOneIteration(
 
   auto timer_backwards = ProfilingUtils::Timer("backwards");
   loss.backward();
-
-  // Apply spatial gradient masking if enabled
-  if (enable_spatial_gradient_masking_) {
-    gaussians_->maskGradients(optimization_mask);
-  }
 
   timer_backwards.stop();
 
@@ -1069,12 +944,7 @@ void GaussianMapper::trainForOneIteration(
     full_model_contributed.index_put_({visible_gaussian_indices},
                                       subset_contributed);
 
-    // Only optimize gaussians that BOTH contributed AND are within
-    // optimization radius
-    torch::Tensor final_optimization_mask =
-        full_model_contributed & optimization_mask;
-
-    gaussians_->optimizerStep(final_optimization_mask,
+    gaussians_->optimizerStep(full_model_contributed,
                               gaussians_->getXYZ().size(0));
   }
   gaussians_->optimizer_->zero_grad(true);
@@ -1085,13 +955,7 @@ void GaussianMapper::trainForOneIteration(
     gaussians_->pruneLowOpacityGaussians(viewpoint_cam, visible_gaussian_mask);
   }
   timer_prune.stop();
-  // gaussians_->updateChunkIDs();
 
-  // if (getIteration() % 100 == 0) {
-  //   gaussians_->prune(0.005, 1.0, 0);
-  // }
-
-  auto timer_densification = ProfilingUtils::Timer("densification");
   {
     torch::NoGradGuard no_grad;
     float current_loss = loss.item().toFloat();
@@ -1103,7 +967,6 @@ void GaussianMapper::trainForOneIteration(
       recordKeyframeRendered(rendered_image, gt_image, viewpoint_cam->fid_,
                              result_dir_, result_dir_, result_dir_);
   }
-  timer_densification.stop();
 
   auto iter_end_timing = std::chrono::steady_clock::now();
   auto iter_time = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -2051,7 +1914,7 @@ void GaussianMapper::handleNewKeyframeFromORBSLAM(
 
     // Call common initialization logic
     createAndInitializeKeyframe(pkf, imgRGB_undistorted, imgAux_undistorted,
-                                 camera, filename);
+                                camera, filename);
 
     // Release ORB-SLAM resources
     pSLAM_->getAtlas()->ReleaseKeyFrameImages(pkf->fid_);

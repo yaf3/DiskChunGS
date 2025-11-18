@@ -62,52 +62,6 @@ std::pair<torch::Tensor, torch::Tensor> GuidedMVS::operator()(
   }
   auto other2ref = torch::stack(other2ref_list, 0).contiguous().cuda();
 
-  // // Debug pose tensors
-  // std::cout << "\n=== C++ POSE DEBUG ===" << std::endl;
-  // std::cout << "Number of keyframes: " << keyframes.size() << std::endl;
-  // std::cout << "other2ref shape: " << other2ref.sizes() << std::endl;
-  // std::cout << "other2ref dtype: " << other2ref.dtype() << std::endl;
-
-  // // Print reference keyframe RT
-  // auto ref_rt = refKeyframe->getRT();
-  // std::cout << "\nReference keyframe RT shape: " << ref_rt.sizes() <<
-  // std::endl; std::cout << "Reference keyframe RT:" << std::endl; std::cout <<
-  // ref_rt << std::endl; std::cout << "Reference keyframe ID: " <<
-  // refKeyframe->fid_ << std::endl;
-
-  // // Print each relative pose
-  // for (size_t i = 0; i < keyframes.size(); ++i) {
-  //   auto keyframe_rt = keyframes[i]->getRT();
-  //   auto ref_rt_inv = torch::linalg::inv(ref_rt);
-  //   auto rel_pose = torch::matmul(keyframe_rt, ref_rt_inv);
-  //   auto rel_pose_34 = rel_pose.slice(0, 0, 3).slice(1, 0, 4);
-
-  //   std::cout << "\nKeyframe " << i << " RT:" << std::endl;
-  //   std::cout << keyframe_rt << std::endl;
-  //   std::cout << "nKeyframe ID: " << keyframes[i]->fid_ << std::endl;
-  //   std::cout << "Reference RT inverse:" << std::endl;
-  //   std::cout << ref_rt_inv << std::endl;
-  //   std::cout << "Relative pose (full 4x4):" << std::endl;
-  //   std::cout << rel_pose << std::endl;
-  //   std::cout << "Relative pose [:3, :4]:" << std::endl;
-  //   std::cout << rel_pose_34 << std::endl;
-  //   std::cout << "other2ref[" << i << "]:" << std::endl;
-  //   std::cout << other2ref[i] << std::endl;
-
-  //   // Check if they match
-  //   auto diff = torch::abs(rel_pose_34 - other2ref[i]);
-  //   auto max_diff = torch::max(diff);
-  //   std::cout << "Max difference: " << max_diff.item<float>() << std::endl;
-
-  //   if (max_diff.item<float>() < 1e-6) {
-  //     std::cout << "✓ Matches other2ref[" << i << "]" << std::endl;
-  //   } else {
-  //     std::cout << "✗ MISMATCH with other2ref[" << i << "]" << std::endl;
-  //   }
-  // }
-
-  // std::cout << "=== END C++ POSE DEBUG ===" << std::endl;
-
   // Get feature maps - check for proper initialization
   TORCH_CHECK(refKeyframe->feature_map_.defined(), 
               "Reference keyframe " + std::to_string(refKeyframe->fid_) + " feature_map_ is not defined");
@@ -217,11 +171,6 @@ std::pair<torch::Tensor, torch::Tensor> GuidedMVS::operator()(
   // std::cout << "refKeyframe->image_width_: "
   //           << static_cast<int>(refKeyframe->original_image_.size(2))
   //           << std::endl;
-  // std::cout << "num_depth_candidates: " << num_depth_candidates << std::endl;
-
-  // Run feature quality validation
-  // validateFeatureQuality(refKeyframe, keyframes, uv_cuda);
-
   if (P != 0) {
     // Check original image pyramid before accessing
     TORCH_CHECK(!refKeyframe->gaus_pyramid_original_image_.empty(), 
@@ -266,8 +215,6 @@ std::pair<torch::Tensor, torch::Tensor> GuidedMVS::operator()(
                cudaMemcpyDeviceToHost);
   }
   cudaFree(d_debug_stats);
-
-  // analyze_debug_stats(h_debug_stats, idepth_range);
 
   auto valid_mask = idist >= 0;
   return std::make_pair(depth, valid_mask);

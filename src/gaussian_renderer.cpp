@@ -17,20 +17,11 @@ GaussianRenderer::render(std::shared_ptr<GaussianModel> model,
                          float FoVy,
                          torch::Tensor& world_view_transform,
                          torch::Tensor& projection_matrix) {
-  // std::cout << "[DEBUG] Rendering with GaussianRenderer" << std::endl;
   int active_sh_degree = model->sh_degree_;
 
   torch::Tensor camera_center = viewpoint_camera->getCenter();
 
-  // std::cout << "Model tensor sizes - XYZ: " << model->getXYZ().sizes()
-  //           << ", mask size: " << visible_gaussian_mask.sizes() << std::endl;
-
   torch::Tensor visible_indices = torch::where(visible_gaussian_mask)[0];
-
-  // std::cout << "Visible indices range: " << visible_indices.min() << " to "
-  //           << visible_indices.max() << ", count: " <<
-  //           visible_indices.size(0)
-  //           << std::endl;
 
   /* If precomputed colors are provided, use them. Otherwise, if it is desired
      to precompute colors from SHs in Python, do it. If not, then SH -> RGB
@@ -100,13 +91,6 @@ GaussianRenderer::render(std::shared_ptr<GaussianModel> model,
         model->getRotationActivation().index({visible_indices}).contiguous();
   }
 
-  // std::cout << "Rasterizer input sizes: " << means3D.sizes() << ", "
-  //           << means2D.sizes() << ", " << opacity.sizes() << ", " <<
-  //           dc.sizes()
-  //           << ", " << shs.sizes() << ", " << colors_precomp.sizes() << ", "
-  //           << scales.sizes() << ", " << rotations.sizes() << ", "
-  //           << cov3D_precomp.sizes() << std::endl;
-
   // Rasterization (unchanged)
   float tanfovx = std::tan(FoVx * 0.5f);
   float tanfovy = std::tan(FoVy * 0.5f);
@@ -117,22 +101,6 @@ GaussianRenderer::render(std::shared_ptr<GaussianModel> model,
 
   GaussianRasterizer rasterizer(raster_settings);
 
-  // Validate inputs to rasterizer
-  // std::cout << "[Rasterizer Input] means3D: " << means3D.sizes() << ",
-  // dtype=" << means3D.dtype()
-  //           << ", device=" << means3D.device() << ", contiguous=" <<
-  //           means3D.is_contiguous() << std::endl;
-  // std::cout << "[Rasterizer Input] opacity: " << opacity.sizes() << ", min="
-  // << opacity.min().item<float>()
-  //           << ", max=" << opacity.max().item<float>() << std::endl;
-  // std::cout << "[Rasterizer Input] scales: " << scales.sizes() << std::endl;
-  // std::cout << "[Rasterizer Input] rotations: " << rotations.sizes() <<
-  // std::endl;
-
-  // if (means3D.numel() > 0 && !means3D.is_contiguous()) {
-  //   std::cout << "[WARNING] means3D not contiguous!" << std::endl;
-  // }
-
   auto rasterizer_result = rasterizer.forward(
       means3D, means2D, opacity, dc, shs, colors_precomp, scales, rotations,
       cov3D_precomp, world_view_transform);
@@ -141,25 +109,6 @@ GaussianRenderer::render(std::shared_ptr<GaussianModel> model,
   auto rendered_depth = std::get<1>(rasterizer_result);
   auto mainGaussID = std::get<2>(rasterizer_result);
   auto radii = std::get<3>(rasterizer_result);
-
-  // Validate rasterizer outputs
-  // std::cout << "[Rasterizer Output] rendered_image: " <<
-  // rendered_image.sizes()
-  //           << ", dtype=" << rendered_image.dtype()
-  //           << ", device=" << rendered_image.device()
-  //           << ", contiguous=" << rendered_image.is_contiguous() <<
-  //           std::endl;
-  // std::cout << "[Rasterizer Output] min=" <<
-  // rendered_image.min().item<float>()
-  //           << ", max=" << rendered_image.max().item<float>() << std::endl;
-
-  // // Check for NaN/Inf before exposure transform
-  // if (torch::any(torch::isnan(rendered_image)).item<bool>()) {
-  //   std::cout << "[ERROR] rendered_image contains NaN!" << std::endl;
-  // }
-  // if (torch::any(torch::isinf(rendered_image)).item<bool>()) {
-  //   std::cout << "[ERROR] rendered_image contains Inf!" << std::endl;
-  // }
 
   rendered_image = viewpoint_camera->applyExposureTransform(rendered_image);
 

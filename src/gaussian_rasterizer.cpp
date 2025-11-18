@@ -15,15 +15,6 @@
 
 #include "include/gaussian_rasterizer.h"
 
-// torch::Tensor GaussianRasterizer::markVisibleGaussians(
-//     torch::Tensor& positions,
-//     torch::Tensor& viewmatrix) {
-//   // Mark visible points (based on frustum culling for camera) with a boolean
-//   torch::NoGradGuard no_grad;
-//   auto raster_settings = this->raster_settings_;
-//   return markVisible(positions, viewmatrix, raster_settings.projmatrix_);
-// }
-
 torch::autograd::tensor_list GaussianRasterizerFunction::forward(
     torch::autograd::AutogradContext* ctx,
     torch::Tensor means3D,
@@ -175,89 +166,3 @@ GaussianRasterizer::forward(torch::Tensor means3D,
                          result[2] /*mainGaussID*/, result[3] /*radii*/);
 }
 
-// void SparseGaussianAdam::step(torch::Tensor& visibility, const uint32_t N) {
-//   torch::NoGradGuard no_grad;
-//   // std::cout << "SparseGaussianAdam::step() called with N=" << N <<
-//   std::endl;
-
-//   int group_idx = 0;
-//   for (auto& group : this->param_groups()) {
-//     // std::cout << "Processing group " << group_idx << std::endl;
-
-//     auto options = static_cast<torch::optim::AdamOptions&>(group.options());
-//     // auto lr = torch::tensor(options.lr());
-//     auto eps = options.eps();
-//     // std::cout << "  lr=" << lr << ", eps=" << eps << std::endl;
-
-//     auto& param = group.params()[0];
-//     // std::cout << "  param size: " << param.sizes()
-//     //           << ", numel: " << param.numel() << std::endl;
-
-//     if (!param.grad().defined()) {
-//       // std::cout << "  grad not defined, skipping" << std::endl;
-//       group_idx++;
-//       continue;
-//     }
-
-//     // std::cout << "  About to access state..." << std::endl;
-//     auto tensor_impl = param.unsafeGetTensorImpl();
-//     // std::cout << "  Got tensor impl" << std::endl;
-
-//     auto& optimizer_state = this->state();
-//     // std::cout << "  Got optimizer state map" << std::endl;
-
-//     auto state_iter = optimizer_state.find(tensor_impl);
-//     if (state_iter == optimizer_state.end()) {
-//       // std::cout << "  State not found, creating new state..." <<
-//       std::endl;
-//       // Initialize state for this parameter (normally done by base
-//       Adam::step) auto new_state =
-//       std::make_unique<torch::optim::AdamParamState>(); new_state->step(0);
-//       new_state->exp_avg(torch::zeros_like(param));
-//       new_state->exp_avg_sq(torch::zeros_like(param));
-//       optimizer_state[tensor_impl] = std::move(new_state);
-//       state_iter = optimizer_state.find(tensor_impl);
-//     }
-//     // std::cout << "  Found/created state in map" << std::endl;
-
-//     auto& state =
-//         static_cast<torch::optim::AdamParamState&>(*state_iter->second);
-//     // std::cout << "  Cast state successfully" << std::endl;
-
-//     if (!state.exp_avg().defined()) {
-//       // std::cout << "  Initializing state..." << std::endl;
-//       state.step(0);
-//       state.exp_avg(
-//           torch::zeros_like(param, {}, torch::MemoryFormat::Preserve));
-//       state.exp_avg_sq(
-//           torch::zeros_like(param, {}, torch::MemoryFormat::Preserve));
-//       // std::cout << "  State initialized" << std::endl;
-//     }
-
-//     auto exp_avg = state.exp_avg();
-//     auto exp_avg_sq = state.exp_avg_sq();
-//     auto grad = param.grad();
-
-//     torch::Tensor lr_tensor;
-//     if (group_idx == 0) {
-//       // Use per-primitive learning rates for positions
-//       lr_tensor = position_lrs_;
-//     } else {
-//       // Use scalar learning rate for other parameters
-//       float scalar_lr = group.options().get_lr();
-//       lr_tensor = torch::tensor(scalar_lr,
-//                                 torch::TensorOptions().device(param.device()));
-//     }
-
-//     const uint32_t M = param.numel() / N;
-//     // std::cout << "  M=" << M << ", calling adamUpdate..." << std::endl;
-
-//     adamUpdate(param, grad, exp_avg, exp_avg_sq, visibility, lr_tensor,
-//                std::get<0>(options.betas()), std::get<1>(options.betas()),
-//                eps, N, M);
-//     // std::cout << "  adamUpdate completed for group " << group_idx <<
-//     // std::endl;
-//     group_idx++;
-//   }
-//   // std::cout << "SparseGaussianAdam::step() completed" << std::endl;
-// }
