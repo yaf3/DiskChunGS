@@ -34,8 +34,7 @@ Record.record_ground_truth_image: 0 # 0:false, 1 or other integer:true
 Record.record_loss_image: 0 # 0:false, 1 or other integer:true
 Record.training_report_interval: 0 # 0:never, 1:always, others:periodically
 Record.record_loop_ply: 1 # 0:false, 1 or other integer:trues
-Record.render_fly_through: 0 # 0:false, 1 or other integer:true
-Record.render_fly_through_speed: 5.0 # 0:false, 1 or other integer:true
+
 Optimization.max_num_iterations: -1
 Optimization.smooth_l1: 0  # 0:false, 1:true
 Chunking.chunk_size: 50.0

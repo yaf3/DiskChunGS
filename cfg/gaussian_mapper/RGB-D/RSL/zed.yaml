@@ -1,41 +1,27 @@
 %YAML:1.0
 
-#--------------------------------------------------------------------------------------------
-# Model Parameters
-#--------------------------------------------------------------------------------------------
-
-Model.sh_degree: 3 # maximum
-Model.resolution: -1.0
 Model.white_background: 0  # 0:false, 1 or other integer:true
-Model.eval: 0  # 0:false, 1 or other integer:true
+Model.sh_degree: 3
+Model.max_gaussians_in_memory: 1500000
+Model.init_proba_scaler: 2.0
+Model.downsample_for_sampling: 1
+Camera.z_near: 0.1
+Camera.z_far: 40.0
 
-#--------------------------------------------------------------------------------------------
-# Pipeline Parameters
-#--------------------------------------------------------------------------------------------
-
-Camera.z_near: 0.01
-Camera.z_far: 100.0
-Monocular.inactive_geo_densify_max_pixel_dist: 1.0 # (squared distance)
-Stereo.min_disparity: 8
-Stereo.num_disparity: 128
-Mapper.min_depth_: 0.0000000001
-Mapper.max_depth_: 40.0
-
-Mapper.inactive_geo_densify: 1  # 0:false, 1 or other integer:true
-Mapper.depth_cache: 10
+Mapper.min_depth_: 0.01
+Mapper.max_depth_: 100.0
+Mapper.keyframe_selection_strategy: 1 # 0:all, 1:recent k
 Mapper.min_num_initial_map_kfs: 10
-Mapper.new_keyframe_times_of_use: 2
+Mapper.new_keyframe_times_of_use: 8
 Mapper.local_BA_increased_times_of_use: 0
 Mapper.loop_closure_increased_times_of_use_: 2
 Mapper.cull_keyframes: 0  # 0:false, 1 or other integer:true
-Mapper.large_rotation_threshold: 30.0
-Mapper.large_translation_threshold: 1.0
+Mapper.large_rotation_threshold: 1.0
+Mapper.large_translation_threshold: 0.1
 Mapper.stable_num_iter_existence: 1
-Mapper.keyframe_similarity_threshold: 0.3
 
-GausPyramid.do: 0  # 0:false, 1 or other integer:true
-GausPyramid.num_levels: 2
-GausPyramid.level_times_of_use: 8
+GausPyramid.num_levels: 1
+GausPyramid.level_times_of_use: 5
 
 Pipeline.convert_SHs: 0  # 0:false, 1 or other integer:true
 Pipeline.compute_cov3D: 0  # 0:false, 1 or other integer:true
@@ -46,48 +32,31 @@ Record.record_rendered_image: 0 # 0:false, 1 or other integer:true
 Record.record_ground_truth_image: 0 # 0:false, 1 or other integer:true
 Record.record_loss_image: 0 # 0:false, 1 or other integer:true
 Record.training_report_interval: 0 # 0:never, 1:always, others:periodically
-Record.record_loop_ply: 0 # 0:false, 1 or other integer:true
-Record.render_fly_through: 0 # 0:false, 1 or other integer:true
-Record.render_fly_through_speed: 5.0 # 0:false, 1 or other integer:true
+Record.record_loop_ply: 0 # 0:false, 1 or other integer:trues
 
-#--------------------------------------------------------------------------------------------
-# Optimization Parameters
-#--------------------------------------------------------------------------------------------
 
-# Learning rate
-Optimization.max_num_iterations: -1
-Optimization.position_lr_init: 0.00016 #0.00016
-Optimization.position_lr_final: 0.0000016
-Optimization.position_lr_delay_mult: 0.01
-Optimization.position_lr_max_steps: 30000
-Optimization.feature_lr: 0.0025
-Optimization.opacity_lr: 0.05 #0.05
-Optimization.scaling_lr: 0.005 #0.005
-Optimization.rotation_lr: 0.001 #0.001
-Optimization.smooth_l1: 0  # 0:false, 1:true
-Optimization.opacity_reg: 0.001
+Chunking.chunk_size: 5.0
 
-# Chunking
-Chunking.chunk_size: 50.0
-Chunking.max_chunks: 20
-
-# Densification
-Optimization.percent_dense: 0.01
-Optimization.lambda_dssim: 0.2
-Optimization.densification_interval: 500
-Optimization.opacity_reset_interval: 0  # 0:never, 1:always, others:periodically
-Optimization.prune_big_point_after_iter: -1
-Optimization.densify_min_opacity: 0.02 #0.005
-Optimization.densify_from_iter: 500
-Optimization.densify_until_iter: -1
-Optimization.densify_grad_threshold: 0.001
 Optimization.auto_distribute: 4  # 0:false, 1 or other integer:true
-Model.init_proba_scaler: 2.0
-Model.downsample_for_sampling: 0
+Optimization.max_num_iterations: -1
+Optimization.smooth_l1: 0  # 0:false, 1:true
+Optimization.position_lr_init: 0.00005
+Optimization.position_lr_decay: 0.99998
+Optimization.feature_lr: 0.005
+Optimization.opacity_lr: 0.1
+Optimization.scaling_lr: 0.01
+Optimization.rotation_lr: 0.002
+Optimization.pose_lr: 0.001
+Optimization.exposure_lr: 0.001
+Optimization.depth_scale_bias_lr: 0.0001
+Optimization.lambda_dssim: 0.2
+Optimization.lambda_depth: 0.1
+Optimization.opacity_reg: 0.001
+Optimization.exposure_optimization: 0 # 0:false, 1 or other integer:true
 
-#--------------------------------------------------------------------------------------------
-# Viewer Parameters
-#--------------------------------------------------------------------------------------------
+External.min_keyframe_translation: 0.25
+External.min_keyframe_rotation: 0.15
+External.min_keyframe_time: 0.5
 
 GaussianViewer.glfw_window_width: 1400
 GaussianViewer.glfw_window_height: 1050
