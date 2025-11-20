@@ -18,12 +18,12 @@ export LD_LIBRARY_PATH=/opt/ros/noetic/lib:/workspace/third_party/libtorch/lib:$
 echo "Environment setup complete!"
 
 # Setup ROS workspace if needed
-if [ -d "/workspace/repo/lsgs_ros" ]; then
+if [ -d "/workspace/repo/ros_wrapper" ]; then
   echo "Setting up ROS workspace..."
   cd ~/catkin_ws/src
   # Create symlink if it doesn't exist
-  if [ ! -L "lsgs_ros" ]; then
-    ln -sf /workspace/repo/lsgs_ros .
+  if [ ! -L "ros_wrapper" ]; then
+    ln -sf /workspace/repo/ros_wrapper .
   fi
 fi
 

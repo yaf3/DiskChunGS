@@ -1,3 +1,19 @@
+/*
+ * Copyright (C) 2023, Inria
+ * GRAPHDECO research group, https://team.inria.fr/graphdeco
+ * All rights reserved.
+ *
+ * This software is free for non-commercial, research and evaluation use
+ * under the terms of the LICENSE.md file.
+ *
+ * For inquiries contact george.drettakis@inria.fr
+ *
+ * This file is Derivative Works of Gaussian Splatting,
+ * created by Longwei Li, Huajian Huang, Hui Cheng and Sai-Kit Yeung in 2023
+ * as part of Photo-SLAM, modified by Dapeng Feng in 2024 as part of CaRtGS,
+ * and further modified by Casimir Feldmann in 2025 as part of DiskChunGS.
+ */
+
 #include "model/gaussian_model.h"
 #include "rendering/gaussian_rasterizer.h"
 
@@ -92,33 +108,6 @@ void GaussianModel::resetPositionLRAndOptimizerState(
             << position_lrs_.max().item<float>()
             << ", min=" << position_lrs_.min().item<float>()
             << ", mean=" << position_lrs_.mean().item<float>() << std::endl;
-}
-
-void GaussianModel::maskGradients(const torch::Tensor& keep_mask) {
-  torch::NoGradGuard no_grad;
-
-  // Create inverse mask for gradients to zero
-  torch::Tensor zero_mask = ~keep_mask;
-
-  // Zero gradients for parameters outside the optimization radius
-  if (xyz_.grad().defined()) {
-    xyz_.mutable_grad().index_put_({zero_mask}, 0.0);
-  }
-  if (features_dc_.grad().defined()) {
-    features_dc_.mutable_grad().index_put_({zero_mask}, 0.0);
-  }
-  if (features_rest_.grad().defined()) {
-    features_rest_.mutable_grad().index_put_({zero_mask}, 0.0);
-  }
-  if (opacity_.grad().defined()) {
-    opacity_.mutable_grad().index_put_({zero_mask}, 0.0);
-  }
-  if (scaling_.grad().defined()) {
-    scaling_.mutable_grad().index_put_({zero_mask}, 0.0);
-  }
-  if (rotation_.grad().defined()) {
-    rotation_.mutable_grad().index_put_({zero_mask}, 0.0);
-  }
 }
 
 torch::Tensor GaussianModel::replaceTensorToOptimizer(torch::Tensor& tensor,

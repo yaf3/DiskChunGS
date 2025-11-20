@@ -6,7 +6,7 @@ cd /workspace/repo
 
 # Build the ROS package
 cd /root/catkin_ws
-catkin build lsgs_ros --cmake-args -DCMAKE_BUILD_TYPE=Debug
+catkin build diskchungs_ros --cmake-args -DCMAKE_BUILD_TYPE=Debug
 
 # Source the setup file
 source /root/catkin_ws/devel/setup.bash

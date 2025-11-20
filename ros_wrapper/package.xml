@@ -1,10 +1,10 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>lsgs_ros</name>
+  <name>diskchungs_ros</name>
   <version>1.0.0</version>
   <description>ROS wrapper for DiskChunGS system</description>
 
-  <maintainer email="cfeldmann@ethz.ch">Casimir Feldmann</maintainer>
+  <maintainer email="casimir.feldmann@gmail.com">Casimir Feldmann</maintainer>
   <license>GPL-3.0</license>
 
   <buildtool_depend>catkin</buildtool_depend>

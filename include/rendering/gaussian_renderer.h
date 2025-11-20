@@ -6,11 +6,12 @@
  * This software is free for non-commercial, research and evaluation use
  * under the terms of the LICENSE.md file.
  *
- * For inquiries contact  george.drettakis@inria.fr
- *
  * This file is Derivative Works of Gaussian Splatting,
- * created by Longwei Li, Huajian Huang, Hui Cheng and Sai-Kit Yeung in 2023,
- * as part of Photo-SLAM.
+ * modified by Longwei Li, Huajian Huang, Hui Cheng and Sai-Kit Yeung in 2023
+ * as part of Photo-SLAM, modified by Dapeng Feng in 2024 as part of CaRtGS,
+ * and further modified by Casimir Feldmann in 2025 as part of DiskChunGS.
+ *
+ * For inquiries contact george.drettakis@inria.fr
  */
 
 #pragma once
@@ -20,9 +21,9 @@
 #include <memory>
 #include <tuple>
 
+#include "model/gaussian_model.h"
 #include "rendering/gaussian_rasterizer.h"
 #include "scene/gaussian_keyframe.h"
-#include "model/gaussian_model.h"
 #include "scene/gaussian_parameters.h"
 #include "utils/sh_utils.h"
 

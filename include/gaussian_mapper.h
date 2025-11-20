@@ -1,21 +1,30 @@
 /**
- * This file is part of Photo-SLAM
+ * This file is part of DiskChunGS, incorporating code from multiple sources.
  *
- * Copyright (C) 2023-2024 Longwei Li and Hui Cheng, Sun Yat-sen University.
- * Copyright (C) 2023-2024 Huajian Huang and Sai-Kit Yeung, Hong Kong University
- * of Science and Technology.
+ * Original Copyright (C) 2025, Inria (On-The-Fly-NVS)
+ * Original Copyright (C) 2023-2024 Longwei Li, Hui Cheng (Photo-SLAM)
+ * Modified Copyright (C) 2024 Dapeng Feng (CaRtGS)
+ * Modified Copyright (C) 2025 Casimir Feldmann (DiskChunGS)
  *
- * Photo-SLAM is free software: you can redistribute it and/or modify it under
- * the terms of the GNU General Public License as published by the Free Software
- * Foundation, either version 3 of the License, or (at your option) any later
- * version.
+ * This file incorporates code from:
+ * - On-The-Fly-NVS (Inria, non-commercial research license)
+ * - CaRtGS/Photo-SLAM (GPL v3)
  *
- * Photo-SLAM is distributed in the hope that it will be useful, but WITHOUT ANY
- * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
- * A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+ * This software is licensed under GPL v3, with the following restrictions:
+ * Portions derived from Inria-licensed works (3DGS, On-The-Fly-NVS) are
+ * subject to non-commercial use restrictions. Commercial use requires
+ * separate licensing from Inria.
  *
- * You should have received a copy of the GNU General Public License along with
- * Photo-SLAM. If not, see <http://www.gnu.org/licenses/>.
+ * For non-commercial inquiries: george.drettakis@inria.fr
+ * For commercial licensing: stip-sophia.transfert@inria.fr
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your
+ * option) any later version, subject to the non-commercial restrictions
+ * above.
+ *
+ * See <http://www.gnu.org/licenses/>.
  */
 
 #pragma once
@@ -48,16 +57,16 @@
 #include "ORB-SLAM3/include/MapDrawer.h"
 #include "ORB-SLAM3/include/System.h"
 #include "chunk_types.h"
-#include "scene/gaussian_keyframe.h"
-#include "gaussian_mapper_external.h"
-#include "scene/gaussian_scene.h"
 #include "depth/guided_mvs.h"
-#include "utils/keyframe_selection.h"
 #include "depth/mono_depth.h"
-#include "geometry/operate_points.h"
-#include "slam_deps/xfeat_cpp/include/XFeat.h"
 #include "depth/stereo_depth.h"
 #include "depth/stereo_vision.h"
+#include "gaussian_mapper_external.h"
+#include "geometry/operate_points.h"
+#include "scene/gaussian_keyframe.h"
+#include "scene/gaussian_scene.h"
+#include "slam_deps/xfeat_cpp/include/XFeat.h"
+#include "utils/keyframe_selection.h"
 #include "utils/tensor_utils.h"
 
 class KeyframeSelector;  // Forward declaration

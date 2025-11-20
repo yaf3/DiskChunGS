@@ -1,3 +1,17 @@
+/*
+ * Copyright (C) 2025, Inria
+ * GRAPHDECO research group, https://team.inria.fr/graphdeco
+ * All rights reserved.
+ *
+ * This software is free for non-commercial, research and evaluation use
+ * under the terms of the LICENSE.md file.
+ *
+ * This file is Derivative Works of On-The-Fly-NVS,
+ * modified by Casimir Feldmann in 2025 as part of DiskChunGS.
+ *
+ * For inquiries contact george.drettakis@inria.fr
+ */
+
 #pragma once
 
 #include <torch/torch.h>
@@ -13,8 +27,8 @@
 #include <tuple>
 #include <vector>
 
-#include "utils/tensor_utils.h"
 #include "slam_deps/depth-anything-tensorrt/depth_anything.h"  // Include the TensorRT DepthAnything
+#include "utils/tensor_utils.h"
 
 /**
  * @brief MonoDepth estimation class using TensorRT DepthAnything

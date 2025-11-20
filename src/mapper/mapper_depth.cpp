@@ -1,29 +1,40 @@
 /**
- * This file is part of CaRtGS, modified from Photo-SLAM under GPL v3 license.
+ * This file is part of DiskChunGS, incorporating code from multiple sources.
  *
- * Copyright (C) 2024 Dapeng Feng, Sun Yat-sen University.
+ * Original Copyright (C) 2025, Inria (On-The-Fly-NVS)
+ * Original Copyright (C) 2023-2024 Longwei Li, Hui Cheng (Photo-SLAM)
+ * Modified Copyright (C) 2024 Dapeng Feng (CaRtGS)
+ * Modified Copyright (C) 2025 Casimir Feldmann (DiskChunGS)
  *
- * CaRtGS is free software: you can redistribute it and/or modify it under
- * the terms of the GNU General Public License as published by the Free Software
- * Foundation, either version 3 of the License, or (at your option) any later
- * version.
+ * This file incorporates code from:
+ * - On-The-Fly-NVS (Inria, non-commercial research license)
+ * - CaRtGS/Photo-SLAM (GPL v3)
  *
- * CaRtGS is distributed in the hope that it will be useful, but WITHOUT ANY
- * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
- * A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+ * This software is licensed under GPL v3, with the following restrictions:
+ * Portions derived from Inria-licensed works (3DGS, On-The-Fly-NVS) are
+ * subject to non-commercial use restrictions. Commercial use requires
+ * separate licensing from Inria.
  *
- * You should have received a copy of the GNU General Public License along with
- * CaRtGS. If not, see <http://www.gnu.org/licenses/>.
+ * For non-commercial inquiries: george.drettakis@inria.fr
+ * For commercial licensing: stip-sophia.transfert@inria.fr
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your
+ * option) any later version, subject to the non-commercial restrictions
+ * above.
+ *
+ * See <http://www.gnu.org/licenses/>.
  */
-
-#include "gaussian_mapper.h"
-#include "geometry/operate_points.h"
-#include "utils/tensor_utils.h"
 
 #include <torch/torch.h>
 
 #include <filesystem>
 #include <iostream>
+
+#include "gaussian_mapper.h"
+#include "geometry/operate_points.h"
+#include "utils/tensor_utils.h"
 
 torch::Tensor GaussianMapper::computeLoGProbability(
     const torch::Tensor& image) {

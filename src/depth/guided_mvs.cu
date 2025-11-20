@@ -6,7 +6,10 @@
  * This software is free for non-commercial, research and evaluation use
  * under the terms of the LICENSE.md file.
  *
- * For inquiries contact  george.drettakis@inria.fr
+ * This file is Derivative Works of On-The-Fly-NVS,
+ * modified by Casimir Feldmann in 2025 as part of DiskChunGS.
+ *
+ * For inquiries contact george.drettakis@inria.fr
  */
 
 #include <cstdio>

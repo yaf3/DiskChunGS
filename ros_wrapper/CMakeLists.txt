@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20 FATAL_ERROR)
-project(lsgs_ros LANGUAGES CXX CUDA)
+project(diskchungs_ros LANGUAGES CXX CUDA)
 # set(CMAKE_VERBOSE_MAKEFILE ON)
 set(CMAKE_DEPENDS_IN_PROJECT_ONLY ON)
 
@@ -18,7 +18,7 @@ message(STATUS "OpenCV_LIBRARIES: ${OpenCV_LIBRARIES}")
 # Set RPATH settings
 list(APPEND CMAKE_INSTALL_RPATH 
     "/workspace/third_party/install/opencv/lib"
-    "${LSGS_MAIN_DIR}/lib" #Maybe needs to be changed
+    "${DiskChunGS_MAIN_DIR}/lib" #Maybe needs to be changed
     "${ORB_SLAM3_SOURCE_DIR}/lib"
     "/workspace/third_party/libtorch/lib"
 )
@@ -57,7 +57,7 @@ set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations")
 set(CAFFE2_USE_CUDNN on)
 
-set(LSGS_MAIN_DIR "/workspace/repo")
+set(DiskChunGS_MAIN_DIR "/workspace/repo")
 
 # Point directly to the Torch config file
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} "/workspace/third_party/libtorch")
@@ -105,9 +105,9 @@ include_directories(BEFORE
     ${OpenCV_INCLUDE_DIRS}
     include
     ${catkin_INCLUDE_DIRS}
-    ${LSGS_MAIN_DIR}
-    ${LSGS_MAIN_DIR}/include
-    ${LSGS_MAIN_DIR}/slam_deps
+    ${DiskChunGS_MAIN_DIR}
+    ${DiskChunGS_MAIN_DIR}/include
+    ${DiskChunGS_MAIN_DIR}/slam_deps
     ${ORB_SLAM3_SOURCE_DIR}
     ${ORB_SLAM3_SOURCE_DIR}/include
     ${ORB_SLAM3_SOURCE_DIR}/include/CameraModels
@@ -120,13 +120,13 @@ include_directories(BEFORE
 
 # ROS wrapper library
 add_library(${PROJECT_NAME}
-  src/lsgs_wrapper.cpp
+  src/wrapper.cpp
 )
 
 target_link_libraries(${PROJECT_NAME}
   ${catkin_LIBRARIES}
-  ${LSGS_MAIN_DIR}/lib/libgaussian_mapper.so
-  ${LSGS_MAIN_DIR}/lib/libgaussian_viewer.so
+  ${DiskChunGS_MAIN_DIR}/lib/libgaussian_mapper.so
+  ${DiskChunGS_MAIN_DIR}/lib/libgaussian_viewer.so
   ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so
   ${OpenCV_LIBRARIES}
   ${CUDA_LIBRARIES}
@@ -135,7 +135,7 @@ target_link_libraries(${PROJECT_NAME}
 )
 
 # ROS node executable
-add_executable(${PROJECT_NAME}_node src/lsgs_node.cpp)
+add_executable(${PROJECT_NAME}_node src/node.cpp)
 target_link_libraries(${PROJECT_NAME}_node
   ${PROJECT_NAME}
   ${catkin_LIBRARIES}

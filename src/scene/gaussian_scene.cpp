@@ -1,21 +1,17 @@
 /**
- * This file is part of Photo-SLAM
+ * This file is part of DiskChunGS, modified from CaRtGS/Photo-SLAM.
  *
- * Copyright (C) 2023-2024 Longwei Li and Hui Cheng, Sun Yat-sen University.
- * Copyright (C) 2023-2024 Huajian Huang and Sai-Kit Yeung, Hong Kong University
- * of Science and Technology.
+ * Original Copyright (C) 2023-2024 Longwei Li, Hui Cheng (Photo-SLAM)
+ * Modified Copyright (C) 2024 Dapeng Feng (CaRtGS)
+ * Modified Copyright (C) 2025 Casimir Feldmann (DiskChunGS)
  *
- * Photo-SLAM is free software: you can redistribute it and/or modify it under
- * the terms of the GNU General Public License as published by the Free Software
- * Foundation, either version 3 of the License, or (at your option) any later
- * version.
+ * This software is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your
+ * option) any later version.
  *
- * Photo-SLAM is distributed in the hope that it will be useful, but WITHOUT ANY
- * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
- * A PARTICULAR PURPOSE. See the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * Photo-SLAM. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details:
+ * <http://www.gnu.org/licenses/>.
  */
 
 #include "scene/gaussian_scene.h"

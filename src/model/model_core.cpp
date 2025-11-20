@@ -1,5 +1,21 @@
-#include "rendering/gaussian_rasterizer.h"
+/*
+ * Copyright (C) 2023, Inria
+ * GRAPHDECO research group, https://team.inria.fr/graphdeco
+ * All rights reserved.
+ *
+ * This software is free for non-commercial, research and evaluation use
+ * under the terms of the LICENSE.md file.
+ *
+ * For inquiries contact george.drettakis@inria.fr
+ *
+ * This file is Derivative Works of Gaussian Splatting,
+ * created by Longwei Li, Huajian Huang, Hui Cheng and Sai-Kit Yeung in 2023
+ * as part of Photo-SLAM, modified by Dapeng Feng in 2024 as part of CaRtGS,
+ * and further modified by Casimir Feldmann in 2025 as part of DiskChunGS.
+ */
+
 #include "model/gaussian_model.h"
+#include "rendering/gaussian_rasterizer.h"
 
 GaussianModel::GaussianModel(const GaussianModelParams& model_params,
                              std::string storage_base_path,
@@ -209,7 +225,7 @@ void GaussianModel::addPoints(const torch::Tensor& new_xyz,
   if (!is_initialized_) {
     // First call - initialize the model
     initializeFromPoints(filtered_xyz, filtered_colors, filtered_scales,
-                         filtered_opacities, iteration, spatial_lr_scale);
+                         filtered_opacities, iteration);
   } else {
     // Subsequent calls - append to existing model
     appendPoints(filtered_xyz, filtered_colors, filtered_scales,
@@ -227,13 +243,11 @@ void GaussianModel::initializeFromPoints(const torch::Tensor& initial_xyz,
                                          const torch::Tensor& initial_colors,
                                          const torch::Tensor& initial_scales,
                                          const torch::Tensor& initial_opacities,
-                                         int iteration,
-                                         float spatial_lr_scale) {
+                                         int iteration) {
   torch::NoGradGuard no_grad;
   std::cout << "[Gaussian Model] Initializing from points: "
             << initial_xyz.sizes() << std::endl;
 
-  this->spatial_lr_scale_ = spatial_lr_scale;
   torch::Tensor fused_color = sh_utils::RGB2SH(initial_colors);
   auto temp = this->sh_degree_ + 1;
   torch::Tensor features = torch::zeros(
@@ -245,17 +259,7 @@ void GaussianModel::initializeFromPoints(const torch::Tensor& initial_xyz,
                   torch::indexing::Slice(3, features.size(1)),
                   torch::indexing::Slice(1, features.size(2))}) = 0.0f;
 
-  torch::Tensor scales;
-  if (initial_scales.defined() && initial_scales.size(0) > 0) {
-    scales = initial_scales;
-  } else {
-    torch::Tensor point_cloud_copy = initial_xyz.clone();
-    torch::Tensor dist2 =
-        torch::clamp_min(distCUDA2(point_cloud_copy), 0.0000001);
-    scales = torch::log(torch::sqrt(dist2) * 0.1);
-    auto scales_ndimension = scales.ndimension();
-    scales = scales.unsqueeze(scales_ndimension).repeat({1, 3});
-  }
+  torch::Tensor scales = initial_scales;
 
   torch::Tensor rots = torch::zeros(
       {initial_xyz.size(0), 4}, torch::TensorOptions().device(device_type_));
@@ -320,16 +324,7 @@ void GaussianModel::appendPoints(const torch::Tensor& new_xyzs,
                   torch::indexing::Slice(3, features.size(1)),
                   torch::indexing::Slice(1, features.size(2))}) = 0.0f;
 
-  torch::Tensor scales;
-  if (new_scales.defined() && new_scales.size(0) > 0) {
-    scales = new_scales;
-  } else {
-    torch::Tensor dist2 =
-        torch::clamp_min(distCUDA2(new_xyzs.clone()), 0.0000001);
-    scales = torch::log(torch::sqrt(dist2) * 0.1);
-    auto scales_ndimension = scales.ndimension();
-    scales = scales.unsqueeze(scales_ndimension).repeat({1, 3});
-  }
+  torch::Tensor scales = new_scales;
 
   torch::Tensor rots = torch::zeros(
       {new_xyzs.size(0), 4}, torch::TensorOptions().device(device_type_));

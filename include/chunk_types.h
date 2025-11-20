@@ -1,5 +1,19 @@
+/**
+ * This file is part of DiskChunGS.
+ *
+ * Copyright (C) 2025 Casimir Feldmann (DiskChunGS)
+ *
+ * This software is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your
+ * option) any later version.
+ *
+ * See <http://www.gnu.org/licenses/>.
+ */
+
 #pragma once
 #include <torch/torch.h>
+
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
@@ -109,7 +123,8 @@ inline ChunkCoord decodeChunkCoord(int64_t chunk_id) {
 // Torch tensor versions of chunk utilities
 
 // Encode chunk coordinates tensor to IDs
-inline torch::Tensor encodeChunkCoordsTensor(const torch::Tensor& chunk_coords) {
+inline torch::Tensor encodeChunkCoordsTensor(
+    const torch::Tensor &chunk_coords) {
   // chunk_coords: [N, 3] with coordinates in range [-1M, +1M]
 
   // Use 21 bits per coordinate = 2M range = [-1,048,576, +1,048,575] chunks
@@ -128,7 +143,7 @@ inline torch::Tensor encodeChunkCoordsTensor(const torch::Tensor& chunk_coords) 
 }
 
 // Decode chunk IDs to coordinates tensor
-inline torch::Tensor decodeChunkCoordsTensor(const torch::Tensor& encoded_ids) {
+inline torch::Tensor decodeChunkCoordsTensor(const torch::Tensor &encoded_ids) {
   const int64_t OFFSET = 1048576;        // 2^20
   const int64_t FIELD_SIZE = 1LL << 21;  // 2^21 = 2,097,152
 
@@ -142,17 +157,18 @@ inline torch::Tensor decodeChunkCoordsTensor(const torch::Tensor& encoded_ids) {
 
 // Convert vector of ChunkCoord to tensor
 inline torch::Tensor chunkCoordVectorToTensor(
-    const std::vector<ChunkCoord>& coords,
+    const std::vector<ChunkCoord> &coords,
     torch::DeviceType device_type = torch::kCUDA) {
   if (coords.empty()) {
     return torch::empty(
-        {0, 3}, torch::TensorOptions().dtype(torch::kInt64).device(device_type));
+        {0, 3},
+        torch::TensorOptions().dtype(torch::kInt64).device(device_type));
   }
 
   // Use from_blob for zero-copy conversion (ChunkCoord is POD with int64_t
   // x,y,z)
   torch::Tensor coord_tensor =
-      torch::from_blob(const_cast<ChunkCoord*>(coords.data()),
+      torch::from_blob(const_cast<ChunkCoord *>(coords.data()),
                        {static_cast<int64_t>(coords.size()), 3},
                        torch::TensorOptions().dtype(torch::kInt64))
           .clone();  // Clone to own the memory
@@ -161,7 +177,7 @@ inline torch::Tensor chunkCoordVectorToTensor(
 }
 
 // Compute chunk IDs from 3D positions
-inline torch::Tensor computeChunkIds(const torch::Tensor& positions,
+inline torch::Tensor computeChunkIds(const torch::Tensor &positions,
                                      float chunk_size) {
   torch::NoGradGuard no_grad;
   float half_chunk = chunk_size * 0.5f;

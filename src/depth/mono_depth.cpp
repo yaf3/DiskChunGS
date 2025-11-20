@@ -1,5 +1,20 @@
-#include <NvInfer.h>
+/*
+ * Copyright (C) 2025, Inria
+ * GRAPHDECO research group, https://team.inria.fr/graphdeco
+ * All rights reserved.
+ *
+ * This software is free for non-commercial, research and evaluation use
+ * under the terms of the LICENSE.md file.
+ *
+ * This file is Derivative Works of On-The-Fly-NVS,
+ * modified by Casimir Feldmann in 2025 as part of DiskChunGS.
+ *
+ * For inquiries contact george.drettakis@inria.fr
+ */
+
 #include "depth/mono_depth.h"
+
+#include <NvInfer.h>
 
 #include <algorithm>
 #include <chrono>
