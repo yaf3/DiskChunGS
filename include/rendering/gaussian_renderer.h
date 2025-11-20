@@ -22,7 +22,7 @@
 
 #include "rendering/gaussian_rasterizer.h"
 #include "scene/gaussian_keyframe.h"
-#include "scene/gaussian_model.h"
+#include "model/gaussian_model.h"
 #include "scene/gaussian_parameters.h"
 #include "utils/sh_utils.h"
 

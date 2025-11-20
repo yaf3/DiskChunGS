@@ -285,9 +285,10 @@ add_library(
     include/chunk_types.h
     # Scene
     include/scene/gaussian_keyframe.h
-    include/scene/gaussian_model.h
     include/scene/gaussian_parameters.h
     include/scene/gaussian_scene.h
+    # Model
+    include/model/gaussian_model.h
     # Rendering
     include/rendering/gaussian_rasterizer.h
     include/rendering/gaussian_renderer.h
@@ -311,17 +312,22 @@ add_library(
     include/utils/debugging_utils.h
     include/utils/trajectory_viewer.h
     # Gaussian mapper implementation
-    src/gaussian_mapper/config.cpp
-    src/gaussian_mapper/initialization.cpp
-    src/gaussian_mapper/core.cpp
-    src/gaussian_mapper/operations.cpp
-    src/gaussian_mapper/io.cpp
-    src/gaussian_mapper/parameters.cpp
-    src/gaussian_mapper/external.cpp
-    src/gaussian_mapper/depth.cpp
+    src/mapper/mapper_config.cpp
+    src/mapper/mapper_initialization.cpp
+    src/mapper/mapper_core.cpp
+    src/mapper/mapper_operations.cpp
+    src/mapper/mapper_io.cpp
+    src/mapper/mapper_parameters.cpp
+    src/mapper/mapper_external.cpp
+    src/mapper/mapper_depth.cpp
+    # Model implementation
+    src/model/model_core.cpp
+    src/model/model_memory.cpp
+    src/model/model_optimization.cpp
+    src/model/model_pruning.cpp
+    src/model/model_storage.cpp
     # Scene implementation
     src/scene/gaussian_keyframe.cpp
-    src/scene/gaussian_model.cpp
     src/scene/gaussian_parameters.cpp
     src/scene/gaussian_scene.cpp
     # Rendering implementation

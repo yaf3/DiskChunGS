@@ -22,7 +22,7 @@
 #include <vector>
 
 #include "cuda_rasterizer/rasterize_points.h"
-#include "scene/gaussian_model.h"
+#include "model/gaussian_model.h"
 
 struct GaussianRasterizationSettings {
   GaussianRasterizationSettings(int image_height,

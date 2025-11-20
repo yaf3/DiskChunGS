@@ -32,7 +32,7 @@
 #include "geometry/point2d.h"
 #include "geometry/point3d.h"
 #include "scene/gaussian_keyframe.h"
-#include "scene/gaussian_model.h"
+#include "model/gaussian_model.h"
 #include "scene/gaussian_parameters.h"
 #include "types.h"
 
