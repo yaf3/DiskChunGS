@@ -69,7 +69,7 @@ cmake -B build -G Ninja \
  -DCMAKE_CUDA_FLAGS="-O3 -use_fast_math" \
  -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++
 
-cmake --build build
+cmake --build build -j16
 
 echo "✓ Build completed successfully!"
 echo "----------------------------------------"

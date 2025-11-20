@@ -37,7 +37,7 @@ docker-compose build dev
 docker-compose run --rm dev
 
 # Inside the container, build the application
-./build.sh
+./scripts/build/build.sh
 ```
 
 ## Getting Started

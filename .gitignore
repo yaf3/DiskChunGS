@@ -32,10 +32,10 @@
 *.app
 
 # Build files
-build/
-bin/
-lib/
-install/
+/build/
+/bin/
+/lib/
+/install/
 
 # VS Code
 # .vscode/

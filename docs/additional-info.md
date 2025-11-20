@@ -4,7 +4,7 @@ This document contains additional utilities and information for working with Dis
 
 ## Hypertuning Scripts
 
-There exist hypertuning scripts `hypertune_kitty.py` and `hypertune_rsl.py`. These are pretty much thrown together and you will have to change the paths/parameters inside these scripts.
+There exist hypertuning scripts `scripts/hypertune_kitty.py` and `scripts/hypertune_rsl.py`. These are pretty much thrown together and you will have to change the paths/parameters inside these scripts.
 
 ## Dataset Tools
 
@@ -26,7 +26,7 @@ Various utility scripts are available in the repository for different purposes:
 
 - **Dataset download scripts**: `scripts/download_replica.sh`, `scripts/download_tum.sh`
 - **Experiment scripts**: `scripts/replica_mono.sh`, `scripts/replica_rgbd.sh`, `scripts/tum_mono.sh`, `scripts/tum_rgbd.sh`, `scripts/kitti_stereo.sh`
-- **Hypertuning scripts**: `hypertune_kitty.py`, `hypertune_rsl.py`
+- **Hypertuning scripts**: `scripts/hypertune_kitty.py`, `scripts/hypertune_rsl.py`
 - **Dataset extraction**: `rosbag_extractor.py`
 - **Video generation**: `img2vid.py`
 
