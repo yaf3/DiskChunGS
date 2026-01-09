@@ -52,17 +52,6 @@ RUN wget https://developer.nvidia.com/downloads/compute/machine-learning/tensorr
     rm nv-tensorrt-local-repo-${os}-${tag}_1.0-1_amd64.deb && \
     rm -rf /var/lib/apt/lists/*
 
-
-# Get mono model
-RUN mkdir -p /workspace/models && \
-    wget -P /workspace/models https://huggingface.co/yuvraj108c/Depth-Anything-2-Onnx/resolve/main/depth_anything_v2_vitl.onnx
-
-# Get stereo model
-WORKDIR /workspace/models
-RUN curl "https://s3.ap-northeast-2.wasabisys.com/pinto-model-zoo/338_Fast-ACVNet/fast_acvnet_plus_onnx_gridsample.tar.gz" -o resources.tar.gz && \
-    tar -zxvf resources.tar.gz && \
-    rm resources.tar.gz
-
 # Update library paths
 WORKDIR /workspace
 RUN echo "export LD_LIBRARY_PATH=/workspace/repo/slam_deps/ORB-SLAM3/lib:\$LD_LIBRARY_PATH" >> /root/.bashrc

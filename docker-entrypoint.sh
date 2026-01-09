@@ -29,6 +29,9 @@ fi
 
 cd /workspace/repo
 
+# Download mono model, stereo included in repo already since download link dead
+wget -P /workspace/repo/models https://huggingface.co/yuvraj108c/Depth-Anything-2-Onnx/resolve/main/depth_anything_v2_vitl.onnx
+
 # Print welcome message
 echo "==============================================="
 echo "3DGS SLAM Docker Environment"

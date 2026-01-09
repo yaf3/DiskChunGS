@@ -37,6 +37,13 @@ additional restrictions from their original licenses.
    - Contact for commercial use: stip-sophia.transfert@inria.fr
    - See: LICENSE_ONTHEFLY.md
 
+5. **FastACVNet+** (Copyright 2022 Gangwei Xu)
+   - License: MIT License
+   - Repository: [https://github.com/gangweiX/Fast-ACVNet]
+   - ONNX Conversion by Katsuya Hyodo (Copyright 2024)
+   - License: MIT License
+   - **Note: Freely redistributable under MIT terms**
+
 ## Usage Terms
 
 ### For Non-Commercial Use (Research & Evaluation):
@@ -146,9 +153,6 @@ We strongly encourage citing the relevant papers if you use this software in you
    month=jul, pages={1–14} }
 
 ```
-
-See CITATION.md for complete citation information.
-
 ---
 
 # GNU GENERAL PUBLIC LICENSE
