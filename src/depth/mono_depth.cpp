@@ -32,7 +32,6 @@ class Logger : public nvinfer1::ILogger {
   }
 };
 
-// MonoDepth implementation - Modified for TensorRT DepthAnything
 MonoDepth::MonoDepth(const std::string& model_path) {
   initialize_model(model_path);
 }
@@ -60,7 +59,7 @@ void MonoDepth::initialize_model(const std::string& model_path) {
     std::cout << "TensorRT DepthAnything model initialized successfully"
               << std::endl;
 
-    // Set input dimensions (these should match your DepthAnything model)
+    // Set input dimensions (these should match the DepthAnything model)
     input_height_ = 518;
     input_width_ = 518;
 
@@ -69,7 +68,7 @@ void MonoDepth::initialize_model(const std::string& model_path) {
                              std::string(e.what()));
   }
 
-  // Initialize Sobel kernels (following Python implementation exactly)
+  // Initialize Sobel kernels
   sobel_x_ = torch::tensor(
       {{{{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}}}},
       torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
@@ -79,44 +78,6 @@ void MonoDepth::initialize_model(const std::string& model_path) {
       torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
 }
 
-cv::Mat MonoDepth::estimate_relative_depth(const cv::Mat& image) {
-  if (!depth_anything_) {
-    throw std::runtime_error("DepthAnything model not initialized");
-  }
-
-  // Store original image dimensions
-  img_height_ = image.rows;
-  img_width_ = image.cols;
-
-  // Convert image to the format expected by DepthAnything
-  cv::Mat input_image;
-  if (image.type() != CV_8UC3) {
-    if (image.type() == CV_32FC3) {
-      // Convert from float [0,1] to uint8 [0,255]
-      image.convertTo(input_image, CV_8UC3, 255.0);
-    } else {
-      image.convertTo(input_image, CV_8UC3);
-    }
-  } else {
-    input_image = image.clone();
-  }
-
-  auto start_inf = std::chrono::high_resolution_clock::now();
-
-  // Run TensorRT inference
-  cv::Mat depth_result = depth_anything_->predict(input_image);
-
-  auto end_inf = std::chrono::high_resolution_clock::now();
-  auto inf_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-      end_inf - start_inf);
-
-  // std::cout << "TensorRT inference time: " << inf_time.count() << "ms"
-  //           << std::endl;
-
-  return depth_result;
-}
-
-// Modified estimate_depth function for TensorRT DepthAnything
 std::tuple<torch::Tensor, torch::Tensor> MonoDepth::estimate_depth(
     const cv::Mat& image,
     float focal_length) {
@@ -151,7 +112,7 @@ std::tuple<torch::Tensor, torch::Tensor> MonoDepth::estimate_depth(
   torch::Tensor depth =
       tensor_utils::cvMat2TorchTensor_Float32(raw_depth, torch::kCUDA);
 
-  // Apply normalization like Python code: (depth - t) / s
+  // Apply normalization: (depth - t) / s
   auto [t, s] = get_t_s(depth);
   depth = (depth - t) / s;
 
@@ -185,7 +146,6 @@ std::tuple<torch::Tensor, torch::Tensor> MonoDepth::estimate_depth(
 
 /**
  * Get median and median absolute deviation for depth normalization
- * Following the Python implementation: get_t_s(d)
  */
 std::tuple<torch::Tensor, torch::Tensor> MonoDepth::get_t_s(
     const torch::Tensor& depth) const {
@@ -196,12 +156,10 @@ std::tuple<torch::Tensor, torch::Tensor> MonoDepth::get_t_s(
 
 /**
  * Align samples by finding scale and offset
- * Following the Python implementation: align_samples(tri_idepth, mono_idepth)
  */
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
 MonoDepth::align_samples(const torch::Tensor& tri_idepth,
                          const torch::Tensor& mono_idepth) const {
-  // This exactly matches the Python implementation
   auto [t_tri, s_tri] = get_t_s(tri_idepth);
   auto [t_mono, s_mono] = get_t_s(mono_idepth);
 
@@ -212,7 +170,7 @@ MonoDepth::align_samples(const torch::Tensor& tri_idepth,
   return std::make_tuple(aligned, scale, offset);
 }
 
-torch::Tensor MonoDepth::align_depth_equivalent(
+torch::Tensor MonoDepth::align_depth(
     const torch::Tensor& mono_depth_map,  // Normalized depth from model
     const std::vector<float>& keypoint_pixels,
     const std::vector<float>& keypoint_depths,  // Metric depths in meters

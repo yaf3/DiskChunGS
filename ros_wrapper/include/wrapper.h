@@ -42,6 +42,38 @@
 #include "gaussian_mapper.h"
 #include "viewer/imgui_viewer.h"
 
+// Configuration structure for GaussianSLAMWrapper
+struct WrapperConfig {
+  // File paths
+  std::string vocabulary_path;
+  std::string orb_settings_path;
+  std::string gaussian_settings_path;
+  std::string output_directory;
+
+  // Topic names
+  std::string left_topic;
+  std::string right_topic;
+  std::string mono_topic;
+  std::string rgb_topic;
+  std::string depth_topic;
+  std::string imu_topic;
+
+  // Frame names for external pose mode
+  std::string target_frame;
+  std::string source_frame;
+
+  // Operating modes
+  std::string mode;       // stereo, mono, rgbd, stereo-imu, rgbd-imu
+  std::string slam_mode;  // orbslam, external, hybrid
+
+  // Settings
+  bool use_viewer;
+  double timeout_duration;
+
+  // Load configuration from ROS parameter server
+  static WrapperConfig loadFromROS(ros::NodeHandle& pnh);
+};
+
 class GaussianSLAMWrapper {
  public:
   GaussianSLAMWrapper(ros::NodeHandle &nh, ros::NodeHandle &pnh);
@@ -81,22 +113,8 @@ class GaussianSLAMWrapper {
   std::thread mapper_thread_;
   std::thread viewer_thread_;
 
-  // Parameters
-  std::string vocabulary_path_;
-  std::string orb_settings_path_;
-  std::string gaussian_settings_path_;
-  std::string output_directory_;
-  bool use_viewer_;
-  std::string mode_;
-  std::string slam_mode_;
-  std::string left_topic_;
-  std::string right_topic_;
-  std::string mono_topic_;
-  std::string rgb_topic_;
-  std::string depth_topic_;
-  std::string imu_topic_;  // Added IMU topic
-  std::string target_frame_;
-  std::string source_frame_;
+  // Configuration
+  WrapperConfig config_;
 
   // IMU-related members
   std::vector<ORB_SLAM3::IMU::Point> imu_buffer_;  // IMU measurements buffer
@@ -108,7 +126,6 @@ class GaussianSLAMWrapper {
   ros::Time last_callback_time_;    // Time of the last callback
   bool data_started_ = false;       // Flag to track if data has started
   bool stopped_ = false;            // Flag to track if we've already stopped
-  double timeout_duration_ = 10.0;  // Default timeout duration in seconds
   std::mutex
       timeout_mutex_;  // Mutex for thread-safe access to timeout variables
   std::atomic<bool> mapping_completed_{false};

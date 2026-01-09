@@ -60,13 +60,6 @@ class MonoDepth {
       float focal_length = 0.0f);
 
   /**
-   * @brief Estimate relative depth from monocular image
-   * @param image Input monocular image
-   * @return Depth map as OpenCV Mat
-   */
-  cv::Mat estimate_relative_depth(const cv::Mat& image);
-
-  /**
    * @brief Align depth using sparse keypoints
    * @param mono_depth_map Normalized depth from model
    * @param keypoint_pixels Pixel coordinates of keypoints
@@ -75,12 +68,11 @@ class MonoDepth {
    * @param height Image height
    * @return Aligned depth tensor
    */
-  torch::Tensor align_depth_equivalent(
-      const torch::Tensor& mono_depth_map,
-      const std::vector<float>& keypoint_pixels,
-      const std::vector<float>& keypoint_depths,
-      int width,
-      int height) const;
+  torch::Tensor align_depth(const torch::Tensor& mono_depth_map,
+                            const std::vector<float>& keypoint_pixels,
+                            const std::vector<float>& keypoint_depths,
+                            int width,
+                            int height) const;
 
  private:
   // TensorRT DepthAnything instance

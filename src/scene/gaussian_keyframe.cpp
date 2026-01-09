@@ -586,9 +586,9 @@ void GaussianKeyframe::setupMonoData(const cv::Mat& img_undist,
   }
 
   // Align depth to keypoints
-  torch::Tensor aligned_inv_depth = depth_estimator->align_depth_equivalent(
-      relative_depth, valid_pixel_coords, valid_depths, image_width_,
-      image_height_);
+  torch::Tensor aligned_inv_depth =
+      depth_estimator->align_depth(relative_depth, valid_pixel_coords,
+                                   valid_depths, image_width_, image_height_);
 
   torch::Tensor inv_depth =
       torch::nn::functional::interpolate(

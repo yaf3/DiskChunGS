@@ -14,132 +14,127 @@
 
 #include "wrapper.h"
 
+WrapperConfig WrapperConfig::loadFromROS(ros::NodeHandle &pnh) {
+  WrapperConfig config;
+
+  // Load required parameters (throw if missing)
+  if (!pnh.getParam("vocabulary_path", config.vocabulary_path)) {
+    throw std::runtime_error("Failed to load vocabulary_path parameter");
+  }
+  if (!pnh.getParam("orb_settings_path", config.orb_settings_path)) {
+    throw std::runtime_error("Failed to load orb_settings_path parameter");
+  }
+  if (!pnh.getParam("gaussian_settings_path", config.gaussian_settings_path)) {
+    throw std::runtime_error("Failed to load gaussian_settings_path parameter");
+  }
+  if (!pnh.getParam("output_directory", config.output_directory)) {
+    throw std::runtime_error("Failed to load output_directory parameter");
+  }
+
+  // Load optional parameters with defaults
+  pnh.param<bool>("use_viewer", config.use_viewer, false);
+  pnh.param<std::string>("mode", config.mode, "stereo");
+  pnh.param<std::string>("slam_mode", config.slam_mode, "orbslam");
+  pnh.param<std::string>("left_topic", config.left_topic,
+                         "/camera/rgb/image_raw");
+  pnh.param<std::string>("right_topic", config.right_topic,
+                         "/camera/rgb/image_raw");
+  pnh.param<std::string>("mono_topic", config.mono_topic, "/camera/image_raw");
+  pnh.param<std::string>("rgb_topic", config.rgb_topic,
+                         "/camera/rgb/image_raw");
+  pnh.param<std::string>("depth_topic", config.depth_topic,
+                         "/camera/depth/image_raw");
+  pnh.param<std::string>("target_frame", config.target_frame, "map");
+  pnh.param<std::string>("source_frame", config.source_frame,
+                         "zed2i_left_camera_frame");
+  pnh.param<double>("timeout_duration", config.timeout_duration, 20.0);
+
+  // Verify file paths exist
+  if (!std::filesystem::exists(config.vocabulary_path)) {
+    throw std::runtime_error("Vocabulary file not found: " +
+                             config.vocabulary_path);
+  }
+  if (!std::filesystem::exists(config.orb_settings_path)) {
+    throw std::runtime_error("ORB settings file not found: " +
+                             config.orb_settings_path);
+  }
+  if (!std::filesystem::exists(config.gaussian_settings_path)) {
+    throw std::runtime_error("Gaussian settings file not found: " +
+                             config.gaussian_settings_path);
+  }
+
+  // Log configuration
+  ROS_INFO("Configuration loaded:");
+  ROS_INFO("  mode: %s", config.mode.c_str());
+  ROS_INFO("  slam_mode: %s", config.slam_mode.c_str());
+  ROS_INFO("  vocabulary_path: %s", config.vocabulary_path.c_str());
+  ROS_INFO("  orb_settings_path: %s", config.orb_settings_path.c_str());
+  ROS_INFO("  gaussian_settings_path: %s",
+           config.gaussian_settings_path.c_str());
+  ROS_INFO("  output_directory: %s", config.output_directory.c_str());
+  ROS_INFO("  timeout_duration: %.1f seconds", config.timeout_duration);
+  ROS_INFO("  use_viewer: %d", config.use_viewer);
+
+  if (config.slam_mode == "external" || config.slam_mode == "hybrid") {
+    ROS_INFO("  target_frame: %s", config.target_frame.c_str());
+    ROS_INFO("  source_frame: %s", config.source_frame.c_str());
+  }
+
+  return config;
+}
+
 GaussianSLAMWrapper::GaussianSLAMWrapper(ros::NodeHandle &nh,
                                          ros::NodeHandle &pnh)
     : nh_(nh),
       pnh_(pnh),
-      tfListener(tfBuffer) {  // Remove subscriber initialization from here
+      tfListener(tfBuffer),
+      config_(WrapperConfig::loadFromROS(pnh)) {
   ROS_INFO("GaussianSLAMWrapper constructor starting...");
-
-  // Dl_info dl_info;
-  // dladdr((void*)cv::getBuildInformation, &dl_info);
-  // std::cout << "Loading OpenCV from: " << dl_info.dli_fname << std::endl;
-  // std::cout << "OpenCV Build Info:\n" << cv::getBuildInformation() <<
-  // std::endl;
-
-  // Load parameters from parameter server
-  if (!pnh_.getParam("vocabulary_path", vocabulary_path_)) {
-    throw std::runtime_error("Failed to load vocabulary_path parameter");
-  }
-  if (!pnh_.getParam("orb_settings_path", orb_settings_path_)) {
-    throw std::runtime_error("Failed to load orb_settings_path parameter");
-  }
-  if (!pnh_.getParam("gaussian_settings_path", gaussian_settings_path_)) {
-    throw std::runtime_error("Failed to load gaussian_settings_path parameter");
-  }
-  if (!pnh_.getParam("output_directory", output_directory_)) {
-    throw std::runtime_error("Failed to load output_directory parameter");
-  }
-  pnh_.param<bool>("use_viewer", use_viewer_, false);
-  pnh_.param<std::string>("mode", mode_, "stereo");
-  pnh_.param<std::string>("left_topic", left_topic_, "/camera/rgb/image_raw");
-  pnh_.param<std::string>("right_topic", right_topic_, "/camera/rgb/image_raw");
-  pnh_.param<std::string>("mono_topic", mono_topic_, "/camera/image_raw");
-  pnh_.param<std::string>("rgb_topic", rgb_topic_, "/camera/rgb/image_raw");
-  pnh_.param<std::string>("depth_topic", depth_topic_,
-                          "/camera/depth/image_raw");
-  pnh_.param<std::string>("imu_topic", imu_topic_, "/boxi/zed2i/imu/data");
-  pnh_.param<std::string>("slam_mode", slam_mode_, "orbslam");
-  pnh_.param<std::string>("target_frame", target_frame_, "map");
-  pnh_.param<std::string>("source_frame", source_frame_,
-                          "zed2i_left_camera_frame");
-  pnh_.param<double>("timeout_duration", timeout_duration_, 20.0);
-
-  ROS_INFO("Parameters loaded:");
-  ROS_INFO("  mode: %s", mode_.c_str());
-  ROS_INFO("  vocabulary_path: %s", vocabulary_path_.c_str());
-  ROS_INFO("  orb_settings_path: %s", orb_settings_path_.c_str());
-  ROS_INFO("  gaussian_settings_path: %s", gaussian_settings_path_.c_str());
-  ROS_INFO("  output_directory: %s", output_directory_.c_str());
-  ROS_INFO("  timeout_duration: %.1f seconds", timeout_duration_);
-  ROS_INFO("  use_viewer: %d", use_viewer_);
-  ROS_INFO("  slam_mode: %s", slam_mode_.c_str());
-  if (slam_mode_ == "external" || slam_mode_ == "hybrid") {
-    ROS_INFO("  target_frame: %s", target_frame_.c_str());
-    ROS_INFO("  source_frame: %s", source_frame_.c_str());
-  }
-  if (mode_ == "rgbd-imu" || mode_ == "stereo-imu") {
-    ROS_INFO("  imu_topic: %s", imu_topic_.c_str());
-  }
 
   timeout_timer_ = nh_.createTimer(ros::Duration(1.0),
                                    &GaussianSLAMWrapper::timeoutCallback, this);
   status_check_timer_ = nh_.createTimer(
       ros::Duration(1.0), &GaussianSLAMWrapper::checkMappingStatus, this);
 
-  // Verify files exist
-  if (!std::filesystem::exists(vocabulary_path_)) {
-    throw std::runtime_error("Vocabulary file not found: " + vocabulary_path_);
-  }
-  if (!std::filesystem::exists(orb_settings_path_)) {
-    throw std::runtime_error("ORB settings file not found: " +
-                             orb_settings_path_);
-  }
-  if (!std::filesystem::exists(gaussian_settings_path_)) {
-    throw std::runtime_error("Gaussian settings file not found: " +
-                             gaussian_settings_path_);
-  }
-
   // Initialize subscribers based on mode
-  if (mode_ == "stereo" || mode_ == "stereo-imu") {
-    left_sub_.subscribe(nh_, left_topic_, 1);
-    right_sub_.subscribe(nh_, right_topic_, 1);
+  if (config_.mode == "stereo") {
+    left_sub_.subscribe(nh_, config_.left_topic, 1);
+    right_sub_.subscribe(nh_, config_.right_topic, 1);
     sync_.reset(new message_filters::Synchronizer<sync_pol>(
         sync_pol(30), left_sub_, right_sub_));
-  } else if (mode_ == "rgbd" || mode_ == "rgbd-imu") {
-    rgb_sub_.subscribe(nh_, rgb_topic_, 1);
-    depth_sub_.subscribe(nh_, depth_topic_, 1);
+  } else if (config_.mode == "rgbd") {
+    rgb_sub_.subscribe(nh_, config_.rgb_topic, 1);
+    depth_sub_.subscribe(nh_, config_.depth_topic, 1);
     rgbd_sync_.reset(new message_filters::Synchronizer<sync_pol>(
         sync_pol(30), rgb_sub_, depth_sub_));
   }
 
-  if (slam_mode_ == "orbslam" || slam_mode_ == "hybrid") {
+  if (config_.slam_mode == "orbslam" || config_.slam_mode == "hybrid") {
     initializeSLAMSystem();
   }
 
   initializeGaussianMapper();
 
   // Register appropriate callback based on mode
-  if (mode_ == "stereo") {
+  if (config_.mode == "stereo") {
     ROS_INFO("Registering stereo callback...");
     ROS_INFO("Left topic: %s", left_sub_.getTopic().c_str());
     ROS_INFO("Right topic: %s", right_sub_.getTopic().c_str());
     sync_->registerCallback(
         boost::bind(&GaussianSLAMWrapper::stereoCallback, this, _1, _2));
-  } else if (mode_ == "rgbd") {
+  } else if (config_.mode == "rgbd") {
     ROS_INFO("Registering RGB-D callback...");
     ROS_INFO("RGB topic: %s", rgb_sub_.getTopic().c_str());
     ROS_INFO("Depth topic: %s", depth_sub_.getTopic().c_str());
     rgbd_sync_->registerCallback(
         boost::bind(&GaussianSLAMWrapper::rgbdCallback, this, _1, _2));
-  } else if (mode_ == "mono") {
+  } else if (config_.mode == "mono") {
     ROS_INFO("Registering mono callback...");
-    mono_sub_ =
-        nh_.subscribe(mono_topic_, 1, &GaussianSLAMWrapper::monoCallback, this);
-    ROS_INFO("Mono topic: %s", mono_topic_.c_str());
-    // Subscribe to IMU data if using an IMU mode
-  } else if (mode_ == "rgbd-imu") {
-    ROS_INFO("Registering RGB-D callback...");
-    ROS_INFO("RGB topic: %s", rgb_sub_.getTopic().c_str());
-    ROS_INFO("Depth topic: %s", depth_sub_.getTopic().c_str());
-    rgbd_sync_->registerCallback(
-        boost::bind(&GaussianSLAMWrapper::rgbdCallback, this, _1, _2));
-    imu_sub_ = nh_.subscribe(imu_topic_, 1000,
-                             &GaussianSLAMWrapper::imuCallback, this);
-    ROS_INFO("Subscribed to IMU topic: %s", imu_topic_.c_str());
-
+    mono_sub_ = nh_.subscribe(config_.mono_topic, 1,
+                              &GaussianSLAMWrapper::monoCallback, this);
+    ROS_INFO("Mono topic: %s", config_.mono_topic.c_str());
   } else {
-    throw std::runtime_error("Invalid mode: " + mode_);
+    throw std::runtime_error("Invalid mode: " + config_.mode);
   }
 
   ROS_INFO("GaussianSLAMWrapper initialization complete!");
@@ -149,16 +144,16 @@ bool GaussianSLAMWrapper::getExternalPose(Sophus::SE3f &pose,
                                           double timestamp) {
   // First attempt with waitForTransform to block until the transform is
   // available
-  if (!tfBuffer.canTransform(target_frame_, source_frame_, ros::Time(timestamp),
-                             ros::Duration(0.5))) {
+  if (!tfBuffer.canTransform(config_.target_frame, config_.source_frame,
+                             ros::Time(timestamp), ros::Duration(0.5))) {
     ROS_WARN("Transform from %s to %s not available yet, waiting...",
-             source_frame_.c_str(), target_frame_.c_str());
+             config_.source_frame.c_str(), config_.target_frame.c_str());
     return false;
   }
   try {
     // Now try to lookup the transform
     geometry_msgs::TransformStamped transformStamped = tfBuffer.lookupTransform(
-        target_frame_, source_frame_, ros::Time(timestamp));
+        config_.target_frame, config_.source_frame, ros::Time(timestamp));
 
     // Get the rotation quaternion and translation
     Eigen::Quaternionf quat(transformStamped.transform.rotation.w,
@@ -172,18 +167,6 @@ bool GaussianSLAMWrapper::getExternalPose(Sophus::SE3f &pose,
 
     // This is Twc (world to camera) from ROS
     Sophus::SE3f Twc_ros(quat, trans);
-
-    // if (first_frame) {
-    //   T_init = Twc_ros;
-    //   first_frame = false;
-    //   pose = Sophus::SE3f();  // Identity for first frame
-    //   return true;
-    // }
-
-    // Sophus::SE3f T_init;
-
-    // Get relative transform from first frame
-    // Sophus::SE3f Twc_relative = T_init.inverse() * Twc_ros;
 
     // ORBSLAM expects Tcw (camera to world), so invert
     pose = Twc_ros.inverse();
@@ -200,21 +183,18 @@ void GaussianSLAMWrapper::initializeSLAMSystem() {
   try {
     ORB_SLAM3::System::eSensor system_mode;
     // Select the appropriate sensor mode
-    if (mode_ == "stereo") {
+    if (config_.mode == "stereo") {
       system_mode = ORB_SLAM3::System::STEREO;
-    } else if (mode_ == "stereo-imu") {
-      system_mode = ORB_SLAM3::System::IMU_STEREO;
-    } else if (mode_ == "rgbd") {
+    } else if (config_.mode == "rgbd") {
       system_mode = ORB_SLAM3::System::RGBD;
-    } else if (mode_ == "rgbd-imu") {
-      system_mode =
-          ORB_SLAM3::System::IMU_RGBD;  // Using the built-in IMU_RGBD mode
-    } else {
+    } else if (config_.mode == "mono") {
       system_mode = ORB_SLAM3::System::MONOCULAR;
+    } else {
+      throw std::runtime_error("Invalid mode specified: " + config_.mode);
     }
 
     slam_system_ = std::make_shared<ORB_SLAM3::System>(
-        vocabulary_path_, orb_settings_path_, system_mode);
+        config_.vocabulary_path, config_.orb_settings_path, system_mode);
     ROS_INFO("SLAM system object created successfully with mode: %d",
              static_cast<int>(system_mode));
     ROS_INFO("SLAM system object created successfully");
@@ -250,34 +230,22 @@ void GaussianSLAMWrapper::imuCallback(const sensor_msgs::ImuConstPtr &msg) {
 void GaussianSLAMWrapper::initializeGaussianMapper() {
   ROS_INFO("Creating Gaussian Mapper...");
 
-  // // Add multiple version checks
-  // std::cout << "OpenCV version from macro: " << CV_VERSION << std::endl;
-  // std::cout << "OpenCV version from string: " << cv::getVersionString()
-  //           << std::endl;
-
-  // Dl_info dl_info;
-  // dladdr((void*)cv::getBuildInformation, &dl_info);
-  // std::cout << "OpenCV library location: " << dl_info.dli_fname << std::endl;
-
-  // // Print build information before creating mapper
-  // std::cout << "OpenCV Build Information:\n"
-  //           << cv::getBuildInformation() << std::endl;
-  if (slam_mode_ == "external") {
+  if (config_.slam_mode == "external") {
     ORB_SLAM3::System::eSensor sensor_type;
 
-    if (mode_ == "mono") {
+    if (config_.mode == "mono") {
       sensor_type = ORB_SLAM3::System::MONOCULAR;
-    } else if (mode_ == "stereo") {
+    } else if (config_.mode == "stereo") {
       sensor_type = ORB_SLAM3::System::STEREO;
-    } else if (mode_ == "rgbd") {
+    } else if (config_.mode == "rgbd") {
       sensor_type = ORB_SLAM3::System::RGBD;
     } else {
       throw std::runtime_error("[Gaussian Mapper]Unsupported sensor type!");
     }
 
     gaussian_mapper_ = std::make_shared<GaussianMapper>(
-        slam_system_, gaussian_settings_path_, output_directory_, 0,
-        torch::kCUDA, sensor_type, orb_settings_path_);
+        slam_system_, config_.gaussian_settings_path, config_.output_directory,
+        0, torch::kCUDA, sensor_type, config_.orb_settings_path);
 
     gaussian_mapper_->setCompletionCallback(
         [this]() { this->mapping_completed_.store(true); });
@@ -285,9 +253,9 @@ void GaussianSLAMWrapper::initializeGaussianMapper() {
     mapper_thread_ = std::thread(&GaussianMapper::run_external_poses,
                                  gaussian_mapper_.get());
 
-  } else if (slam_mode_ == "orbslam" || slam_mode_ == "hybrid") {
+  } else if (config_.slam_mode == "orbslam" || config_.slam_mode == "hybrid") {
     gaussian_mapper_ = std::make_shared<GaussianMapper>(
-        slam_system_, gaussian_settings_path_, output_directory_,
+        slam_system_, config_.gaussian_settings_path, config_.output_directory,
         0,            // stream id
         torch::kCUDA  // assuming CUDA is available
     );
@@ -295,14 +263,11 @@ void GaussianSLAMWrapper::initializeGaussianMapper() {
     mapper_thread_ = std::thread(&GaussianMapper::run, gaussian_mapper_.get());
   }
 
-  // // Add version check after mapper creation
-  // std::cout << "OpenCV version after mapper creation: " << CV_VERSION
-  //           << std::endl;
-
-  if (use_viewer_) {
+  if (config_.use_viewer) {
     ROS_INFO("Initializing viewer...");
-    viewer_ = std::make_shared<ImGuiViewer>(slam_system_, gaussian_mapper_,
-                                            true, (slam_mode_ == "external"));
+    viewer_ =
+        std::make_shared<ImGuiViewer>(slam_system_, gaussian_mapper_, true,
+                                      (config_.slam_mode == "external"));
     viewer_thread_ = std::thread(&ImGuiViewer::run, viewer_.get());
     ROS_INFO("Viewer initialized and started.");
   }
@@ -318,12 +283,9 @@ void GaussianSLAMWrapper::monoCallback(const sensor_msgs::ImageConstPtr &msg) {
       cv_ptr = cv_bridge::toCvShare(msg, sensor_msgs::image_encodings::RGB8);
     }
 
-    // ROS_INFO("Image size: %dx%d", cv_ptr->image.cols, cv_ptr->image.rows);
-
     double timestamp = msg->header.stamp.toSec();
-    // ROS_INFO("Processing frame with timestamp: %.6f", timestamp);
 
-    if (slam_mode_ == "external") {
+    if (config_.slam_mode == "external") {
       ROS_ERROR("Mono doesn't support external mode right now!");
       return;
     }
@@ -343,8 +305,6 @@ void GaussianSLAMWrapper::stereoCallback(
     const sensor_msgs::ImageConstPtr &msg_left,
     const sensor_msgs::ImageConstPtr &msg_right) {
   updateCallbackTime();
-  // ROS_INFO("Received stereo images. Left encoding: %s, Right encoding: %s",
-  //          msg_left->encoding.c_str(), msg_right->encoding.c_str());
 
   cv_bridge::CvImageConstPtr cv_left, cv_right;
   try {
@@ -361,10 +321,6 @@ void GaussianSLAMWrapper::stereoCallback(
           cv_bridge::toCvShare(msg_right, sensor_msgs::image_encodings::RGB8);
     }
 
-    // ROS_INFO("Image sizes - Left: %dx%d, Right: %dx%d", cv_left->image.cols,
-    //          cv_left->image.rows, cv_right->image.cols,
-    //          cv_right->image.rows);
-
   } catch (cv_bridge::Exception &e) {
     ROS_ERROR("cv_bridge exception: %s", e.what());
     return;
@@ -372,19 +328,18 @@ void GaussianSLAMWrapper::stereoCallback(
 
   // Get timestamp from message
   double timestamp = msg_left->header.stamp.toSec();
-  // ROS_INFO("Processing frame with timestamp: %.6f", timestamp);
 
   try {
-    if (slam_mode_ == "external") {
+    if (config_.slam_mode == "external") {
       Sophus::SE3f Twc;
       if (getExternalPose(Twc, timestamp)) {
         // Process frame with GT pose
         gaussian_mapper_->handleNewFrameExternal(
             cv_left->image, cv_right->image, Twc, timestamp);
       }
-    } else if (slam_mode_ == "hybrid") {
+    } else if (config_.slam_mode == "hybrid") {
       ROS_ERROR("Hyrbid not yet implemented for stereo");
-    } else if (slam_mode_ == "orbslam") {
+    } else if (config_.slam_mode == "orbslam") {
       if (!slam_system_) {
         ROS_ERROR("SLAM system pointer is null!");
         return;
@@ -442,7 +397,7 @@ void GaussianSLAMWrapper::rgbdCallback(
       std::lock_guard<std::mutex> lock(imu_mutex_);
 
       // Find relevant IMU measurements for this frame
-      if (mode_ == "rgbd-imu") {
+      if (config_.mode == "rgbd-imu") {
         // Only use IMU measurements between the last frame and this one
         double min_time = last_processed_image_ts_;
         std::cout << "min_time: " << min_time << std::endl;
@@ -480,16 +435,14 @@ void GaussianSLAMWrapper::rgbdCallback(
 
     // Tracking logic
     try {
-      if (slam_mode_ == "external") {
+      if (config_.slam_mode == "external") {
         Sophus::SE3f Twc;
         if (getExternalPose(Twc, timestamp)) {
-          // std::cout << "handleNewFrameExternal called" << std::endl;
           gaussian_mapper_->handleNewFrameExternal(
               cv_rgb->image, cv_depth->image, Twc, timestamp);
-          // std::cout << "handleNewFrameExternal finished" << std::endl;
         }
 
-      } else if (slam_mode_ == "hybrid") {
+      } else if (config_.slam_mode == "hybrid") {
         Sophus::SE3f Twc;
         if (getExternalPose(Twc, timestamp)) {
           try {
@@ -503,7 +456,7 @@ void GaussianSLAMWrapper::rgbdCallback(
           }
         }
 
-      } else if (slam_mode_ == "orbslam") {
+      } else if (config_.slam_mode == "orbslam") {
         if (!slam_system_) {
           ROS_ERROR("SLAM system pointer is null!");
           return;
@@ -532,7 +485,7 @@ void GaussianSLAMWrapper::timeoutCallback(const ros::TimerEvent &event) {
   if (data_started_ && !stopped_) {
     ros::Duration elapsed = ros::Time::now() - last_callback_time_;
 
-    if (elapsed.toSec() > timeout_duration_) {
+    if (elapsed.toSec() > config_.timeout_duration) {
       ROS_INFO(
           "No callbacks received for %.1f seconds, signaling data stream "
           "stopped",

@@ -127,10 +127,6 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       settings_file["Record.training_report_interval"].operator int();
   record_loop_ply_ =
       (settings_file["Record.record_loop_ply"].operator int()) != 0;
-  render_fly_through_ =
-      (settings_file["Record.render_fly_through"].operator int()) != 0;
-  render_fly_through_speed_ =
-      settings_file["Record.render_fly_through_speed"].operator float();
 
   // Optimization Parameters
   opt_params_.iterations_ =

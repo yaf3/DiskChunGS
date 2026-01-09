@@ -278,7 +278,7 @@ extern "C" void launch_uvToDepth(const void* uvs,
                                  const float* idepthMap,
                                  float* depth,
                                  float* idist,
-                                 DebugStats* debug_stats,  // New parameter
+                                 DebugStats* debug_stats,
                                  float range,
                                  int nPts,
                                  int featMapH,
@@ -288,8 +288,8 @@ extern "C" void launch_uvToDepth(const void* uvs,
                                  int H,
                                  int W,
                                  int num_depth_candidates) {
-  dim3 block(num_depth_candidates);  // Keep this - threads per block
-  dim3 grid(nPts);                   // Change this - one block per point
+  dim3 block(num_depth_candidates);
+  dim3 grid(nPts);
 
   uvToDepth<<<grid, block>>>(reinterpret_cast<const float2*>(uvs),
                              reinterpret_cast<const half_C*>(refFeatMap),

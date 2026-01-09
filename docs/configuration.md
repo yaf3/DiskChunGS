@@ -80,8 +80,6 @@ This document explains all available configuration options for DiskChunGS. The c
 | `Record.record_loss_image` | Enables recording of loss visualization images. `0`: false, `1` or other integer: true. |
 | `Record.training_report_interval` | Interval for generating training reports. `0`: never, `1`: always, other values: periodically. |
 | `Record.record_loop_ply` | DEPRECATED. Enables recording of loop closure point clouds. `0`: false, `1` or other integer: true. |
-| `Record.render_fly_through` | Enables rendering of fly-through sequences. `0`: false, `1` or other integer: true. |
-| `Record.render_fly_through_speed` | Speed factor for fly-through rendering. |
 
 ## Optimization Settings
 

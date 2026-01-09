@@ -388,8 +388,6 @@ class GaussianMapper {
   bool record_rendered_image_;
   bool record_ground_truth_image_;
   bool record_loss_image_;
-  bool render_fly_through_;
-  float render_fly_through_speed_ = 5.0;
 
   int training_report_interval_;
   bool record_loop_ply_;

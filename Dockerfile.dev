@@ -9,7 +9,7 @@ RUN apt-key adv --refresh-keys --keyserver keyserver.ubuntu.com || true && \
 RUN pip3 install optuna optuna-dashboard networkx==2.8.8 opencv-python==4.10.0.84 pynput
 
 # Install Python packages for evaluation
-RUN pip3 install torchmetrics evo
+RUN pip3 install torchmetrics==1.5.2 evo
 
 # Install additional development tools
 RUN apt-get update && apt-get install -y \
@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y \
     clang-format \
     && rm -rf /var/lib/apt/lists/*
 
+# Install onnx runtime
 RUN wget https://github.com/microsoft/onnxruntime/releases/download/v1.18.1/onnxruntime-linux-x64-gpu-1.18.1.tgz && \
     tar -xzf onnxruntime-linux-x64-gpu-1.18.1.tgz && \
     rm onnxruntime-linux-x64-gpu-1.18.1.tgz && \
@@ -28,6 +29,7 @@ RUN wget https://github.com/microsoft/onnxruntime/releases/download/v1.18.1/onnx
     rm -rf onnxruntime-linux-x64-gpu-1.18.1 && \
     sudo ldconfig
 
+# Install tensorrt runtime
 RUN wget https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/secure/8.6.1/local_repos/nv-tensorrt-local-repo-ubuntu2004-8.6.1-cuda-11.8_1.0-1_amd64.deb && \
     os="ubuntu2004" && \
     tag="8.6.1-cuda-11.8" && \
