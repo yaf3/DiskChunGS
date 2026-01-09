@@ -23,41 +23,43 @@
             // ],
             // "program": "${workspaceFolder}/bin/view_result",
             // "args": [
-            //     "${workspaceFolder}/results/30_03/replica_rgbd_0/office0/14900_shutdown/data/gaussian_mapper_cfg.yaml",
-            //     "",
-            //     "${workspaceFolder}/results/30_03/replica_rgbd_0/office0/14900_shutdown/data"
+            //     "${workspaceFolder}/results/kitti_lc_mono/kitti_mono_0/07/9482_shutdown/data",
             // ],
-            "program": "${workspaceFolder}/bin/kitti_mono",
+            // "program": "${workspaceFolder}/bin/kitti_mono",
+            // "args": [
+            //     "${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
+            //     "${workspaceFolder}/cfg/ORB_SLAM3/Monocular/KITTI/KITTI04-12.yaml",
+            //     "${workspaceFolder}/cfg/gaussian_mapper/Monocular/KITTI/KITTI.yaml",
+            //     "/data/kitti/data_odometry_color/dataset/sequences/07",
+            //     "${workspaceFolder}/results/kitti_lc_mono/kitti_mono_0/07",
+            //     "viewer",
+            //     "20",
+            //     "true"
+            // ],
+            "program": "${workspaceFolder}/bin/kitti_stereo",
             "args": [
                 "${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-                "${workspaceFolder}/cfg/ORB_SLAM3/Monocular/KITTI/KITTI04-12.yaml",
-                "${workspaceFolder}/cfg/gaussian_mapper/Monocular/KITTI/KITTI.yaml",
-                "/data/kitti/data_odometry_color/dataset/sequences/07",
-                "${workspaceFolder}/results/kitti/07",
+                "${workspaceFolder}/cfg/ORB_SLAM3/Stereo/KITTI/KITTI00-02.yaml",
+                "${workspaceFolder}/cfg/gaussian_mapper/Stereo/KITTI/KITTI.yaml",
+                "/data/kitti/data_odometry_color/dataset/sequences/00",
+                "${workspaceFolder}/results/kitti/kitti_stereo_0/00",
                 "viewer",
                 "20",
                 "true"
             ],
+            // "program": "${workspaceFolder}/bin/view_result",
+            // "args": [
+            //     "${workspaceFolder}/results/kitti/kitti_stereo_0/06/19366_shutdown/data"
+            // ],
             // "program": "${workspaceFolder}/bin/kitti_stereo",
             // "args": [
             //     "${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
             //     "${workspaceFolder}/cfg/ORB_SLAM3/Stereo/KITTI/KITTI04-12.yaml",
             //     "${workspaceFolder}/cfg/gaussian_mapper/Stereo/KITTI/KITTI.yaml",
-            //     "/data/kitti/data_odometry_color/dataset/sequences/09",
-            //     "${workspaceFolder}/results/kitti/09",
+            //     "/data/kitti/data_odometry_color/dataset/sequences/07",
+            //     "${workspaceFolder}/results/kitti/07",
             //     "viewer",
-            //     "5",
-            //     "true"
-            // ],
-            // "program": "${workspaceFolder}/bin/kitti_stereo",
-            // "args": [
-            //     "${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "${workspaceFolder}/cfg/ORB_SLAM3/Stereo/KITTI/KITTI03.yaml",
-            //     "${workspaceFolder}/cfg/gaussian_mapper/Stereo/KITTI/KITTI.yaml",
-            //     "/data/kitti/data_odometry_color/dataset/sequences/03",
-            //     "${workspaceFolder}/results/kitti/03",
-            //     "viewer",
-            //     "5",
+            //     "20",
             //     "true"
             // ],
             // "program": "${workspaceFolder}/bin/kitti_rgbd",
@@ -68,17 +70,13 @@
             //     "/data/kitti/data_odometry_color/dataset/sequences/00",
             //     "${workspaceFolder}/results/kitti_rgbd/00"
             // ],
-            // "program": "${workspaceFolder}/bin/view_result",
-            // "args": [
-            //     "${workspaceFolder}/results/kitti/07/20647_shutdown/data"
-            // ],
             // "program": "${workspaceFolder}/bin/tum_mono",
             // "args": [
             //     "${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "${workspaceFolder}/cfg/ORB_SLAM3/Monocular/TUM/tum_freiburg1_desk.yaml",
+            //     "${workspaceFolder}/cfg/ORB_SLAM3/Monocular/TUM/tum_freiburg3_long_office_household.yaml",
             //     "${workspaceFolder}/cfg/gaussian_mapper/Monocular/TUM/tum_mono.yaml",
-            //     "/data/TUM/rgbd_dataset_freiburg1_desk",
-            //     "${workspaceFolder}/results/TUM_mono/rgbd_dataset_freiburg1_desk"
+            //     "/data/TUM/rgbd_dataset_freiburg3_long_office_household",
+            //     "${workspaceFolder}/results/TUM_mono/tum_mono_0/rgbd_dataset_freiburg3_long_office_household"
             // ],
             // "program": "${workspaceFolder}/bin/tum_rgbd",
             // "args": [
@@ -88,12 +86,6 @@
             //     "/data/TUM/rgbd_dataset_freiburg3_long_office_household",
             //     "${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/TUM/associations/tum_freiburg3_long_office_household.txt",
             //     "${workspaceFolder}/results/TUM/tum_freiburg3_long_office_household"
-            // ],
-            // "program": "${workspaceFolder}/bin/train_colmap",
-            // "args": [
-            //     "${workspaceFolder}/cfg/gaussian_mapper/Colmap/KITTI/KITTI.yaml",
-            //     "/data/kitti_colmap/00_500f",
-            //     "${workspaceFolder}/results/kitti/colmap"
             // ],
             // "program": "${workspaceFolder}/bin/test_foundation_stereo",
             // "args": [
@@ -113,14 +105,14 @@
             // "program": "${workspaceFolder}/bin/camera_mono",
             // "args": [
             //     "${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "${workspaceFolder}/cfg/ORB_SLAM3/Monocular/StaticHikes/forest1.yaml",
-            //     "${workspaceFolder}/cfg/gaussian_mapper/Monocular/StaticHikes/forest1.yaml",
-            //     "/data/onTheFly/StaticHikes/forest1",
-            //     "${workspaceFolder}/results/StaticHikes/forest1"
+            //     "${workspaceFolder}/cfg/ORB_SLAM3/Monocular/Smartphone/georg.yaml",
+            //     "${workspaceFolder}/cfg/gaussian_mapper/Monocular/Smartphone/georg.yaml",
+            //     "/data/smartphone/apartment",
+            //     "${workspaceFolder}/results/smartphone/apartment"
             // ],
             // "program": "${workspaceFolder}/bin/view_result",
             // "args": [
-            //     "${workspaceFolder}/results/14_07_test3/kitti_mono_0/04/43400_shutdown/data"
+            //     "${workspaceFolder}/results/kitti/07/7900_shutdown/data"
             // ],
             // "program": "${workspaceFolder}/bin/vkitti_rgbd",
             // "args": [
@@ -149,11 +141,11 @@
                 },
                 {
                     "name": "TORCH_SHOW_CPP_STACKTRACES",
-                    "value": "1"
+                    "value": "0"
                 },
                 {
                     "name": "TORCH_CPP_LOG_LEVEL",
-                    "value": "1"
+                    "value": "0"
                 }
             ],
             "externalConsole": false,
@@ -171,7 +163,7 @@
             "name": "ROS SLAM Debug",
             "type": "cppdbg",
             "request": "launch",
-            "program": "/root/catkin_ws/devel/lib/lsgs_ros/lsgs_ros_node",
+            "program": "/root/catkin_ws/devel/lib/diskchungs_ros/diskchungs_ros_node",
             "cwd": "/root/catkin_ws",
             // "args": [
             //     "__name:=gaussian_slam",
@@ -224,6 +216,20 @@
             //     "_slam_mode:=hybrid",
             //     "_target_frame:=dlio_map",
             //     "_source_frame:=zed2i_left"
+            // ],
+            // "args": [
+            //     "__name:=gaussian_slam",
+            //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
+            //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/RSL/zed.yaml",
+            //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/RGB-D/RSL/zed.yaml",
+            //     "_output_directory:=${workspaceFolder}/results/RSL/lab",
+            //     "_use_viewer:=true",
+            //     "_mode:=rgbd",
+            //     "_rgb_topic:=/zed2i/zed_node/rgb/image_rect_color",
+            //     "_depth_topic:=/zed2i/zed_node/depth/depth_registered",
+            //     "_slam_mode:=external",
+            //     "_target_frame:=map",
+            //     "_source_frame:=zed2i_left_camera_optical_frame"
             // ],
             "args": [
                 "__name:=gaussian_slam",

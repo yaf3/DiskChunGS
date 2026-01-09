@@ -124,7 +124,7 @@ void GaussianMapper::initializeStereoDepthEstimator() {
 
   // ONNX model in Docker image (rebuilt on each Docker build)
   std::string model_path =
-      "/workspace/models/fast_acvnet_plus_onnx_gridsample/"
+      "/workspace/repo/models/"
       "fast_acvnet_plus_kitti_2015_opset16_" +
       std::to_string(model_resolution.height) + "x" +
       std::to_string(model_resolution.width) + ".onnx";
@@ -150,7 +150,7 @@ void GaussianMapper::initializeMonocularDepthEstimator() {
 
   // ONNX model in Docker image (rebuilt on each Docker build)
   std::string onnx_path =
-      "/workspace/models/"
+      "/workspace/repo/models/"
       "depth_anything_v2_vitl.onnx";
 
   // Engine in persistent volume mount (survives Docker rebuilds)
