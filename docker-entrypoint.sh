@@ -29,8 +29,14 @@ fi
 
 cd /workspace/repo
 
-# Download mono model, stereo included in repo already since download link dead
-wget -P /workspace/repo/models https://huggingface.co/yuvraj108c/Depth-Anything-2-Onnx/resolve/main/depth_anything_v2_vitl.onnx
+# Download mono model only if it doesn't exist
+MODEL_PATH="/workspace/repo/models/depth_anything_v2_vitl.onnx"
+if [ ! -f "$MODEL_PATH" ]; then
+  echo "Downloading mono model..."
+  wget -P /workspace/repo/models https://huggingface.co/yuvraj108c/Depth-Anything-2-Onnx/resolve/main/depth_anything_v2_vitl.onnx
+else
+  echo "Mono model already exists, skipping download."
+fi
 
 # Print welcome message
 echo "==============================================="
