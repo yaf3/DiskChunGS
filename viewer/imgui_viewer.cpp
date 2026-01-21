@@ -143,6 +143,28 @@ void ImGuiViewer::run() {
   if (!glfwInit())
     throw std::runtime_error("[ImGuiViewer]Fails to initialize!");
 
+  // Query DPI scale from primary monitor before window creation
+  float dpi_scale = 1.0f;
+  GLFWmonitor* primary_monitor = glfwGetPrimaryMonitor();
+  if (primary_monitor) {
+    float xscale, yscale;
+    glfwGetMonitorContentScale(primary_monitor, &xscale, &yscale);
+    dpi_scale = xscale;
+  }
+
+  // Scale window and panel dimensions for HiDPI displays
+  if (dpi_scale > 1.0f) {
+    glfw_window_width_ = static_cast<int>(glfw_window_width_ * dpi_scale);
+    glfw_window_height_ = static_cast<int>(glfw_window_height_ * dpi_scale);
+    panel_width_ = static_cast<int>(panel_width_ * dpi_scale);
+    display_panel_height_ = static_cast<int>(display_panel_height_ * dpi_scale);
+    training_panel_height_ = static_cast<int>(training_panel_height_ * dpi_scale);
+    camera_panel_height_ = static_cast<int>(camera_panel_height_ * dpi_scale);
+    // Recalculate center coordinates after scaling
+    main_cx_ = glfw_window_width_ / 2;
+    main_cy_ = glfw_window_height_ / 2;
+  }
+
   const char* glsl_version = "#version 130";
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
@@ -173,6 +195,12 @@ void ImGuiViewer::run() {
   // Setup Platform/Renderer backends
   ImGui_ImplGlfw_InitForOpenGL(window, true);
   ImGui_ImplOpenGL3_Init(glsl_version);
+
+  // Scale ImGui fonts and style for HiDPI displays
+  if (dpi_scale > 1.0f) {
+    io.FontGlobalScale = dpi_scale;
+    ImGui::GetStyle().ScaleAllSizes(dpi_scale);
+  }
 
   // Variables for tracking
   Sophus::SE3f Tcw, TcwInit;
