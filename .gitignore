@@ -65,3 +65,4 @@ debug_mono
 debug_stereo
 deprecated
 *.adjusted
+*.engine

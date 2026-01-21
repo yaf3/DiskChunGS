@@ -53,7 +53,12 @@ void StereoDepth::initialize_model(const std::string& model_path) {
   std::string model_filename = model_file_path.filename().string();
 
   // Generate engine cache path in persistent volume mount
-  engine_cache_path_ = "/workspace/repo/engines/" + model_filename + ".trt";
+  std::string base_filename = model_filename;
+  size_t pos = base_filename.rfind(".onnx");
+  if (pos != std::string::npos) {
+    base_filename = base_filename.substr(0, pos);
+  }
+  engine_cache_path_ = "/workspace/repo/models/" + base_filename + ".engine";
 
   try {
     // Try to load cached engine first
@@ -63,9 +68,6 @@ void StereoDepth::initialize_model(const std::string& model_path) {
     } else {
       std::cout << "Building TensorRT engine from ONNX..." << std::endl;
       build_engine(model_path);
-
-      // Create engines directory if it doesn't exist
-      std::filesystem::create_directories("/workspace/repo/engines");
 
       save_engine(engine_cache_path_);
       std::cout << "TensorRT engine saved to: " << engine_cache_path_

@@ -36,7 +36,22 @@ MonoDepth::MonoDepth(const std::string& model_path) {
   initialize_model(model_path);
 }
 
-void MonoDepth::initialize_model(const std::string& model_path) {
+void MonoDepth::initialize_model(const std::string& user_model_path) {
+  std::string base_filepath = user_model_path;
+  size_t pos = base_filepath.rfind(".onnx");
+  if (pos != std::string::npos) {
+    base_filepath = base_filepath.substr(0, pos);
+  }
+
+  std::string engine_path = base_filepath + ".engine";
+
+  std::string model_path;
+  if (std::filesystem::exists(engine_path)) {
+    model_path = engine_path;
+  } else {
+    model_path = user_model_path;
+  }
+
   // Check if model file exists
   std::ifstream file(model_path);
   if (!file.good()) {

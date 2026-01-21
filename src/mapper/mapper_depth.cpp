@@ -120,95 +120,26 @@ void GaussianMapper::initializeLaplacianOfGaussianKernel() {
 }
 
 void GaussianMapper::initializeStereoDepthEstimator() {
-  cv::Size model_resolution(1280, 384);
+  cv::Size model_resolution(
+      1280, 384);  // Other resolutions would need to be downloaded separately
 
-  // ONNX model in Docker image (rebuilt on each Docker build)
-  std::string model_path =
+  // ONNX model path
+  std::string onnx_path =
       "/workspace/repo/models/"
       "fast_acvnet_plus_kitti_2015_opset16_" +
       std::to_string(model_resolution.height) + "x" +
       std::to_string(model_resolution.width) + ".onnx";
 
-  // Engine will be saved to /workspace/repo/engines/ (persistent)
-  // by StereoDepth::initialize_model()
-
-  // std::string model_path =
-  //     "/workspace/models/crestereo/"
-  //     "crestereo_init_iter20_720x1280.onnx";
-  // std::string model_path =
-  //     "/workspace/models/IGEV-plusplus/"
-  //     "IGEVplusplusRT_fp32_iter6_kitti.onnx";
-  this->stereo_depth_estimator_ = std::make_shared<StereoDepth>(model_path);
+  this->stereo_depth_estimator_ = std::make_shared<StereoDepth>(onnx_path);
 }
 
 void GaussianMapper::initializeMonocularDepthEstimator() {
-  // std::string model_path =
-  // "/workspace/repo/models/metric3dv2/metric3d-vit-large.onnx";
-  // std::string model_path =
-  // "/workspace/repo/models/depth_anything/"
-  // "depth_anything_v2_vitl.onnx";
-
-  // ONNX model in Docker image (rebuilt on each Docker build)
+  // ONNX model path
   std::string onnx_path =
       "/workspace/repo/models/"
       "depth_anything_v2_vitl.onnx";
 
-  // Engine in persistent volume mount (survives Docker rebuilds)
-  std::string persistent_engine_path =
-      "/workspace/repo/engines/depth_anything_v2_vitl.engine";
-
-  // Temporary engine path (where DepthAnything initially saves it)
-  std::string temp_engine_path =
-      "/workspace/models/depth_anything_v2_vitl.engine";
-
-  std::string model_path;
-
-  // Check if persistent engine file exists
-  if (std::filesystem::exists(persistent_engine_path)) {
-    std::cout << "Using cached TensorRT engine: " << persistent_engine_path
-              << std::endl;
-    model_path = persistent_engine_path;
-  } else {
-    std::cout << "Persistent engine not found. Building from ONNX: "
-              << onnx_path << std::endl;
-
-    // Check if temporary engine exists from previous run
-    if (std::filesystem::exists(temp_engine_path)) {
-      std::cout << "Found temporary engine, moving to persistent location..."
-                << std::endl;
-      // Create engines directory if it doesn't exist
-      std::filesystem::create_directories("/workspace/repo/engines");
-      std::filesystem::copy_file(
-          temp_engine_path, persistent_engine_path,
-          std::filesystem::copy_options::overwrite_existing);
-      model_path = persistent_engine_path;
-    } else {
-      // Build from ONNX (DepthAnything will save to temp location)
-      std::cout << "Building TensorRT engine from ONNX (this may take a few "
-                   "minutes)..."
-                << std::endl;
-      model_path = onnx_path;
-
-      // Initialize with ONNX to trigger build
-      this->monocular_depth_estimator_ =
-          std::make_shared<MonoDepth>(model_path);
-
-      // Copy the built engine to persistent location
-      if (std::filesystem::exists(temp_engine_path)) {
-        std::cout << "Saving engine to persistent location: "
-                  << persistent_engine_path << std::endl;
-        std::filesystem::create_directories("/workspace/repo/engines");
-        std::filesystem::copy_file(
-            temp_engine_path, persistent_engine_path,
-            std::filesystem::copy_options::overwrite_existing);
-        std::cout << "Engine saved! Future runs will use the cached engine."
-                  << std::endl;
-      }
-      return;  // Already initialized
-    }
-  }
-
-  this->monocular_depth_estimator_ = std::make_shared<MonoDepth>(model_path);
+  this->monocular_depth_estimator_ = std::make_shared<MonoDepth>(onnx_path);
 }
 
 void GaussianMapper::projectRgbDepthToPointCloud(
