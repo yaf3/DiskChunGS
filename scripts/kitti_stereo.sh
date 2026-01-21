@@ -144,29 +144,3 @@ bin/kitti_stereo \
     5.0 \
     true
 done
-
-for ((i=0; i<num_trials; i++))
-do
-bin/kitti_stereo \
-    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
-    cfg/ORB_SLAM3/Stereo/KITTI/KITTI04-12.yaml \
-    cfg/gaussian_mapper/Stereo/KITTI/KITTI.yaml \
-    /data/kitti/data_odometry_color/dataset/sequences/11 \
-    results/$exp/kitti_stereo_$i/11 \
-    no_viewer \
-    5.0 \
-    true
-    done
-
-for ((i=0; i<num_trials; i++))
-do
-bin/kitti_stereo \
-    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
-    cfg/ORB_SLAM3/Stereo/KITTI/KITTI04-12.yaml \
-    cfg/gaussian_mapper/Stereo/KITTI/KITTI.yaml \
-    /data/kitti/data_odometry_color/dataset/sequences/12 \
-    results/$exp/kitti_stereo_$i/12 \
-    no_viewer \
-    5.0 \
-    true
-done
