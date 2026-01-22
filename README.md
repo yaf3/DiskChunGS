@@ -2,7 +2,7 @@
 [Casimir Feldmann](https://scholar.google.com/citations?user=WNqWurwAAAAJ&hl=en&oi=ao)<sup>1</sup>, [Max Wilder-Smith](https://github.com/maxwildersmith)<sup>1</sup>, [Vaishakh Patil](https://scholar.google.com/citations?user=aB04078AAAAJ&hl=en)<sup>1</sup>, [Michael Niemeyer](https://m-niemeyer.github.io/)<sup>2</sup>, [Michael Oechsle](https://moechsle.github.io/)<sup>2</sup>, [Keisuke Tateno](https://scholar.google.com/citations?user=ml3laqEAAAAJ&hl=ja)<sup>2</sup>, and [Marco Hutter](https://scholar.google.ch/citations?user=DO3quJYAAAAJ&hl=en)<sup>1</sup> <br>
 ETH Zurich<sup>1</sup>, Google<sup>2</sup>
 <br>
-[[`Paper`]()] [[`Project`]()] [[`Demo`]()] [[`Dataset`]()] [[`BibTeX`]()]
+[[`Paper`](https://arxiv.org/abs/2511.23030)] [[`Project`](https://rffr.leggedrobotics.com/works/diskchungs/)] [[`Video`](https://www.youtube.com/watch?v=BFqPBZulrhQ&feature=youtu.be)]
 
 ![Pipeline](assets/pipeline.png?raw=true)
 
@@ -26,7 +26,7 @@ Recent advances in 3D Gaussian Splatting (3DGS) have demonstrated impressive res
 
 ```bash
 # Clone this repo
-git clone --recursive git@github.com:leggedrobotics/large_scale_gaussian_slam.git
+git clone --recursive git@github.com:leggedrobotics/DiskChunGS.git
 
 cd large_scale_gaussian_slam
 
