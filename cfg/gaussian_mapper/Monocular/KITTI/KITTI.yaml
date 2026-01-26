@@ -11,7 +11,6 @@ Camera.z_far: 10.0
 
 Mapper.min_depth_: 0.01
 Mapper.max_depth_: 100.0
-Mapper.keyframe_selection_strategy: 1 # 0:all, 1:recent k, 2:chunk_based
 Mapper.min_num_initial_map_kfs: 10
 Mapper.new_keyframe_times_of_use: 8
 Mapper.local_BA_increased_times_of_use: 0
