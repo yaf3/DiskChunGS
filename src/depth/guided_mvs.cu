@@ -19,22 +19,6 @@
 #define min_iz 1e-4f
 #define max_iz 1e1f
 
-struct DebugStats {
-  int valid_cams_count;
-  int best_cam_idx;
-  float max_baseline_dist;
-  float initial_idepth;
-  float final_depth;
-  float min_cost;
-  float max_cost;
-  float cost_ratio;
-  bool quadratic_applied;
-  float quadratic_variation;
-  int best_candidate_idx;
-  bool insufficient_baseline;
-  bool out_of_bounds;
-};
-
 /**
  * @brief Estimate depth values of for the UV coordinates using multi-view
  * stereo guided with a coarse initial depth map. This kernel finds the best
@@ -70,7 +54,6 @@ __global__ void uvToDepth(const float2* uvs,
                           const float* idepthMap,
                           float* depth,
                           float* idist,
-                          DebugStats* debug_stats,  // New debug output
                           float range,
                           int nPts,
                           int featMapH,
@@ -97,35 +80,13 @@ __global__ void uvToDepth(const float2* uvs,
   __shared__ float_C refFeat;
   __shared__ float refiDepth;
   __shared__ float step;
-  __shared__ DebugStats debug_info;
 
   if (threadIdx.x == 0) {
-    // Initialize debug info with failure markers
-    debug_info.valid_cams_count = 0;
-    debug_info.best_cam_idx = -1;
-    debug_info.max_baseline_dist = -1.0f;
-    debug_info.initial_idepth = -1.0f;
-    debug_info.final_depth = -1.0f;
-    debug_info.min_cost = -1.0f;
-    debug_info.max_cost = -1.0f;
-    debug_info.cost_ratio = -1.0f;
-    debug_info.quadratic_applied = false;
-    debug_info.quadratic_variation = 0.0f;
-    debug_info.best_candidate_idx = -1;
-    debug_info.insufficient_baseline = false;
-    debug_info.out_of_bounds = false;
-
     step = 2 * range / (NUM_DEPTH_CANDIDATES - 1);
     float2 samplingUV = makeSamplingUV(uv, depthMapW, depthMapH, W, H);
     refiDepth = interp(idepthMap, samplingUV, depthMapW, depthMapH);
     refiDepth = max(refiDepth, 1e-6f);
-    debug_info.initial_idepth = refiDepth;
-
-    if (refiDepth >= max_iz) {
-      // Early return - leave depth[index] and debug_info.final_depth as -1
-      debug_stats[index] = debug_info;
-      return;
-    }
+    if (refiDepth >= max_iz) return;
     float3 min_xyz = unit_xyz * (1.f / min(refiDepth + range, max_iz));
     float3 max_xyz = unit_xyz * (1.f / max(refiDepth - range, min_iz));
 
@@ -133,52 +94,27 @@ __global__ void uvToDepth(const float2* uvs,
     bestCamIdx_s = -1;
     int bestCamIdx = -1;
     float maxDist = 0.0f;
-    bool any_camera_out_of_bounds = false;
-    bool any_camera_insufficient_baseline = false;
     for (int camIdx(0); camIdx < NUM_CAMS; camIdx++) {
       float2 uvCamNear = project(min_xyz, intrinsics, Rts[camIdx]);
       float2 uvCamFar = project(max_xyz, intrinsics, Rts[camIdx]);
       float dist = dist2(uvCamNear, uvCamFar);
+      valid[camIdx] = uvCamNear.x > 0 && uvCamNear.y > 0 &&
+                      uvCamNear.x < W - 1 && uvCamNear.y < H - 1 &&
+                      uvCamFar.x > 0 && uvCamFar.y > 0 && uvCamFar.x < W - 1 &&
+                      uvCamFar.y < H - 1 && dist > 100.f;
 
-      bool in_bounds = uvCamNear.x > 0 && uvCamNear.y > 0 &&
-                       uvCamNear.x < W - 1 && uvCamNear.y < H - 1 &&
-                       uvCamFar.x > 0 && uvCamFar.y > 0 && uvCamFar.x < W - 1 &&
-                       uvCamFar.y < H - 1;
-
-      bool sufficient_baseline = dist > 100.f;
-
-      valid[camIdx] = in_bounds && sufficient_baseline;
-
-      // Track reasons for camera rejection
-      if (!in_bounds) any_camera_out_of_bounds = true;
-      if (!sufficient_baseline) any_camera_insufficient_baseline = true;
-
-      if (valid[camIdx]) {
-        debug_info.valid_cams_count++;  // Count ALL valid cameras
-        if (maxDist < dist) {
-          maxDist = dist;
-          bestCamIdx = camIdx;
-        }
+      if (valid[camIdx] && maxDist < dist) {
+        maxDist = dist;
+        bestCamIdx = camIdx;
       }
     }
-
-    // Only set failure flags if NO cameras are valid
-    if (debug_info.valid_cams_count == 0) {
-      debug_info.out_of_bounds = any_camera_out_of_bounds;
-      debug_info.insufficient_baseline = any_camera_insufficient_baseline;
-    }
-
     bestCamIdx_s = bestCamIdx;
-    debug_info.best_cam_idx = bestCamIdx;
-    debug_info.max_baseline_dist = maxDist;
   }
   __syncthreads();
 
   if (bestCamIdx_s == -1) {
     if (threadIdx.x == 0) {
       depth[index] = 1.f / refiDepth;
-      debug_info.final_depth = depth[index];
-      debug_stats[index] = debug_info;
     }
     return;
   }
@@ -202,8 +138,8 @@ __global__ void uvToDepth(const float2* uvs,
   float3 xyz = unit_xyz * depthCandidate;
   float cost = 0.f;
 
-  // Compute the cost for this depth candidate given the reprojected feature
-  // of the neighoring cameras
+  // Compute the cost for this depth candidate given the reprojected feature of
+  // the neighoring cameras
   for (int camIdx(0); camIdx < NUM_CAMS; camIdx++) {
     if (!valid[camIdx]) continue;
 
@@ -233,13 +169,7 @@ __global__ void uvToDepth(const float2* uvs,
     }
   }
 
-  debug_info.min_cost = minCost;
-  debug_info.max_cost = maxCost;
-  debug_info.cost_ratio = maxCost / (minCost + 1e-8f);
-  debug_info.best_candidate_idx = bestDepthIdx;
-
   if ((maxCost > 1.1f * minCost)) {
-    debug_info.quadratic_applied = true;
     // Quadratic interpolation
     int leftIdx = max(bestDepthIdx - 1, 0);
     int rightIdx = min(bestDepthIdx + 1, NUM_DEPTH_CANDIDATES - 1);
@@ -247,7 +177,6 @@ __global__ void uvToDepth(const float2* uvs,
     float rightCost = costs[rightIdx];
     float variation = 0.5 * (leftCost - rightCost) /
                       ((leftCost + rightCost) - 2. * minCost + 1e-8);
-    debug_info.quadratic_variation = variation;
     variation = min(max(variation, -0.5f), 0.5f);
 
     float bestiDepth;
@@ -262,11 +191,8 @@ __global__ void uvToDepth(const float2* uvs,
 
     bestiDepth = max(min(bestiDepth, max_iz), min_iz);
     depth[index] = 1.f / bestiDepth;
-    debug_info.final_depth = depth[index];
     idist[index] = abs(bestiDepth - refiDepth);
   }
-
-  debug_stats[index] = debug_info;
 }
 
 // C++ wrapper function for the CUDA kernel
@@ -278,7 +204,6 @@ extern "C" void launch_uvToDepth(const void* uvs,
                                  const float* idepthMap,
                                  float* depth,
                                  float* idist,
-                                 DebugStats* debug_stats,
                                  float range,
                                  int nPts,
                                  int featMapH,
@@ -296,8 +221,8 @@ extern "C" void launch_uvToDepth(const void* uvs,
                              reinterpret_cast<const half_C*>(otherFeatMaps),
                              reinterpret_cast<const Pose*>(Rts),
                              reinterpret_cast<const Intrinsics*>(intrinsics_),
-                             idepthMap, depth, idist, debug_stats, range, nPts,
-                             featMapH, featMapW, depthMapH, depthMapW, H, W);
+                             idepthMap, depth, idist, range, nPts, featMapH,
+                             featMapW, depthMapH, depthMapW, H, W);
 
   // Check for CUDA errors
   cudaError_t err = cudaGetLastError();
