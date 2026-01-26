@@ -146,7 +146,6 @@ void GaussianMapper::run() {
     // Check conditions for incremental mapping
     if (hasMetIncrementalMappingConditions()) {
       combineMappingOperations();
-      if (cull_keyframes_) cullKeyframes();
     }
 
     // Invoke training once
@@ -260,11 +259,8 @@ void GaussianMapper::trainForOneIteration() {
     metrics.reserved_memory_mb = reserved_MB;
     metrics.allocated_memory_mb = alloc_MB;
     metrics.ram_usage_mb = getCurrentRAMUsageMB();
-    if (keyframe_selection_strategy_ == 1)
-      metrics.queue_keyframes = keyframe_queue_->getQueueSize();
-    else {
-      metrics.queue_keyframes = 0;
-    }
+    metrics.queue_keyframes = keyframe_queue_->getQueueSize();
+
     training_metrics_.push_back(metrics);
   }
 

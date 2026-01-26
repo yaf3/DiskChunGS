@@ -80,16 +80,12 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
   loop_closure_increased_times_of_use_ =
       settings_file["Mapper.loop_closure_increased_times_of_use_"]
           .operator int();
-  cull_keyframes_ =
-      (settings_file["Mapper.cull_keyframes"].operator int()) != 0;
   large_rot_th_ =
       settings_file["Mapper.large_rotation_threshold"].operator float();
   large_trans_th_ =
       settings_file["Mapper.large_translation_threshold"].operator float();
   stable_num_iter_existence_ =
       settings_file["Mapper.stable_num_iter_existence"].operator int();
-  keyframe_selection_strategy_ =
-      settings_file["Mapper.keyframe_selection_strategy"].operator float();
 
   min_keyframe_translation_ =
       settings_file["External.min_keyframe_translation"].operator float();

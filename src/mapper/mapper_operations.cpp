@@ -178,9 +178,7 @@ void GaussianMapper::processLocalMappingBABatch(
         }
 
         pkf->computeTransformTensors();
-        // if (keyframe_selection_strategy_ == 1) {
-        //   keyframe_queue_->updateChunkKeyframeMapping(pkf);
-        // }
+
       } else {
         // Create a new keyframe
         handleNewKeyframeFromORBSLAM(kf);
@@ -336,10 +334,8 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
   float temp_max_gaussians_in_memory = gaussians_->max_gaussians_in_memory_;
   gaussians_->max_gaussians_in_memory_ = 100000000000;
 
-  if (keyframe_selection_strategy_ == 1) {
-    for (const auto& [index, keyframe] : scene_->keyframes_) {
-      if (keyframe->loaded_) keyframe->saveDataToDisk();
-    }
+  for (const auto& [index, keyframe] : scene_->keyframes_) {
+    if (keyframe->loaded_) keyframe->saveDataToDisk();
   }
 
   // Force batched strategy for now
@@ -357,12 +353,10 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
 
   gaussians_->max_gaussians_in_memory_ = temp_max_gaussians_in_memory;
 
-  if (keyframe_selection_strategy_ == 1) {
-    for (auto& kf : associated_kfs) {
-      auto kfid = std::get<0>(kf);
-      std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
-      keyframe_queue_->updateChunkKeyframeMapping(pkf, false);
-    }
+  for (auto& kf : associated_kfs) {
+    auto kfid = std::get<0>(kf);
+    std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
+    keyframe_queue_->updateChunkKeyframeMapping(pkf, false);
   }
 
   // Delete any mapping BA operations that accumulated during loop closure
@@ -376,40 +370,6 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
 
   // Mark this iteration
   loop_closure_iteration_ = true;
-
-  // Prioritize chunks from loop closure detection area for optimization
-  // if (false && keyframe_selection_strategy_ == 1) {
-  //   std::unordered_set<int64_t> loop_detection_chunks;
-  //   int loop_closure_kf_count = 0;
-
-  //   for (auto& kf : associated_kfs) {
-  //     bool is_loop_closure_kf = std::get<4>(kf);  // isLoopClosureKF flag
-  //     if (is_loop_closure_kf) {
-  //       loop_closure_kf_count++;
-  //       auto kfid = std::get<0>(kf);
-  //       std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
-  //       if (pkf) {
-  //         std::vector<ChunkCoord> visible_chunks =
-  //             frustumCullChunks(pkf, chunk_size_, nullptr);
-  //         torch::Tensor visible_chunk_coords_tensor =
-  //             chunkCoordVectorToTensor(visible_chunks);
-  //         torch::Tensor visible_chunk_ids =
-  //             encodeChunkCoordsTensor(visible_chunk_coords_tensor);
-  //         for (int i = 0; i < visible_chunk_ids.size(0); ++i) {
-  //           loop_detection_chunks.insert(visible_chunk_ids[i].item<int64_t>());
-  //         }
-  //       }
-  //     }
-  //   }
-
-  //   if (!loop_detection_chunks.empty()) {
-  //     keyframe_queue_->addLoopClosurePriorityChunks(loop_detection_chunks);
-  //     std::cout << "[Loop Closure] Found " << loop_closure_kf_count
-  //               << " loop closure keyframes, enqueued "
-  //               << loop_detection_chunks.size()
-  //               << " unique chunks for priority optimization" << std::endl;
-  //   }
-  // }
 
   auto time_end = std::chrono::steady_clock::now();
   auto duration =
@@ -722,74 +682,6 @@ int GaussianMapper::processSequentialLoopClosure(
 
 void GaussianMapper::processScaleRefinement(ORB_SLAM3::MappingOperation& opr) {
   throw std::runtime_error("Scale refinement not implemented!");
-  // Existing scale refinement code...
-  // std::cout << "[Gaussian Mapper]Scale refinement Detected. Transforming "
-  //              "all kfs and points..."
-  //           << std::endl;
-
-  // float s = opr.mfScale;
-  // Sophus::SE3f& T = opr.mT;
-  // if (initial_mapped_) {
-  //   // Apply the scaled transformation on ALL gaussian model points,
-  //   // including those on disk
-  //   {
-  //     std::unique_lock<std::mutex> lock_render(mutex_render_);
-
-  //     // Get all existing chunk coordinates (both in memory and on disk)
-  //     std::vector<ChunkCoord> all_chunks =
-  //         chunk_manager_->getExistingChunkCoords();
-
-  //     std::cout << "Applying scale transformation to " << all_chunks.size()
-  //               << " chunks" << std::endl;
-
-  //     // Process chunks in batches to manage memory
-  //     const int batch_size = 5;  // Adjust based on memory constraints
-  //     for (size_t i = 0; i < all_chunks.size(); i += batch_size) {
-  //       size_t end = std::min(i + batch_size, all_chunks.size());
-
-  //       // Process current batch
-  //       for (size_t j = i; j < end; j++) {
-  //         const auto& coord = all_chunks[j];
-  //         if (chunk_manager_->loadChunkSync(coord, true)) {
-  //           {
-  //             std::shared_ptr<Chunk> chunk =
-  //             chunk_manager_->getChunkAt(coord); ChunkOptimizationGuard
-  //             guard(chunk_manager_.get(), {chunk});
-  //             chunk->getGaussians()->applyScaledTransformation(s, T);
-  //           }  // Guard automatically releases here
-  //           chunk_manager_->saveChunkAsync(coord);
-  //         }
-  //       }
-  //     }
-  //   }
-  //   // Apply the scaled transformation to the scene
-  //   scene_->applyScaledTransformation(s, T);
-  // } else {  // TODO: the workflow should not come here, delete this
-  //           // branch
-  //   // Apply the scaled transformation to the cached points
-  //   for (auto& pt : scene_->cached_point_cloud_) {
-  //     // pt <- (s * Ryw * pt + tyw)
-  //     auto& pt_xyz = pt.second.xyz_;
-  //     pt_xyz *= s;
-  //     pt_xyz = T.cast<double>() * pt_xyz;
-  //   }
-
-  //   // Apply the scaled transformation on gaussian keyframes
-  //   for (auto& kfit : scene_->keyframes()) {
-  //     std::shared_ptr<GaussianKeyframe> pkf = kfit.second;
-  //     Sophus::SE3f Twc = pkf->getPosef().inverse();
-  //     Twc.translation() *= s;
-  //     Sophus::SE3f Tyc = T * Twc;
-  //     Sophus::SE3f Tcy = Tyc.inverse();
-  //     pkf->setPose(Tcy.unit_quaternion().cast<double>(),
-  //                  Tcy.translation().cast<double>());
-  //     pkf->computeTransformTensors();
-  //   }
-  // }
-
-  // Gaussians will be all over the place, transfer them to their
-  // respective chunks
-  // chunk_manager_->transferGaussiansAcrossChunks();
 }
 
 // Common keyframe initialization logic used by both ORB-SLAM and external modes
@@ -814,10 +706,8 @@ void GaussianMapper::createAndInitializeKeyframe(
   pkf->computeTransformTensors();
   scene_->addKeyframe(pkf);
 
-  // Update chunk-keyframe mapping if using strategy 1
-  if (keyframe_selection_strategy_ == 1) {
-    keyframe_queue_->updateChunkKeyframeMapping(pkf, true);
-  }
+  // Update chunk-keyframe mapping
+  keyframe_queue_->updateChunkKeyframeMapping(pkf, true);
 
   // Give new keyframes times of use and add it to the training sliding window
   increaseKeyframeTimesOfUse(pkf, newKeyframeTimesOfUse());
@@ -904,24 +794,6 @@ void GaussianMapper::increaseKeyframeTimesOfUse(
     std::shared_ptr<GaussianKeyframe> pkf,
     int times) {
   pkf->remaining_times_of_use_ += times;
-}
-
-void GaussianMapper::cullKeyframes() {
-  std::unordered_set<unsigned long> kfids =
-      pSLAM_->getAtlas()->GetCurrentKeyFrameIds();
-  std::vector<unsigned long> kfids_to_erase;
-  std::size_t nkfs = scene_->keyframes().size();
-  kfids_to_erase.reserve(nkfs);
-  for (auto& kfit : scene_->keyframes()) {
-    unsigned long kfid = kfit.first;
-    if (kfids.find(kfid) == kfids.end()) {
-      kfids_to_erase.emplace_back(kfid);
-    }
-  }
-
-  for (auto& kfid : kfids_to_erase) {
-    scene_->keyframes().erase(kfid);
-  }
 }
 
 // Used for selection of keyframe in MVS
@@ -1527,11 +1399,6 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
 
   gaussians_->addPoints(all_points3D, all_colors, all_scales, final_opacities,
                         getIteration(), scene_->cameras_extent_);
-
-  // Track which chunks received new gaussians and add optimization budget
-  // if (keyframe_selection_strategy_ == 1 && all_points3D.size(0) > 0) {
-  //   keyframe_queue_->addBudgetFromGaussianPositions(all_points3D);
-  // }
 
   auto end_time = std::chrono::steady_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(

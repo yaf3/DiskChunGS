@@ -27,7 +27,6 @@ Mapper.min_num_initial_map_kfs: 0 # NOT used
 Mapper.new_keyframe_times_of_use: 1
 Mapper.local_BA_increased_times_of_use: 0 # NOT used
 Mapper.loop_closure_increased_times_of_use_: 0 # NOT used
-Mapper.cull_keyframes: 0 # NOT used
 Mapper.large_rotation_threshold: 0.0 # NOT used
 Mapper.large_translation_threshold: 0.0 # NOT used
 Mapper.stable_num_iter_existence: 0 # NOT used

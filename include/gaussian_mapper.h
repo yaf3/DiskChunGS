@@ -222,12 +222,7 @@ class GaussianMapper {
                  std::filesystem::path optional_camera_path = "");
 
  protected:
-  void cullKeyframes();
-
   void sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf);
-
-  // bool needInterruptTraining();
-  // void setInterruptTraining(const bool interrupt_training);
 
   void recordKeyframeRendered(torch::Tensor &rendered,
                               torch::Tensor &ground_truth,
@@ -335,7 +330,6 @@ class GaussianMapper {
  public:
   std::map<std::size_t, float> kfs_loss_;
   std::map<std::size_t, int> kfs_used_times_;
-  int keyframe_selection_strategy_ = 0;  // 0: all, 1: recent k, 2: chunk-based
 
   // Status
   bool initial_mapped_;
@@ -371,7 +365,6 @@ class GaussianMapper {
   int local_BA_increased_times_of_use_;
   int loop_closure_increased_times_of_use_;
 
-  bool cull_keyframes_;
   int stable_num_iter_existence_;
 
   std::filesystem::path result_dir_;
