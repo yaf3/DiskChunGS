@@ -80,10 +80,9 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   // Initialize scene
   scene_ = std::make_shared<GaussianScene>(model_params_);
 
-  // keyframe_queue_ = std::make_shared<KeyframeQueue>(
-  //     scene_, gaussians_, chunk_size_, &kfs_loss_, &kfs_used_times_);
-  keyframe_queue_ = std::make_shared<KeyframeQueue>(scene_, 50.0, &kfs_loss_,
-                                                    &kfs_used_times_);
+  // Create keyframe
+  keyframe_selector_ = std::make_shared<KeyframeSelection>(
+      scene_, 50.0, &kfs_loss_, &kfs_used_times_);
 
   // Initialize Laplacian of Gaussian kernel
   initializeLaplacianOfGaussianKernel();
@@ -344,8 +343,4 @@ GaussianMapper::GaussianMapper(std::filesystem::path gaussian_config_file_path,
   initializeLaplacianOfGaussianKernel();
 
   loadScene(result_dir);
-
-  // Initialize keyframe queue after gaussians_ is loaded
-  // keyframe_queue_ = std::make_shared<KeyframeQueue>(
-  //     scene_, gaussians_, chunk_size_, &kfs_loss_, &kfs_used_times_);
 }

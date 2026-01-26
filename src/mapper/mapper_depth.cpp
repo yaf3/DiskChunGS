@@ -38,7 +38,7 @@
 
 torch::Tensor GaussianMapper::computeLoGProbability(
     const torch::Tensor& image) {
-  // Step 1: Create Laplacian kernel (same as Python)
+  // Step 1: Create Laplacian kernel
   torch::Tensor laplacian_kernel = torch::tensor(
       {{{{0, 1, 0}, {1, -4, 1}, {0, 1, 0}}}},
       torch::TensorOptions().dtype(torch::kFloat32).device(image.device()));
@@ -60,12 +60,12 @@ torch::Tensor GaussianMapper::computeLoGProbability(
   torch::Tensor laplacian_norm =
       torch::linalg_vector_norm(laplacian, 1, /*dim=*/1, /*keepdim=*/true);
 
-  // Step 5: Zero out the borders (exactly like Python)
+  // Step 5: Zero out the borders
   // laplacian_norm shape: [1, 1, H, W]
   int H = laplacian_norm.size(-2);  // Second to last dimension
   int W = laplacian_norm.size(-1);  // Last dimension
 
-  // Zero out borders using proper LibTorch indexing
+  // Zero out borders
   using namespace torch::indexing;
 
   // Zero out top and bottom rows
@@ -92,7 +92,7 @@ torch::Tensor GaussianMapper::computeLoGProbability(
 }
 
 void GaussianMapper::initializeLaplacianOfGaussianKernel() {
-  int radius = 3;  // Match Python version
+  int radius = 3;
   int kernel_size = 2 * radius + 1;
 
   // Create coordinate grids
@@ -140,216 +140,6 @@ void GaussianMapper::initializeMonocularDepthEstimator() {
       "depth_anything_v2_vitl.onnx";
 
   this->monocular_depth_estimator_ = std::make_shared<MonoDepth>(onnx_path);
-}
-
-void GaussianMapper::projectRgbDepthToPointCloud(
-    torch::Tensor& rgb_tensor,
-    torch::Tensor& depth_tensor,
-    std::vector<float>& camera_intrinsics,
-    float min_depth,
-    float max_depth,
-    Sophus::SE3f& pose,
-    std::string& output_path,
-    int subsample_factor) {
-  int height = rgb_tensor.size(1);
-  int width = rgb_tensor.size(2);
-
-  std::cout << "Projecting " << width << "x" << height
-            << " image to point cloud..." << std::endl;
-
-  std::cout << "RGB tensor size: " << rgb_tensor.sizes() << std::endl;
-  std::cout << "Depth tensor size: " << depth_tensor.sizes() << std::endl;
-
-  // Create validity mask for depth
-  // torch::Tensor valid_depth =
-  //     (depth_tensor >= min_depth) & (depth_tensor <= max_depth);
-  torch::Tensor valid_depth = torch::ones_like(depth_tensor, torch::kBool);
-
-  // Optional: Add subsampling for performance
-  if (subsample_factor > 1) {
-    torch::Tensor subsample_mask = torch::zeros_like(valid_depth);
-    for (int v = 0; v < height; v += subsample_factor) {
-      for (int u = 0; u < width; u += subsample_factor) {
-        if (v < height && u < width) {
-          subsample_mask[v][u] = true;
-        }
-      }
-    }
-    valid_depth = valid_depth & subsample_mask;
-  }
-
-  // Flatten for processing (following your existing pattern)
-  torch::Tensor sample_mask = valid_depth.flatten();
-  torch::Tensor depth_flat = depth_tensor.flatten();
-  torch::Tensor rgb_flat =
-      rgb_tensor.permute({1, 2, 0}).flatten(0, 1);  // HWC -> (H*W)C
-
-  // Get valid data
-  torch::Tensor sampled_colors = rgb_flat.index({sample_mask});
-  torch::Tensor sampled_depths = depth_flat.index({sample_mask});
-
-  std::cout << "Valid points after filtering: " << sampled_depths.size(0)
-            << std::endl;
-
-  if (sampled_depths.size(0) == 0) {
-    std::cerr << "No valid depth points found!" << std::endl;
-    return;
-  }
-
-  // Reproject to 3D using your existing function
-  torch::Tensor points3D =
-      reprojectDepthPinhole(depth_flat, sample_mask, camera_intrinsics, width);
-  points3D = points3D.index({sample_mask});
-
-  // Transform to world coordinates if pose is provided
-  if (!pose.matrix().isIdentity()) {
-    Sophus::SE3f Twc = pose.inverse();  // Convert camera-to-world
-    torch::Tensor Twc_tensor =
-        tensor_utils::EigenMatrix2TorchTensor(Twc.matrix(), device_type_)
-            .transpose(0, 1);
-    transformPoints(points3D, Twc_tensor);
-  }
-
-  // Visualize using your existing function
-  visualizePointCloud(points3D, sampled_colors, output_path);
-
-  // Print some statistics
-  auto points_cpu = points3D.cpu();
-  auto points_accessor = points_cpu.accessor<float, 2>();
-
-  float min_x = points_accessor[0][0], max_x = points_accessor[0][0];
-  float min_y = points_accessor[0][1], max_y = points_accessor[0][1];
-  float min_z = points_accessor[0][2], max_z = points_accessor[0][2];
-
-  int num_points = points_cpu.size(0);
-  for (int i = 0; i < num_points; i++) {
-    min_x = std::min(min_x, points_accessor[i][0]);
-    max_x = std::max(max_x, points_accessor[i][0]);
-    min_y = std::min(min_y, points_accessor[i][1]);
-    max_y = std::max(max_y, points_accessor[i][1]);
-    min_z = std::min(min_z, points_accessor[i][2]);
-    max_z = std::max(max_z, points_accessor[i][2]);
-  }
-
-  std::cout << "Point cloud bounds:" << std::endl;
-  std::cout << "  X: [" << min_x << ", " << max_x << "]" << std::endl;
-  std::cout << "  Y: [" << min_y << ", " << max_y << "]" << std::endl;
-  std::cout << "  Z: [" << min_z << ", " << max_z << "]" << std::endl;
-}
-
-void GaussianMapper::projectKeypointsToPointCloud(
-    std::shared_ptr<GaussianKeyframe> pkf,
-    const std::string& output_path) {
-  std::vector<float> valid_points_3d;  // Will store [x1,y1,z1, x2,y2,z2, ...]
-  std::vector<float> valid_colors;     // Will store [r1,g1,b1, r2,g2,b2, ...]
-
-  int num_keypoints = pkf->kps_pixel_.size() / 2;
-
-  for (int i = 0; i < num_keypoints; i++) {
-    float u = pkf->kps_pixel_[2 * i];
-    float v = pkf->kps_pixel_[2 * i + 1];
-    float x = pkf->kps_point_local_[3 * i];
-    float y = pkf->kps_point_local_[3 * i + 1];
-    float z = pkf->kps_point_local_[3 * i + 2];
-
-    bool has_valid_3d =
-        (z > 0.1f && z < 100.0f) && (u >= 0 && u < pkf->image_width_) &&
-        (v >= 0 && v < pkf->image_height_) && std::isfinite(x) &&
-        std::isfinite(y) && std::isfinite(z);
-
-    if (has_valid_3d) {
-      // Add 3D point
-      valid_points_3d.push_back(x);
-      valid_points_3d.push_back(y);
-      valid_points_3d.push_back(z);
-
-      // Add red color
-      valid_colors.push_back(1.0f);  // R
-      valid_colors.push_back(0.0f);  // G
-      valid_colors.push_back(0.0f);  // B
-    }
-  }
-
-  if (valid_points_3d.empty()) {
-    std::cerr << "No valid keypoints found!" << std::endl;
-    return;
-  }
-
-  int num_valid = valid_points_3d.size() / 3;
-  std::cout << "Found " << num_valid << " valid keypoints out of "
-            << num_keypoints << " total" << std::endl;
-
-  // Create tensors from vectors
-  torch::Tensor points3D =
-      torch::from_blob(valid_points_3d.data(), {num_valid, 3},
-                       torch::TensorOptions().dtype(torch::kFloat32))
-          .to(device_type_)
-          .clone();  // Clone to own the memory
-
-  torch::Tensor colors =
-      torch::from_blob(valid_colors.data(), {num_valid, 3},
-                       torch::TensorOptions().dtype(torch::kFloat32))
-          .to(device_type_)
-          .clone();  // Clone to own the memory
-
-  // Transform to world coordinates if needed
-  Sophus::SE3f pose = pkf->getPosef();
-  if (!pose.matrix().isIdentity()) {
-    Sophus::SE3f Twc = pose.inverse();
-    torch::Tensor Twc_tensor =
-        tensor_utils::EigenMatrix2TorchTensor(Twc.matrix(), device_type_)
-            .transpose(0, 1);
-    transformPoints(points3D, Twc_tensor);
-  }
-
-  // Use your existing visualization function
-  visualizePointCloud(points3D, colors, output_path);
-
-  // Print statistics
-  // std::cout << "Keypoint cloud statistics:" << std::endl;
-  // auto points_cpu = points3D.cpu();
-  // auto mins = points_cpu.min(0).values;
-  // auto maxs = points_cpu.max(0).values;
-  // std::cout << " X: [" << mins[0].item<float>() << ", " <<
-  // maxs[0].item<float>()
-  //           << "]" << std::endl;
-  // std::cout << " Y: [" << mins[1].item<float>() << ", " <<
-  // maxs[1].item<float>()
-  //           << "]" << std::endl;
-  // std::cout << " Z: [" << mins[2].item<float>() << ", " <<
-  // maxs[2].item<float>()
-  //           << "]" << std::endl;
-}
-
-void GaussianMapper::updateORBSLAMPoses() {
-  if (!pSLAM_) return;
-
-  auto* atlas = pSLAM_->getAtlas();
-  auto* map = atlas->GetCurrentMap();
-
-  // Get all ORB-SLAM keyframes
-  std::vector<ORB_SLAM3::KeyFrame*> orb_keyframes;
-  {
-    std::unique_lock<std::mutex> lock(map->mMutexMapUpdate);
-    orb_keyframes = map->GetAllKeyFrames();
-  }
-
-  // Update each ORB-SLAM keyframe with optimized pose
-  for (auto* orb_kf : orb_keyframes) {
-    unsigned long kf_id = orb_kf->mnId;
-
-    // Find corresponding Gaussian keyframe
-    auto gaussian_kf_it = scene_->keyframes().find(kf_id);
-    if (gaussian_kf_it != scene_->keyframes().end()) {
-      auto gaussian_kf = gaussian_kf_it->second;
-
-      // Get optimized pose from Gaussian keyframe
-      Sophus::SE3f optimized_pose = gaussian_kf->getPosef();
-
-      // Convert to ORB-SLAM format and update
-      orb_kf->SetPose(optimized_pose);
-    }
-  }
 }
 
 torch::Tensor GaussianMapper::sampleConf(const torch::Tensor& mono_depth_conf,

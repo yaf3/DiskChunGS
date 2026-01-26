@@ -264,7 +264,6 @@ class GaussianMapper {
   std::tuple<std::vector<float>, std::vector<float>>
   extractValidKeypointsForDepthAlignment(
       std::shared_ptr<GaussianKeyframe> pkf) const;
-  void updateORBSLAMPoses();
 
   torch::Tensor sampleConf(const torch::Tensor &mono_depth_conf,
                            const torch::Tensor &uv,
@@ -287,7 +286,7 @@ class GaussianMapper {
   // Scene
   std::shared_ptr<GaussianScene> scene_;
 
-  std::shared_ptr<KeyframeQueue> keyframe_queue_;
+  std::shared_ptr<KeyframeSelection> keyframe_selector_;
 
   // SLAM system
   std::shared_ptr<ORB_SLAM3::System> pSLAM_;
@@ -433,16 +432,6 @@ class GaussianMapper {
                                     const torch::Tensor &points3D,
                                     const torch::Tensor &valid_points,
                                     const std::string &save_path);
-  void projectRgbDepthToPointCloud(torch::Tensor &rgb_tensor,
-                                   torch::Tensor &depth_tensor,
-                                   std::vector<float> &camera_intrinsics,
-                                   float min_depth,
-                                   float max_depth,
-                                   Sophus::SE3f &pose,
-                                   std::string &output_path,
-                                   int subsample_factor);
-  void projectKeypointsToPointCloud(std::shared_ptr<GaussianKeyframe> pkf,
-                                    const std::string &output_path);
 
   volatile bool isExternalDataStopped() {
     return external_data_stopped_.load(std::memory_order_acquire);

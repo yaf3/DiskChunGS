@@ -143,11 +143,6 @@ void GaussianMapper::run_external_poses() {
 
   frame_queue_.stop();
 
-  // For debug: basically viewer now
-  // while (getIteration() < 100000) {
-  //   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-  // }
-
   saveTotalGaussians("_shutdown");
   // Save and clear
   renderAndRecordAllKeyframes("_shutdown");

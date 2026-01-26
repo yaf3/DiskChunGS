@@ -356,7 +356,7 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation& opr) {
   for (auto& kf : associated_kfs) {
     auto kfid = std::get<0>(kf);
     std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
-    keyframe_queue_->updateChunkKeyframeMapping(pkf, false);
+    keyframe_selector_->updateChunkKeyframeMapping(pkf, false);
   }
 
   // Delete any mapping BA operations that accumulated during loop closure
@@ -707,7 +707,7 @@ void GaussianMapper::createAndInitializeKeyframe(
   scene_->addKeyframe(pkf);
 
   // Update chunk-keyframe mapping
-  keyframe_queue_->updateChunkKeyframeMapping(pkf, true);
+  keyframe_selector_->updateChunkKeyframeMapping(pkf, true);
 
   // Give new keyframes times of use and add it to the training sliding window
   increaseKeyframeTimesOfUse(pkf, newKeyframeTimesOfUse());

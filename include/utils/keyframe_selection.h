@@ -27,12 +27,12 @@
 #include "scene/gaussian_keyframe.h"
 #include "scene/gaussian_scene.h"
 
-class KeyframeQueue {
+class KeyframeSelection {
  public:
-  KeyframeQueue(std::shared_ptr<GaussianScene> scene,
-                float chunk_size = 20.0f,
-                const std::map<std::size_t, float>* loss_map = nullptr,
-                std::map<std::size_t, int>* used_times_map = nullptr);
+  KeyframeSelection(std::shared_ptr<GaussianScene> scene,
+                    float chunk_size = 20.0f,
+                    const std::map<std::size_t, float>* loss_map = nullptr,
+                    std::map<std::size_t, int>* used_times_map = nullptr);
 
   std::shared_ptr<GaussianKeyframe> getNextKeyframe();
 

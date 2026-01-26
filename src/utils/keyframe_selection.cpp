@@ -21,10 +21,11 @@
 #include <thread>
 
 // Constructor
-KeyframeQueue::KeyframeQueue(std::shared_ptr<GaussianScene> scene,
-                             float chunk_size,
-                             const std::map<std::size_t, float>* loss_map,
-                             std::map<std::size_t, int>* used_times_map)
+KeyframeSelection::KeyframeSelection(
+    std::shared_ptr<GaussianScene> scene,
+    float chunk_size,
+    const std::map<std::size_t, float>* loss_map,
+    std::map<std::size_t, int>* used_times_map)
     : scene_(scene),
       chunk_size_(chunk_size),
       loss_map_(loss_map),
@@ -38,7 +39,7 @@ KeyframeQueue::KeyframeQueue(std::shared_ptr<GaussianScene> scene,
 }
 
 // Updated keyframe selection using active_frames_gpu_
-std::shared_ptr<GaussianKeyframe> KeyframeQueue::getNextKeyframe() {
+std::shared_ptr<GaussianKeyframe> KeyframeSelection::getNextKeyframe() {
   if (!latest_keyframe_) {
     std::cout << "No latest keyframe available." << std::endl;
     return nullptr;
@@ -220,7 +221,7 @@ std::shared_ptr<GaussianKeyframe> KeyframeQueue::getNextKeyframe() {
   return selected_keyframe;
 }
 
-Eigen::Vector3f KeyframeQueue::tensorToEigen(
+Eigen::Vector3f KeyframeSelection::tensorToEigen(
     const torch::Tensor& tensor) const {
   // Ensure tensor is on CPU and contiguous
   torch::Tensor cpu_tensor = tensor.cpu().contiguous();
@@ -231,14 +232,14 @@ Eigen::Vector3f KeyframeQueue::tensorToEigen(
   return Eigen::Vector3f(data_ptr[0], data_ptr[1], data_ptr[2]);
 }
 
-void KeyframeQueue::increaseKeyframeTimesOfUse(
+void KeyframeSelection::increaseKeyframeTimesOfUse(
     std::shared_ptr<GaussianKeyframe> keyframe,
     int additional_uses) {
   if (!keyframe) return;
   keyframe->remaining_times_of_use_ += additional_uses;
 }
 
-void KeyframeQueue::updateChunkKeyframeMapping(
+void KeyframeSelection::updateChunkKeyframeMapping(
     std::shared_ptr<GaussianKeyframe> keyframe,
     bool is_new_keyframe) {
   if (!keyframe) return;
@@ -270,4 +271,4 @@ void KeyframeQueue::updateChunkKeyframeMapping(
   }
 }
 
-int KeyframeQueue::getQueueSize() const { return gpu_queue.size(); }
+int KeyframeSelection::getQueueSize() const { return gpu_queue.size(); }

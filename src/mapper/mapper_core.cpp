@@ -259,7 +259,7 @@ void GaussianMapper::trainForOneIteration() {
     metrics.reserved_memory_mb = reserved_MB;
     metrics.allocated_memory_mb = alloc_MB;
     metrics.ram_usage_mb = getCurrentRAMUsageMB();
-    metrics.queue_keyframes = keyframe_queue_->getQueueSize();
+    metrics.queue_keyframes = keyframe_selector_->getQueueSize();
 
     training_metrics_.push_back(metrics);
   }
@@ -268,7 +268,7 @@ void GaussianMapper::trainForOneIteration() {
 
   // Select keyframe for training
   std::shared_ptr<GaussianKeyframe> viewpoint_cam =
-      keyframe_queue_->getNextKeyframe();
+      keyframe_selector_->getNextKeyframe();
 
   if (!viewpoint_cam) {
     increaseIteration(-1);
