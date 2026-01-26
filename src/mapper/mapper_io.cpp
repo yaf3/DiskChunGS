@@ -844,7 +844,6 @@ void GaussianMapper::loadCamerasFromJson(std::filesystem::path json_path) {
     pkf->initOptimizer(device_type_, opt_params_.pose_lr_,
                        opt_params_.exposure_lr_,
                        opt_params_.depth_scale_bias_lr_);
-    kfid_shuffled_ = false;
 
     break;
   }

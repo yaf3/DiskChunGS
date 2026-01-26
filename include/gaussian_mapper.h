@@ -117,8 +117,7 @@ class GaussianMapper {
   void readConfigFromFile(std::filesystem::path cfg_path);
 
   void run();
-  void trainForOneIteration(
-      std::shared_ptr<GaussianKeyframe> selected_keyframe = nullptr);
+  void trainForOneIteration();
 
   bool isStopped();
   void signalStop(const bool going_to_stop = true);
@@ -210,16 +209,10 @@ class GaussianMapper {
                                                std::vector<float>,
                                                std::vector<float>,
                                                std::string> &kf);
-  std::shared_ptr<GaussianKeyframe> useOneRandomSlidingWindowKeyframe();
-  std::vector<std::shared_ptr<GaussianKeyframe>> getUpcomingKeyframes(
-      size_t count);
-  std::shared_ptr<GaussianKeyframe> useOneRandomKeyframe();
   std::vector<std::shared_ptr<GaussianKeyframe>> getClosestKeyframes(
       std::shared_ptr<GaussianKeyframe> current_kf,
       int n,
       int k = 1);
-  std::shared_ptr<GaussianKeyframe> useRecentKeyframe();
-  void generateKfidRandomShuffle();
 
  public:
   void increaseKeyframeTimesOfUse(std::shared_ptr<GaussianKeyframe> pkf,
@@ -326,7 +319,6 @@ class GaussianMapper {
   std::map<camera_id_t, torch::Tensor> undistort_mask_;
   std::map<camera_id_t, torch::Tensor> viewer_main_undistort_mask_;
   std::map<camera_id_t, torch::Tensor> viewer_sub_undistort_mask_;
-  bool kfid_shuffled_ = false;
 
  protected:
   // Parameters

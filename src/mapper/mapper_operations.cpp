@@ -495,9 +495,6 @@ int GaussianMapper::processBatchedLoopClosure(
           // gaussians_->resetOpacityForMask(visible_gaussians);
           gaussians_->resetPositionLRAndOptimizerState(visible_gaussians);
         }
-        // Reset depth loss weight for keyframe that underwent large
-        // transformation
-        // pkf->resetDepthLossWeight();
       }
 
       if (large_rot || large_trans) {
@@ -639,10 +636,6 @@ int GaussianMapper::processSequentialLoopClosure(
       }
 
       if (large_rot || large_trans) {
-        // Reset depth loss weight for keyframe that underwent large
-        // transformation
-        pkf->resetDepthLossWeight();
-
         std::cout << "[Sequential Loop] Large loop correction detected for kf"
                   << kfid << std::endl;
 
@@ -820,7 +813,6 @@ void GaussianMapper::createAndInitializeKeyframe(
   // Add the new keyframe to the scene
   pkf->computeTransformTensors();
   scene_->addKeyframe(pkf);
-  kfid_shuffled_ = false;
 
   // Update chunk-keyframe mapping if using strategy 1
   if (keyframe_selection_strategy_ == 1) {
@@ -930,6 +922,68 @@ void GaussianMapper::cullKeyframes() {
   for (auto& kfid : kfids_to_erase) {
     scene_->keyframes().erase(kfid);
   }
+}
+
+// Used for selection of keyframe in MVS
+std::vector<std::shared_ptr<GaussianKeyframe>>
+GaussianMapper::getClosestKeyframes(
+    std::shared_ptr<GaussianKeyframe> current_kf,
+    int n,
+    int k) {
+  std::vector<std::shared_ptr<GaussianKeyframe>> closest_keyframes;
+  if (n <= 0 || k <= 0) return closest_keyframes;
+
+  auto all_keyframes = scene_->getAllKeyframes();
+  if (all_keyframes.empty()) return closest_keyframes;
+
+  // Get current keyframe's camera center position
+  Eigen::Vector3f current_center = current_kf->getTranslationf();
+
+  // Create a vector of keyframes sorted by spatial distance to current
+  // keyframe
+  std::vector<std::pair<float, std::shared_ptr<GaussianKeyframe>>> candidates;
+  for (const auto& kf_pair : all_keyframes) {
+    if (kf_pair.second != current_kf) {  // Exclude current keyframe
+      // Get candidate keyframe's camera center position
+      Eigen::Vector3f candidate_center = kf_pair.second->getTranslationf();
+      // Calculate Euclidean distance between camera centers
+      float spatial_distance = (current_center - candidate_center).norm();
+      candidates.push_back({spatial_distance, kf_pair.second});
+    }
+  }
+
+  // Sort by spatial distance (closest first)
+  std::sort(candidates.begin(), candidates.end(),
+            [](const auto& a, const auto& b) { return a.first < b.first; });
+
+  // First, try to take every k-th keyframe from the sorted list
+  int selected_count = 0;
+  for (int i = 0; i < static_cast<int>(candidates.size()) && selected_count < n;
+       i += k) {
+    closest_keyframes.push_back(candidates[i].second);
+    selected_count++;
+  }
+
+  // If we still need more keyframes and haven't used all candidates,
+  // fill the remaining slots with the closest unused keyframes
+  if (selected_count < n) {
+    // Create a set of already selected keyframes for quick lookup
+    std::set<std::shared_ptr<GaussianKeyframe>> selected_set;
+    for (const auto& kf : closest_keyframes) {
+      selected_set.insert(kf);
+    }
+
+    // Add remaining closest keyframes that weren't selected
+    for (int i = 0;
+         i < static_cast<int>(candidates.size()) && selected_count < n; ++i) {
+      if (selected_set.find(candidates[i].second) == selected_set.end()) {
+        closest_keyframes.push_back(candidates[i].second);
+        selected_count++;
+      }
+    }
+  }
+
+  return closest_keyframes;
 }
 
 void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {

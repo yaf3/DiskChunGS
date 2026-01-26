@@ -365,23 +365,11 @@ void GaussianKeyframe::initOptimizer(torch::DeviceType device_type,
   optimizer_->param_groups()[4].options().set_lr(depth_scale_bias_lr);
 }
 
-// Simplified step function
 void GaussianKeyframe::step() {
   if (!optimizer_) return;
 
-  depth_loss_weight *= depth_loss_weight_decay_;
-
-  // optimizer_->step();
-  // optimizer_->zero_grad();
-
-  local_iterations_++;
-}
-
-void GaussianKeyframe::resetDepthLossWeight() {
-  depth_loss_weight = 1e-2f;  // Reset to initial value
-  std::cout << "[Keyframe " << fid_
-            << "] Depth loss weight reset to: " << depth_loss_weight
-            << std::endl;
+  optimizer_->step();
+  optimizer_->zero_grad();
 }
 
 // Apply appearance transform to rendered colors
