@@ -16,20 +16,12 @@
 
 #include "scene/gaussian_keyframe.h"
 
-void GaussianKeyframe::setPose(const double qw,
-                               const double qx,
-                               const double qy,
-                               const double qz,
-                               const double tx,
-                               const double ty,
-                               const double tz) {
-  // Convert quaternion to rotation matrix
-  Eigen::Quaterniond q(qw, qx, qy, qz);
-  q.normalize();
-  Eigen::Matrix3d R = q.toRotationMatrix();
-  Eigen::Vector3d t(tx, ty, tz);
+#include "utils/depth_utils.h"
 
-  // Initialize tensor representation directly
+// Helper function to set pose from rotation matrix and translation
+void GaussianKeyframe::setPoseImpl(const Eigen::Matrix3d& R,
+                                   const Eigen::Vector3d& t) {
+  // Initialize tensor representation
   rW2C_ = torch::zeros({3, 2}, torch::TensorOptions()
                                    .dtype(torch::kFloat32)
                                    .device(torch::kCUDA)
@@ -54,55 +46,55 @@ void GaussianKeyframe::setPose(const double qw,
   this->set_pose_ = true;
 }
 
-void GaussianKeyframe::setPose(const Eigen::Quaterniond& q,
-                               const Eigen::Vector3d& t) {
-  // Normalize and convert to rotation matrix
-  Eigen::Quaterniond q_norm = q.normalized();
-  Eigen::Matrix3d R = q_norm.toRotationMatrix();
-
-  // Initialize tensor representation
-  rW2C_ = torch::zeros({3, 2}, torch::TensorOptions()
-                                   .dtype(torch::kFloat32)
-                                   .device(torch::kCUDA)
-                                   .requires_grad(true));
-
-  tW2C_ = torch::zeros({3}, torch::TensorOptions()
-                                .dtype(torch::kFloat32)
-                                .device(torch::kCUDA)
-                                .requires_grad(true));
-
-  // Copy current pose to parameters
-  {
-    torch::NoGradGuard no_grad;
-    for (int i = 0; i < 3; i++) {
-      for (int j = 0; j < 2; j++) {
-        rW2C_[i][j] = static_cast<float>(R(i, j));
-      }
-      tW2C_[i] = static_cast<float>(t(i));
-    }
-  }
-
-  this->set_pose_ = true;
+void GaussianKeyframe::setPose(const double qw,
+                               const double qx,
+                               const double qy,
+                               const double qz,
+                               const double tx,
+                               const double ty,
+                               const double tz) {
+  Eigen::Quaterniond q(qw, qx, qy, qz);
+  q.normalize();
+  Eigen::Matrix3d R = q.toRotationMatrix();
+  Eigen::Vector3d t(tx, ty, tz);
+  setPoseImpl(R, t);
 }
 
-Sophus::SE3d GaussianKeyframe::getPose() {
-  // Convert tensor representation to SE3
+void GaussianKeyframe::setPose(const Eigen::Quaterniond& q,
+                               const Eigen::Vector3d& t) {
+  Eigen::Quaterniond q_norm = q.normalized();
+  Eigen::Matrix3d R = q_norm.toRotationMatrix();
+  setPoseImpl(R, t);
+}
+
+// Helper function to convert rotation tensor to Eigen matrix
+Eigen::Matrix3d GaussianKeyframe::tensorToRotationMatrix() const {
   torch::Tensor R_tensor = sixD2RotationMatrix(rW2C_);
-
-  // Convert to Eigen
-  Eigen::Matrix3d R_eigen;
-  Eigen::Vector3d t_eigen;
-
   auto R_cpu = R_tensor.detach().cpu();
-  auto t_cpu = tW2C_.detach().cpu();
 
+  Eigen::Matrix3d R_eigen;
   for (int i = 0; i < 3; i++) {
-    t_eigen(i) = t_cpu[i].item<float>();
     for (int j = 0; j < 3; j++) {
       R_eigen(i, j) = R_cpu[i][j].item<float>();
     }
   }
+  return R_eigen;
+}
 
+// Helper function to convert translation tensor to Eigen vector
+Eigen::Vector3d GaussianKeyframe::tensorToTranslation() const {
+  auto t_cpu = tW2C_.detach().cpu();
+
+  Eigen::Vector3d t_eigen;
+  for (int i = 0; i < 3; i++) {
+    t_eigen(i) = t_cpu[i].item<float>();
+  }
+  return t_eigen;
+}
+
+Sophus::SE3d GaussianKeyframe::getPose() {
+  Eigen::Matrix3d R_eigen = tensorToRotationMatrix();
+  Eigen::Vector3d t_eigen = tensorToTranslation();
   Eigen::Quaterniond q(R_eigen);
   return Sophus::SE3d(q, t_eigen);
 }
@@ -195,26 +187,12 @@ void GaussianKeyframe::computeTransformTensors() {
 
 Eigen::Matrix4f GaussianKeyframe::getWorld2View2(const Eigen::Vector3f& trans,
                                                  float scale) {
-  // Get current pose from tensors
-  torch::Tensor R_tensor = sixD2RotationMatrix(rW2C_);
+  // Get current pose from tensors using helper functions
+  Eigen::Matrix3f R = tensorToRotationMatrix().cast<float>();
+  Eigen::Vector3f t = tensorToTranslation().cast<float>();
 
   Eigen::Matrix4f Rt;
   Rt.setZero();
-
-  // Convert tensor to Eigen matrix
-  auto R_cpu = R_tensor.detach().cpu();
-  auto t_cpu = tW2C_.detach().cpu();
-
-  Eigen::Matrix3f R;
-  Eigen::Vector3f t;
-
-  for (int i = 0; i < 3; i++) {
-    t(i) = t_cpu[i].item<float>();
-    for (int j = 0; j < 3; j++) {
-      R(i, j) = R_cpu[i][j].item<float>();
-    }
-  }
-
   Rt.topLeftCorner<3, 3>() = R;
   Rt.topRightCorner<3, 1>() = t;
   Rt(3, 3) = 1.0f;
@@ -229,18 +207,7 @@ Eigen::Matrix4f GaussianKeyframe::getWorld2View2(const Eigen::Vector3f& trans,
 }
 
 Eigen::Matrix3d GaussianKeyframe::getRotationMatrix() {
-  torch::Tensor R_tensor = sixD2RotationMatrix(rW2C_);
-
-  Eigen::Matrix3d R_eigen;
-  auto R_cpu = R_tensor.detach().cpu();
-
-  for (int i = 0; i < 3; i++) {
-    for (int j = 0; j < 3; j++) {
-      R_eigen(i, j) = R_cpu[i][j].item<float>();
-    }
-  }
-
-  return R_eigen;
+  return tensorToRotationMatrix();
 }
 
 Eigen::Matrix3f GaussianKeyframe::getRotationMatrixf() {
@@ -248,14 +215,7 @@ Eigen::Matrix3f GaussianKeyframe::getRotationMatrixf() {
 }
 
 Eigen::Vector3d GaussianKeyframe::getTranslation() {
-  Eigen::Vector3d t_eigen;
-  auto t_cpu = tW2C_.detach().cpu();
-
-  for (int i = 0; i < 3; i++) {
-    t_eigen(i) = t_cpu[i].item<float>();
-  }
-
-  return t_eigen;
+  return tensorToTranslation();
 }
 
 Eigen::Vector3f GaussianKeyframe::getTranslationf() {
@@ -399,7 +359,7 @@ torch::Tensor GaussianKeyframe::applyExposureTransform(torch::Tensor& colors) {
   return result.clamp(0.0f, 1.0f);
 }
 
-torch::Tensor GaussianKeyframe::sixD2RotationMatrix(const torch::Tensor& rW2C) {
+torch::Tensor GaussianKeyframe::sixD2RotationMatrix(const torch::Tensor& rW2C) const {
   // Convert 6D representation to rotation matrix
   // Input: rW2C [3, 2] - first two columns of rotation matrix
   // Output: R [3, 3] - full rotation matrix
@@ -474,30 +434,8 @@ void GaussianKeyframe::setupStereoData(
           .unsqueeze(0)
           .unsqueeze(0);
 
-  // Initialize Sobel kernels
-  torch::Tensor sobel_x = torch::tensor(
-      {{{{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}}}},
-      torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
-
-  torch::Tensor sobel_y = torch::tensor(
-      {{{{-1, -2, -1}, {0, 0, 0}, {1, 2, 1}}}},
-      torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
-
-  // Compute gradients using Sobel filters
-  torch::Tensor grad_x = torch::nn::functional::conv2d(
-      depth_image, sobel_x,
-      torch::nn::functional::Conv2dFuncOptions().padding(1));
-
-  torch::Tensor grad_y = torch::nn::functional::conv2d(
-      depth_image, sobel_y,
-      torch::nn::functional::Conv2dFuncOptions().padding(1));
-
-  // Compute edge magnitude and confidence
-  torch::Tensor edges = torch::cat({grad_x, grad_y}, 0);
-  torch::Tensor edges_sq_norm = (edges.pow(2)).sum(0, true);
-
-  float var = 0.2f;
-  depth_confidence_ = torch::exp(-edges_sq_norm / var);
+  // Compute depth confidence using edge detection
+  depth_confidence_ = depth_utils::computeDepthConfidence(depth_image);
 
   // Create multi-resolution depth images for pyramid training
   generateInverseDepthPyramid(inverted_depth);
@@ -505,7 +443,6 @@ void GaussianKeyframe::setupStereoData(
 
 /**
  * Extract valid keypoints with 3D coordinates for depth alignment
- * Similar to how the Python code filters keypoints with has_pt3d
  */
 std::tuple<std::vector<float>, std::vector<float>>
 GaussianKeyframe::extractValidKeypointsForDepthAlignment() const {
@@ -610,30 +547,8 @@ void GaussianKeyframe::setupRGBDData(const cv::Mat& img_auxiliary_undist) {
           .unsqueeze(0)
           .unsqueeze(0);
 
-  // Initialize Sobel kernels
-  torch::Tensor sobel_x = torch::tensor(
-      {{{{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}}}},
-      torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
-
-  torch::Tensor sobel_y = torch::tensor(
-      {{{{-1, -2, -1}, {0, 0, 0}, {1, 2, 1}}}},
-      torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
-
-  // Compute gradients using Sobel filters
-  torch::Tensor grad_x = torch::nn::functional::conv2d(
-      depth_image, sobel_x,
-      torch::nn::functional::Conv2dFuncOptions().padding(1));
-
-  torch::Tensor grad_y = torch::nn::functional::conv2d(
-      depth_image, sobel_y,
-      torch::nn::functional::Conv2dFuncOptions().padding(1));
-
-  // Compute edge magnitude and confidence
-  torch::Tensor edges = torch::cat({grad_x, grad_y}, 0);
-  torch::Tensor edges_sq_norm = (edges.pow(2)).sum(0, true);
-
-  float var = 0.2f;
-  depth_confidence_ = torch::exp(-edges_sq_norm / var);
+  // Compute depth confidence using edge detection
+  depth_confidence_ = depth_utils::computeDepthConfidence(depth_image);
 
   generateInverseDepthPyramid(inverse_depth);
 }

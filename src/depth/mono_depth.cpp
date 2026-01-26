@@ -16,6 +16,8 @@
 
 #include <NvInfer.h>
 
+#include "utils/depth_utils.h"
+
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
@@ -82,15 +84,6 @@ void MonoDepth::initialize_model(const std::string& user_model_path) {
     throw std::runtime_error("Failed to initialize TensorRT model: " +
                              std::string(e.what()));
   }
-
-  // Initialize Sobel kernels
-  sobel_x_ = torch::tensor(
-      {{{{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}}}},
-      torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
-
-  sobel_y_ = torch::tensor(
-      {{{{-1, -2, -1}, {0, 0, 0}, {1, 2, 1}}}},
-      torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
 }
 
 std::tuple<torch::Tensor, torch::Tensor> MonoDepth::estimate_depth(
@@ -137,19 +130,8 @@ std::tuple<torch::Tensor, torch::Tensor> MonoDepth::estimate_depth(
     depth = depth.unsqueeze(0);
   }
 
-  // Compute gradients using Sobel filters
-  torch::Tensor grad_x = torch::nn::functional::conv2d(
-      depth, sobel_x_, torch::nn::functional::Conv2dFuncOptions().padding(1));
-
-  torch::Tensor grad_y = torch::nn::functional::conv2d(
-      depth, sobel_y_, torch::nn::functional::Conv2dFuncOptions().padding(1));
-
-  // Compute edge magnitude and confidence
-  torch::Tensor edges = torch::cat({grad_x, grad_y}, 0);
-  torch::Tensor edges_sq_norm = (edges.pow(2)).sum(0, true);
-
-  float var = 0.2f;
-  torch::Tensor confidence = torch::exp(-edges_sq_norm / var);
+  // Compute depth confidence using edge detection
+  torch::Tensor confidence = depth_utils::computeDepthConfidence(depth);
 
   auto inf_time = std::chrono::duration_cast<std::chrono::milliseconds>(
       end_inf - start_inf);

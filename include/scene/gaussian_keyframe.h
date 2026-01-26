@@ -62,6 +62,13 @@ class GaussianKeyframe {
 
   void setPose(const Eigen::Quaterniond& q, const Eigen::Vector3d& t);
 
+ private:
+  void setPoseImpl(const Eigen::Matrix3d& R, const Eigen::Vector3d& t);
+  Eigen::Matrix3d tensorToRotationMatrix() const;
+  Eigen::Vector3d tensorToTranslation() const;
+
+ public:
+
   Sophus::SE3d getPose();
   Sophus::SE3f getPosef();
 
@@ -95,7 +102,7 @@ class GaussianKeyframe {
 
   torch::Tensor applyExposureTransform(torch::Tensor& colors);
 
-  torch::Tensor sixD2RotationMatrix(const torch::Tensor& rW2C);
+  torch::Tensor sixD2RotationMatrix(const torch::Tensor& rW2C) const;
 
   torch::Tensor getR();
   torch::Tensor getT();

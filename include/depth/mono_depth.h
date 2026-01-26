@@ -84,10 +84,6 @@ class MonoDepth {
   int img_height_;
   int img_width_;
 
-  // Sobel kernels for gradient computation
-  torch::Tensor sobel_x_;
-  torch::Tensor sobel_y_;
-
   /**
    * @brief Initialize the TensorRT model
    * @param model_path Path to model file
