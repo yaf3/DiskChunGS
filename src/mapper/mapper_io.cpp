@@ -85,20 +85,8 @@ std::tuple<cv::Mat, cv::Mat> GaussianMapper::renderFromPose(
     throw std::runtime_error(
         "[GaussianMapper::renderFromPose]KeyFrame Camera not found!");
   }
-  // Eigen::Vector3f cam_position;
-  // for (int i = 0; i < 3; ++i) {
-  //   cam_position[i] = pkf->camera_center_[i].item<float>();
-  // }
-  // auto cam_chunk_coord = chunk_manager_->getChunkCoord(cam_position);
-  // std::cout << "Cam chunk: " << cam_chunk_coord.x << " " <<
-  // cam_chunk_coord.y
-  //           << " " << cam_chunk_coord.z << std::endl;
-
-  // std::cout << "Tcw matrix:\n" << Tcw.matrix() << std::endl;
 
   std::unique_lock lock_render(mutex_render_);
-
-  // std::cout << width << " " << height << std::endl;
 
   torch::Tensor visible_gaussian_mask = gaussians_->cullVisibleGaussians(pkf);
 
@@ -158,7 +146,6 @@ void GaussianMapper::renderAndRecordKeyframe(
       pkf->image_width_, pipe_params_, background_, override_color_, 1.0f,
       false, pkf->FoVx_, pkf->FoVy_, view_matrix, pkf->projection_matrix_);
 
-  // Chunks automatically released by ChunkOptimizationGuard destructor
   auto rendered_image = std::get<1>(render_pkg);
   // torch::cuda::synchronize();
   auto end_timing = std::chrono::steady_clock::now();
@@ -327,29 +314,24 @@ void GaussianMapper::keyframesToJson(std::filesystem::path result_dir) {
 
 void GaussianMapper::writeKeyframeUsedTimes(std::filesystem::path result_dir,
                                             std::string name_suffix) {
-  return;
-  //   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
-  //   std::filesystem::path result_path =
-  //       result_dir / ("keyframe_used_times" + name_suffix + ".txt");
-  //   std::ofstream out_stream;
-  //   out_stream.open(result_path, std::ios::app);
-  //   if (!out_stream.is_open())
-  //     throw std::runtime_error("Cannot open json at " +
-  //     result_path.string());
+  CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
+  std::filesystem::path result_path =
+      result_dir / ("keyframe_used_times" + name_suffix + ".txt");
+  std::ofstream out_stream;
+  out_stream.open(result_path, std::ios::app);
+  if (!out_stream.is_open())
+    throw std::runtime_error("Cannot open json at " + result_path.string());
 
-  //   out_stream << "##[Gaussian Mapper]Iteration " << getIteration()
-  //              << " keyframe id, used times, remaining times:\n";
-  //   for (const auto& used_times_it : keyframe_queue_->getKfsUsedTimes()) {
-  //     out_stream
-  //         << used_times_it.first << " " << used_times_it.second << " "
-  //         <<
-  //         scene_->keyframes().at(used_times_it.first)->remaining_times_of_use_
-  //         << "\n";
-  //   }
-  //   out_stream << "##=========================================" <<
-  //   std::endl;
+  out_stream << "##[Gaussian Mapper]Iteration " << getIteration()
+             << " keyframe id, used times, remaining times:\n";
+  for (const auto& used_times_it : kfs_used_times_)
+    out_stream
+        << used_times_it.first << " " << used_times_it.second << " "
+        << scene_->keyframes().at(used_times_it.first)->remaining_times_of_use_
+        << "\n";
+  out_stream << "##=========================================" << std::endl;
 
-  //   out_stream.close();
+  out_stream.close();
 }
 
 void GaussianMapper::writeTrainingMetricsCSV(std::filesystem::path result_dir) {
@@ -481,18 +463,7 @@ bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
   std::cout << "Loaded " << gaussians_->chunks_on_disk_.size(0)
             << " chunks from manifest" << std::endl;
 
-  // // Load a few chunks for initial visualization if desired
-  // if (load_initial_chunks_ && !chunk_coords.empty()) {
-  //   int max_to_load =
-  //       std::min(static_cast<int>(chunk_coords.size()),
-  //       max_initial_chunks_);
-
-  //   for (int i = 0; i < max_to_load; i++) {
-  //     chunk_manager_->loadChunk(chunk_coords[i]);
-  //   }
-  // }
-
-  // Optinal new Camera configs
+  // Optional new Camera configs
   if (!optional_camera_path.empty() &&
       std::filesystem::exists(optional_camera_path)) {
     cv::FileStorage camera_file(optional_camera_path.string().c_str(),
@@ -576,14 +547,6 @@ void GaussianMapper::saveChunkManifest(std::filesystem::path scene_dir) {
   Json::StreamWriterBuilder builder;
   const std::unique_ptr<Json::StreamWriter> writer(builder.newStreamWriter());
 
-  // Save chunks_in_memory_ (std::unordered_set<int64_t>)
-  // Json::Value chunks_in_memory_array(Json::arrayValue);
-  // for (const auto& chunk_id : gaussians_->chunks_in_memory_) {
-  //   chunks_in_memory_array.append(
-  //       Json::Value(static_cast<Json::Int64>(chunk_id)));
-  // }
-  // json_root["chunks_in_memory"] = chunks_in_memory_array;
-
   // Save chunks_on_disk_ (std::unordered_set<int64_t>)
   Json::Value chunks_on_disk_array(Json::arrayValue);
   Json::Value chunk_gaussian_counts_array(Json::arrayValue);
@@ -637,17 +600,6 @@ void GaussianMapper::loadChunkManifest(std::filesystem::path scene_dir) {
 
   gaussians_->chunks_loaded_from_disk_ = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
-
-  // // Load chunks_in_memory_ (std::unordered_set<int64_t>)
-  // if (root.isMember("chunks_in_memory") &&
-  // root["chunks_in_memory"].isArray()) {
-  //   const Json::Value& chunks_in_memory_array = root["chunks_in_memory"];
-  //   for (const auto& chunk_value : chunks_in_memory_array) {
-  //     if (chunk_value.isInt64()) {
-  //       gaussians_->chunks_in_memory_.insert(chunk_value.asInt64());
-  //     }
-  //   }
-  // }
 
   // Load chunks_on_disk_ (std::unordered_set<int64_t>)
   if (root.isMember("chunks_on_disk") && root["chunks_on_disk"].isArray()) {
