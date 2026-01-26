@@ -104,7 +104,15 @@ SOFTWARE.
 
 We strongly encourage citing the relevant papers if you use this software in your research:
 ```bibtex
-[DiskChunGS citation]
+@misc{feldmann2025diskchungslargescale3dgaussian,
+      title={DiskChunGS: Large-Scale 3D Gaussian SLAM Through Chunk-Based Memory Management}, 
+      author={Casimir Feldmann and Maximum Wilder-Smith and Vaishakh Patil and Michael Oechsle and Michael Niemeyer and Keisuke Tateno and Marco Hutter},
+      year={2025},
+      eprint={2511.23030},
+      archivePrefix={arXiv},
+      primaryClass={cs.RO},
+      url={https://arxiv.org/abs/2511.23030}, 
+}
 
 @article{Feng_2025,
    title={CaRtGS: Computational Alignment for Real-Time Gaussian Splatting SLAM},
