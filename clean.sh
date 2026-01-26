@@ -25,10 +25,4 @@ echo "Cleaning ORB-SLAM3..."
 rm -rf slam_deps/ORB-SLAM3/build/
 rm -f slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt
 
-# # Remove any leftover build artifacts
-# echo "Cleaning additional build artifacts..."
-# find . -name "CMakeCache.txt" -delete
-# find . -name "CMakeFiles" -type d -exec rm -rf {} +
-# find . -name "compile_commands.json" -delete
-
 echo "Clean completed!"

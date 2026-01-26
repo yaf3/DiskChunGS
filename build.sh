@@ -69,10 +69,10 @@ cmake -B build -G Ninja \
  -DCMAKE_CUDA_FLAGS="-O3 -use_fast_math" \
  -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++
 
-cmake --build build -j16
+cmake --build build -j16 # Reduce if causes OOM
 
 echo "✓ Build completed successfully!"
 echo "----------------------------------------"
 echo "You can run the application with:"
-echo "  ./bin/your_application_name"
+echo "  ./bin/application_name"
 echo "----------------------------------------"

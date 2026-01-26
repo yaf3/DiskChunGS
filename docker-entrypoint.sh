@@ -47,7 +47,7 @@ echo "- PyTorch and libtorch are ready to use"
 echo "- ROS Noetic is configured"
 echo "- Environment variables are set"
 echo ""
-echo "Your code is available at /workspace"
+echo "Code is available at /workspace/repo"
 echo "==============================================="
 
 # Execute the command passed to docker run
