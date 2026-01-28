@@ -884,6 +884,79 @@ class GaussianMapper {
   GaussianPipelineParams pipe_params_;
 
  private:
+  // ========== Initialization Helpers ==========
+
+  /**
+   * @brief Initialize random seed for reproducibility
+   * @param seed Random seed value
+   */
+  void initializeRandomSeed(int seed);
+
+  /**
+   * @brief Initialize compute device (CPU or CUDA)
+   * @param device_type Requested device type
+   */
+  void initializeDevice(torch::DeviceType device_type);
+
+  /**
+   * @brief Create output directory structure
+   */
+  void initializeDirectories();
+
+  /**
+   * @brief Initialize background color and override color tensors
+   */
+  void initializeBackgroundAndOverrideColor();
+
+  /**
+   * @brief Initialize core Gaussian components (model, scene, keyframe selector)
+   * @param with_training_infrastructure If true, initialize training components
+   */
+  void initializeGaussianComponents(bool with_training_infrastructure);
+
+  /**
+   * @brief Load ORB-SLAM settings and extract camera information
+   * @param sensor_type ORB-SLAM sensor type
+   * @param orb_settings_path Path to ORB-SLAM settings file
+   * @return Tuple of (orb_settings, cameras, image_size, undistort_params)
+   */
+  std::tuple<ORB_SLAM3::Settings*,
+             std::vector<ORB_SLAM3::GeometricCamera*>,
+             cv::Size,
+             UndistortParams>
+  initializeORBSettings(ORB_SLAM3::System::eSensor sensor_type,
+                        const std::string& orb_settings_path);
+
+  /**
+   * @brief Configure sensor type and stereo parameters
+   * @param sensor_type ORB-SLAM sensor type
+   * @param orb_settings ORB-SLAM settings object
+   */
+  void initializeSensorType(ORB_SLAM3::System::eSensor sensor_type,
+                            ORB_SLAM3::Settings* orb_settings);
+
+  /**
+   * @brief Initialize depth estimation pipelines based on sensor type
+   * @return MVS inverse depth range parameter
+   */
+  float initializeDepthEstimation();
+
+  /**
+   * @brief Initialize MVS and feature extraction components
+   * @param mvs_inverse_depth_range Inverse depth range for MVS
+   */
+  void initializeMVSAndFeatures(float mvs_inverse_depth_range);
+
+  /**
+   * @brief Process and configure a single camera from ORB-SLAM
+   * @param SLAM_camera ORB-SLAM camera object
+   * @param undistort_params Undistortion parameters
+   * @param SLAM_im_size Image size from SLAM
+   */
+  void processCameraFromORBSLAM(ORB_SLAM3::GeometricCamera* SLAM_camera,
+                                const UndistortParams& undistort_params,
+                                const cv::Size& SLAM_im_size);
+
   // ========== Private Data Members ==========
 
   // Loop closure control
