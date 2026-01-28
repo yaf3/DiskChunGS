@@ -88,9 +88,8 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       readConfig<int>(settings_file, "Mapper.new_keyframe_times_of_use");
   local_BA_increased_times_of_use_ =
       readConfig<int>(settings_file, "Mapper.local_BA_increased_times_of_use");
-  loop_closure_increased_times_of_use_ =
-      readConfig<int>(settings_file,
-                      "Mapper.loop_closure_increased_times_of_use_");
+  loop_closure_increased_times_of_use_ = readConfig<int>(
+      settings_file, "Mapper.loop_closure_increased_times_of_use_");
   large_rot_th_ =
       readConfig<float>(settings_file, "Mapper.large_rotation_threshold");
   large_trans_th_ =
@@ -133,7 +132,8 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       readConfigBool(settings_file, "Record.record_rendered_image");
   record_ground_truth_image_ =
       readConfigBool(settings_file, "Record.record_ground_truth_image");
-  record_loss_image_ = readConfigBool(settings_file, "Record.record_loss_image");
+  record_loss_image_ =
+      readConfigBool(settings_file, "Record.record_loss_image");
   training_report_interval_ =
       readConfig<int>(settings_file, "Record.training_report_interval");
   record_loop_ply_ = readConfigBool(settings_file, "Record.record_loop_ply");
@@ -159,7 +159,8 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       readConfig<float>(settings_file, "Optimization.exposure_lr");
   opt_params_.depth_scale_bias_lr_ =
       readConfig<float>(settings_file, "Optimization.depth_scale_bias_lr");
-  opt_params_.smooth_l1_ = readConfigBool(settings_file, "Optimization.smooth_l1");
+  opt_params_.smooth_l1_ =
+      readConfigBool(settings_file, "Optimization.smooth_l1");
 
   opt_params_.lambda_dssim_ =
       readConfig<float>(settings_file, "Optimization.lambda_dssim");
@@ -178,4 +179,6 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
 
   // ========== Chunking Parameters ==========
   chunk_size_ = readConfig<float>(settings_file, "Chunking.chunk_size");
+  keyframe_selection_chunk_size_ = readConfig<float>(
+      settings_file, "Chunking.keyframe_selection_chunk_size");
 }

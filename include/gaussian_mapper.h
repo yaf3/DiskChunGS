@@ -448,7 +448,8 @@ class GaussianMapper {
   std::shared_ptr<ORB_SLAM3::System> pSLAM_;
 
   // Chunk management
-  float chunk_size_ = 50.0;
+  float chunk_size_ = 10.0;
+  float keyframe_selection_chunk_size_ = 50.0;
   std::filesystem::path chunk_save_dir_;
   std::filesystem::path keyframe_save_dir_;
 
@@ -559,10 +560,13 @@ class GaussianMapper {
 
   // Keyframe selection thresholds for external pose mode
   Sophus::SE3f last_keyframe_pose_;
-  float min_keyframe_translation_{0.25f};  ///< Min translation (meters) for new keyframe
-  float min_keyframe_rotation_{0.15f};     ///< Min rotation (radians) for new keyframe
+  float min_keyframe_translation_{
+      0.25f};  ///< Min translation (meters) for new keyframe
+  float min_keyframe_rotation_{
+      0.15f};  ///< Min rotation (radians) for new keyframe
   double last_keyframe_timestamp_{0.0};
-  float min_keyframe_time_{0.5f};          ///< Min time interval (seconds) between keyframes
+  float min_keyframe_time_{
+      0.5f};  ///< Min time interval (seconds) between keyframes
 
   // Synchronization
   std::mutex mutex_status_;
@@ -909,7 +913,8 @@ class GaussianMapper {
   void initializeBackgroundAndOverrideColor();
 
   /**
-   * @brief Initialize core Gaussian components (model, scene, keyframe selector)
+   * @brief Initialize core Gaussian components (model, scene, keyframe
+   * selector)
    * @param with_training_infrastructure If true, initialize training components
    */
   void initializeGaussianComponents(bool with_training_infrastructure);
@@ -920,12 +925,12 @@ class GaussianMapper {
    * @param orb_settings_path Path to ORB-SLAM settings file
    * @return Tuple of (orb_settings, cameras, image_size, undistort_params)
    */
-  std::tuple<ORB_SLAM3::Settings*,
-             std::vector<ORB_SLAM3::GeometricCamera*>,
+  std::tuple<ORB_SLAM3::Settings *,
+             std::vector<ORB_SLAM3::GeometricCamera *>,
              cv::Size,
              UndistortParams>
   initializeORBSettings(ORB_SLAM3::System::eSensor sensor_type,
-                        const std::string& orb_settings_path);
+                        const std::string &orb_settings_path);
 
   /**
    * @brief Configure sensor type and stereo parameters
@@ -933,7 +938,7 @@ class GaussianMapper {
    * @param orb_settings ORB-SLAM settings object
    */
   void initializeSensorType(ORB_SLAM3::System::eSensor sensor_type,
-                            ORB_SLAM3::Settings* orb_settings);
+                            ORB_SLAM3::Settings *orb_settings);
 
   /**
    * @brief Initialize depth estimation pipelines based on sensor type
@@ -953,9 +958,9 @@ class GaussianMapper {
    * @param undistort_params Undistortion parameters
    * @param SLAM_im_size Image size from SLAM
    */
-  void processCameraFromORBSLAM(ORB_SLAM3::GeometricCamera* SLAM_camera,
-                                const UndistortParams& undistort_params,
-                                const cv::Size& SLAM_im_size);
+  void processCameraFromORBSLAM(ORB_SLAM3::GeometricCamera *SLAM_camera,
+                                const UndistortParams &undistort_params,
+                                const cv::Size &SLAM_im_size);
 
   // ========== Private Data Members ==========
 

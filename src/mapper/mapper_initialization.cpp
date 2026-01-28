@@ -150,7 +150,7 @@ void GaussianMapper::initializeGaussianComponents(
         model_params_, chunk_save_dir_.string(), chunk_size_);
 
     keyframe_selector_ = std::make_shared<KeyframeSelection>(
-        scene_, 50.0, &kfs_loss_, &kfs_used_times_);
+        scene_, keyframe_selection_chunk_size_, &kfs_loss_, &kfs_used_times_);
   }
 }
 
