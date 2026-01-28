@@ -19,6 +19,17 @@
 
 #include "gaussian_mapper.h"
 
+// Helper template to read config values with less boilerplate
+template <typename T>
+T readConfig(const cv::FileStorage& fs, const std::string& key) {
+  return fs[key].operator T();
+}
+
+// Helper for reading boolean values (converts int to bool)
+bool readConfigBool(const cv::FileStorage& fs, const std::string& key) {
+  return readConfig<int>(fs, key) != 0;
+}
+
 void copyFolder(const std::filesystem::path& source,
                 const std::filesystem::path& destination) {
   // Create the destination directory if it doesn't exist
@@ -53,55 +64,59 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
             << std::endl;
   std::unique_lock<std::mutex> lock(mutex_settings_);
 
-  // Model parameters
-  model_params_.sh_degree_ = settings_file["Model.sh_degree"].operator int();
+  // ========== Model Parameters ==========
+  model_params_.sh_degree_ = readConfig<int>(settings_file, "Model.sh_degree");
   model_params_.white_background_ =
-      (settings_file["Model.white_background"].operator int()) != 0;
+      readConfigBool(settings_file, "Model.white_background");
   model_params_.max_gaussians_in_memory_ =
-      settings_file["Model.max_gaussians_in_memory"].operator int();
+      readConfig<int>(settings_file, "Model.max_gaussians_in_memory");
   init_proba_scaler_ =
-      settings_file["Model.init_proba_scaler"].operator float();
+      readConfig<float>(settings_file, "Model.init_proba_scaler");
   downsample_for_sampling_ =
-      (settings_file["Model.downsample_for_sampling"].operator int()) != 0;
+      readConfigBool(settings_file, "Model.downsample_for_sampling");
 
-  // Pipeline Parameters
-  z_near_ = settings_file["Camera.z_near"].operator float();
-  z_far_ = settings_file["Camera.z_far"].operator float();
+  // ========== Camera Parameters ==========
+  z_near_ = readConfig<float>(settings_file, "Camera.z_near");
+  z_far_ = readConfig<float>(settings_file, "Camera.z_far");
 
-  min_depth_ = settings_file["Mapper.min_depth_"].operator float();
-  max_depth_ = settings_file["Mapper.max_depth_"].operator float();
-
+  // ========== Mapper Parameters ==========
+  min_depth_ = readConfig<float>(settings_file, "Mapper.min_depth_");
+  max_depth_ = readConfig<float>(settings_file, "Mapper.max_depth_");
   min_num_initial_map_kfs_ = static_cast<unsigned long>(
-      settings_file["Mapper.min_num_initial_map_kfs"].operator int());
+      readConfig<int>(settings_file, "Mapper.min_num_initial_map_kfs"));
   new_keyframe_times_of_use_ =
-      settings_file["Mapper.new_keyframe_times_of_use"].operator int();
+      readConfig<int>(settings_file, "Mapper.new_keyframe_times_of_use");
   local_BA_increased_times_of_use_ =
-      settings_file["Mapper.local_BA_increased_times_of_use"].operator int();
+      readConfig<int>(settings_file, "Mapper.local_BA_increased_times_of_use");
   loop_closure_increased_times_of_use_ =
-      settings_file["Mapper.loop_closure_increased_times_of_use_"]
-          .operator int();
+      readConfig<int>(settings_file,
+                      "Mapper.loop_closure_increased_times_of_use_");
   large_rot_th_ =
-      settings_file["Mapper.large_rotation_threshold"].operator float();
+      readConfig<float>(settings_file, "Mapper.large_rotation_threshold");
   large_trans_th_ =
-      settings_file["Mapper.large_translation_threshold"].operator float();
+      readConfig<float>(settings_file, "Mapper.large_translation_threshold");
   stable_num_iter_existence_ =
-      settings_file["Mapper.stable_num_iter_existence"].operator int();
+      readConfig<int>(settings_file, "Mapper.stable_num_iter_existence");
 
+  // ========== External Mode Parameters ==========
   min_keyframe_translation_ =
-      settings_file["External.min_keyframe_translation"].operator float();
+      readConfig<float>(settings_file, "External.min_keyframe_translation");
   min_keyframe_rotation_ =
-      settings_file["External.min_keyframe_rotation"].operator float();
+      readConfig<float>(settings_file, "External.min_keyframe_rotation");
   min_keyframe_time_ =
-      settings_file["External.min_keyframe_time"].operator float();
+      readConfig<float>(settings_file, "External.min_keyframe_time");
 
+  // ========== Pipeline Parameters ==========
   pipe_params_.convert_SHs_ =
-      (settings_file["Pipeline.convert_SHs"].operator int()) != 0;
+      readConfigBool(settings_file, "Pipeline.convert_SHs");
   pipe_params_.compute_cov3D_ =
-      (settings_file["Pipeline.compute_cov3D"].operator int()) != 0;
+      readConfigBool(settings_file, "Pipeline.compute_cov3D");
+
+  // ========== Gaussian Pyramid Parameters ==========
   num_gaus_pyramid_sub_levels_ =
-      settings_file["GausPyramid.num_levels"].operator int();
+      readConfig<int>(settings_file, "GausPyramid.num_levels");
   int sub_level_times_of_use =
-      settings_file["GausPyramid.level_times_of_use"].operator int();
+      readConfig<int>(settings_file, "GausPyramid.level_times_of_use");
   kf_gaus_pyramid_times_of_use_.resize(num_gaus_pyramid_sub_levels_);
   kf_gaus_pyramid_factors_.resize(num_gaus_pyramid_sub_levels_);
   for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
@@ -109,58 +124,58 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
     kf_gaus_pyramid_factors_[l] = std::pow(0.5f, l);
   }
 
+  // ========== Recording Parameters ==========
   keyframe_record_interval_ =
-      settings_file["Record.keyframe_record_interval"].operator int();
+      readConfig<int>(settings_file, "Record.keyframe_record_interval");
   all_keyframes_record_interval_ =
-      settings_file["Record.all_keyframes_record_interval"].operator int();
+      readConfig<int>(settings_file, "Record.all_keyframes_record_interval");
   record_rendered_image_ =
-      (settings_file["Record.record_rendered_image"].operator int()) != 0;
+      readConfigBool(settings_file, "Record.record_rendered_image");
   record_ground_truth_image_ =
-      (settings_file["Record.record_ground_truth_image"].operator int()) != 0;
-  record_loss_image_ =
-      (settings_file["Record.record_loss_image"].operator int()) != 0;
+      readConfigBool(settings_file, "Record.record_ground_truth_image");
+  record_loss_image_ = readConfigBool(settings_file, "Record.record_loss_image");
   training_report_interval_ =
-      settings_file["Record.training_report_interval"].operator int();
-  record_loop_ply_ =
-      (settings_file["Record.record_loop_ply"].operator int()) != 0;
+      readConfig<int>(settings_file, "Record.training_report_interval");
+  record_loop_ply_ = readConfigBool(settings_file, "Record.record_loop_ply");
 
-  // Optimization Parameters
+  // ========== Optimization Parameters ==========
   opt_params_.iterations_ =
-      settings_file["Optimization.max_num_iterations"].operator int();
+      readConfig<int>(settings_file, "Optimization.max_num_iterations");
   opt_params_.position_lr_init_ =
-      settings_file["Optimization.position_lr_init"].operator float();
+      readConfig<float>(settings_file, "Optimization.position_lr_init");
   opt_params_.position_lr_decay_ =
-      settings_file["Optimization.position_lr_decay"].operator float();
+      readConfig<float>(settings_file, "Optimization.position_lr_decay");
   opt_params_.feature_lr_ =
-      settings_file["Optimization.feature_lr"].operator float();
+      readConfig<float>(settings_file, "Optimization.feature_lr");
   opt_params_.opacity_lr_ =
-      settings_file["Optimization.opacity_lr"].operator float();
+      readConfig<float>(settings_file, "Optimization.opacity_lr");
   opt_params_.scaling_lr_ =
-      settings_file["Optimization.scaling_lr"].operator float();
+      readConfig<float>(settings_file, "Optimization.scaling_lr");
   opt_params_.rotation_lr_ =
-      settings_file["Optimization.rotation_lr"].operator float();
-  opt_params_.pose_lr_ = settings_file["Optimization.pose_lr"].operator float();
+      readConfig<float>(settings_file, "Optimization.rotation_lr");
+  opt_params_.pose_lr_ =
+      readConfig<float>(settings_file, "Optimization.pose_lr");
   opt_params_.exposure_lr_ =
-      settings_file["Optimization.exposure_lr"].operator float();
+      readConfig<float>(settings_file, "Optimization.exposure_lr");
   opt_params_.depth_scale_bias_lr_ =
-      settings_file["Optimization.depth_scale_bias_lr"].operator float();
-  opt_params_.smooth_l1_ =
-      (settings_file["Optimization.smooth_l1"].operator int()) != 0;
+      readConfig<float>(settings_file, "Optimization.depth_scale_bias_lr");
+  opt_params_.smooth_l1_ = readConfigBool(settings_file, "Optimization.smooth_l1");
 
   opt_params_.lambda_dssim_ =
-      settings_file["Optimization.lambda_dssim"].operator float();
+      readConfig<float>(settings_file, "Optimization.lambda_dssim");
   opt_params_.lambda_depth_ =
-      settings_file["Optimization.lambda_depth"].operator float();
+      readConfig<float>(settings_file, "Optimization.lambda_depth");
   opt_params_.auto_distribute_ =
-      settings_file["Optimization.auto_distribute"].operator int();
+      readConfig<int>(settings_file, "Optimization.auto_distribute");
   exposure_optimization_ =
-      settings_file["Optimization.exposure_optimization"].operator int();
+      readConfig<int>(settings_file, "Optimization.exposure_optimization");
 
-  // Viewer Parameters
+  // ========== Viewer Parameters ==========
   rendered_image_viewer_scale_ =
-      settings_file["GaussianViewer.image_scale"].operator float();
+      readConfig<float>(settings_file, "GaussianViewer.image_scale");
   rendered_image_viewer_scale_main_ =
-      settings_file["GaussianViewer.image_scale_main"].operator float();
+      readConfig<float>(settings_file, "GaussianViewer.image_scale_main");
 
-  chunk_size_ = settings_file["Chunking.chunk_size"].operator float();
+  // ========== Chunking Parameters ==========
+  chunk_size_ = readConfig<float>(settings_file, "Chunking.chunk_size");
 }

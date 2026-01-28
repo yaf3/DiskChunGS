@@ -77,6 +77,13 @@ class TrajectoryViewer;  // Forward declaration
     if (!std::filesystem::create_directories(dir))                    \
       throw std::runtime_error("Cannot create result directory at " + \
                                dir.string());
+
+/**
+ * @brief Parameters for image undistortion and camera calibration
+ *
+ * Stores the original image size and distortion coefficients needed
+ * to perform image undistortion for camera calibration.
+ */
 struct UndistortParams {
   UndistortParams() : old_size_(0, 0) {
     dist_coeff_ = (cv::Mat_<float>(1, 4) << 0.0f, 0.0f, 0.0f, 0.0f);
@@ -90,11 +97,22 @@ struct UndistortParams {
   }
 
   cv::Size old_size_;
-  cv::Mat dist_coeff_;
+  cv::Mat dist_coeff_;  ///< Distortion coefficients [k1, k2, p1, p2]
 };
 
+/**
+ * @brief Sensor type enumeration for the mapping system
+ *
+ * Defines supported sensor configurations for visual mapping.
+ */
 enum SystemSensorType { INVALID = 0, MONOCULAR = 1, STEREO = 2, RGBD = 3 };
 
+/**
+ * @brief Recursively copy a directory and all its contents
+ *
+ * @param source Source directory path to copy from
+ * @param destination Destination directory path to copy to
+ */
 void copyFolder(const std::filesystem::path &source,
                 const std::filesystem::path &destination);
 
@@ -114,6 +132,15 @@ class GaussianMapper {
                  int seed = 0,
                  torch::DeviceType device_type = torch::kCUDA);
 
+  /**
+   * @brief Read configuration parameters from YAML file
+   *
+   * Loads all mapper, model, optimization, and pipeline parameters from
+   * a configuration file using OpenCV FileStorage. Initializes model
+   * parameters, optimization settings, recording options, and viewer settings.
+   *
+   * @param cfg_path Path to the configuration YAML file
+   */
   void readConfigFromFile(std::filesystem::path cfg_path);
 
   void run();
