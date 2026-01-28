@@ -116,8 +116,27 @@ enum SystemSensorType { INVALID = 0, MONOCULAR = 1, STEREO = 2, RGBD = 3 };
 void copyFolder(const std::filesystem::path &source,
                 const std::filesystem::path &destination);
 
+/**
+ * @brief Main Gaussian Splatting mapper class
+ *
+ * Supports monocular, stereo, and RGB-D sensors.
+ * Manages incremental mapping, loop closure handling, and chunk-based memory.
+ */
 class GaussianMapper {
  public:
+  // ========== Constructors ==========
+
+  /**
+   * @brief Construct mapper with ORB-SLAM integration
+   *
+   * @param pSLAM Shared pointer to ORB-SLAM3 system
+   * @param gaussian_config_file_path Path to configuration YAML file
+   * @param result_dir Output directory for results and visualizations
+   * @param seed Random seed for reproducibility
+   * @param device_type Torch device type (CUDA or CPU)
+   * @param sensor_type Sensor configuration (MONOCULAR, STEREO, RGBD)
+   * @param orb_settings_path Path to ORB-SLAM settings file
+   */
   GaussianMapper(
       std::shared_ptr<ORB_SLAM3::System> pSLAM,
       std::filesystem::path gaussian_config_file_path,
@@ -127,10 +146,20 @@ class GaussianMapper {
       ORB_SLAM3::System::eSensor sensor_type = ORB_SLAM3::System::MONOCULAR,
       const string &orb_settings_path = "");
 
+  /**
+   * @brief Construct mapper for external pose mode (without ORB-SLAM)
+   *
+   * @param gaussian_config_file_path Path to configuration YAML file
+   * @param result_dir Output directory for results and visualizations
+   * @param seed Random seed for reproducibility
+   * @param device_type Torch device type (CUDA or CPU)
+   */
   GaussianMapper(std::filesystem::path gaussian_config_file_path,
                  std::filesystem::path result_dir,
                  int seed = 0,
                  torch::DeviceType device_type = torch::kCUDA);
+
+  // ========== Core Methods ==========
 
   /**
    * @brief Read configuration parameters from YAML file
@@ -143,55 +172,445 @@ class GaussianMapper {
    */
   void readConfigFromFile(std::filesystem::path cfg_path);
 
+  /**
+   * @brief Main mapping loop - runs initial and incremental mapping phases
+   *
+   * Coordinates with ORB-SLAM to process keyframes, perform Gaussian
+   * optimization, and handle loop closures. Runs until SLAM shutdown or
+   * external stop signal.
+   */
   void run();
+
+  /**
+   * @brief Execute one iteration of Gaussian optimization
+   *
+   * Selects a keyframe, renders Gaussians, computes losses (L1, SSIM, depth),
+   * performs backpropagation, and updates Gaussian parameters.
+   */
   void trainForOneIteration();
 
+  /**
+   * @brief Check if mapper has been signaled to stop
+   * @return True if stopped, false otherwise
+   */
   bool isStopped();
+
+  /**
+   * @brief Signal the mapper to stop execution
+   * @param going_to_stop Stop flag (default: true)
+   */
   void signalStop(const bool going_to_stop = true);
 
+  // ========== Rendering ==========
+
+  /**
+   * @brief Render RGB and depth images from a given camera pose
+   *
+   * @param Tcw Camera-to-world transformation
+   * @param width Output image width
+   * @param height Output image height
+   * @param main_vision Use main vision camera parameters if true
+   * @return Tuple of (RGB image, depth image)
+   */
   std::tuple<cv::Mat, cv::Mat> renderFromPose(const Sophus::SE3f &Tcw,
                                               const int width,
                                               const int height,
                                               const bool main_vision = false);
 
+  // ========== Training Progress ==========
+
+  /**
+   * @brief Get current training iteration number
+   * @return Current iteration count
+   */
   int getIteration();
+
+  /**
+   * @brief Increment iteration counter
+   * @param inc Amount to increment (can be negative)
+   */
   void increaseIteration(const int inc = 1);
 
+  // ========== Learning Rate Getters ==========
+
+  /** @brief Get initial learning rate for Gaussian positions */
   float positionLearningRateInit();
+
+  /** @brief Get learning rate for spherical harmonic features */
   float featureLearningRate();
+
+  /** @brief Get learning rate for Gaussian opacity */
   float opacityLearningRate();
+
+  /** @brief Get learning rate for Gaussian scaling */
   float scalingLearningRate();
+
+  /** @brief Get learning rate for Gaussian rotation */
   float rotationLearningRate();
+
+  /** @brief Get SSIM loss weight (lambda_dssim) */
   float lambdaDssim();
+
+  /** @brief Get depth loss weight */
   float lambdaDepth();
+
+  /** @brief Get times of use threshold for new keyframes */
   int newKeyframeTimesOfUse();
+
+  /** @brief Get stability iteration threshold */
   int stableNumIterExistence();
+
+  /** @brief Check if training should continue */
   bool isKeepingTraining();
 
+  // ========== Parameter Setters ==========
+
+  /**
+   * @brief Set SSIM loss weight
+   * @param lambda_dssim Weight for DSSIM term in loss
+   */
   void setLambdaDssim(const float lambda_dssim);
+
+  /**
+   * @brief Set usage count for new keyframes
+   * @param times Number of times a new keyframe should be used
+   */
   void setNewKeyframeTimesOfUse(const int times);
+
+  /**
+   * @brief Set stability threshold for Gaussian existence
+   * @param niter Number of iterations for stability
+   */
   void setStableNumIterExistence(const int niter);
+
+  /**
+   * @brief Set whether to keep training after SLAM shutdown
+   * @param keep Continue training flag
+   */
   void setKeepTraining(const bool keep);
 
+  // ========== Accessors and Configuration ==========
+
+  /**
+   * @brief Get reference to Gaussian model parameters
+   * @return Reference to model parameters
+   */
   GaussianModelParams &getGaussianModelParams() { return this->model_params_; }
+
+  /**
+   * @brief Set the sensor type for the mapper
+   * @param sensor_type Sensor configuration (MONOCULAR, STEREO, RGBD)
+   */
   void setSensorType(SystemSensorType sensor_type) {
     this->sensor_type_ = sensor_type;
   }
 
+  /**
+   * @brief Set trajectory viewer for visualization
+   * @param viewer Pointer to trajectory viewer instance
+   */
   void setTrajectoryViewer(TrajectoryViewer *viewer) {
     trajectory_viewer_ = viewer;
   }
 
-  void testTransferGaussiansAcrossChunks();
+  // ========== Scene Persistence ==========
+
+  /**
+   * @brief Increment usage counter for a keyframe
+   * @param pkf Keyframe to update
+   * @param times Number of times to increment usage counter
+   */
+  void increaseKeyframeTimesOfUse(std::shared_ptr<GaussianKeyframe> pkf,
+                                  int times);
+
+  /**
+   * @brief Save complete scene to disk (Gaussians, keyframes, cameras)
+   * @param scene_dir Directory to save scene data
+   * @return True if save successful, false otherwise
+   */
+  bool saveScene(std::filesystem::path scene_dir);
+
+  /**
+   * @brief Load complete scene from disk
+   * @param scene_dir Directory containing scene data
+   * @param optional_camera_path Optional path to camera JSON file
+   * @return True if load successful, false otherwise
+   */
+  bool loadScene(std::filesystem::path scene_dir,
+                 std::filesystem::path optional_camera_path = "");
+
+  // ========== External Pose Mode (without ORB-SLAM) ==========
+
+  /**
+   * @brief Check if current pose/time warrants creating a new keyframe
+   * @param current_pose Current camera pose
+   * @param current_time Current timestamp
+   * @return True if keyframe should be created
+   */
+  bool isKeyframe(const Sophus::SE3f &current_pose, double current_time);
+
+  /**
+   * @brief Process a new keyframe in external pose mode
+   * @param rgb_image RGB image
+   * @param depth_or_right_image Depth map or right stereo image
+   * @param pose Camera pose
+   * @param timestamp Image timestamp
+   */
+  void handleNewKeyframeFromExternal(cv::Mat &rgb_image,
+                                     cv::Mat &depth_or_right_image,
+                                     const Sophus::SE3f &pose,
+                                     const double timestamp);
+
+  /**
+   * @brief Handle incoming frame in external mode (checks if keyframe needed)
+   * @param rgb_image RGB image
+   * @param depth_or_right_image Depth map or right stereo image
+   * @param pose Camera pose
+   * @param timestamp Image timestamp
+   */
+  void handleNewFrameExternal(const cv::Mat &rgb_image,
+                              const cv::Mat &depth_or_right_image,
+                              const Sophus::SE3f &pose,
+                              const double timestamp);
+
+  /**
+   * @brief Store recent external data for viewer
+   * @param rgb_image RGB image to store
+   * @param pose Pose to store
+   */
+  void setRecentExternalData(const cv::Mat &rgb_image,
+                             const Sophus::SE3f &pose);
+
+  /**
+   * @brief Retrieve recent external data for viewer
+   * @return Tuple of (rgb_image, pose)
+   */
+  std::tuple<const cv::Mat, const Sophus::SE3f> getRecentExternalData();
+
+  /**
+   * @brief Main loop for external pose mode
+   */
+  void run_external_poses();
+
+  /**
+   * @brief Check if external data ingestion has stopped
+   * @return True if stopped, false otherwise
+   */
+  volatile bool isExternalDataStopped() {
+    return external_data_stopped_.load(std::memory_order_acquire);
+  }
+
+  /**
+   * @brief Signal that external data ingestion should stop
+   */
+  volatile void signalExternalDataStopped() {
+    std::cout << "External data stopped" << std::endl;
+    external_data_stopped_.store(true, std::memory_order_release);
+  }
+
+  /**
+   * @brief Set callback function to be called on completion
+   * @param callback Function to call when mapping finishes
+   */
+  void setCompletionCallback(std::function<void()> callback);
+
+  // ========== Loop Closure Pause Mechanism ==========
+
+  /**
+   * @brief Check if image ingestion should be paused (e.g., during loop
+   * closure)
+   * @return True if paused, false otherwise
+   */
+  bool shouldPauseImageIngestion() const {
+    return pause_image_ingestion_.load(std::memory_order_acquire);
+  }
+
+  /**
+   * @brief Block until pause is released
+   *
+   * Used to halt image ingestion during loop closure optimization.
+   */
+  void waitWhilePaused() {
+    while (pause_image_ingestion_.load(std::memory_order_acquire)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+
+  // ========== Public Data Members ==========
+
+  // Configuration
+  std::filesystem::path config_file_path_;
+
+  // Core components
+  std::shared_ptr<GaussianModel> gaussians_;
+  std::shared_ptr<GaussianScene> scene_;
+  std::shared_ptr<KeyframeSelection> keyframe_selector_;
+  std::shared_ptr<ORB_SLAM3::System> pSLAM_;
+
+  // Chunk management
+  float chunk_size_ = 50.0;
+  std::filesystem::path chunk_save_dir_;
+  std::filesystem::path keyframe_save_dir_;
+
+  // Device and rendering settings
+  torch::DeviceType device_type_;
+  int num_gaus_pyramid_sub_levels_ = 0;
+  std::vector<int> kf_gaus_pyramid_times_of_use_;
+  std::vector<float> kf_gaus_pyramid_factors_;
+
+  bool viewer_camera_id_set_ = false;
+  std::uint32_t viewer_camera_id_ = 0;
+  float rendered_image_viewer_scale_ = 1.0f;
+  float rendered_image_viewer_scale_main_ = 1.0f;
+
+  float z_near_ = 0.01f;
+  float z_far_ = 100.0f;
+
+  // Undistortion masks
+  std::map<camera_id_t, torch::Tensor> undistort_mask_;
+  std::map<camera_id_t, torch::Tensor> viewer_main_undistort_mask_;
+  std::map<camera_id_t, torch::Tensor> viewer_sub_undistort_mask_;
+
+  // Training tracking
+  std::map<std::size_t, float> kfs_loss_;
+  std::map<std::size_t, int> kfs_used_times_;
+
+  // Status flags
+  bool initial_mapped_;
+  bool interrupt_training_;
+  bool stopped_;
+  int iteration_;
+  float ema_loss_for_log_;
+  bool SLAM_ended_;
+  bool loop_closure_iteration_;
+  bool keep_training_ = false;
+  int default_sh_ = 0;
+
+  // Sensor configuration
+  SystemSensorType sensor_type_;
+
+  // Depth estimation
+  float stereo_baseline_length_ = 0.0f;
+  cv::Mat stereo_Q_;
+  std::shared_ptr<StereoDepth> stereo_depth_estimator_;
+  std::shared_ptr<MonoDepth> monocular_depth_estimator_;
+  float min_depth_ = 0.0f;
+  float max_depth_ = 100.0f;
+
+  // Feature extraction and MVS
+  std::unique_ptr<XFeat::XFDetector> feat_extractor_;
+  std::unique_ptr<GuidedMVS> guided_mvs_;
+
+  // Mapping parameters
+  unsigned long min_num_initial_map_kfs_;
+  torch::Tensor background_;
+  float large_rot_th_;
+  float large_trans_th_;
+  torch::Tensor override_color_;
+
+  int new_keyframe_times_of_use_;
+  int local_BA_increased_times_of_use_;
+  int loop_closure_increased_times_of_use_;
+
+  int stable_num_iter_existence_;
+
+  // Output and recording
+  std::filesystem::path result_dir_;
+  int keyframe_record_interval_;
+  int all_keyframes_record_interval_;
+  bool record_rendered_image_;
+  bool record_ground_truth_image_;
+  bool record_loss_image_;
+
+  int training_report_interval_;
+  bool record_loop_ply_;
+
+  // Training metrics
+  int metrics_collection_interval_ = 1000;
+  struct TrainingMetrics {
+    int iteration;
+    double elapsed_time_seconds;
+    int active_gaussian_count;
+    int total_gaussian_count;
+    float reserved_memory_mb;
+    float allocated_memory_mb;
+    float ram_usage_mb;
+    int queue_keyframes;
+  };
+  std::vector<TrainingMetrics> training_metrics_;
+  std::chrono::steady_clock::time_point training_start_time_;
+
+  // Sampling parameters
+  int exposure_optimization_ = 0;
+  float init_proba_scaler_ = 2.0;
+  bool downsample_for_sampling_ = false;
+
+  // Utilities
+  std::random_device rd_;
+  TrajectoryViewer *trajectory_viewer_ = nullptr;
+
+  // External pose mode data
+  cv::Mat external_image_;
+  Sophus::SE3f external_pose_;
+  LeakyFrameQueue frame_queue_;
+
+  std::atomic<bool> external_data_stopped_{false};
+  std::function<void()> completion_callback_;
+
+  Sophus::SE3f last_keyframe_pose_;
+  float min_keyframe_translation_{0.25f};
+  float min_keyframe_rotation_{0.15f};
+  double last_keyframe_timestamp_{0.0};
+  float min_keyframe_time_{0.5f};
+
+  // Synchronization
+  std::mutex mutex_status_;
+  std::mutex mutex_settings_;
+  std::mutex mutex_render_;
+  std::mutex mutex_external_data_;
 
  protected:
+  // ========== Mapping Conditions and Operations ==========
+
+  /**
+   * @brief Check if initial mapping phase can begin
+   * @return True if minimum keyframes exist and SLAM has mapping data
+   */
   bool hasMetInitialMappingConditions();
+
+  /**
+   * @brief Check if incremental mapping can proceed
+   * @return True if SLAM has new mapping operations
+   */
   bool hasMetIncrementalMappingConditions();
 
+  /**
+   * @brief Process queued mapping operations from ORB-SLAM
+   *
+   * Handles local bundle adjustment results and loop closure operations,
+   * updating keyframe poses and Gaussian positions accordingly.
+   */
   void combineMappingOperations();
+
+  /**
+   * @brief Process a batch of local mapping operations
+   * @param operations Vector of mapping operations to process
+   */
   void processLocalMappingBABatch(
       std::vector<ORB_SLAM3::MappingOperation> &operations);
+
+  /**
+   * @brief Handle loop closure bundle adjustment
+   * @param opr Loop closure operation containing updated poses
+   */
   void processLoopClosureBA(ORB_SLAM3::MappingOperation &opr);
+
+  /**
+   * @brief Process loop closure sequentially for affected keyframes
+   * @param associated_kfs Vector of keyframe tuples with updated poses
+   * @param loop_kf_scale Scale factor for loop closure keyframes
+   * @return Number of gaussians transformed
+   */
   int processSequentialLoopClosure(
       const std::vector<std::tuple<unsigned long,
                                    unsigned long,
@@ -203,6 +622,15 @@ class GaussianMapper {
                                    std::vector<float>,
                                    std::string>> &associated_kfs,
       float loop_kf_scale);
+
+  /**
+   * @brief Process loop closure with batch loading of chunks
+   * @param associated_kfs Vector of keyframe tuples with updated poses
+   * @param kf_chunk_pairs Keyframe-chunk pairs to process
+   * @param all_unique_chunks Set of unique chunk IDs involved
+   * @param loop_kf_scale Scale factor for loop closure keyframes
+   * @return Number of gaussians transformed
+   */
   int processBatchedLoopClosure(
       std::vector<std::tuple<unsigned long,
                              unsigned long,
@@ -217,16 +645,38 @@ class GaussianMapper {
                                   torch::Tensor>> &kf_chunk_pairs,
       const std::unordered_set<int64_t> &all_unique_chunks,
       float loop_kf_scale);
+
+  /**
+   * @brief Refine scene scale based on scale drift correction
+   * @param opr Mapping operation containing scale refinement data
+   */
   void processScaleRefinement(ORB_SLAM3::MappingOperation &opr);
 
-  // Common keyframe initialization used by both ORB-SLAM and external modes
+  // ========== Keyframe Management ==========
+
+  /**
+   * @brief Common keyframe initialization for both ORB-SLAM and external modes
+   *
+   * Creates a keyframe, estimates depth, samples Gaussians, and adds to scene.
+   *
+   * @param pkf Output keyframe pointer to initialize
+   * @param rgb_image RGB image data
+   * @param aux_image Auxiliary image (depth or right stereo image)
+   * @param camera Camera parameters
+   * @param filename Optional filename for tracking
+   */
   void createAndInitializeKeyframe(std::shared_ptr<GaussianKeyframe> &pkf,
                                    cv::Mat &rgb_image,
                                    cv::Mat &aux_image,
                                    const Camera &camera,
                                    const std::string &filename = "");
 
-  // Handle new keyframe from ORB-SLAM (formerly handleNewKeyframe)
+  /**
+   * @brief Handle new keyframe from ORB-SLAM system
+   *
+   * @param kf Tuple containing: (id, camera_id, pose, image, is_loop_closure,
+   *           auxiliary_image, keypoint_pixels, keypoint_points, filename)
+   */
   void handleNewKeyframeFromORBSLAM(std::tuple<unsigned long,
                                                unsigned long,
                                                Sophus::SE3f,
@@ -236,21 +686,37 @@ class GaussianMapper {
                                                std::vector<float>,
                                                std::vector<float>,
                                                std::string> &kf);
+
+  /**
+   * @brief Find N closest keyframes to a given keyframe
+   * @param current_kf Reference keyframe
+   * @param n Number of closest keyframes to find
+   * @param k Stride for keyframe selection (default: 1)
+   * @return Vector of closest keyframes
+   */
   std::vector<std::shared_ptr<GaussianKeyframe>> getClosestKeyframes(
       std::shared_ptr<GaussianKeyframe> current_kf,
       int n,
       int k = 1);
 
- public:
-  void increaseKeyframeTimesOfUse(std::shared_ptr<GaussianKeyframe> pkf,
-                                  int times);
-  bool saveScene(std::filesystem::path scene_dir);
-  bool loadScene(std::filesystem::path scene_dir,
-                 std::filesystem::path optional_camera_path = "");
+  // ========== Gaussian Sampling and Recording ==========
 
- protected:
+  /**
+   * @brief Sample new Gaussians from keyframe
+   * @param pkf Keyframe to sample Gaussians from
+   */
   void sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf);
 
+  /**
+   * @brief Record rendered image, ground truth, and loss visualization
+   * @param rendered Rendered image tensor
+   * @param ground_truth Ground truth image tensor
+   * @param kfid Keyframe ID for filename
+   * @param result_img_dir Directory for rendered images
+   * @param result_gt_dir Directory for ground truth images
+   * @param result_loss_dir Directory for loss visualizations
+   * @param name_suffix Optional filename suffix
+   */
   void recordKeyframeRendered(torch::Tensor &rendered,
                               torch::Tensor &ground_truth,
                               unsigned long kfid,
@@ -258,6 +724,19 @@ class GaussianMapper {
                               std::filesystem::path result_gt_dir,
                               std::filesystem::path result_loss_dir,
                               std::string name_suffix = "");
+
+  /**
+   * @brief Render and record a single keyframe with quality metrics
+   * @param pkf Keyframe to render
+   * @param dssim Output DSSIM metric
+   * @param psnr Output PSNR metric
+   * @param psnr_gs Output Gaussian splatting PSNR
+   * @param render_time Output rendering time in seconds
+   * @param result_img_dir Directory for rendered images
+   * @param result_gt_dir Directory for ground truth images
+   * @param result_loss_dir Directory for loss visualizations
+   * @param name_suffix Optional filename suffix
+   */
   void renderAndRecordKeyframe(std::shared_ptr<GaussianKeyframe> pkf,
                                float &dssim,
                                float &psnr,
@@ -267,34 +746,76 @@ class GaussianMapper {
                                std::filesystem::path result_gt_dir,
                                std::filesystem::path result_loss_dir,
                                std::string name_suffix = "");
+
+  /**
+   * @brief Render and record all keyframes in the scene
+   * @param name_suffix Optional filename suffix
+   */
   void renderAndRecordAllKeyframes(std::string name_suffix = "");
 
+  /**
+   * @brief Export keyframe data to JSON format
+   * @param result_dir Output directory for JSON file
+   */
   void keyframesToJson(std::filesystem::path result_dir);
+
+  /**
+   * @brief Write keyframe usage statistics to file
+   * @param result_dir Output directory
+   * @param name_suffix Optional filename suffix
+   */
   void writeKeyframeUsedTimes(std::filesystem::path result_dir,
                               std::string name_suffix = "");
+
+  /**
+   * @brief Export training metrics to CSV file
+   * @param result_dir Output directory for CSV file
+   */
   void writeTrainingMetricsCSV(std::filesystem::path result_dir);
 
+  /**
+   * @brief Save chunk manifest file
+   * @param scene_dir Scene directory
+   */
   void saveChunkManifest(std::filesystem::path scene_dir);
+
+  /**
+   * @brief Load chunk manifest file
+   * @param scene_dir Scene directory
+   */
   void loadChunkManifest(std::filesystem::path scene_dir);
+
+  /**
+   * @brief Load camera parameters from JSON file
+   * @param json_path Path to cameras JSON file
+   */
   void loadCamerasFromJson(std::filesystem::path json_path);
 
+  /**
+   * @brief Save all Gaussians to PLY file
+   * @param name_suffix Filename suffix
+   */
   void saveTotalGaussians(std::string name_suffix);
 
-  torch::Tensor disc_kernel_;
-  float log_sigma_ = 3.0f;  // Sigma for LoG operator
+  // ========== Depth Estimation ==========
 
-  // Constants for depth estimation
-  static constexpr const char* DEPTH_MODEL_BASE_DIR = "/workspace/repo/models/";
+  // Constants
+  static constexpr const char *DEPTH_MODEL_BASE_DIR = "/workspace/repo/models/";
   static constexpr int LOG_KERNEL_RADIUS = 3;
   static constexpr int STEREO_MODEL_HEIGHT = 384;
   static constexpr int STEREO_MODEL_WIDTH = 1280;
 
+  // Depth-related data
+  torch::Tensor disc_kernel_;
+  float log_sigma_ = 3.0f;
+
   /**
-   * @brief Compute Laplacian of Gaussian (LoG) probability map for edge detection
+   * @brief Compute Laplacian of Gaussian (LoG) probability map for edge
+   * detection
    *
-   * Applies a Laplacian filter followed by smoothing with a disc kernel to detect
-   * edges and regions of high spatial variation. Used to identify areas with
-   * high information content for point sampling.
+   * Applies a Laplacian filter followed by smoothing with a disc kernel to
+   * detect edges and regions of high spatial variation. Used to identify areas
+   * with high information content for point sampling.
    *
    * @param image Input image tensor [C, H, W]
    * @return Probability map tensor [H, W] with values in [0, 1]
@@ -323,6 +844,16 @@ class GaussianMapper {
    * configured resolution.
    */
   void initializeStereoDepthEstimator();
+
+  /**
+   * @brief Extract valid keypoints for depth scale alignment
+   *
+   * Retrieves ORB-SLAM keypoints and their 3D positions for aligning
+   * monocular depth estimates with sparse SLAM reconstruction.
+   *
+   * @param pkf Keyframe to extract keypoints from
+   * @return Tuple of (pixel_coordinates, points_3d_local)
+   */
   std::tuple<std::vector<float>, std::vector<float>>
   extractValidKeypointsForDepthAlignment(
       std::shared_ptr<GaussianKeyframe> pkf) const;
@@ -344,209 +875,24 @@ class GaussianMapper {
                            int width,
                            int height);
 
- private:
-  // Updated function declarations:
-  std::shared_ptr<GaussianKeyframe> selectLocalityAwareKeyframe();
-  std::vector<std::shared_ptr<GaussianKeyframe>> predictUpcomingKeyframes(
-      int count = 5);
-  void initializeChunkManagement();
+  // ========== Protected Data Members ==========
 
- public:
-  // Parameters
-  std::filesystem::path config_file_path_;
-
-  std::shared_ptr<GaussianModel> gaussians_;
-
-  // Scene
-  std::shared_ptr<GaussianScene> scene_;
-
-  std::shared_ptr<KeyframeSelection> keyframe_selector_;
-
-  // SLAM system
-  std::shared_ptr<ORB_SLAM3::System> pSLAM_;
-
-  float chunk_size_ = 50.0;
-  std::filesystem::path chunk_save_dir_;
-  std::filesystem::path keyframe_save_dir_;
-
-  // Settings
-  torch::DeviceType device_type_;
-  int num_gaus_pyramid_sub_levels_ = 0;
-  std::vector<int> kf_gaus_pyramid_times_of_use_;
-  std::vector<float> kf_gaus_pyramid_factors_;
-
-  bool viewer_camera_id_set_ = false;
-  std::uint32_t viewer_camera_id_ = 0;
-  float rendered_image_viewer_scale_ = 1.0f;
-  float rendered_image_viewer_scale_main_ = 1.0f;
-
-  float z_near_ = 0.01f;
-  float z_far_ = 100.0f;
-
-  // Data
-  std::map<camera_id_t, torch::Tensor> undistort_mask_;
-  std::map<camera_id_t, torch::Tensor> viewer_main_undistort_mask_;
-  std::map<camera_id_t, torch::Tensor> viewer_sub_undistort_mask_;
-
- protected:
-  // Parameters
+  // Model parameters
   GaussianModelParams model_params_;
   GaussianOptimizationParams opt_params_;
   GaussianPipelineParams pipe_params_;
 
-  // Data
-  std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>
-      viewpoint_sliding_window_;
-  std::vector<std::size_t> kfid_shuffle_;
-  std::size_t kfid_shuffle_idx_ = 0;
-
- public:
-  std::map<std::size_t, float> kfs_loss_;
-  std::map<std::size_t, int> kfs_used_times_;
-
-  // Status
-  bool initial_mapped_;
-  bool interrupt_training_;
-  bool stopped_;
-  int iteration_;
-  float ema_loss_for_log_;
-  bool SLAM_ended_;
-  bool loop_closure_iteration_;
-  bool keep_training_ = false;
-  int default_sh_ = 0;
-
-  // Settings
-  SystemSensorType sensor_type_;
-
-  float stereo_baseline_length_ = 0.0f;
-  cv::Mat stereo_Q_;
-  std::shared_ptr<StereoDepth> stereo_depth_estimator_;
-  std::shared_ptr<MonoDepth> monocular_depth_estimator_;
-  float min_depth_ = 0.0f;
-  float max_depth_ = 100.0f;
-
-  std::unique_ptr<XFeat::XFDetector> feat_extractor_;
-  std::unique_ptr<GuidedMVS> guided_mvs_;
-
-  unsigned long min_num_initial_map_kfs_;
-  torch::Tensor background_;
-  float large_rot_th_;
-  float large_trans_th_;
-  torch::Tensor override_color_;
-
-  int new_keyframe_times_of_use_;
-  int local_BA_increased_times_of_use_;
-  int loop_closure_increased_times_of_use_;
-
-  int stable_num_iter_existence_;
-
-  std::filesystem::path result_dir_;
-  int keyframe_record_interval_;
-  int all_keyframes_record_interval_;
-  bool record_rendered_image_;
-  bool record_ground_truth_image_;
-  bool record_loss_image_;
-
-  int training_report_interval_;
-  bool record_loop_ply_;
-
-  // Training metrics collection
-  int metrics_collection_interval_ =
-      1000;  // Collect metrics every N iterations
-  struct TrainingMetrics {
-    int iteration;
-    double elapsed_time_seconds;
-    int active_gaussian_count;
-    int total_gaussian_count;
-    float reserved_memory_mb;
-    float allocated_memory_mb;
-    float ram_usage_mb;
-    int queue_keyframes;
-  };
-  std::vector<TrainingMetrics> training_metrics_;
-  std::chrono::steady_clock::time_point training_start_time_;
-
-  int exposure_optimization_ = 0;
-  float init_proba_scaler_ = 2.0;
-  bool downsample_for_sampling_ = false;
-
-  // Tools
-  std::random_device rd_;
-  TrajectoryViewer *trajectory_viewer_ = nullptr;
-
-  cv::Mat external_image_;
-  Sophus::SE3f external_pose_;
-  LeakyFrameQueue frame_queue_;
-
-  // Mutex
-  std::mutex mutex_status_;
-  std::mutex mutex_settings_;
-  std::mutex
-      mutex_render_;  ///< the model is suppose to be read-only from outside
-  std::mutex mutex_external_data_;
-
- public:
-  bool isKeyframe(const Sophus::SE3f &current_pose, double current_time);
-  // Handle new keyframe from external mode (formerly processNewFrame)
-  void handleNewKeyframeFromExternal(cv::Mat &rgb_image,
-                                     cv::Mat &depth_or_right_image,
-                                     const Sophus::SE3f &pose,
-                                     const double timestamp);
-  void handleNewFrameExternal(const cv::Mat &rgb_image,
-                              const cv::Mat &depth_or_right_image,
-                              const Sophus::SE3f &pose,
-                              const double timestamp);
-
-  void setRecentExternalData(const cv::Mat &rgb_image,
-                             const Sophus::SE3f &pose);
-
-  std::tuple<const cv::Mat, const Sophus::SE3f> getRecentExternalData();
-  void run_external_poses();
-  void visualizeDepthReconstruction(std::shared_ptr<GaussianKeyframe> pkf,
-                                    const torch::Tensor &points3D,
-                                    const torch::Tensor &valid_points,
-                                    const std::string &save_path);
-
-  volatile bool isExternalDataStopped() {
-    return external_data_stopped_.load(std::memory_order_acquire);
-  }
-
-  volatile void signalExternalDataStopped() {
-    std::cout << "External data stopped" << std::endl;
-    external_data_stopped_.store(true, std::memory_order_release);
-  }
-
-  std::atomic<bool> external_data_stopped_{false};
-  std::function<void()> completion_callback_;
-  void setCompletionCallback(std::function<void()> callback);
-
-  // Member variables for external pose handling
-  Sophus::SE3f last_keyframe_pose_;
-  float min_keyframe_translation_{
-      0.25f};                           // Minimum translation for new keyframe
-  float min_keyframe_rotation_{0.15f};  // Minimum rotation in radians
-  double last_keyframe_timestamp_{0.0};
-  float min_keyframe_time_{0.5f};  // Minimum time between keyframes
-
-  // Loop closure pause mechanism
-  bool shouldPauseImageIngestion() const {
-    return pause_image_ingestion_.load(std::memory_order_acquire);
-  }
-
-  void waitWhilePaused() {
-    while (pause_image_ingestion_.load(std::memory_order_acquire)) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-  }
-
  private:
+  // ========== Private Data Members ==========
+
+  // Loop closure control
   std::atomic<bool> pause_image_ingestion_{false};
   int loop_closure_optimization_iterations_ = 1000;
 
   // Spatial gradient masking for loop closure
   bool enable_spatial_gradient_masking_ = false;
-  float max_optimization_distance_ = 25.0f;  // meters
 
+  // GPU memory management
   std::deque<std::shared_ptr<GaussianKeyframe>> gpu_queue;
   size_t max_gpu_keyframes_ = 400;
 };

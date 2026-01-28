@@ -21,6 +21,7 @@
 #include "utils/profiling.h"
 #include "utils/trajectory_viewer.h"
 
+// Helper function to query current RAM usage from /proc/self/status
 float getCurrentRAMUsageMB() {
   std::ifstream status_file("/proc/self/status");
   std::string line;
@@ -35,26 +36,7 @@ float getCurrentRAMUsageMB() {
   return 0.0f;  // Return 0 if unable to read
 }
 
-void trainingReport(int iteration,
-                    int num_iterations,
-                    torch::Tensor& Ll1,
-                    torch::Tensor& loss,
-                    float ema_loss_for_log,
-                    int64_t elapsed_time,
-                    GaussianModel& gaussians,
-                    GaussianScene& scene,
-                    GaussianPipelineParams& pipe,
-                    torch::Tensor& background) {
-  std::cout << std::fixed << std::setprecision(8) << "Training iteration "
-            << iteration << "/" << num_iterations
-            << ", time elapsed:" << elapsed_time / 1000.0 << "s"
-            << ", ema_loss:" << ema_loss_for_log
-            << ", num_points:" << gaussians.xyz_.size(0) << std::endl;
-}
-
 void GaussianMapper::run() {
-  std::cout << "[MAPPER DEBUG] GaussianMapper::run() started" << std::endl;
-
   std::chrono::steady_clock::time_point training_start =
       std::chrono::steady_clock::now();
   training_start_time_ = training_start;
@@ -70,14 +52,10 @@ void GaussianMapper::run() {
   std::filesystem::remove_all(keyframe_save_dir_);
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(keyframe_save_dir_)
 
-  std::cout << "[MAPPER DEBUG] Starting initial mapping phase" << std::endl;
   // First loop: Initial gaussian mapping
   while (!isStopped()) {
     // Check conditions for initial mapping
     if (hasMetInitialMappingConditions()) {
-      std::cout << "[MAPPER DEBUG] Initial mapping completed, breaking to "
-                   "next phase"
-                << std::endl;
       pSLAM_->getAtlas()->clearMappingOperation();
 
       // Get initial sparse map
@@ -115,7 +93,6 @@ void GaussianMapper::run() {
           // Setup training on first keyframe
           if (!initial_mapped_) {
             gaussians_->trainingSetup(opt_params_);
-            std::cout << "Inital mapped!\n";
             initial_mapped_ = true;
           }
         }
@@ -127,17 +104,13 @@ void GaussianMapper::run() {
       // Finish initial mapping loop
       break;
     } else if (pSLAM_->isShutDown()) {
-      std::cout << "[MAPPER DEBUG] SLAM shutdown during initial mapping"
-                << std::endl;
       break;
     } else {
       // Initial conditions not satisfied
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
   }
-  std::cout << "[MAPPER DEBUG] Exited initial mapping phase" << std::endl;
 
-  std::cout << "[MAPPER DEBUG] Starting incremental mapping phase" << std::endl;
   // Second loop: Incremental gaussian mapping
   int SLAM_stop_iter = 0;
   while (!isStopped()) {
@@ -155,18 +128,12 @@ void GaussianMapper::run() {
     if (pSLAM_->isShutDown()) {
       SLAM_stop_iter = getIteration();
       SLAM_ended_ = true;
-      std::cout << "[MAPPER DEBUG] SLAM shutdown at iteration "
-                << SLAM_stop_iter << std::endl;
     }
 
     if (SLAM_ended_) {
-      std::cout << "[MAPPER DEBUG] Breaking from incremental mapping"
-                << std::endl;
       break;
     }
   }
-
-  std::cout << "[MAPPER DEBUG] Exited incremental mapping phase" << std::endl;
 
   std::chrono::steady_clock::time_point training_end =
       std::chrono::steady_clock::now();
@@ -187,39 +154,22 @@ void GaussianMapper::run() {
               << (result_dir_ / "training_time.txt").string() << std::endl;
   }
 
-  std::cout << "[MAPPER DEBUG] ===== STARTING CLEANUP SECTION ====="
-            << std::endl;
-  std::cout << "[MAPPER DEBUG] Saving total gaussians" << std::endl;
+  // Finalization: save outputs and clean up
   saveTotalGaussians("_shutdown");
-
-  std::cout << "[MAPPER DEBUG] Rendering and recording all keyframes"
-            << std::endl;
   renderAndRecordAllKeyframes("_shutdown");
-
-  std::cout << "[MAPPER DEBUG] Saving scene" << std::endl;
   saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
             "data");
-
-  std::cout << "[MAPPER DEBUG] Writing keyframe used times" << std::endl;
   writeKeyframeUsedTimes(result_dir_ / "used_times", "final");
-
-  std::cout << "[MAPPER DEBUG] Writing training metrics CSV" << std::endl;
   writeTrainingMetricsCSV(result_dir_);
 
-  std::cout << "[MAPPER DEBUG] Cleaning up temporary directories" << std::endl;
   std::filesystem::remove_all(chunk_save_dir_);
   std::filesystem::remove_all(keyframe_save_dir_);
 
-  std::cout << "[MAPPER DEBUG] Signaling stop" << std::endl;
   signalStop();
 
   if (completion_callback_) {
-    std::cout << "[MAPPER DEBUG] Calling completion callback" << std::endl;
     completion_callback_();
   }
-
-  std::cout << "[MAPPER DEBUG] ===== GaussianMapper::run() COMPLETED ====="
-            << std::endl;
 }
 
 void GaussianMapper::trainForOneIteration() {
@@ -287,12 +237,10 @@ void GaussianMapper::trainForOneIteration() {
   bool had_to_load = false;
   if (!viewpoint_cam->loaded_) {
     std::cout << "Loading keyframe " << std::to_string(viewpoint_cam->fid_)
-              << " to GPU for training" << std::endl;
+              << " from disk to GPU" << std::endl;
     viewpoint_cam->loadDataFromDisk();
     had_to_load = true;
   }
-
-  // std::cout << "Using keyframe id: " << viewpoint_cam->fid_ << std::endl;
 
   writeKeyframeUsedTimes(result_dir_ / "used_times");
 
@@ -429,7 +377,6 @@ bool GaussianMapper::isStopped() {
 void GaussianMapper::signalStop(const bool going_to_stop) {
   std::unique_lock<std::mutex> lock_status(this->mutex_status_);
   this->stopped_ = going_to_stop;
-  std::cout << "Signal stop received" << std::endl;
 }
 
 bool GaussianMapper::hasMetInitialMappingConditions() {
