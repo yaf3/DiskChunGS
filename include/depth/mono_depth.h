@@ -84,6 +84,10 @@ class MonoDepth {
   int img_height_;
   int img_width_;
 
+  // Constants
+  static constexpr int DEFAULT_INPUT_HEIGHT = 518;
+  static constexpr int DEFAULT_INPUT_WIDTH = 518;
+
   /**
    * @brief Initialize the TensorRT model
    * @param model_path Path to model file

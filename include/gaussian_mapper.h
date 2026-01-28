@@ -256,15 +256,62 @@ class GaussianMapper {
   torch::Tensor disc_kernel_;
   float log_sigma_ = 3.0f;  // Sigma for LoG operator
 
+  // Constants for depth estimation
+  static constexpr const char* DEPTH_MODEL_BASE_DIR = "/workspace/repo/models/";
+  static constexpr int LOG_KERNEL_RADIUS = 3;
+  static constexpr int STEREO_MODEL_HEIGHT = 384;
+  static constexpr int STEREO_MODEL_WIDTH = 1280;
+
+  /**
+   * @brief Compute Laplacian of Gaussian (LoG) probability map for edge detection
+   *
+   * Applies a Laplacian filter followed by smoothing with a disc kernel to detect
+   * edges and regions of high spatial variation. Used to identify areas with
+   * high information content for point sampling.
+   *
+   * @param image Input image tensor [C, H, W]
+   * @return Probability map tensor [H, W] with values in [0, 1]
+   */
   torch::Tensor computeLoGProbability(const torch::Tensor &image);
+
+  /**
+   * @brief Initialize circular disc kernel for smoothing LoG responses
+   *
+   * Creates a normalized disc-shaped convolution kernel used to smooth
+   * the Laplacian response and reduce noise in edge detection.
+   */
   void initializeLaplacianOfGaussianKernel();
 
+  /**
+   * @brief Initialize monocular depth estimator with Depth-Anything v2 model
+   *
+   * Loads the Depth-Anything v2 ViT-Large model for monocular depth estimation.
+   */
   void initializeMonocularDepthEstimator();
+
+  /**
+   * @brief Initialize stereo depth estimator with Fast-ACVNet model
+   *
+   * Loads the Fast-ACVNet+ model for stereo depth estimation at the
+   * configured resolution.
+   */
   void initializeStereoDepthEstimator();
   std::tuple<std::vector<float>, std::vector<float>>
   extractValidKeypointsForDepthAlignment(
       std::shared_ptr<GaussianKeyframe> pkf) const;
 
+  /**
+   * @brief Sample confidence values at specified UV coordinates
+   *
+   * Uses bilinear interpolation to sample from a confidence map at given
+   * pixel coordinates.
+   *
+   * @param mono_depth_conf Confidence map tensor [1, 1, H, W]
+   * @param uv Pixel coordinates tensor [N, 2] where N is number of points
+   * @param width Image width for coordinate normalization
+   * @param height Image height for coordinate normalization
+   * @return Sampled confidence values [N]
+   */
   torch::Tensor sampleConf(const torch::Tensor &mono_depth_conf,
                            const torch::Tensor &uv,
                            int width,

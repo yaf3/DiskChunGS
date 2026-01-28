@@ -24,7 +24,8 @@
 #include <fstream>
 #include <iostream>
 
-// Simple logger for TensorRT
+namespace {
+// TensorRT logger for internal use
 class Logger : public nvinfer1::ILogger {
  public:
   void log(Severity severity, const char* msg) noexcept override {
@@ -33,12 +34,14 @@ class Logger : public nvinfer1::ILogger {
     }
   }
 };
+}  // anonymous namespace
 
 MonoDepth::MonoDepth(const std::string& model_path) {
   initialize_model(model_path);
 }
 
 void MonoDepth::initialize_model(const std::string& user_model_path) {
+  // Generate engine cache path by replacing .onnx extension with .engine
   std::string base_filepath = user_model_path;
   size_t pos = base_filepath.rfind(".onnx");
   if (pos != std::string::npos) {
@@ -47,6 +50,7 @@ void MonoDepth::initialize_model(const std::string& user_model_path) {
 
   std::string engine_path = base_filepath + ".engine";
 
+  // Prefer cached engine if available, otherwise use ONNX model
   std::string model_path;
   if (std::filesystem::exists(engine_path)) {
     model_path = engine_path;
@@ -76,9 +80,9 @@ void MonoDepth::initialize_model(const std::string& user_model_path) {
     std::cout << "TensorRT DepthAnything model initialized successfully"
               << std::endl;
 
-    // Set input dimensions (these should match the DepthAnything model)
-    input_height_ = 518;
-    input_width_ = 518;
+    // Set model input dimensions
+    input_height_ = DEFAULT_INPUT_HEIGHT;
+    input_width_ = DEFAULT_INPUT_WIDTH;
 
   } catch (const std::exception& e) {
     throw std::runtime_error("Failed to initialize TensorRT model: " +
@@ -109,54 +113,42 @@ std::tuple<torch::Tensor, torch::Tensor> MonoDepth::estimate_depth(
     input_image = image.clone();
   }
 
-  auto start_inf = std::chrono::high_resolution_clock::now();
-
   // Run TensorRT inference
   cv::Mat raw_depth = depth_anything_->predict(input_image);
-
-  auto end_inf = std::chrono::high_resolution_clock::now();
 
   // Convert to torch tensor for processing
   torch::Tensor depth =
       tensor_utils::cvMat2TorchTensor_Float32(raw_depth, torch::kCUDA);
 
-  // Apply normalization: (depth - t) / s
+  // Normalize depth using median and MAD: (depth - t) / s
   auto [t, s] = get_t_s(depth);
   depth = (depth - t) / s;
 
+  // Ensure depth has correct dimensions [B, C, H, W]
   if (depth.dim() == 2) {
     depth = depth.unsqueeze(0).unsqueeze(0);
   } else if (depth.dim() == 3) {
     depth = depth.unsqueeze(0);
   }
 
-  // Compute depth confidence using edge detection
+  // Compute confidence map based on depth gradients
   torch::Tensor confidence = depth_utils::computeDepthConfidence(depth);
-
-  auto inf_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-      end_inf - start_inf);
-  // std::cout << "TensorRT inference time: " << inf_time.count() << "ms"
-  //           << std::endl;
 
   return std::make_tuple(depth, confidence);
 }
 
-/**
- * Get median and median absolute deviation for depth normalization
- */
 std::tuple<torch::Tensor, torch::Tensor> MonoDepth::get_t_s(
     const torch::Tensor& depth) const {
+  // Compute robust statistics: median (t) and median absolute deviation (s)
   torch::Tensor t = depth.median();
   torch::Tensor s = (depth - t).abs().median();
   return std::make_tuple(t, s);
 }
 
-/**
- * Align samples by finding scale and offset
- */
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
 MonoDepth::align_samples(const torch::Tensor& tri_idepth,
                          const torch::Tensor& mono_idepth) const {
+  // Compute robust scale and shift to align mono depth to triangulated depth
   auto [t_tri, s_tri] = get_t_s(tri_idepth);
   auto [t_mono, s_mono] = get_t_s(mono_idepth);
 
@@ -194,23 +186,23 @@ torch::Tensor MonoDepth::align_depth(
                        torch::TensorOptions().dtype(torch::kFloat32))
           .to(mono_depth_map.device());
 
-  // Step 1: Sample normalized depth values at keypoint locations
+  // Sample normalized monocular depth at keypoint locations
   torch::Tensor mono_idepth =
       sample_depth_at_pixels(mono_depth_map, pixel_coords, width, height);
 
-  // Step 2: Convert metric depths to inverse depths
+  // Convert metric depths to inverse depths for alignment
   torch::Tensor tri_idepth = 1.0f / metric_depths;
 
-  // Step 3: First alignment
+  // Initial alignment using all keypoints
   auto [mono_idepth_aligned, scale, offset] =
       align_samples(tri_idepth, mono_idepth);
 
-  // Step 4: Outlier filtering
+  // Filter outliers: reject keypoints with error > 5x median error
   torch::Tensor err = (mono_idepth_aligned - tri_idepth).abs();
   torch::Tensor err_median = err.median();
   torch::Tensor valid_mask = err < (5.0f * err_median);
 
-  // Step 5: Re-align with filtered data
+  // Re-align using only inliers (if enough remain)
   if (valid_mask.sum().item<int>() >= 3) {
     torch::Tensor tri_idepth_valid = tri_idepth.masked_select(valid_mask);
     torch::Tensor mono_idepth_valid = mono_idepth.masked_select(valid_mask);
@@ -218,40 +210,37 @@ torch::Tensor MonoDepth::align_depth(
     auto [mono_idepth_aligned_final, scale_final, offset_final] =
         align_samples(tri_idepth_valid, mono_idepth_valid);
 
-    // Step 6: Apply to entire depth map
+    // Apply refined alignment to entire depth map
     torch::Tensor mono_depth_map_aligned =
         mono_depth_map * scale_final + offset_final;
 
     return mono_depth_map_aligned;
 
   } else {
-    std::cout << "Warning: Not enough valid keypoints after filtering"
-              << std::endl;
-    // Fall back to first alignment
+    std::cout << "Warning: Not enough valid keypoints after outlier filtering ("
+              << valid_mask.sum().item<int>() << " remaining)" << std::endl;
+    // Fall back to initial alignment using all keypoints
     torch::Tensor mono_depth_map_aligned = mono_depth_map * scale + offset;
     return mono_depth_map_aligned;
   }
 }
 
-/**
- * Sample depth values at given pixel coordinates
- */
 torch::Tensor MonoDepth::sample_depth_at_pixels(
     const torch::Tensor& depth_map,
     const torch::Tensor& pixel_coords,
     int width,
     int height) const {
-  // Convert pixel coordinates to normalized coordinates [-1, 1]
+  // Normalize pixel coordinates from [0, width/height] to [-1, 1] for grid_sample
   torch::Tensor normalized_coords = pixel_coords.clone().to(torch::kFloat32);
   normalized_coords.select(1, 0) =
       (normalized_coords.select(1, 0) / (width - 1)) * 2.0 - 1.0;
   normalized_coords.select(1, 1) =
       (normalized_coords.select(1, 1) / (height - 1)) * 2.0 - 1.0;
 
-  // Reshape for grid_sample: [1, 1, N, 2]
+  // Reshape to grid_sample format: [batch, height, width, 2]
   torch::Tensor grid = normalized_coords.view({1, 1, -1, 2});
 
-  // Sample using bilinear interpolation
+  // Sample depth values using bilinear interpolation
   torch::Tensor sampled = torch::nn::functional::grid_sample(
       depth_map, grid,
       torch::nn::functional::GridSampleFuncOptions()

@@ -123,6 +123,10 @@ class StereoDepth {
   float max_dist_;
   std::string engine_cache_path_;
 
+  // Constants
+  static constexpr const char* DEFAULT_ENGINE_CACHE_DIR =
+      "/workspace/repo/models/";
+
   /**
    * @brief Initialize TensorRT model
    * @param model_path Path to ONNX model file
@@ -163,7 +167,12 @@ class StereoDepth {
   void get_model_info();
 
   /**
-   * @brief Prepare input image for inference
+   * @brief Preprocess input image on GPU and write to pinned memory buffer
+   *
+   * Performs resize, normalization, and channel reordering on GPU. Output is
+   * written to pinned host memory for faster CPU-GPU transfers during
+   * inference.
+   *
    * @param img Input image
    * @param output_buffer Pinned memory buffer to write to
    */

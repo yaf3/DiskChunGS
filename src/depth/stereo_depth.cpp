@@ -58,7 +58,7 @@ void StereoDepth::initialize_model(const std::string& model_path) {
   if (pos != std::string::npos) {
     base_filename = base_filename.substr(0, pos);
   }
-  engine_cache_path_ = "/workspace/repo/models/" + base_filename + ".engine";
+  engine_cache_path_ = std::string(DEFAULT_ENGINE_CACHE_DIR) + base_filename + ".engine";
 
   try {
     // Try to load cached engine first
@@ -239,11 +239,8 @@ void StereoDepth::allocate_buffers() {
   // Allocate host memory for output
   output_data_ = new float[input_height_ * input_width_];
 
-  // Pre-allocate GPU preprocessing buffers
+  // Pre-allocate GPU preprocessing buffers (3 channels for RGB)
   gpu_channels_.resize(3);
-
-  // std::cout << "GPU buffers allocated (with pinned host memory)" <<
-  // std::endl;
 }
 
 void StereoDepth::free_buffers() {
@@ -274,7 +271,6 @@ void StereoDepth::free_buffers() {
   }
 }
 
-// GPU-accelerated preprocessing - all operations on GPU
 void StereoDepth::prepare_input_optimized(const cv::Mat& img,
                                           float* output_buffer) {
   // Upload to GPU
@@ -292,17 +288,17 @@ void StereoDepth::prepare_input_optimized(const cv::Mat& img,
     gpu_float_ = gpu_resized_;
   }
 
-  // ImageNet normalization on GPU - RGB order
-  cv::Scalar mean(0.485, 0.456, 0.406);
-  cv::Scalar std(0.229, 0.224, 0.225);
+  // Apply ImageNet normalization on GPU (RGB order)
+  const cv::Scalar mean(0.485, 0.456, 0.406);
+  const cv::Scalar std(0.229, 0.224, 0.225);
 
   cv::cuda::subtract(gpu_float_, mean, gpu_normalized_);
   cv::cuda::divide(gpu_normalized_, std, gpu_normalized_);
 
-  // Split channels on GPU
+  // Split into separate channels and download in CHW format
   cv::cuda::split(gpu_normalized_, gpu_channels_);
 
-  // Download CHW data directly to pinned memory
+  // Download channel data directly to pinned memory for efficient transfer
   const int channel_size = input_width_ * input_height_;
   for (int c = 0; c < 3; c++) {
     gpu_channels_[c].download(cv::Mat(input_height_, input_width_, CV_32F,
@@ -339,10 +335,10 @@ cv::Mat StereoDepth::inference_tensorrt() {
     cudaMemcpyAsync(output_data_, buffers_[2], output_size_bytes,
                     cudaMemcpyDeviceToHost, stream_);
 
-    // Synchronize stream to ensure completion
+    // Synchronize stream to ensure all operations complete
     cudaStreamSynchronize(stream_);
 
-    // Create result matrix - no clone needed, output_data_ is persistent
+    // Clone output data since output_data_ buffer will be reused
     return cv::Mat(input_height_, input_width_, CV_32F, output_data_).clone();
 
   } catch (const std::exception& e) {
@@ -356,54 +352,34 @@ cv::Mat StereoDepth::estimate_depth(const cv::Mat& left_img,
   img_height_ = left_img.rows;
   img_width_ = left_img.cols;
 
-  // Use optimized preprocessing with pinned memory and TensorRT inference
-  auto start_prep = std::chrono::high_resolution_clock::now();
+  // Preprocess both images using GPU-accelerated pipeline
   prepare_input_optimized(left_img, pinned_left_input_);
   prepare_input_optimized(right_img, pinned_right_input_);
-  auto end_prep = std::chrono::high_resolution_clock::now();
 
-  auto start_inf = std::chrono::high_resolution_clock::now();
+  // Run TensorRT inference to compute disparity
   cv::Mat raw_disparity = inference_tensorrt();
-  auto end_inf = std::chrono::high_resolution_clock::now();
-
-  // Optional: Print timing breakdown
-  auto prep_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-      end_prep - start_prep);
-  auto inf_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-      end_inf - start_inf);
-  // std::cout << "Preprocessing: " << prep_time.count()
-  //           << "ms, Inference: " << inf_time.count() << "ms" << std::endl;
 
   return raw_disparity;
 }
 
-/**
- * @brief Estimate depth from stereo images and convert to metric depth
- * @param left_img Left stereo image
- * @param right_img Right stereo image
- * @param focal_length Camera focal length in pixels (for original image
- * resolution)
- * @param baseline Stereo baseline distance in meters
- * @return Depth map in meters
- */
 cv::Mat StereoDepth::estimate_metric_depth(const cv::Mat& left_img,
                                            const cv::Mat& right_img,
                                            const float focal_length,
                                            const float baseline) {
-  // First get disparity
+  // Compute disparity at model resolution
   cv::Mat disparity = estimate_depth(left_img, right_img);
 
-  // Scale disparity back to original image resolution
+  // Resize disparity back to original image resolution
   cv::Mat disparity_map;
   cv::resize(disparity, disparity_map, cv::Size(img_width_, img_height_), 0, 0,
              cv::INTER_LINEAR);
 
-  // Scale disparity values to account for resolution change
+  // Scale disparity values to match original image resolution
   float scale_factor =
       static_cast<float>(img_width_) / static_cast<float>(input_width_);
   disparity_map *= scale_factor;
 
-  // Convert to depth
+  // Convert disparity to metric depth using: depth = (focal_length * baseline) / disparity
   cv::Mat depth_map;
   cv::divide(focal_length * baseline, disparity_map, depth_map);
   return depth_map;
