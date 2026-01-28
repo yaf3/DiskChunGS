@@ -61,8 +61,7 @@ GaussianOptimizationParams::GaussianOptimizationParams(
     float lambda_dssim,
     float lambda_depth,
     int auto_distribute,
-    bool smooth_l1,
-    float opacity_reg)
+    bool smooth_l1)
     : iterations_(iterations),
       position_lr_init_(position_lr_init),
       position_lr_decay_(position_lr_decay),
@@ -76,5 +75,4 @@ GaussianOptimizationParams::GaussianOptimizationParams(
       lambda_dssim_(lambda_dssim),
       lambda_depth_(lambda_depth),
       auto_distribute_(auto_distribute),
-      smooth_l1_(smooth_l1),
-      opacity_reg_(opacity_reg) {}
+      smooth_l1_(smooth_l1) {}

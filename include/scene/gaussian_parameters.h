@@ -67,8 +67,7 @@ class GaussianOptimizationParams {
                              float lambda_dssim = 0.2f,
                              float lambda_depth = 0.001f,
                              int auto_distribute = 0,
-                             bool smooth_l1 = false,
-                             float opacity_reg = 0.01f);
+                             bool smooth_l1 = false);
 
  public:
   int iterations_;
@@ -85,5 +84,4 @@ class GaussianOptimizationParams {
   float lambda_depth_;
   int auto_distribute_;
   bool smooth_l1_;
-  float opacity_reg_;
 };

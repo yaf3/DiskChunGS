@@ -359,7 +359,8 @@ torch::Tensor GaussianKeyframe::applyExposureTransform(torch::Tensor& colors) {
   return result.clamp(0.0f, 1.0f);
 }
 
-torch::Tensor GaussianKeyframe::sixD2RotationMatrix(const torch::Tensor& rW2C) const {
+torch::Tensor GaussianKeyframe::sixD2RotationMatrix(
+    const torch::Tensor& rW2C) const {
   // Convert 6D representation to rotation matrix
   // Input: rW2C [3, 2] - first two columns of rotation matrix
   // Output: R [3, 3] - full rotation matrix
@@ -412,7 +413,7 @@ void GaussianKeyframe::setupStereoData(
     return;  // No stereo image available
   }
 
-  // FIX: Convert float32 [0,1] images to uint8 [0,255] images
+  // Convert float32 [0,1] images to uint8 [0,255] images
   cv::Mat left_img_uint8, right_img_uint8;
   img_undist.convertTo(left_img_uint8, CV_8UC3, 255.0);
   img_auxiliary_undist.convertTo(right_img_uint8, CV_8UC3, 255.0);
@@ -464,14 +465,6 @@ GaussianKeyframe::extractValidKeypointsForDepthAlignment() const {
     float z = kps_point_local_[3 * i + 2];
 
     // Check if keypoint has valid 3D coordinates
-    // Following the pattern from the Python code where has_pt3d checks for
-    // valid points
-    // bool has_valid_3d = (z > 0.1f && z < 100.0f) &&  // reasonable depth
-    // range
-    //                     (u >= 0 && u < image_width_) &&  // within image
-    //                     bounds (v >= 0 && v < image_height_) &&
-    //                     std::isfinite(x) && std::isfinite(y) &&
-    //                     std::isfinite(z);
     bool has_valid_3d = (z > 0.0) &&
                         (u >= 0 && u < image_width_) &&  // within image bounds
                         (v >= 0 && v < image_height_) && std::isfinite(x) &&
@@ -581,7 +574,6 @@ GaussianKeyframe::getTrainingData(
                          image_width);
 }
 
-// In GaussianKeyframe class
 void GaussianKeyframe::generateImagePyramid(const cv::Mat& img_undist) {
   assert(!img_undist.empty());
   cv::cuda::GpuMat img_gpu;
@@ -597,7 +589,6 @@ void GaussianKeyframe::generateImagePyramid(const cv::Mat& img_undist) {
   }
 }
 
-// In GaussianKeyframe class
 void GaussianKeyframe::generateInverseDepthPyramid(const cv::Mat& depth_mat) {
   if (!depth_mat.empty()) {
     gaus_pyramid_inv_depth_image_.resize(num_gaus_pyramid_sub_levels_);
@@ -916,9 +907,6 @@ void GaussianKeyframe::transferToGPU() {
     Tensor_vec_exposure_ = {exposure_transform_};
     Tensor_vec_depth_scale_ = {depth_scale_};
     Tensor_vec_depth_bias_ = {depth_bias_};
-
-    // Note: You may need to reinitialize the optimizer with the new GPU tensors
-    // depending on your optimizer implementation
   }
 
   loaded_ = true;

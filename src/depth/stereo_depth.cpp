@@ -242,7 +242,8 @@ void StereoDepth::allocate_buffers() {
   // Pre-allocate GPU preprocessing buffers
   gpu_channels_.resize(3);
 
-  std::cout << "GPU buffers allocated (with pinned host memory)" << std::endl;
+  // std::cout << "GPU buffers allocated (with pinned host memory)" <<
+  // std::endl;
 }
 
 void StereoDepth::free_buffers() {

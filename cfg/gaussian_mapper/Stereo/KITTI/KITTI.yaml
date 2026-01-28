@@ -51,7 +51,6 @@ Optimization.exposure_lr: 0.000
 Optimization.depth_scale_bias_lr: 0.0001
 Optimization.lambda_dssim: 0.2
 Optimization.lambda_depth: 1.0
-Optimization.opacity_reg: 0.01
 Optimization.exposure_optimization: 0 # 0:false, 1 or other integer:true
 
 GaussianViewer.glfw_window_width: 1862

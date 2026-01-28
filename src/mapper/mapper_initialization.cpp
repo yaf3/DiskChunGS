@@ -208,10 +208,10 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
             camera.width_ * this->kf_gaus_pyramid_factors_[l];
         camera.gaus_pyramid_height_[l] =
             camera.height_ * this->kf_gaus_pyramid_factors_[l];
-        std::cout << "For level: " << l
-                  << " width: " << camera.gaus_pyramid_width_[l]
-                  << " and height: " << camera.gaus_pyramid_height_[l]
-                  << std::endl;
+        // std::cout << "For level: " << l
+        //           << " width: " << camera.gaus_pyramid_width_[l]
+        //           << " and height: " << camera.gaus_pyramid_height_[l]
+        //           << std::endl;
       }
 
       camera.params_[0] /*new fx*/ = SLAM_fx * x_ratio;

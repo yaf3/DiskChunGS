@@ -146,8 +146,6 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       settings_file["Optimization.depth_scale_bias_lr"].operator float();
   opt_params_.smooth_l1_ =
       (settings_file["Optimization.smooth_l1"].operator int()) != 0;
-  opt_params_.opacity_reg_ =
-      settings_file["Optimization.opacity_reg"].operator float();
 
   opt_params_.lambda_dssim_ =
       settings_file["Optimization.lambda_dssim"].operator float();

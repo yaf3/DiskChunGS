@@ -66,5 +66,4 @@ Optimization.lambda_depth: 0.1
 Optimization.densification_interval: 50
 Optimization.densify_min_opacity: 0.05
 Optimization.densify_grad_threshold: 0.05 
-Optimization.opacity_reg: 0.001
 Optimization.exposure_optimization: 0

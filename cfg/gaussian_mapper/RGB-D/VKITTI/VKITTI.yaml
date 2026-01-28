@@ -65,7 +65,6 @@ Optimization.rotation_lr: 0.001 #0.001
 Optimization.pose_lr: 0.0000
 Optimization.exposure_lr: 0.00
 Optimization.smooth_l1: 0  # 0:false, 1:true
-Optimization.opacity_reg: 0.001
 
 # Chunking
 Chunking.chunk_size: 50.0
