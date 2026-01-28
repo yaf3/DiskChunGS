@@ -11,12 +11,13 @@
  * See <http://www.gnu.org/licenses/>.
  */
 
-#include <iostream>
-
 #include "gaussian_mapper.h"
 #include "gaussian_mapper_external.h"
 
-// Frame implementation
+// ============================================================================
+// Frame and LeakyFrameQueue implementations
+// ============================================================================
+
 Frame::Frame(const cv::Mat& rgb,
              const cv::Mat& depth,
              const Sophus::SE3f& p,
@@ -26,15 +27,12 @@ Frame::Frame(const cv::Mat& rgb,
       pose(p),
       timestamp(ts) {}
 
-// LeakyFrameQueue implementation
 LeakyFrameQueue::LeakyFrameQueue(size_t max_size) : max_size_(max_size) {}
 
 void LeakyFrameQueue::push(Frame&& frame) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   if (queue_.size() >= max_size_) {
-    // Drop newest frame when full
-    // std::cout << "Queue full, dropped newest frame" << std::endl;
     return;
   }
 
@@ -74,56 +72,48 @@ size_t LeakyFrameQueue::size() const {
   return queue_.size();
 }
 
-// GaussianMapper external mode methods
+// ============================================================================
+// GaussianMapper external pose mode methods
+// ============================================================================
+
 void GaussianMapper::handleNewFrameExternal(const cv::Mat& rgb_image,
                                             const cv::Mat& depth_or_right_image,
                                             const Sophus::SE3f& pose,
                                             const double timestamp) {
-  static int frame_count = 0;
-  // std::cout << "External frame #" << frame_count++ << " with timestamp "
-  //           << timestamp << " and position " <<
-  //           pose.translation().transpose()
-  //           << std::endl;
   frame_queue_.push(Frame(rgb_image, depth_or_right_image, pose, timestamp));
 }
 
 void GaussianMapper::run_external_poses() {
-  std::cout << "[MAPPER DEBUG] GaussianMapper::run_external_poses() started"
-            << std::endl;
+  training_start_time_ = std::chrono::steady_clock::now();
 
-  std::chrono::steady_clock::time_point training_start =
-      std::chrono::steady_clock::now();
-  training_start_time_ = training_start;
-
+  // Initialize output directories
   std::filesystem::remove_all(chunk_save_dir_);
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
 
   std::filesystem::remove_all(keyframe_save_dir_);
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(keyframe_save_dir_)
 
+  // Set default scene extent for external mode
   scene_->cameras_extent_ = 1.0f;
 
-  // Process frames until we have enough keyframes
+  // Initial mapping: process first keyframe and setup training
   while (!initial_mapped_ && !isStopped() && !isExternalDataStopped()) {
     auto maybe_frame = frame_queue_.pop(true);
-    if (!maybe_frame) continue;
+    if (!maybe_frame) {
+      continue;
+    }
 
     auto& frame = *maybe_frame;
     handleNewKeyframeFromExternal(frame.rgb_image, frame.depth_image,
                                   frame.pose, frame.timestamp);
-    std::cout << "Num keyframes: " << scene_->keyframes().size() << std::endl;
 
     std::unique_lock<std::mutex> lock_render(mutex_render_);
-    std::cout << "Calling training setup!" << std::endl;
     gaussians_->trainingSetup(opt_params_);
     initial_mapped_ = true;
   }
 
-  int SLAM_stop_iter = 0;
-  // Start training loop while still processing new frames
-  std::cout << "Starting training loop" << std::endl;
+  // Main training loop: process incoming frames and train
   while (!isExternalDataStopped() && !isStopped()) {
-    // Process any pending frames
     while (auto maybe_frame = frame_queue_.pop(false)) {
       handleNewKeyframeFromExternal(maybe_frame->rgb_image,
                                     maybe_frame->depth_image, maybe_frame->pose,
@@ -131,20 +121,12 @@ void GaussianMapper::run_external_poses() {
     }
 
     trainForOneIteration();
-    SLAM_stop_iter = getIteration();
-
-    // std::cout << "Loop check: isExternalDataStopped()="
-    //           << (isExternalDataStopped() ? "true" : "false")
-    //           << ", isStopped()=" << (isStopped() ? "true" : "false")
-    //           << std::endl;
   }
-
-  std::cout << "Training finished" << std::endl;
 
   frame_queue_.stop();
 
+  // Save final results
   saveTotalGaussians("_shutdown");
-  // Save and clear
   renderAndRecordAllKeyframes("_shutdown");
   saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
             "data");
@@ -163,26 +145,23 @@ bool GaussianMapper::isKeyframe(const Sophus::SE3f& current_pose,
     return true;
   }
 
+  // Check temporal threshold
   if (current_time - last_keyframe_timestamp_ < min_keyframe_time_) {
     return false;
-    std::cout << "[isKeyframe] Not enough time since last keyframe"
-              << std::endl;
   }
 
-  // Check motion
+  // Check motion thresholds (translation and rotation)
   Sophus::SE3f relative_motion = current_pose.inverse() * last_keyframe_pose_;
-
   float translation = relative_motion.translation().norm();
   float rotation = Eigen::AngleAxisf(relative_motion.rotationMatrix()).angle();
 
   if (translation > min_keyframe_translation_ ||
       rotation > min_keyframe_rotation_) {
-    // std::cout << "[isKeyframe] Suitable keyframe" << std::endl;
     last_keyframe_pose_ = current_pose;
     return true;
-  } else {
-    return false;
   }
+
+  return false;
 }
 
 void GaussianMapper::handleNewKeyframeFromExternal(
@@ -190,35 +169,24 @@ void GaussianMapper::handleNewKeyframeFromExternal(
     cv::Mat& depth_or_right_image,
     const Sophus::SE3f& pose,
     const double timestamp) {
-  std::cout << "[External Mode] Updating external data..." << std::endl;
   setRecentExternalData(rgb_image, pose);
 
-  // Check if this frame should be a keyframe
   if (!isKeyframe(pose, timestamp)) {
-    std::cout << "[External Mode] Not a keyframe, returning" << std::endl;
     return;
   }
 
-  // Update tracking info
   last_keyframe_pose_ = pose;
   last_keyframe_timestamp_ = timestamp;
 
-  // Create keyframe
   std::shared_ptr<GaussianKeyframe> pkf = std::make_shared<GaussianKeyframe>(
       scene_->keyframes().size(), getIteration(), keyframe_save_dir_);
-  std::cout << "New kf. fid: " << pkf->fid_ << std::endl;
 
-  // Set pose from external data
   pkf->setPose(pose.unit_quaternion().cast<double>(),
                pose.translation().cast<double>());
 
-  // External mode always uses camera 0
+  // External mode uses a single camera (index 0)
   Camera& camera = scene_->cameras_.at(0);
-
-  // Call common initialization logic
   createAndInitializeKeyframe(pkf, rgb_image, depth_or_right_image, camera);
-
-  std::cout << "[External Mode] Successfully completed" << std::endl;
 }
 
 void GaussianMapper::setRecentExternalData(const cv::Mat& rgb_image,

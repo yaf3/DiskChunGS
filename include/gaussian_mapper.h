@@ -557,11 +557,12 @@ class GaussianMapper {
   std::atomic<bool> external_data_stopped_{false};
   std::function<void()> completion_callback_;
 
+  // Keyframe selection thresholds for external pose mode
   Sophus::SE3f last_keyframe_pose_;
-  float min_keyframe_translation_{0.25f};
-  float min_keyframe_rotation_{0.15f};
+  float min_keyframe_translation_{0.25f};  ///< Min translation (meters) for new keyframe
+  float min_keyframe_rotation_{0.15f};     ///< Min rotation (radians) for new keyframe
   double last_keyframe_timestamp_{0.0};
-  float min_keyframe_time_{0.5f};
+  float min_keyframe_time_{0.5f};          ///< Min time interval (seconds) between keyframes
 
   // Synchronization
   std::mutex mutex_status_;
