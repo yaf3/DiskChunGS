@@ -37,8 +37,12 @@ class GuidedMVS {
   /**
    * @brief Construct a new GuidedMVS object
    *
-   * @param num_prev_keyframes Number of previous keyframes to use
-   * @param num_depth_candidates Number of depth candidates (default: 16)
+   * @param num_prev_keyframes Number of previous keyframes to use for
+   * multi-view matching
+   * @param num_depth_candidates Number of depth candidates to test per point
+   * (default: 16)
+   * @param inverse_depth_range Range around monocular depth prior to search
+   * (default: 0.2)
    */
   GuidedMVS(int num_prev_keyframes,
             int num_depth_candidates = 16,

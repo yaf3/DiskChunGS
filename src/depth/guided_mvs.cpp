@@ -52,7 +52,7 @@ GuidedMVS::GuidedMVS(int num_prev_keyframes,
       num_depth_candidates(num_depth_candidates),
       idepth_range(inverse_depth_range) {}
 
-// Operator implementation
+// Implementation of guided MVS operator (see header for API documentation)
 std::pair<torch::Tensor, torch::Tensor> GuidedMVS::operator()(
     const torch::Tensor& uv,
     const std::shared_ptr<GaussianKeyframe> refKeyframe,
@@ -65,17 +65,18 @@ std::pair<torch::Tensor, torch::Tensor> GuidedMVS::operator()(
   // Ensure tensors are contiguous and on CUDA
   auto uv_cuda = uv.contiguous().cuda();
 
-  // Get relative poses
+  // Compute relative poses: transform other keyframes to reference frame coordinates
   std::vector<torch::Tensor> other2ref_list;
   for (const auto& keyframe : keyframes) {
     auto rel_pose = torch::matmul(keyframe->getRT(),
                                   torch::linalg::inv(refKeyframe->getRT()));
+    // Extract rotation and translation [3x4] from 4x4 transformation matrix
     other2ref_list.push_back(
-        rel_pose.slice(0, 0, 3).slice(1, 0, 4));  // [:3, :4]
+        rel_pose.slice(0, 0, 3).slice(1, 0, 4));
   }
   auto other2ref = torch::stack(other2ref_list, 0).contiguous().cuda();
 
-  // Get feature maps
+  // Gather feature maps from all keyframes
   auto refFeatMap = refKeyframe->feature_map_.contiguous().cuda();
   std::vector<torch::Tensor> featMaps_list;
   for (const auto& keyframe : keyframes) {
@@ -83,51 +84,46 @@ std::pair<torch::Tensor, torch::Tensor> GuidedMVS::operator()(
   }
   auto featMaps = torch::stack(featMaps_list, 0);
 
+  // Upscale feature maps to full image resolution for precise matching
+  auto interpolate_options = torch::nn::functional::InterpolateFuncOptions()
+                                 .size(std::vector<int64_t>{refKeyframe->image_height_,
+                                                            refKeyframe->image_width_})
+                                 .mode(torch::kBilinear)
+                                 .align_corners(true);
+
   refFeatMap = torch::nn::functional::interpolate(
                    refFeatMap.unsqueeze(0),
-                   torch::nn::functional::InterpolateFuncOptions()
-                       .size(std::vector<int64_t>{refKeyframe->image_height_,
-                                                  refKeyframe->image_width_})
-                       .mode(torch::kBilinear)
-                       .align_corners(true))
+                   interpolate_options)
                    .squeeze(0);
 
-  featMaps = torch::nn::functional::interpolate(
-      featMaps, torch::nn::functional::InterpolateFuncOptions()
-                    .size(std::vector<int64_t>{refKeyframe->image_height_,
-                                               refKeyframe->image_width_})
-                    .mode(torch::kBilinear)
-                    .align_corners(true));
+  featMaps = torch::nn::functional::interpolate(featMaps, interpolate_options);
 
-  // Get intrinsics
+  // Extract camera intrinsics: fx, cx, cy (fy assumed equal to fx)
   auto intrinsics = torch::tensor({refKeyframe->intr_[0], refKeyframe->intr_[2],
                                    refKeyframe->intr_[3]})
                         .contiguous()
                         .cuda();
 
-  // Get monocular inverse depth
+  // Get monocular inverse depth prior from finest pyramid level
   auto mono_idepth = refKeyframe->gaus_pyramid_inv_depth_image_[0]
                          .unsqueeze(0)
                          .unsqueeze(0)
                          .contiguous()
                          .cuda();
 
-  // Initialize output tensors
-  auto depth = -torch::ones(
-      {uv_cuda.size(0)},
-      torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
-  auto idist = -torch::ones(
-      {uv_cuda.size(0)},
-      torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
+  // Initialize output tensors (negative values indicate invalid/uncomputed)
+  const int num_points = uv_cuda.size(0);
+  auto cuda_float_options = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA);
+  auto depth = -torch::ones({num_points}, cuda_float_options);
+  auto idist = -torch::ones({num_points}, cuda_float_options);
 
-  const int P = uv_cuda.size(0);
-  if (P != 0) {
-    // Launch CUDA kernel via wrapper
+  if (num_points != 0) {
+    // Launch CUDA kernel for depth estimation
     launch_uvToDepth(
         uv_cuda.data_ptr<float>(), refFeatMap.data_ptr<at::Half>(),
         featMaps.data_ptr<at::Half>(), other2ref.data_ptr<float>(),
         intrinsics.data_ptr<float>(), mono_idepth.data_ptr<float>(),
-        depth.data_ptr<float>(), idist.data_ptr<float>(), idepth_range, P,
+        depth.data_ptr<float>(), idist.data_ptr<float>(), idepth_range, num_points,
         static_cast<int>(refFeatMap.size(1)),
         static_cast<int>(refFeatMap.size(2)),
         static_cast<int>(mono_idepth.size(-2)),
@@ -137,6 +133,7 @@ std::pair<torch::Tensor, torch::Tensor> GuidedMVS::operator()(
         num_depth_candidates);
   }
 
+  // Valid mask identifies points where depth estimation succeeded (non-negative idist)
   auto valid_mask = idist >= 0;
   return std::make_pair(depth, valid_mask);
-};
+}
