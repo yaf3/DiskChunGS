@@ -797,6 +797,38 @@ class GaussianMapper {
   void loadCamerasFromJson(std::filesystem::path json_path);
 
   /**
+   * @brief Helper to initialize a camera from intrinsic parameters
+   *
+   * Common logic for setting up pinhole camera with distortion from intrinsic
+   * parameters. Used by both loadScene and loadCamerasFromJson.
+   *
+   * @param camera_id Camera identifier
+   * @param width Image width
+   * @param height Image height
+   * @param fx Focal length in x direction
+   * @param fy Focal length in y direction
+   * @param cx Principal point x coordinate
+   * @param cy Principal point y coordinate
+   * @param k1 Radial distortion coefficient k1
+   * @param k2 Radial distortion coefficient k2
+   * @param p1 Tangential distortion coefficient p1
+   * @param p2 Tangential distortion coefficient p2
+   * @param k3 Radial distortion coefficient k3
+   */
+  void initializeCameraFromIntrinsics(camera_id_t camera_id,
+                                      int width,
+                                      int height,
+                                      float fx,
+                                      float fy,
+                                      float cx,
+                                      float cy,
+                                      float k1,
+                                      float k2,
+                                      float p1,
+                                      float p2,
+                                      float k3);
+
+  /**
    * @brief Save all Gaussians to PLY file
    * @param name_suffix Filename suffix
    */

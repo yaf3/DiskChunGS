@@ -19,6 +19,91 @@
 #include "utils/loss_utils.h"
 #include "utils/profiling.h"
 
+namespace {
+// Helper function to convert tensor to image and save
+void saveTensorAsImage(const torch::Tensor& tensor,
+                      const std::filesystem::path& filepath) {
+  auto image_cv = tensor_utils::torchTensor2CvMat_Float32(tensor);
+  cv::cvtColor(image_cv, image_cv, CV_RGB2BGR);
+  image_cv.convertTo(image_cv, CV_8UC3, 255.0f);
+  cv::imwrite(filepath, image_cv);
+}
+
+// Helper function to create and write JSON to file
+void writeJsonToFile(const Json::Value& json_root,
+                    const std::filesystem::path& file_path) {
+  Json::StreamWriterBuilder builder;
+  const std::unique_ptr<Json::StreamWriter> writer(builder.newStreamWriter());
+
+  std::ofstream out_stream(file_path);
+  if (!out_stream.is_open()) {
+    throw std::runtime_error("Cannot open file at " + file_path.string());
+  }
+  writer->write(json_root, &out_stream);
+  out_stream.close();
+}
+
+// Helper function to open output file stream with error checking
+std::ofstream openOutputFile(const std::filesystem::path& file_path) {
+  std::ofstream out_stream(file_path);
+  if (!out_stream.is_open()) {
+    throw std::runtime_error("Cannot open file at " + file_path.string());
+  }
+  return out_stream;
+}
+}  // anonymous namespace
+
+void GaussianMapper::initializeCameraFromIntrinsics(
+    camera_id_t camera_id,
+    int width,
+    int height,
+    float fx,
+    float fy,
+    float cx,
+    float cy,
+    float k1,
+    float k2,
+    float p1,
+    float p2,
+    float k3) {
+  Camera camera;
+  camera.camera_id_ = camera_id;
+  camera.width_ = width;
+  camera.height_ = height;
+  camera.setModelId(Camera::CameraModelType::PINHOLE);
+
+  cv::Mat K =
+      (cv::Mat_<float>(3, 3) << fx, 0.f, cx, 0.f, fy, cy, 0.f, 0.f, 1.f);
+
+  camera.params_[0] = fx;
+  camera.params_[1] = fy;
+  camera.params_[2] = cx;
+  camera.params_[3] = cy;
+
+  std::vector<float> dist_coeff = {k1, k2, p1, p2, k3};
+  camera.dist_coeff_ = cv::Mat(5, 1, CV_32F, dist_coeff.data()).clone();
+  camera.initUndistortRectifyMapAndMask(K, cv::Size(width, height), K, false);
+
+  undistort_mask_[camera.camera_id_] =
+      tensor_utils::cvMat2TorchTensor_Float32(camera.undistort_mask,
+                                              device_type_);
+
+  cv::Mat viewer_main_undistort_mask;
+  int viewer_image_height_main_ = height * rendered_image_viewer_scale_main_;
+  int viewer_image_width_main_ = width * rendered_image_viewer_scale_main_;
+  cv::resize(camera.undistort_mask, viewer_main_undistort_mask,
+             cv::Size(viewer_image_width_main_, viewer_image_height_main_));
+  viewer_main_undistort_mask_[camera.camera_id_] =
+      tensor_utils::cvMat2TorchTensor_Float32(viewer_main_undistort_mask,
+                                              device_type_);
+
+  if (!viewer_camera_id_set_) {
+    viewer_camera_id_ = camera.camera_id_;
+    viewer_camera_id_set_ = true;
+  }
+  scene_->addCamera(camera);
+}
+
 void GaussianMapper::recordKeyframeRendered(
     torch::Tensor& rendered,
     torch::Tensor& ground_truth,
@@ -27,34 +112,20 @@ void GaussianMapper::recordKeyframeRendered(
     std::filesystem::path result_gt_dir,
     std::filesystem::path result_loss_dir,
     std::string name_suffix) {
+  std::string base_filename =
+      std::to_string(getIteration()) + "_" + std::to_string(kfid) + name_suffix;
+
   if (record_rendered_image_) {
-    auto image_cv = tensor_utils::torchTensor2CvMat_Float32(rendered);
-    cv::cvtColor(image_cv, image_cv, CV_RGB2BGR);
-    image_cv.convertTo(image_cv, CV_8UC3, 255.0f);
-    cv::imwrite(result_img_dir / (std::to_string(getIteration()) + "_" +
-                                  std::to_string(kfid) + name_suffix + ".jpg"),
-                image_cv);
+    saveTensorAsImage(rendered, result_img_dir / (base_filename + ".jpg"));
   }
 
   if (record_ground_truth_image_) {
-    auto gt_image_cv = tensor_utils::torchTensor2CvMat_Float32(ground_truth);
-    cv::cvtColor(gt_image_cv, gt_image_cv, CV_RGB2BGR);
-    gt_image_cv.convertTo(gt_image_cv, CV_8UC3, 255.0f);
-    cv::imwrite(
-        result_gt_dir / (std::to_string(getIteration()) + "_" +
-                         std::to_string(kfid) + name_suffix + "_gt.jpg"),
-        gt_image_cv);
+    saveTensorAsImage(ground_truth, result_gt_dir / (base_filename + "_gt.jpg"));
   }
 
   if (record_loss_image_) {
     torch::Tensor loss_tensor = torch::abs(rendered - ground_truth);
-    auto loss_image_cv = tensor_utils::torchTensor2CvMat_Float32(loss_tensor);
-    cv::cvtColor(loss_image_cv, loss_image_cv, CV_RGB2BGR);
-    loss_image_cv.convertTo(loss_image_cv, CV_8UC3, 255.0f);
-    cv::imwrite(
-        result_loss_dir / (std::to_string(getIteration()) + "_" +
-                           std::to_string(kfid) + name_suffix + "_loss.jpg"),
-        loss_image_cv);
+    saveTensorAsImage(loss_tensor, result_loss_dir / (base_filename + "_loss.jpg"));
   }
 }
 
@@ -183,64 +254,43 @@ void GaussianMapper::renderAndRecordAllKeyframes(std::string name_suffix) {
     CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(image_gt_dir);
 
   std::filesystem::path image_loss_dir = result_dir / "image_loss";
-  if (record_loss_image_) {
+  if (record_loss_image_)
     CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(image_loss_dir);
-  }
 
-  std::filesystem::path render_time_path = result_dir / "render_time.txt";
-  std::ofstream out_time(render_time_path);
+  std::ofstream out_time = openOutputFile(result_dir / "render_time.txt");
   out_time << "##[Gaussian Mapper]Render time statistics: keyframe id, "
-              "time(milliseconds)"
-           << std::endl;
+              "time(milliseconds)\n";
 
-  std::filesystem::path dssim_path = result_dir / "dssim.txt";
-  std::ofstream out_dssim(dssim_path);
-  out_dssim << "##[Gaussian Mapper]keyframe id, dssim" << std::endl;
+  std::ofstream out_dssim = openOutputFile(result_dir / "dssim.txt");
+  out_dssim << "##[Gaussian Mapper]keyframe id, dssim\n";
 
-  std::filesystem::path psnr_path = result_dir / "psnr.txt";
-  std::ofstream out_psnr(psnr_path);
-  out_psnr << "##[Gaussian Mapper]keyframe id, psnr" << std::endl;
+  std::ofstream out_psnr = openOutputFile(result_dir / "psnr.txt");
+  out_psnr << "##[Gaussian Mapper]keyframe id, psnr\n";
 
-  std::filesystem::path psnr_gs_path =
-      result_dir / "psnr_gaussian_splatting.txt";
-  std::ofstream out_psnr_gs(psnr_gs_path);
-  out_psnr_gs << "##[Gaussian Mapper]keyframe id, psnr_gaussian_splatting"
-              << std::endl;
+  std::ofstream out_psnr_gs =
+      openOutputFile(result_dir / "psnr_gaussian_splatting.txt");
+  out_psnr_gs << "##[Gaussian Mapper]keyframe id, psnr_gaussian_splatting\n";
 
-  std::size_t nkfs = scene_->keyframes().size();
-  auto kfit = scene_->keyframes().begin();
   float dssim, psnr, psnr_gs;
   double render_time;
-  for (std::size_t i = 0; i < nkfs; ++i) {
-    renderAndRecordKeyframe((*kfit).second, dssim, psnr, psnr_gs, render_time,
-                            image_dir, image_gt_dir, image_loss_dir);
-    out_time << (*kfit).first << " " << std::fixed << std::setprecision(8)
-             << render_time << std::endl;
-
-    out_dssim << (*kfit).first << " " << std::fixed << std::setprecision(10)
-              << dssim << std::endl;
-    out_psnr << (*kfit).first << " " << std::fixed << std::setprecision(10)
-             << psnr << std::endl;
-    out_psnr_gs << (*kfit).first << " " << std::fixed << std::setprecision(10)
-                << psnr_gs << std::endl;
-
-    ++kfit;
+  for (const auto& [kfid, pkf] : scene_->keyframes()) {
+    renderAndRecordKeyframe(pkf, dssim, psnr, psnr_gs, render_time, image_dir,
+                            image_gt_dir, image_loss_dir);
+    out_time << kfid << " " << std::fixed << std::setprecision(8)
+             << render_time << "\n";
+    out_dssim << kfid << " " << std::fixed << std::setprecision(10) << dssim
+              << "\n";
+    out_psnr << kfid << " " << std::fixed << std::setprecision(10) << psnr
+             << "\n";
+    out_psnr_gs << kfid << " " << std::fixed << std::setprecision(10)
+                << psnr_gs << "\n";
   }
 }
 
 void GaussianMapper::keyframesToJson(std::filesystem::path result_dir) {
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
 
-  std::filesystem::path result_path = result_dir / "cameras.json";
-  std::ofstream out_stream;
-  out_stream.open(result_path);
-  if (!out_stream.is_open())
-    throw std::runtime_error("Cannot open json file at " +
-                             result_path.string());
-
   Json::Value json_root;
-  Json::StreamWriterBuilder builder;
-  const std::unique_ptr<Json::StreamWriter> writer(builder.newStreamWriter());
 
   int i = 0;
   for (const auto& kfit : scene_->keyframes()) {
@@ -309,7 +359,7 @@ void GaussianMapper::keyframesToJson(std::filesystem::path result_dir) {
     ++i;
   }
 
-  writer->write(json_root, &out_stream);
+  writeJsonToFile(json_root, result_dir / "cameras.json");
 }
 
 void GaussianMapper::writeKeyframeUsedTimes(std::filesystem::path result_dir,
@@ -317,37 +367,31 @@ void GaussianMapper::writeKeyframeUsedTimes(std::filesystem::path result_dir,
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
   std::filesystem::path result_path =
       result_dir / ("keyframe_used_times" + name_suffix + ".txt");
-  std::ofstream out_stream;
-  out_stream.open(result_path, std::ios::app);
-  if (!out_stream.is_open())
-    throw std::runtime_error("Cannot open json at " + result_path.string());
+
+  std::ofstream out_stream(result_path, std::ios::app);
+  if (!out_stream.is_open()) {
+    throw std::runtime_error("Cannot open file at " + result_path.string());
+  }
 
   out_stream << "##[Gaussian Mapper]Iteration " << getIteration()
              << " keyframe id, used times, remaining times:\n";
-  for (const auto& used_times_it : kfs_used_times_)
+  for (const auto& used_times_it : kfs_used_times_) {
     out_stream
         << used_times_it.first << " " << used_times_it.second << " "
         << scene_->keyframes().at(used_times_it.first)->remaining_times_of_use_
         << "\n";
-  out_stream << "##=========================================" << std::endl;
-
-  out_stream.close();
+  }
+  out_stream << "##=========================================\n";
 }
 
 void GaussianMapper::writeTrainingMetricsCSV(std::filesystem::path result_dir) {
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
-  std::filesystem::path result_path = result_dir / "training_metrics.csv";
-  std::ofstream out_stream;
-  out_stream.open(result_path);
-  if (!out_stream.is_open())
-    throw std::runtime_error("Cannot open CSV at " + result_path.string());
+  std::ofstream out_stream = openOutputFile(result_dir / "training_metrics.csv");
 
-  // Write CSV header
   out_stream << "iteration,elapsed_time_seconds,active_gaussian_count,total_"
                 "gaussian_count,reserved_memory_"
                 "mb,allocated_memory_mb,ram_usage_mb,queue_keyframes\n";
 
-  // Write data
   for (const auto& metrics : training_metrics_) {
     out_stream << metrics.iteration << "," << metrics.elapsed_time_seconds
                << "," << metrics.active_gaussian_count << ","
@@ -357,9 +401,8 @@ void GaussianMapper::writeTrainingMetricsCSV(std::filesystem::path result_dir) {
                << "," << metrics.queue_keyframes << "\n";
   }
 
-  out_stream.close();
-  std::cout << "[GaussianMapper] Training metrics saved to " << result_path
-            << std::endl;
+  std::cout << "[GaussianMapper] Training metrics saved to "
+            << result_dir / "training_metrics.csv" << std::endl;
 }
 
 bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
@@ -377,22 +420,9 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
   // Save a manifest of all chunks on disk
   saveChunkManifest(scene_dir);
 
-  std::filesystem::path cameras_exent_path = scene_dir / "cameras_extent.json";
-
   Json::Value json_root;
-  Json::StreamWriterBuilder builder;
-  const std::unique_ptr<Json::StreamWriter> writer(builder.newStreamWriter());
-
   json_root[0] = Json::Value(scene_->cameras_extent_);
-
-  // Write to file
-  std::ofstream out_stream(cameras_exent_path);
-  if (!out_stream.is_open()) {
-    throw std::runtime_error("Cannot open cameras_extent file at " +
-                             cameras_exent_path.string());
-  }
-  writer->write(json_root, &out_stream);
-  out_stream.close();
+  writeJsonToFile(json_root, scene_dir / "cameras_extent.json");
 
   // Save config used to train the model
   try {
@@ -473,64 +503,25 @@ bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
           "[Gaussian Mapper]Failed to open settings file at: " +
           optional_camera_path.string());
 
-    Camera camera;
-    camera.camera_id_ = 0;
-    camera.width_ = camera_file["Camera.w"].operator int();
-    camera.height_ = camera_file["Camera.h"].operator int();
-
     std::string camera_type = camera_file["Camera.type"].string();
     if (camera_type == "Pinhole") {
-      camera.setModelId(Camera::CameraModelType::PINHOLE);
-
-      float fx = camera_file["Camera.fx"].operator float();
-      float fy = camera_file["Camera.fy"].operator float();
-      float cx = camera_file["Camera.cx"].operator float();
-      float cy = camera_file["Camera.cy"].operator float();
-
-      float k1 = camera_file["Camera.k1"].operator float();
-      float k2 = camera_file["Camera.k2"].operator float();
-      float p1 = camera_file["Camera.p1"].operator float();
-      float p2 = camera_file["Camera.p2"].operator float();
-      float k3 = camera_file["Camera.k3"].operator float();
-
-      cv::Mat K =
-          (cv::Mat_<float>(3, 3) << fx, 0.f, cx, 0.f, fy, cy, 0.f, 0.f, 1.f);
-
-      camera.params_[0] = fx;
-      camera.params_[1] = fy;
-      camera.params_[2] = cx;
-      camera.params_[3] = cy;
-
-      std::vector<float> dist_coeff = {k1, k2, p1, p2, k3};
-      camera.dist_coeff_ = cv::Mat(5, 1, CV_32F, dist_coeff.data());
-      camera.initUndistortRectifyMapAndMask(
-          K, cv::Size(camera.width_, camera.height_), K, false);
-
-      undistort_mask_[camera.camera_id_] =
-          tensor_utils::cvMat2TorchTensor_Float32(camera.undistort_mask,
-                                                  device_type_);
-
-      cv::Mat viewer_main_undistort_mask;
-      int viewer_image_height_main_ =
-          camera.height_ * rendered_image_viewer_scale_main_;
-      int viewer_image_width_main_ =
-          camera.width_ * rendered_image_viewer_scale_main_;
-      cv::resize(camera.undistort_mask, viewer_main_undistort_mask,
-                 cv::Size(viewer_image_width_main_, viewer_image_height_main_));
-      viewer_main_undistort_mask_[camera.camera_id_] =
-          tensor_utils::cvMat2TorchTensor_Float32(viewer_main_undistort_mask,
-                                                  device_type_);
-
+      initializeCameraFromIntrinsics(
+          0,  // camera_id
+          camera_file["Camera.w"].operator int(),
+          camera_file["Camera.h"].operator int(),
+          camera_file["Camera.fx"].operator float(),
+          camera_file["Camera.fy"].operator float(),
+          camera_file["Camera.cx"].operator float(),
+          camera_file["Camera.cy"].operator float(),
+          camera_file["Camera.k1"].operator float(),
+          camera_file["Camera.k2"].operator float(),
+          camera_file["Camera.p1"].operator float(),
+          camera_file["Camera.p2"].operator float(),
+          camera_file["Camera.k3"].operator float());
     } else {
       throw std::runtime_error("[Gaussian Mapper]Unsupported camera model: " +
                                optional_camera_path.string());
     }
-
-    if (!viewer_camera_id_set_) {
-      viewer_camera_id_ = camera.camera_id_;
-      viewer_camera_id_set_ = true;
-    }
-    this->scene_->addCamera(camera);
   }
 
   // Ready
@@ -542,12 +533,9 @@ bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
 }
 
 void GaussianMapper::saveChunkManifest(std::filesystem::path scene_dir) {
-  std::filesystem::path manifest_path = scene_dir / "chunk_manifest.json";
   Json::Value json_root;
-  Json::StreamWriterBuilder builder;
-  const std::unique_ptr<Json::StreamWriter> writer(builder.newStreamWriter());
 
-  // Save chunks_on_disk_ (std::unordered_set<int64_t>)
+  // Save chunks_on_disk_ and chunk_gaussian_counts_
   Json::Value chunks_on_disk_array(Json::arrayValue);
   Json::Value chunk_gaussian_counts_array(Json::arrayValue);
   auto chunks_cpu = gaussians_->chunks_on_disk_.cpu();
@@ -556,24 +544,15 @@ void GaussianMapper::saveChunkManifest(std::filesystem::path scene_dir) {
   auto accessor_count = chunk_gaussian_counts_cpu.accessor<int64_t, 1>();
 
   for (int i = 0; i < chunks_cpu.size(0); ++i) {
-    int64_t chunk_id = accessor_id[i];
-    int64_t count = accessor_count[i];
     chunks_on_disk_array.append(
-        Json::Value(static_cast<Json::Int64>(chunk_id)));
+        Json::Value(static_cast<Json::Int64>(accessor_id[i])));
     chunk_gaussian_counts_array.append(
-        Json::Value(static_cast<Json::Int64>(count)));
+        Json::Value(static_cast<Json::Int64>(accessor_count[i])));
   }
   json_root["chunks_on_disk"] = chunks_on_disk_array;
   json_root["chunk_gaussian_counts"] = chunk_gaussian_counts_array;
 
-  // Write to file
-  std::ofstream out_stream(manifest_path);
-  if (!out_stream.is_open()) {
-    throw std::runtime_error("Cannot open manifest file at " +
-                             manifest_path.string());
-  }
-  writer->write(json_root, &out_stream);
-  out_stream.close();
+  writeJsonToFile(json_root, scene_dir / "chunk_manifest.json");
 }
 
 // Implementation for loadChunkManifest
@@ -741,44 +720,8 @@ void GaussianMapper::loadCamerasFromJson(std::filesystem::path json_path) {
     Sophus::SE3d Tcw = Twc.inverse();
     pkf->setPose(Tcw.unit_quaternion(), Tcw.translation());
 
-    Camera camera;
-    camera.camera_id_ = 0;
-    camera.width_ = pkf->image_width_;
-    camera.height_ = pkf->image_height_;
-    camera.setModelId(Camera::CameraModelType::PINHOLE);
-
-    cv::Mat K =
-        (cv::Mat_<float>(3, 3) << fx, 0.f, cx, 0.f, fy, cy, 0.f, 0.f, 1.f);
-
-    camera.params_[0] = fx;
-    camera.params_[1] = fy;
-    camera.params_[2] = cx;
-    camera.params_[3] = cy;
-
-    std::vector<float> dist_coeff = {k1, k2, p1, p2, k3};
-    camera.dist_coeff_ = cv::Mat(5, 1, CV_32F, dist_coeff.data());
-    camera.initUndistortRectifyMapAndMask(
-        K, cv::Size(camera.width_, camera.height_), K, false);
-
-    undistort_mask_[camera.camera_id_] =
-        tensor_utils::cvMat2TorchTensor_Float32(camera.undistort_mask,
-                                                device_type_);
-
-    cv::Mat viewer_main_undistort_mask;
-    int viewer_image_height_main_ =
-        camera.height_ * rendered_image_viewer_scale_main_;
-    int viewer_image_width_main_ =
-        camera.width_ * rendered_image_viewer_scale_main_;
-    cv::resize(camera.undistort_mask, viewer_main_undistort_mask,
-               cv::Size(viewer_image_width_main_, viewer_image_height_main_));
-    viewer_main_undistort_mask_[camera.camera_id_] =
-        tensor_utils::cvMat2TorchTensor_Float32(viewer_main_undistort_mask,
-                                                device_type_);
-    if (!viewer_camera_id_set_) {
-      viewer_camera_id_ = camera.camera_id_;
-      viewer_camera_id_set_ = true;
-    }
-    this->scene_->addCamera(camera);
+    initializeCameraFromIntrinsics(0, pkf->image_width_, pkf->image_height_, fx,
+                                   fy, cx, cy, k1, k2, p1, p2, k3);
 
     // Set camera parameters
     if (scene_->cameras_.find(viewer_camera_id_) != scene_->cameras_.end()) {
@@ -808,17 +751,6 @@ void GaussianMapper::saveTotalGaussians(std::string name_suffix) {
       result_dir_ / (std::to_string(getIteration()) + name_suffix);
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
 
-  std::filesystem::path file_path = result_dir / "gaussianCount.txt";
-
-  std::ofstream outFile(file_path);
-
-  // Check if the file was opened successfully
-  if (!outFile) {
-    std::cerr << "Error: Could not open the file." << std::endl;
-    return;
-  }
-  outFile << totalGaussians;
-
-  // Close the file
-  outFile.close();
+  std::ofstream out_file = openOutputFile(result_dir / "gaussianCount.txt");
+  out_file << totalGaussians;
 }

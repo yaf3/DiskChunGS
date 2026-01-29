@@ -105,12 +105,12 @@ inline torch::Tensor cvMat2TorchTensor_Float32(const cv::Mat& mat,
 }
 
 /**
- * @brief
+ * @brief Convert a PyTorch tensor to OpenCV Mat (float32)
  *
- * @param torch::Tensor {channels, rows, cols}
- * @return cv::Mat {rows, cols, channels}
+ * @param tensor Input tensor {channels, rows, cols}
+ * @return cv::Mat Output matrix {rows, cols, channels}
  */
-inline cv::Mat torchTensor2CvMat_Float32(torch::Tensor& tensor) {
+inline cv::Mat torchTensor2CvMat_Float32(const torch::Tensor& tensor) {
   cv::Mat mat;
 
   // Move to CPU and ensure contiguous memory layout first
