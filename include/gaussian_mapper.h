@@ -72,6 +72,22 @@
 class KeyframeSelector;  // Forward declaration
 class TrajectoryViewer;  // Forward declaration
 
+/**
+ * @brief Type alias for keyframe data tuple from ORB-SLAM
+ *
+ * Contains: (keyframe_id, camera_id, pose, rgb_image, is_loop_closure,
+ *            auxiliary_image, keypoint_pixels, keypoint_3d_points, filename)
+ */
+using KeyframeTuple = std::tuple<unsigned long,
+                                 unsigned long,
+                                 Sophus::SE3f,
+                                 cv::Mat,
+                                 bool,
+                                 cv::Mat,
+                                 std::vector<float>,
+                                 std::vector<float>,
+                                 std::string>;
+
 #define CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(dir)                 \
   if (!dir.empty() && !std::filesystem::exists(dir))                  \
     if (!std::filesystem::create_directories(dir))                    \
@@ -617,15 +633,7 @@ class GaussianMapper {
    * @return Number of gaussians transformed
    */
   int processSequentialLoopClosure(
-      const std::vector<std::tuple<unsigned long,
-                                   unsigned long,
-                                   Sophus::SE3f,
-                                   cv::Mat,
-                                   bool,
-                                   cv::Mat,
-                                   std::vector<float>,
-                                   std::vector<float>,
-                                   std::string>> &associated_kfs,
+      const std::vector<KeyframeTuple> &associated_kfs,
       float loop_kf_scale);
 
   /**
@@ -637,15 +645,7 @@ class GaussianMapper {
    * @return Number of gaussians transformed
    */
   int processBatchedLoopClosure(
-      std::vector<std::tuple<unsigned long,
-                             unsigned long,
-                             Sophus::SE3f,
-                             cv::Mat,
-                             bool,
-                             cv::Mat,
-                             std::vector<float>,
-                             std::vector<float>,
-                             std::string>> &associated_kfs,
+      std::vector<KeyframeTuple> &associated_kfs,
       const std::vector<std::pair<std::shared_ptr<GaussianKeyframe>,
                                   torch::Tensor>> &kf_chunk_pairs,
       const std::unordered_set<int64_t> &all_unique_chunks,
@@ -656,6 +656,22 @@ class GaussianMapper {
    * @param opr Mapping operation containing scale refinement data
    */
   void processScaleRefinement(ORB_SLAM3::MappingOperation &opr);
+
+  /**
+   * @brief Check if pose difference exceeds threshold for large correction
+   * @param diff_pose Difference between old and new poses
+   * @return True if rotation or translation exceeds thresholds
+   */
+  bool isPoseDivergenceLarge(const Sophus::SE3f &diff_pose) const;
+
+  /**
+   * @brief Get relevant chunk IDs visible from a keyframe (loaded, on-disk, or
+   * with gaussians)
+   * @param visible_chunk_ids Tensor of chunk IDs in keyframe frustum
+   * @return Filtered tensor of relevant chunk IDs
+   */
+  torch::Tensor filterRelevantChunks(
+      const torch::Tensor &visible_chunk_ids) const;
 
   // ========== Keyframe Management ==========
 
@@ -678,19 +694,9 @@ class GaussianMapper {
 
   /**
    * @brief Handle new keyframe from ORB-SLAM system
-   *
-   * @param kf Tuple containing: (id, camera_id, pose, image, is_loop_closure,
-   *           auxiliary_image, keypoint_pixels, keypoint_points, filename)
+   * @param kf Keyframe data tuple from ORB-SLAM
    */
-  void handleNewKeyframeFromORBSLAM(std::tuple<unsigned long,
-                                               unsigned long,
-                                               Sophus::SE3f,
-                                               cv::Mat,
-                                               bool,
-                                               cv::Mat,
-                                               std::vector<float>,
-                                               std::vector<float>,
-                                               std::string> &kf);
+  void handleNewKeyframeFromORBSLAM(KeyframeTuple &kf);
 
   /**
    * @brief Find N closest keyframes to a given keyframe
@@ -999,6 +1005,8 @@ class GaussianMapper {
   // Loop closure control
   std::atomic<bool> pause_image_ingestion_{false};
   int loop_closure_optimization_iterations_ = 1000;
+  float loop_closure_memory_multiplier_ =
+      8.0f;  ///< Multiplier for max_gaussians_in_memory during loop closure
 
   // Spatial gradient masking for loop closure
   bool enable_spatial_gradient_masking_ = false;

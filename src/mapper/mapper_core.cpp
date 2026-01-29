@@ -73,10 +73,7 @@ void GaussianMapper::run() {
           pKF->GetKeypointInfo(pixels, pointsLocal);
 
           // Create tuple to pass into handleNewKeyframeFromORBSLAM
-          std::tuple<unsigned long, unsigned long, Sophus::SE3f, cv::Mat, bool,
-                     cv::Mat, std::vector<float>, std::vector<float>,
-                     std::string>
-              kf_tuple = std::make_tuple(
+          KeyframeTuple kf_tuple = std::make_tuple(
                   pKF->mnId,               // Id
                   pKF->mpCamera->GetId(),  // CameraId
                   pKF->GetPose(),          // pose
