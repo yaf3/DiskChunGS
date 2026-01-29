@@ -275,7 +275,6 @@ class GaussianModel {
                               int64_t target_gaussian_count);
 
   void checkMemoryPressure();
-  void testSaveLoadEvictCycle();
 
   void updateChunkAccess(const torch::Tensor& accessed_chunk_ids);
   void saveAllChunks();

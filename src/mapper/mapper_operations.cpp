@@ -289,7 +289,8 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation &opr) {
   // because we don't render during loop closure (no VRAM needed for rendering).
   //
   // The increased limit is: original_limit * loop_closure_memory_multiplier_
-  // (default multiplier is 8x, configurable via loop_closure_memory_multiplier_)
+  // (default multiplier is 8x, configurable via
+  // loop_closure_memory_multiplier_)
   //
   // Strategy selection:
   // - If projected_total <= increased_limit: Use BATCHED processing
@@ -308,9 +309,9 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation &opr) {
             << current_gaussians
             << ", Additional needed: " << total_gaussians_needed
             << ", Projected total: " << projected_total
-            << ", Original limit: " << original_limit
-            << ", Increased limit (x" << loop_closure_memory_multiplier_
-            << "): " << increased_limit << std::endl;
+            << ", Original limit: " << original_limit << ", Increased limit (x"
+            << loop_closure_memory_multiplier_ << "): " << increased_limit
+            << std::endl;
 
   // Temporarily increase the memory limit for loop closure processing
   gaussians_->max_gaussians_in_memory_ = increased_limit;
@@ -478,22 +479,23 @@ int GaussianMapper::processSequentialLoopClosure(
     float loop_kf_scale) {
   int total_transformed = 0;
 
-  // Track gaussians visible from loop closure keyframes (for opacity reset)
-  torch::Tensor loop_closure_opacity_mask = torch::zeros(
-      {gaussians_->xyz_.size(0)}, torch::TensorOptions()
-                                      .dtype(torch::kBool)
-                                      .device(gaussians_->device_type_));
-  int loop_closure_kf_count = 0;
+  int64_t total_gaussian_count = gaussians_->countAllGaussians();
+  int64_t buffer_size = static_cast<int64_t>(total_gaussian_count * 1.1);
 
-  // Track transformed gaussians using ID-based approach
+  // Buffer to track which gaussians have been transformed (by stable ID).
+  // Used to avoid double-transforming gaussians visible from multiple
+  // keyframes. We use IDs rather than indices because indices change as chunks
+  // load/unload.
   torch::Tensor transformed_gaussian_ids =
-      torch::full({static_cast<long>(gaussians_->countAllGaussians() * 1.1)},
-                  -1,  // -1 = empty slot
+      torch::full({buffer_size}, -1,
                   torch::TensorOptions()
                       .dtype(torch::kInt64)
                       .device(gaussians_->device_type_));
   int next_slot = 0;
 
+  // Helper: Record newly transformed gaussians by their IDs
+  // Compares old vs new transform flags to find which gaussians were just
+  // transformed, then stores their stable IDs in the tracking buffer.
   auto updateTransformTracking = [&](const torch::Tensor &old_flags,
                                      const torch::Tensor &new_flags) {
     torch::Tensor newly_transformed_mask = new_flags & (~old_flags);
@@ -507,40 +509,54 @@ int GaussianMapper::processSequentialLoopClosure(
     }
   };
 
+  // Helper: Convert tracked IDs back to current index mask
+  // Since indices change as chunks load/unload, we must recompute the mask
+  // each time by checking which current gaussians have IDs in our tracked set.
   auto getCurrentTransformFlags = [&]() -> torch::Tensor {
     torch::Tensor valid_ids = transformed_gaussian_ids.slice(0, 0, next_slot);
     return torch::isin(gaussians_->gaussian_ids_, valid_ids);
   };
 
+  // Process each keyframe sequentially
   for (const auto &kf : associated_kfs) {
     auto kfid = std::get<0>(kf);
     std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
 
     if (!pkf) continue;
 
+    // Compute pose difference
     const auto &pose = std::get<2>(kf);
     Sophus::SE3f original_pose = pkf->getPosef();
     Sophus::SE3f diff_pose = pose.inverse() * original_pose;
 
-    // Handle loop closure keyframes
+    // Handle loop closure keyframes: reset optimizer state for visible
+    // gaussians Must reset IMMEDIATELY while gaussians are loaded (before
+    // potential eviction)
     bool is_loop_closure_kf = std::get<4>(kf);
     if (is_loop_closure_kf) {
-      loop_closure_kf_count++;
       std::cout << "[Sequential Loop] Loop closure keyframe: " << kfid
                 << std::endl;
+      // cullVisibleGaussians handles chunk loading internally
       torch::Tensor visible_gaussians = gaussians_->cullVisibleGaussians(pkf);
-      loop_closure_opacity_mask = loop_closure_opacity_mask | visible_gaussians;
+
+      if (torch::any(visible_gaussians).item<bool>()) {
+        gaussians_->resetPositionLRAndOptimizerState(visible_gaussians);
+      }
     }
 
+    // Handle large pose corrections: transform visible gaussians
+    // Only process if pose changed significantly (rotation or translation).
     if (isPoseDivergenceLarge(diff_pose)) {
       std::cout << "[Sequential Loop] Large correction for kf" << kfid
                 << std::endl;
 
+      // Convert pose difference to tensor for GPU operations
       torch::Tensor diff_pose_tensor =
           tensor_utils::EigenMatrix2TorchTensor(diff_pose.matrix(),
                                                 gaussians_->device_type_)
               .transpose(0, 1);
 
+      // Find and load chunks visible from this keyframe's frustum
       std::vector<ChunkCoord> visible_chunk_coords =
           gaussians_->frustumCullChunks(pkf, /*use_cache=*/true);
 
@@ -556,48 +572,34 @@ int GaussianMapper::processSequentialLoopClosure(
 
       gaussians_->loadChunks(relevant_chunk_ids);
 
+      // Get current transform state (recomputed since chunks just loaded)
       torch::Tensor old_transform_flags = getCurrentTransformFlags();
       torch::Tensor current_transform_flags = old_transform_flags.clone();
 
+      // Transform visible gaussians that haven't been transformed yet
       int gaussians_transformed_by_this_kf = 0;
-
       gaussians_->scaledTransformVisiblePointsOfKeyframe(
           current_transform_flags, diff_pose_tensor, pkf->world_view_transform_,
           pkf->full_proj_transform_, pkf->creation_iter_,
           stableNumIterExistence(), gaussians_transformed_by_this_kf,
           loop_kf_scale);
 
+      // Record newly transformed gaussian IDs
       updateTransformTracking(old_transform_flags, current_transform_flags);
 
       total_transformed += gaussians_transformed_by_this_kf;
       std::cout << "[Sequential Loop] Keyframe " << kfid << " transformed "
                 << gaussians_transformed_by_this_kf << " points" << std::endl;
 
+      // Reassign gaussians to correct spatial chunks after transformation
       gaussians_->handleBatchChunkRedistribution(relevant_chunk_ids);
       increaseKeyframeTimesOfUse(pkf, loop_closure_increased_times_of_use_);
     }
 
+    // Update keyframe to use corrected ORB-SLAM pose
     pkf->setPose(pose.unit_quaternion().cast<double>(),
                  pose.translation().cast<double>());
     pkf->computeTransformTensors();
-  }
-
-  // Reset optimizer state for all transformed gaussians
-  torch::Tensor final_transform_mask = getCurrentTransformFlags();
-  if (torch::any(final_transform_mask).item<bool>()) {
-    std::cout << "[Sequential Loop] Resetting optimizer state for transformed "
-                 "gaussians"
-              << std::endl;
-    gaussians_->resetPositionLRAndOptimizerState(final_transform_mask);
-  }
-
-  // Reset opacity for gaussians visible from loop closure keyframes
-  if (torch::any(loop_closure_opacity_mask).item<bool>()) {
-    std::cout << "[Sequential Loop] Resetting opacity for gaussians visible "
-                 "from "
-              << loop_closure_kf_count << " loop closure keyframes"
-              << std::endl;
-    gaussians_->resetOpacityForMask(loop_closure_opacity_mask);
   }
 
   return total_transformed;
