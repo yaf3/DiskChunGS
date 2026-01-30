@@ -465,7 +465,7 @@ class GaussianMapper {
 
   // Chunk management
   float chunk_size_ = 10.0;
-  float keyframe_selection_chunk_size_ = 50.0;
+  float keyframe_selection_chunk_size_ = 200.0;
   std::filesystem::path chunk_save_dir_;
   std::filesystem::path keyframe_save_dir_;
 
@@ -1007,11 +1007,4 @@ class GaussianMapper {
   int loop_closure_optimization_iterations_ = 1000;
   float loop_closure_memory_multiplier_ =
       8.0f;  ///< Multiplier for max_gaussians_in_memory during loop closure
-
-  // Spatial gradient masking for loop closure
-  bool enable_spatial_gradient_masking_ = false;
-
-  // GPU memory management
-  std::deque<std::shared_ptr<GaussianKeyframe>> gpu_queue;
-  size_t max_gpu_keyframes_ = 400;
 };

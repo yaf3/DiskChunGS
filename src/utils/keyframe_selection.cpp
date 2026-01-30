@@ -24,19 +24,15 @@
 KeyframeSelection::KeyframeSelection(
     std::shared_ptr<GaussianScene> scene,
     float chunk_size,
+    int auto_distribute,
     const std::map<std::size_t, float>* loss_map,
     std::map<std::size_t, int>* used_times_map)
     : scene_(scene),
       chunk_size_(chunk_size),
+      auto_distribute_(auto_distribute),
       loss_map_(loss_map),
       used_times_map_(used_times_map),
-      rng_(std::random_device{}()),
-      uniform_dist_(0.0f, 1.0f),
-      level_dist_({1.0, 0.0, 0.0}) {
-  chunk_sizes_[0] = 4 * chunk_size_;  // FINE
-  // chunk_sizes_[1] = 8 * chunk_size_;   // MEDIUM
-  // chunk_sizes_[2] = 12 * chunk_size_;  // COARSE
-}
+      rng_(std::random_device{}()) {}
 
 // Updated keyframe selection using active_frames_gpu_
 std::shared_ptr<GaussianKeyframe> KeyframeSelection::getNextKeyframe() {
@@ -48,23 +44,21 @@ std::shared_ptr<GaussianKeyframe> KeyframeSelection::getNextKeyframe() {
   torch::Tensor latest_center = latest_keyframe_->getCenter();
   Eigen::Vector3f latest_position = tensorToEigen(latest_center);
 
-  // Select level using the existing distribution
-  int level = level_dist_(rng_);
-  ChunkCoord chunk_coord = getChunkCoord(latest_position, chunk_sizes_[level]);
+  ChunkCoord chunk_coord = getChunkCoord(latest_position, chunk_size_);
   int64_t chunk_id = encodeChunkCoord(chunk_coord);
 
-  auto it = chunk_to_keyframes_[level].find(chunk_id);
-  if (it == chunk_to_keyframes_[level].end() || it->second.empty()) {
-    std::cout << "Keyframe has moved to new chunk " << chunk_id << " at level "
-              << level << ", updating mapping..." << std::endl;
+  auto it = chunk_to_keyframes_.find(chunk_id);
+  if (it == chunk_to_keyframes_.end() || it->second.empty()) {
+    std::cout << "Keyframe has moved to new chunk " << chunk_id
+              << ", updating mapping..." << std::endl;
 
     // Keyframe's position has changed due to pose optimization - update its
     // chunk mapping
     updateChunkKeyframeMapping(latest_keyframe_, false);
 
     // Retry lookup after updating
-    it = chunk_to_keyframes_[level].find(chunk_id);
-    if (it == chunk_to_keyframes_[level].end() || it->second.empty()) {
+    it = chunk_to_keyframes_.find(chunk_id);
+    if (it == chunk_to_keyframes_.end() || it->second.empty()) {
       std::cerr << "ERROR: Still no keyframes in chunk " << chunk_id
                 << " after updating mapping!" << std::endl;
       return nullptr;
@@ -107,8 +101,9 @@ std::shared_ptr<GaussianKeyframe> KeyframeSelection::getNextKeyframe() {
       }
 
       if (!loss_vec.empty()) {
-        // Select top 25% of keyframes with highest loss
-        int k = std::max(1, static_cast<int>(loss_vec.size() / 4));
+        // Select top (1/auto_distribute_)% of keyframes with highest loss
+        int k =
+            std::max(1, static_cast<int>(loss_vec.size() / auto_distribute_));
 
         // Partial sort to get top-k highest loss keyframes
         std::nth_element(loss_vec.begin(), loss_vec.begin() + k, loss_vec.end(),
@@ -249,26 +244,20 @@ void KeyframeSelection::updateChunkKeyframeMapping(
     latest_keyframe_ = keyframe;
   } else {
     // Remove old associations for updated keyframes
-    for (int level = 0; level < 3; ++level) {
-      auto& level_map = chunk_to_keyframes_[level];
-      for (auto& chunk_pair : level_map) {
-        auto& keyframe_list = chunk_pair.second;
-        keyframe_list.erase(
-            std::remove(keyframe_list.begin(), keyframe_list.end(), keyframe),
-            keyframe_list.end());
-      }
+    for (auto& chunk_pair : chunk_to_keyframes_) {
+      auto& keyframe_list = chunk_pair.second;
+      keyframe_list.erase(
+          std::remove(keyframe_list.begin(), keyframe_list.end(), keyframe),
+          keyframe_list.end());
     }
   }
 
   // Add associations based on current position
   torch::Tensor center_tensor = keyframe->getCenter();
   Eigen::Vector3f position = tensorToEigen(center_tensor);
-
-  for (int level = 0; level < 3; ++level) {
-    ChunkCoord chunk_coord = getChunkCoord(position, chunk_sizes_[level]);
-    int64_t chunk_id = encodeChunkCoord(chunk_coord);
-    chunk_to_keyframes_[level][chunk_id].push_back(keyframe);
-  }
+  ChunkCoord chunk_coord = getChunkCoord(position, chunk_size_);
+  int64_t chunk_id = encodeChunkCoord(chunk_coord);
+  chunk_to_keyframes_[chunk_id].push_back(keyframe);
 }
 
 int KeyframeSelection::getQueueSize() const { return gpu_queue.size(); }

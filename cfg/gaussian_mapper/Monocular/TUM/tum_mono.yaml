@@ -34,7 +34,7 @@ Record.training_report_interval: 0 # 0:never, 1:always, others:periodically
 Record.record_loop_ply: 0 # 0:false, 1 or other integer:trues
 
 Chunking.chunk_size: 10.0
-Chunking.keyframe_selection_chunk_size: 50.0
+Chunking.keyframe_selection_chunk_size: 200.0
 
 Optimization.auto_distribute: 4  # 0:false, 1 or other integer:true
 Optimization.max_num_iterations: -1
