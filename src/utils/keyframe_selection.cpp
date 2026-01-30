@@ -14,13 +14,8 @@
 #include "utils/keyframe_selection.h"
 
 #include <algorithm>
-#include <condition_variable>
 #include <iostream>
-#include <mutex>
-#include <queue>
-#include <thread>
 
-// Constructor
 KeyframeSelection::KeyframeSelection(
     std::shared_ptr<GaussianScene> scene,
     float chunk_size,
@@ -34,7 +29,6 @@ KeyframeSelection::KeyframeSelection(
       used_times_map_(used_times_map),
       rng_(std::random_device{}()) {}
 
-// Updated keyframe selection using active_frames_gpu_
 std::shared_ptr<GaussianKeyframe> KeyframeSelection::getNextKeyframe() {
   if (!latest_keyframe_) {
     std::cout << "No latest keyframe available." << std::endl;
@@ -101,7 +95,8 @@ std::shared_ptr<GaussianKeyframe> KeyframeSelection::getNextKeyframe() {
       }
 
       if (!loss_vec.empty()) {
-        // Select top (1/auto_distribute_)% of keyframes with highest loss
+        // Select top (1/auto_distribute_) fraction of keyframes with highest
+        // loss
         int k =
             std::max(1, static_cast<int>(loss_vec.size() / auto_distribute_));
 
@@ -111,20 +106,11 @@ std::shared_ptr<GaussianKeyframe> KeyframeSelection::getNextKeyframe() {
                             const std::pair<std::size_t, float>& b) {
                            return a.second > b.second;
                          });
-        // std::cout << "Top " << k << " keyframes by loss in chunk " <<
-        // chunk_id
-        //           << ": ";
-        // for (int i = 0; i < k; ++i) {
-        //   std::cout << "(KF ID: " << loss_vec[i].first
-        //             << ", Loss: " << loss_vec[i].second << ") ";
-        // }
-        // std::cout << std::endl;
 
         // Give additional uses to high-loss keyframes
         for (int i = 0; i < k; ++i) {
           auto scene_kf_it = scene_->keyframes().find(loss_vec[i].first);
           if (scene_kf_it != scene_->keyframes().end()) {
-            // Find the keyframe in our candidates
             for (const auto& candidate : candidates) {
               if (candidate->fid_ == loss_vec[i].first) {
                 increaseKeyframeTimesOfUse(candidate, 1);
@@ -145,7 +131,7 @@ std::shared_ptr<GaussianKeyframe> KeyframeSelection::getNextKeyframe() {
     }
   }
 
-  // Select from available candidates
+  // Select from available candidates using weighted random selection
   if (!available_candidates.empty()) {
     // Weight selection by remaining uses (higher remaining uses = higher
     // probability)
@@ -153,13 +139,11 @@ std::shared_ptr<GaussianKeyframe> KeyframeSelection::getNextKeyframe() {
     weights.reserve(available_candidates.size());
 
     for (const auto& candidate : available_candidates) {
-      // Use remaining times as weight, with a minimum weight to ensure variety
       float weight = std::max(
           1.0f, static_cast<float>(candidate->remaining_times_of_use_));
       weights.push_back(weight);
     }
 
-    // Weighted random selection
     std::discrete_distribution<> weighted_dist(weights.begin(), weights.end());
     size_t selected_index = weighted_dist(rng_);
     selected_keyframe = available_candidates[selected_index];
@@ -186,27 +170,26 @@ std::shared_ptr<GaussianKeyframe> KeyframeSelection::getNextKeyframe() {
       --(selected_keyframe->remaining_times_of_use_);
     }
 
-    // Efficient GPU memory management
+    // Ensure keyframe data is loaded to GPU
     if (!selected_keyframe->loaded_) {
       selected_keyframe->loadDataFromDisk();
     }
 
     // Remove keyframe if already in queue to avoid duplicates
     auto queue_it =
-        std::find(gpu_queue.begin(), gpu_queue.end(), selected_keyframe);
-    if (queue_it != gpu_queue.end()) {
-      gpu_queue.erase(queue_it);
+        std::find(gpu_queue_.begin(), gpu_queue_.end(), selected_keyframe);
+    if (queue_it != gpu_queue_.end()) {
+      gpu_queue_.erase(queue_it);
     }
 
     // Add to front (most recently used)
-    gpu_queue.push_front(selected_keyframe);
+    gpu_queue_.push_front(selected_keyframe);
 
-    // Clean up oldest keyframes
-    while (gpu_queue.size() > max_gpu_keyframes_) {
-      std::shared_ptr<GaussianKeyframe> oldest = gpu_queue.back();
-      gpu_queue.pop_back();
+    // Evict oldest keyframes to stay within GPU memory budget
+    while (gpu_queue_.size() > max_gpu_keyframes_) {
+      std::shared_ptr<GaussianKeyframe> oldest = gpu_queue_.back();
+      gpu_queue_.pop_back();
 
-      // Only transfer to CPU if it's loaded and not the selected one
       if (oldest->loaded_ && oldest != selected_keyframe) {
         oldest->saveDataToDisk();
       }
@@ -218,12 +201,8 @@ std::shared_ptr<GaussianKeyframe> KeyframeSelection::getNextKeyframe() {
 
 Eigen::Vector3f KeyframeSelection::tensorToEigen(
     const torch::Tensor& tensor) const {
-  // Ensure tensor is on CPU and contiguous
   torch::Tensor cpu_tensor = tensor.cpu().contiguous();
-
-  // Get pointer to data
   float* data_ptr = cpu_tensor.data_ptr<float>();
-
   return Eigen::Vector3f(data_ptr[0], data_ptr[1], data_ptr[2]);
 }
 
@@ -239,7 +218,6 @@ void KeyframeSelection::updateChunkKeyframeMapping(
     bool is_new_keyframe) {
   if (!keyframe) return;
 
-  // Update latest keyframe if this is a new keyframe
   if (is_new_keyframe) {
     latest_keyframe_ = keyframe;
   } else {
@@ -252,7 +230,7 @@ void KeyframeSelection::updateChunkKeyframeMapping(
     }
   }
 
-  // Add associations based on current position
+  // Add to chunk based on current position
   torch::Tensor center_tensor = keyframe->getCenter();
   Eigen::Vector3f position = tensorToEigen(center_tensor);
   ChunkCoord chunk_coord = getChunkCoord(position, chunk_size_);
@@ -260,4 +238,4 @@ void KeyframeSelection::updateChunkKeyframeMapping(
   chunk_to_keyframes_[chunk_id].push_back(keyframe);
 }
 
-int KeyframeSelection::getQueueSize() const { return gpu_queue.size(); }
+int KeyframeSelection::getQueueSize() const { return gpu_queue_.size(); }
