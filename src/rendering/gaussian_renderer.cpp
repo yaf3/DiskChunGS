@@ -40,7 +40,7 @@ GaussianRenderer::render(std::shared_ptr<GaussianModel> model,
   torch::Tensor visible_indices = torch::where(visible_gaussian_mask)[0];
 
   /* If precomputed colors are provided, use them. Otherwise, if it is desired
-     to precompute colors from SHs in Python, do it. If not, then SH -> RGB
+     to precompute colors from SHs do it. If not, then SH -> RGB
      conversion will be done by rasterizer.
    */
   torch::Tensor dc, shs, colors_precomp;
@@ -107,7 +107,7 @@ GaussianRenderer::render(std::shared_ptr<GaussianModel> model,
         model->getRotationActivation().index({visible_indices}).contiguous();
   }
 
-  // Rasterization (unchanged)
+  // Rasterization
   float tanfovx = std::tan(FoVx * 0.5f);
   float tanfovy = std::tan(FoVy * 0.5f);
 

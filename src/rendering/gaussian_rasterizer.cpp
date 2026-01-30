@@ -53,7 +53,7 @@ torch::autograd::tensor_list GaussianRasterizerFunction::forward(
   ctx->saved_data["prefiltered"] = raster_settings.prefiltered_;
   ctx->saved_data["debug"] = raster_settings.debug_;
 
-  // Save tensors in the SAME ORDER as Python version
+  // Save tensors
   ctx->save_for_backward({colors_precomp, means3D, scales, rotations,
                           cov3Ds_precomp, radii, dc, sh, opacities, geomBuffer,
                           binningBuffer, imgBuffer, sampleBuffer, viewmatrix,
@@ -81,24 +81,24 @@ torch::autograd::tensor_list GaussianRasterizerFunction::backward(
 
   auto saved = ctx->get_saved_variables();
 
-  // Restore tensors in the SAME ORDER as Python version
-  auto colors_precomp = saved[0];  // matches Python: colors_precomp
-  auto means3D = saved[1];         // matches Python: means3D
-  auto scales = saved[2];          // matches Python: scales
-  auto rotations = saved[3];       // matches Python: rotations
-  auto cov3Ds_precomp = saved[4];  // matches Python: cov3Ds_precomp
-  auto radii = saved[5];           // matches Python: radii
-  auto dc = saved[6];              // matches Python: dc
-  auto sh = saved[7];              // matches Python: sh
-  auto opacities = saved[8];       // matches Python: opacities
-  auto geomBuffer = saved[9];      // matches Python: geomBuffer
-  auto binningBuffer = saved[10];  // matches Python: binningBuffer
-  auto imgBuffer = saved[11];      // matches Python: imgBuffer
-  auto sampleBuffer = saved[12];   // matches Python: sampleBuffer
-  auto viewmatrix = saved[13];     // matches Python: viewmatrix
-  auto bg = saved[14];             // raster_settings.bg_
-  auto projmatrix = saved[15];     // raster_settings.projmatrix_
-  auto campos = saved[16];         // raster_settings.campos_
+  // Restore tensors
+  auto colors_precomp = saved[0];
+  auto means3D = saved[1];
+  auto scales = saved[2];
+  auto rotations = saved[3];
+  auto cov3Ds_precomp = saved[4];
+  auto radii = saved[5];
+  auto dc = saved[6];
+  auto sh = saved[7];
+  auto opacities = saved[8];
+  auto geomBuffer = saved[9];
+  auto binningBuffer = saved[10];
+  auto imgBuffer = saved[11];
+  auto sampleBuffer = saved[12];
+  auto viewmatrix = saved[13];
+  auto bg = saved[14];
+  auto projmatrix = saved[15];
+  auto campos = saved[16];
 
   // Compute gradients for relevant tensors by invoking backward method
   auto grad_out_color = grad_outputs[0];
@@ -114,20 +114,10 @@ torch::autograd::tensor_list GaussianRasterizerFunction::backward(
           geomBuffer, num_rendered, binningBuffer, imgBuffer, num_buckets,
           sampleBuffer, debug);
 
-  // Return gradients in the SAME ORDER as Python version
-  return {
-      grad_means3D,         // matches Python position 0
-      grad_means2D,         // matches Python position 1
-      grad_dc,              // matches Python position 2
-      grad_sh,              // matches Python position 3
-      grad_colors_precomp,  // matches Python position 4
-      grad_opacities,       // matches Python position 5
-      grad_scales,          // matches Python position 6
-      grad_rotations,       // matches Python position 7
-      grad_cov3Ds_precomp,  // matches Python position 8
-      grad_viewmatrix,      // matches Python position 9
-      torch::Tensor()       // matches Python position 10 (None)
-  };
+  // Return gradients
+  return {grad_means3D,        grad_means2D,    grad_dc,        grad_sh,
+          grad_colors_precomp, grad_opacities,  grad_scales,    grad_rotations,
+          grad_cov3Ds_precomp, grad_viewmatrix, torch::Tensor()};
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
@@ -143,11 +133,7 @@ GaussianRasterizer::forward(torch::Tensor means3D,
                             torch::Tensor viewmatrix) {
   auto raster_settings = this->raster_settings_;
 
-  // Remove the validation checks to match Python version (which has them
-  // commented out) The Python version doesn't validate these conditions, so C++
-  // shouldn't either
-
-  // Create empty tensors for undefined parameters to match Python behavior
+  // Create empty tensors for undefined parameters
   torch::TensorOptions options;
   if (!shs.defined()) shs = torch::tensor({}, options.device(torch::kCUDA));
   if (!colors_precomp.defined())
