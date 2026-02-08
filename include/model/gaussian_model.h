@@ -115,6 +115,47 @@ class SparseGaussianAdam;
  */
 class GaussianModel {
  public:
+  //============================================================================
+  // Nested Types
+  //============================================================================
+
+  /**
+   * @brief Container for all data associated with a spatial chunk.
+   *
+   * Holds Gaussian parameters and optimizer state for serialization.
+   */
+  struct ChunkData {
+    // Gaussian parameters
+    torch::Tensor xyz, features_dc, features_rest;
+    torch::Tensor scaling, rotation, opacity;
+    torch::Tensor exist_since, position_lrs, gaussian_ids;
+
+    // Adam optimizer states (one per parameter group)
+    std::vector<torch::Tensor> exp_avg_states;  ///< First moment estimates [6].
+    std::vector<torch::Tensor>
+        exp_avg_sq_states;             ///< Second moment estimates [6].
+    std::vector<int64_t> step_counts;  ///< Adam step counts [6].
+
+    int num_points;    ///< Number of Gaussians in this chunk.
+    int64_t chunk_id;  ///< Encoded spatial coordinate ID.
+  };
+
+  /**
+   * @brief Binary header for tensor serialization.
+   *
+   * Precedes tensor data in chunk files to enable reconstruction.
+   */
+  struct TensorHeader {
+    uint32_t dims;       ///< Number of tensor dimensions.
+    uint32_t sizes[8];   ///< Size in each dimension (max 8D).
+    uint32_t dtype;      ///< torch::ScalarType as uint32_t.
+    uint64_t data_size;  ///< Total data size in bytes.
+  };
+
+  //============================================================================
+  // Construction
+  //============================================================================
+
   /**
    * @brief Constructs a GaussianModel with the given parameters.
    * @param model_params Configuration including SH degree, device, and memory
@@ -127,8 +168,7 @@ class GaussianModel {
                          float chunk_size = 20.0f);
 
   //============================================================================
-  // Activation Getters - Methods to retrieve activated (transformed) Gaussian
-  // parameters.
+  // Activation Getters
   //============================================================================
 
   /**
@@ -169,8 +209,7 @@ class GaussianModel {
   torch::Tensor getCovarianceActivation(int scaling_modifier = 1);
 
   //============================================================================
-  // Transformation Methods - Methods for applying geometric transformations to
-  // Gaussians.
+  // Geometric Transformations
   //============================================================================
 
   /**
@@ -221,8 +260,7 @@ class GaussianModel {
       const float scale = 1.0f);
 
   //============================================================================
-  // Optimization Methods - Methods for training setup and gradient-based
-  // optimization.
+  // Optimization
   //============================================================================
 
   /**
@@ -290,7 +328,7 @@ class GaussianModel {
   torch::Tensor replaceTensorToOptimizer(torch::Tensor& t, int tensor_idx);
 
   //============================================================================
-  // Pruning and Densification - Methods for removing and adding Gaussians.
+  // Pruning and Densification
   //============================================================================
 
   /**
@@ -335,93 +373,6 @@ class GaussianModel {
       const std::vector<torch::Tensor>& loaded_exp_avg_sq = {},
       const std::vector<int64_t>& loaded_step_counts = {});
 
- protected:
-  /**
-   * @brief Computes exponentially decaying learning rate.
-   * @param step Current optimization step.
-   * @return Learning rate value.
-   */
-  float exponLrFunc(int step);
-
- public:
-  //============================================================================
-  // Core Gaussian Parameters
-  //============================================================================
-
-  torch::DeviceType device_type_;  ///< CUDA or CPU device for tensors.
-  int sh_degree_;                  ///< Spherical harmonics degree (0-3).
-
-  torch::Tensor xyz_;               ///< Gaussian positions [N, 3].
-  torch::Tensor features_dc_;       ///< DC SH coefficients [N, 1, 3].
-  torch::Tensor features_rest_;     ///< Higher-order SH coefficients [N, K, 3].
-  torch::Tensor scaling_;           ///< Log-space scaling [N, 3].
-  torch::Tensor rotation_;          ///< Rotation quaternions [N, 4].
-  torch::Tensor opacity_;           ///< Logit-space opacity [N, 1].
-  torch::Tensor exist_since_iter_;  ///< Creation iteration per Gaussian [N].
-  torch::Tensor gaussian_chunk_ids_;  ///< Spatial chunk ID per Gaussian [N].
-
-  //============================================================================
-  // Optimizer Interface - Vector wrappers required by the optimizer API.
-  //============================================================================
-
-  std::vector<torch::Tensor> Tensor_vec_xyz_, Tensor_vec_feature_dc_,
-      Tensor_vec_feature_rest_, Tensor_vec_opacity_, Tensor_vec_scaling_,
-      Tensor_vec_rotation_;
-
-  std::shared_ptr<SparseGaussianAdam> optimizer_;  ///< Sparse Adam optimizer.
-  float spatial_lr_scale_;  ///< Scale factor for position learning rate.
-
- protected:
-  int local_iteration_;      ///< Current local training iteration.
-  float position_lr_init_;   ///< Initial position learning rate.
-  float position_lr_decay_;  ///< Per-step decay factor for position LR.
-  float position_lr_min_;    ///< Minimum position learning rate.
-
-  torch::Tensor position_lrs_;  ///< Per-Gaussian position learning rates [N].
-
-  std::mutex mutex_settings_;  ///< Mutex for thread-safe settings access.
-
- public:
-  //============================================================================
-  // Chunk-Based Visibility - Methods and data for spatial chunking and frustum
-  // culling
-  //============================================================================
-
-  float chunk_size_;  ///< Spatial size of each chunk in world units.
-
-  FrustumCullingCache
-      gaussian_visibility_cache_;  ///< Cache for visibility queries.
-
-  /**
-   * @brief Determines which chunks are visible from a keyframe's frustum.
-   * @param keyframe The camera keyframe for visibility testing.
-   * @param use_cache Whether to use cached visibility results.
-   * @return Vector of visible chunk coordinates.
-   */
-  std::vector<ChunkCoord> frustumCullChunks(
-      std::shared_ptr<GaussianKeyframe> keyframe,
-      bool use_cache);
-
-  /**
-   * @brief Creates a mask of Gaussians visible from a keyframe.
-   * @param keyframe The camera keyframe for visibility testing.
-   * @param manage_memory If true, loads/evicts chunks as needed.
-   * @return Boolean mask [N] indicating visible Gaussians.
-   *
-   * Performs frustum culling at chunk level, then creates a mask
-   * for all Gaussians in visible chunks.
-   */
-  torch::Tensor cullVisibleGaussians(std::shared_ptr<GaussianKeyframe> keyframe,
-                                     bool manage_memory = true);
-
-  /**
-   * @brief Creates a Gaussian mask from a set of chunk IDs.
-   * @param visible_chunk_ids Tensor of chunk IDs to include.
-   * @return Boolean mask [N] for Gaussians in those chunks.
-   */
-  torch::Tensor createGaussianMaskFromChunks(
-      const torch::Tensor& visible_chunk_ids);
-
   /**
    * @brief Prunes Gaussians with low opacity or excessive screen size.
    * @param pkf Keyframe used for screen-size calculation.
@@ -431,15 +382,15 @@ class GaussianModel {
                                 const torch::Tensor& visible_gaussian_mask);
 
   /**
-   * @brief Recomputes chunk IDs based on current Gaussian positions.
+   * @brief Prunes Gaussians by opacity and world-space size.
+   * @param min_opacity Minimum opacity threshold.
+   * @param extent Scene extent for size calculation.
+   * @param max_screen_size Maximum allowed screen-space size (0 to disable).
    */
-  void updateChunkIDs();
-
-  bool is_initialized_ =
-      false;  ///< Whether the model has been initialized with points.
+  void prune(float min_opacity, float extent, int max_screen_size);
 
   //============================================================================
-  // Point Management - Methods for adding new Gaussians from SLAM observations.
+  // Point Management
   //============================================================================
 
   /**
@@ -492,80 +443,53 @@ class GaussianModel {
                     const torch::Tensor& new_opacities,
                     int iteration);
 
-  //============================================================================
-  // Storage Tracking -  Tensors tracking chunk state between disk and memory
-  //============================================================================
-
-  torch::Tensor
-      chunks_loaded_from_disk_;   ///< IDs of chunks currently loaded from disk.
-  torch::Tensor chunks_on_disk_;  ///< IDs of all chunks saved to disk.
-  torch::Tensor chunk_gaussian_counts_;  ///< Gaussian count per disk chunk.
-  torch::Tensor gaussian_ids_;  ///< Unique ID per Gaussian for tracking.
-
-  int64_t next_gaussian_id_ =
-      0;  ///< Counter for generating unique Gaussian IDs.
-
-  std::string storage_base_path_;  ///< Directory for chunk file storage.
-
-  //============================================================================
-  // Memory Management -  Configuration and state for GPU memory management
-  //============================================================================
-
-  int64_t max_gaussians_in_memory_ =
-      3000000;  ///< Max Gaussians before eviction.
-  std::chrono::steady_clock::time_point
-      last_memory_check_;  ///< Rate-limiting for checks.
-
-  std::unordered_map<int64_t, float>
-      chunk_access_times_;  ///< Per-chunk access timestamps.
-  int new_gaussian_chunk_density_ =
-      100;  ///< Min Gaussians/chunk for new points.
-
   /**
-   * @brief Queries current GPU memory usage via CUDA allocator.
-   * @return Current allocated bytes on GPU.
+   * @brief Initializes an empty model for subsequent chunk loading.
+   * @param spatial_lr_scale Scale factor for position learning rate.
    */
-  size_t getCurrentGPUMemoryUsage() const;
+  void initializeEmpty(float spatial_lr_scale);
 
   //============================================================================
-  // Disk Storage Structures
+  // Chunk Visibility and Frustum Culling
   //============================================================================
 
   /**
-   * @brief Container for all data associated with a spatial chunk.
+   * @brief Determines which chunks are visible from a keyframe's frustum.
+   * @param keyframe The camera keyframe for visibility testing.
+   * @param use_cache Whether to use cached visibility results.
+   * @return Vector of visible chunk coordinates.
+   */
+  std::vector<ChunkCoord> frustumCullChunks(
+      std::shared_ptr<GaussianKeyframe> keyframe,
+      bool use_cache);
+
+  /**
+   * @brief Creates a mask of Gaussians visible from a keyframe.
+   * @param keyframe The camera keyframe for visibility testing.
+   * @param manage_memory If true, loads/evicts chunks as needed.
+   * @return Boolean mask [N] indicating visible Gaussians.
    *
-   * Holds Gaussian parameters and optimizer state for serialization.
+   * Performs frustum culling at chunk level, then creates a mask
+   * for all Gaussians in visible chunks.
    */
-  struct ChunkData {
-    // Gaussian parameters
-    torch::Tensor xyz, features_dc, features_rest;
-    torch::Tensor scaling, rotation, opacity;
-    torch::Tensor exist_since, position_lrs, gaussian_ids;
-
-    // Adam optimizer states (one per parameter group)
-    std::vector<torch::Tensor> exp_avg_states;  ///< First moment estimates [6].
-    std::vector<torch::Tensor>
-        exp_avg_sq_states;             ///< Second moment estimates [6].
-    std::vector<int64_t> step_counts;  ///< Adam step counts [6].
-
-    int num_points;    ///< Number of Gaussians in this chunk.
-    int64_t chunk_id;  ///< Encoded spatial coordinate ID.
-  };
+  torch::Tensor cullVisibleGaussians(std::shared_ptr<GaussianKeyframe> keyframe,
+                                     bool manage_memory = true);
 
   /**
-   * @brief Binary header for tensor serialization.
-   *
-   * Precedes tensor data in chunk files to enable reconstruction.
+   * @brief Creates a Gaussian mask from a set of chunk IDs.
+   * @param visible_chunk_ids Tensor of chunk IDs to include.
+   * @return Boolean mask [N] for Gaussians in those chunks.
    */
-  struct TensorHeader {
-    uint32_t dims;       ///< Number of tensor dimensions.
-    uint32_t sizes[8];   ///< Size in each dimension (max 8D).
-    uint32_t dtype;      ///< torch::ScalarType as uint32_t.
-    uint64_t data_size;  ///< Total data size in bytes.
-  };
+  torch::Tensor createGaussianMaskFromChunks(
+      const torch::Tensor& visible_chunk_ids);
+
+  /**
+   * @brief Recomputes chunk IDs based on current Gaussian positions.
+   */
+  void updateChunkIDs();
 
   //============================================================================
-  // Disk I/O Methods - Methods for chunk serialization and persistence
+  // Disk I/O
   //============================================================================
 
   /**
@@ -643,9 +567,28 @@ class GaussianModel {
    */
   void saveAndEvictChunks(const torch::Tensor& chunk_ids);
 
+  /**
+   * @brief Saves all in-memory chunks to disk.
+   *
+   * Used for checkpointing or shutdown. Skips spillover chunks.
+   */
+  void saveAllChunks();
+
+  /**
+   * @brief Removes chunk files from disk.
+   * @param chunk_ids Tensor of chunk IDs whose files to delete.
+   */
+  void deleteSparseChunkFiles(const torch::Tensor& chunk_ids);
+
   //============================================================================
-  // Memory Management Methods
+  // Memory Management
   //============================================================================
+
+  /**
+   * @brief Queries current GPU memory usage via CUDA allocator.
+   * @return Current allocated bytes on GPU.
+   */
+  size_t getCurrentGPUMemoryUsage() const;
 
   /**
    * @brief Selects chunks to evict based on LRU policy.
@@ -666,13 +609,6 @@ class GaussianModel {
    * @param accessed_chunk_ids Chunks that were accessed.
    */
   void updateChunkAccess(const torch::Tensor& accessed_chunk_ids);
-
-  /**
-   * @brief Saves all in-memory chunks to disk.
-   *
-   * Used for checkpointing or shutdown. Skips spillover chunks.
-   */
-  void saveAllChunks();
 
   /**
    * @brief Counts total Gaussians across memory and disk.
@@ -697,22 +633,10 @@ class GaussianModel {
                              int min_gaussians_per_chunk);
 
   /**
-   * @brief Initializes an empty model for subsequent chunk loading.
-   * @param spatial_lr_scale Scale factor for position learning rate.
-   */
-  void initializeEmpty(float spatial_lr_scale);
-
-  /**
    * @brief Deletes chunks with too few Gaussians.
    * @param min_gaussians_per_chunk Threshold for deletion.
    */
   void deleteSparseChunks(int min_gaussians_per_chunk);
-
-  /**
-   * @brief Removes chunk files from disk.
-   * @param chunk_ids Tensor of chunk IDs whose files to delete.
-   */
-  void deleteSparseChunkFiles(const torch::Tensor& chunk_ids);
 
   /**
    * @brief Handles Gaussians that moved between chunks after loop closure.
@@ -723,11 +647,77 @@ class GaussianModel {
    */
   void handleBatchChunkRedistribution(const torch::Tensor& processed_chunk_ids);
 
+  //============================================================================
+  // Public Data Members
+  //============================================================================
+
+  // Device and configuration
+  torch::DeviceType device_type_;  ///< CUDA or CPU device for tensors.
+  int sh_degree_;                  ///< Spherical harmonics degree (0-3).
+
+  // Core Gaussian parameters
+  torch::Tensor xyz_;               ///< Gaussian positions [N, 3].
+  torch::Tensor features_dc_;       ///< DC SH coefficients [N, 1, 3].
+  torch::Tensor features_rest_;     ///< Higher-order SH coefficients [N, K, 3].
+  torch::Tensor scaling_;           ///< Log-space scaling [N, 3].
+  torch::Tensor rotation_;          ///< Rotation quaternions [N, 4].
+  torch::Tensor opacity_;           ///< Logit-space opacity [N, 1].
+  torch::Tensor exist_since_iter_;  ///< Creation iteration per Gaussian [N].
+  torch::Tensor gaussian_chunk_ids_;  ///< Spatial chunk ID per Gaussian [N].
+
+  // Optimizer interface (vector wrappers required by optimizer API)
+  std::vector<torch::Tensor> Tensor_vec_xyz_, Tensor_vec_feature_dc_,
+      Tensor_vec_feature_rest_, Tensor_vec_opacity_, Tensor_vec_scaling_,
+      Tensor_vec_rotation_;
+
+  std::shared_ptr<SparseGaussianAdam> optimizer_;  ///< Sparse Adam optimizer.
+  float spatial_lr_scale_;  ///< Scale factor for position learning rate.
+
+  // Chunk visibility
+  float chunk_size_;  ///< Spatial size of each chunk in world units.
+  FrustumCullingCache
+      gaussian_visibility_cache_;  ///< Cache for visibility queries.
+  bool is_initialized_ =
+      false;  ///< Whether the model has been initialized with points.
+
+  // Storage tracking
+  torch::Tensor
+      chunks_loaded_from_disk_;   ///< IDs of chunks currently loaded from disk.
+  torch::Tensor chunks_on_disk_;  ///< IDs of all chunks saved to disk.
+  torch::Tensor chunk_gaussian_counts_;  ///< Gaussian count per disk chunk.
+  torch::Tensor gaussian_ids_;  ///< Unique ID per Gaussian for tracking.
+  int64_t next_gaussian_id_ =
+      0;                             ///< Counter for generating unique Gaussian IDs.
+  std::string storage_base_path_;  ///< Directory for chunk file storage.
+
+  // Memory management configuration
+  int64_t max_gaussians_in_memory_ =
+      3000000;  ///< Max Gaussians before eviction.
+  std::chrono::steady_clock::time_point
+      last_memory_check_;  ///< Rate-limiting for checks.
+  std::unordered_map<int64_t, float>
+      chunk_access_times_;  ///< Per-chunk access timestamps.
+  int new_gaussian_chunk_density_ =
+      100;  ///< Min Gaussians/chunk for new points.
+
+ protected:
+  //============================================================================
+  // Protected Members
+  //============================================================================
+
   /**
-   * @brief Prunes Gaussians by opacity and world-space size.
-   * @param min_opacity Minimum opacity threshold.
-   * @param extent Scene extent for size calculation.
-   * @param max_screen_size Maximum allowed screen-space size (0 to disable).
+   * @brief Computes exponentially decaying learning rate.
+   * @param step Current optimization step.
+   * @return Learning rate value.
    */
-  void prune(float min_opacity, float extent, int max_screen_size);
+  float exponLrFunc(int step);
+
+  int local_iteration_;      ///< Current local training iteration.
+  float position_lr_init_;   ///< Initial position learning rate.
+  float position_lr_decay_;  ///< Per-step decay factor for position LR.
+  float position_lr_min_;    ///< Minimum position learning rate.
+
+  torch::Tensor position_lrs_;  ///< Per-Gaussian position learning rates [N].
+
+  std::mutex mutex_settings_;  ///< Mutex for thread-safe settings access.
 };

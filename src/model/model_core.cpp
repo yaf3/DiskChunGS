@@ -104,12 +104,6 @@ void GaussianModel::applyScaledTransformation(const float s,
           .transpose(0, 1);
   transformPoints(this->xyz_, T_tensor);
 
-  // torch::Tensor scales;
-  // torch::Tensor point_cloud_copy = this->xyz_.clone();
-  // torch::Tensor dist2 = torch::clamp_min(distCUDA2(point_cloud_copy),
-  // 0.0000001); scales = torch::log(torch::sqrt(dist2)); auto scales_ndimension
-  // = scales.ndimension(); scales =
-  // scales.unsqueeze(scales_ndimension).repeat({1, 3});
   this->scaling_ *= s;
   scaledTransformationPostfix(this->xyz_, this->scaling_);
 }
@@ -182,19 +176,9 @@ void GaussianModel::addPoints(const torch::Tensor& new_xyz,
                               float spatial_lr_scale) {
   torch::NoGradGuard no_grad;
 
-  auto start_time = std::chrono::steady_clock::now();
-
-  // Apply chunk density filtering
-
-  auto filter_start_time = std::chrono::steady_clock::now();
   auto [filtered_xyz, filtered_colors, filtered_scales, filtered_opacities] =
       filterPointsByChunkDensity(new_xyz, new_colors, new_scales, new_opacities,
                                  new_gaussian_chunk_density_);
-  auto filter_end_time = std::chrono::steady_clock::now();
-  auto filter_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-      filter_end_time - filter_start_time);
-  // std::cout << "filterPointsByChunkDensity completed in "
-  //           << filter_duration.count() << "ms" << std::endl;
 
   if (filtered_xyz.size(0) == 0) {
     std::cout
@@ -202,11 +186,6 @@ void GaussianModel::addPoints(const torch::Tensor& new_xyz,
         << std::endl;
     return;
   }
-
-  // std::cout << "[Gaussian Model] Filtered points: " << filtered_xyz.size(0)
-  //           << " -> " << filtered_xyz.size(0) << " (kept "
-  //           << (100.0f * filtered_xyz.size(0) / new_xyz.size(0)) << "%)"
-  //           << std::endl;
 
   // Only care about existing disk chunks that need loading
   torch::Tensor affected_chunks =
@@ -231,12 +210,6 @@ void GaussianModel::addPoints(const torch::Tensor& new_xyz,
     appendPoints(filtered_xyz, filtered_colors, filtered_scales,
                  filtered_opacities, iteration);
   }
-
-  auto end_time = std::chrono::steady_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-      end_time - start_time);
-  // std::cout << "addPoints completed in " << duration.count() << "ms"
-  //           << std::endl;
 }
 
 void GaussianModel::initializeFromPoints(const torch::Tensor& initial_xyz,
@@ -298,8 +271,6 @@ void GaussianModel::initializeFromPoints(const torch::Tensor& initial_xyz,
   next_gaussian_id_ += initial_xyz.size(0);
 
   GAUSSIAN_MODEL_TENSORS_TO_VEC
-
-  // c10::cuda::CUDACachingAllocator::emptyCache();
 
   is_initialized_ = true;
 }
@@ -366,8 +337,6 @@ void GaussianModel::appendPoints(const torch::Tensor& new_xyzs,
                        new_opacities_tensor, new_scaling, new_rotation,
                        new_exist_since_iter, new_chunk_ids, new_position_lrs,
                        new_gaussian_ids);
-
-  // c10::cuda::CUDACachingAllocator::emptyCache();
 }
 
 std::vector<ChunkCoord> GaussianModel::frustumCullChunks(
@@ -408,12 +377,7 @@ torch::Tensor GaussianModel::cullVisibleGaussians(
   torch::Tensor chunk_visibility_mask =
       createGaussianMaskFromChunks(visible_chunk_ids);
 
-  //  Update access times for all visible chunks
   updateChunkAccess(visible_chunk_ids);
-
-  // std::cout << "[Culling Debug] Culling stats - Total: " << xyz_.size(0)
-  //           << ", Chunk visible: " << chunk_visibility_mask.sum().item<int>()
-  //           << std::endl;
 
   return chunk_visibility_mask;
 }
