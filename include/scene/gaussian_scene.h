@@ -16,62 +16,116 @@
 
 #pragma once
 
-#include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <tuple>
-#include <unordered_map>
 #include <vector>
 
 #include "camera.h"
-#include "geometry/point2d.h"
 #include "geometry/point3d.h"
 #include "model/gaussian_model.h"
 #include "scene/gaussian_keyframe.h"
 #include "scene/gaussian_parameters.h"
 #include "types.h"
 
+/**
+ * @brief Manages a collection of cameras and keyframes for
+ *        Gaussian splatting reconstruction.
+ *
+ * This class serves as the central container for scene data, providing
+ * thread-safe access to keyframes and methods for coordinate transformations.
+ */
 class GaussianScene {
  public:
-  GaussianScene(GaussianModelParams& args,
-                int load_iteration = 0,
-                bool shuffle = true,
-                std::vector<float> resolution_scales = {1.0f});
+  /**
+   * @brief Constructs a GaussianScene.
+   * @param args Model parameters configuration.
+   * @param load_iteration Iteration to load from disk (0 = no loading).
+   */
+  GaussianScene(GaussianModelParams& args, int load_iteration = 0);
 
- public:
+  // ─────────────────────────────────────────────────────────────────────────
+  // Camera management
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * @brief Adds a camera to the scene.
+   * @param camera Camera to add (stored by camera_id_).
+   */
   void addCamera(Camera& camera);
-  Camera& getCamera(camera_id_t cameraId);
 
-  void addKeyframe(std::shared_ptr<GaussianKeyframe> new_kf);
+  /**
+   * @brief Retrieves a camera by ID.
+   * @param camera_id The camera identifier.
+   * @return Reference to the camera.
+   */
+  Camera& getCamera(camera_id_t camera_id);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Keyframe management (thread-safe)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * @brief Adds a keyframe to the scene (thread-safe).
+   * @param keyframe Shared pointer to the keyframe.
+   */
+  void addKeyframe(std::shared_ptr<GaussianKeyframe> keyframe);
+
+  /**
+   * @brief Retrieves a keyframe by frame ID (thread-safe).
+   * @param fid Frame identifier.
+   * @return Shared pointer to keyframe, or nullptr if not found.
+   */
   std::shared_ptr<GaussianKeyframe> getKeyframe(std::size_t fid);
+
+  /**
+   * @brief Returns a reference to the keyframes map (not thread-safe).
+   * @warning Direct access bypasses mutex protection.
+   */
   std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>& keyframes();
+
+  /**
+   * @brief Returns a copy of all keyframes (thread-safe).
+   * @return Copy of the keyframes map.
+   */
   std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> getAllKeyframes();
 
-  void cachePoint3D(point3D_id_t point3D_id, Point3D& point3d);
-  Point3D& getPoint3D(point3D_id_t point3DId);
-  void clearCachedPoint3D();
+  // ─────────────────────────────────────────────────────────────────────────
+  // Transformations and normalization
+  // ─────────────────────────────────────────────────────────────────────────
 
+  /**
+   * @brief Applies a scaled SE3 transformation to all keyframes.
+   * @param scale Scale factor applied to translations.
+   * @param transform SE3 transformation to apply.
+   */
   void applyScaledTransformation(
-      const float s = 1.0,
-      const Sophus::SE3f T = Sophus::SE3f(Eigen::Matrix3f::Identity(),
-                                          Eigen::Vector3f::Zero()));
+      float scale = 1.0f,
+      Sophus::SE3f transform = Sophus::SE3f(Eigen::Matrix3f::Identity(),
+                                            Eigen::Vector3f::Zero()));
 
+  /**
+   * @brief Computes NeRF++ style normalization from camera positions.
+   *
+   * Calculates the centroid of all camera centers and the radius of the
+   * bounding sphere (with 10% margin).
+   *
+   * @return Tuple of (translation to center, bounding radius).
+   */
   std::tuple<Eigen::Vector3f, float> getNerfppNorm();
 
-  std::tuple<std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>,
-             std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>>
-  splitTrainAndTestKeyframes(const float test_ratio);
+  // ─────────────────────────────────────────────────────────────────────────
+  // Public data members
+  // ─────────────────────────────────────────────────────────────────────────
 
- public:
-  float cameras_extent_;  ///< scene_info.nerf_normalization["radius"]
-
-  int loaded_iter_;
+  float cameras_extent_ = 0.0f;  ///< Scene radius for NeRF normalization.
+  int loaded_iter_ = 0;          ///< Iteration loaded from disk (0 = none).
 
   std::map<camera_id_t, Camera> cameras_;
   std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> keyframes_;
   std::map<point3D_id_t, Point3D> cached_point_cloud_;
 
  protected:
-  std::mutex mutex_kfs_;
+  std::mutex mutex_kfs_;  ///< Mutex for thread-safe keyframe access.
 };

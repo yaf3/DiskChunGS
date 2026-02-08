@@ -16,118 +16,95 @@
 
 #include "scene/gaussian_scene.h"
 
-GaussianScene::GaussianScene(GaussianModelParams& args,
-                             int load_iteration,
-                             bool shuffle,
-                             std::vector<float> resolution_scales) {
+#include <iostream>
+
+GaussianScene::GaussianScene(GaussianModelParams& args, int load_iteration) {
   if (load_iteration) {
-    this->loaded_iter_ = load_iteration;
+    loaded_iter_ = load_iteration;
     std::cout << "Loading trained model at iteration " << load_iteration
               << std::endl;
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Camera management
+// ─────────────────────────────────────────────────────────────────────────────
+
 void GaussianScene::addCamera(Camera& camera) {
-  this->cameras_.emplace(camera.camera_id_, camera);
+  cameras_.emplace(camera.camera_id_, camera);
 }
 
-Camera& GaussianScene::getCamera(camera_id_t cameraId) {
-  return this->cameras_[cameraId];
+Camera& GaussianScene::getCamera(camera_id_t camera_id) {
+  return cameras_[camera_id];
 }
 
-void GaussianScene::addKeyframe(std::shared_ptr<GaussianKeyframe> new_kf) {
-  std::unique_lock<std::mutex> lock_kfs(this->mutex_kfs_);
-  this->keyframes_.emplace(new_kf->fid_, new_kf);
+// ─────────────────────────────────────────────────────────────────────────────
+// Keyframe management
+// ─────────────────────────────────────────────────────────────────────────────
+
+void GaussianScene::addKeyframe(std::shared_ptr<GaussianKeyframe> keyframe) {
+  std::unique_lock<std::mutex> lock(mutex_kfs_);
+  keyframes_.emplace(keyframe->fid_, keyframe);
 }
 
 std::shared_ptr<GaussianKeyframe> GaussianScene::getKeyframe(std::size_t fid) {
-  std::unique_lock<std::mutex> lock_kfs(this->mutex_kfs_);
-  if (this->keyframes_.find(fid) != this->keyframes_.end())
-    return this->keyframes_[fid];
-  else
-    return nullptr;
+  std::unique_lock<std::mutex> lock(mutex_kfs_);
+  auto it = keyframes_.find(fid);
+  return (it != keyframes_.end()) ? it->second : nullptr;
 }
 
 std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>&
 GaussianScene::keyframes() {
-  return this->keyframes_;
+  return keyframes_;
 }
 
 std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>
 GaussianScene::getAllKeyframes() {
-  std::unique_lock<std::mutex> lock_kfs(this->mutex_kfs_);
-  return this->keyframes_;
+  std::unique_lock<std::mutex> lock(mutex_kfs_);
+  return keyframes_;
 }
 
-void GaussianScene::cachePoint3D(point3D_id_t point3D_id, Point3D& point3d) {
-  this->cached_point_cloud_[point3D_id] = point3d;
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// Transformations and normalization
+// ─────────────────────────────────────────────────────────────────────────────
 
-Point3D& GaussianScene::getPoint3D(point3D_id_t point3DId) {
-  if (this->cached_point_cloud_.find(point3DId) ==
-      this->cached_point_cloud_.end())
-    std::cout << "GaussianScene::getPoint3D(" << point3DId
-              << ") invalid point Id, creating new point." << std::endl;
+void GaussianScene::applyScaledTransformation(const float scale,
+                                              const Sophus::SE3f transform) {
+  for (auto& [fid, keyframe] : keyframes_) {
+    Sophus::SE3f Twc = keyframe->getPosef().inverse();
+    Twc.translation() *= scale;
 
-  return this->cached_point_cloud_[point3DId];
-}
-
-void GaussianScene::clearCachedPoint3D() { this->cached_point_cloud_.clear(); }
-
-void GaussianScene::applyScaledTransformation(const float s,
-                                              const Sophus::SE3f T) {
-  // Apply the scaled transformation on gaussian keyframes
-  for (auto& kfit : keyframes_) {
-    std::shared_ptr<GaussianKeyframe> pkf = kfit.second;
-    Sophus::SE3f Twc = pkf->getPosef().inverse();
-    Twc.translation() *= s;
-    Sophus::SE3f Tyc = T * Twc;
-    Sophus::SE3f Tcy = Tyc.inverse();
-    pkf->setPose(Tcy.unit_quaternion().cast<double>(),
-                 Tcy.translation().cast<double>());
-    pkf->computeTransformTensors();
+    Sophus::SE3f Tcy = (transform * Twc).inverse();
+    keyframe->setPose(Tcy.unit_quaternion().cast<double>(),
+                      Tcy.translation().cast<double>());
+    keyframe->computeTransformTensors();
   }
 }
 
-/**
- * @brief
- *
- * @return std::tuple<Eigen::Vector3f, float> first=translate, second=radius
- */
 std::tuple<Eigen::Vector3f, float> GaussianScene::getNerfppNorm() {
-  std::vector<Eigen::Matrix<float, 3, 1>> cam_centers;
-  auto kfs = this->getAllKeyframes();
-  std::size_t n_cams = kfs.size();
+  auto kfs = getAllKeyframes();
+  const std::size_t n_cams = kfs.size();
+
+  // Collect camera centers from world-to-camera transforms
+  std::vector<Eigen::Vector3f> cam_centers;
   cam_centers.reserve(n_cams);
-  for (auto& kfit : kfs) {
-    auto pkf = kfit.second;
-    auto W2C = pkf->getWorld2View2();
-    auto C2W = W2C.inverse();
-    auto cam_center = C2W.block<3, 1>(0, 3);
-    cam_centers.emplace_back(cam_center);
+  for (const auto& [fid, keyframe] : kfs) {
+    Eigen::Matrix4f C2W = keyframe->getWorld2View2().inverse();
+    cam_centers.emplace_back(C2W.block<3, 1>(0, 3));
   }
 
-  // get_center_and_diag(cam_centers)
-  Eigen::Vector3f avg_cam_center;
-  avg_cam_center.setZero();
-  for (const auto& cam_center : cam_centers) {
-    avg_cam_center.x() += cam_center.x();
-    avg_cam_center.y() += cam_center.y();
-    avg_cam_center.z() += cam_center.z();
+  // Compute centroid
+  Eigen::Vector3f centroid = Eigen::Vector3f::Zero();
+  for (const auto& center : cam_centers) {
+    centroid += center;
   }
-  avg_cam_center.x() /= n_cams;
-  avg_cam_center.y() /= n_cams;
-  avg_cam_center.z() /= n_cams;
+  centroid /= static_cast<float>(n_cams);
 
-  float max_dist = 0.0f;  // diagonal
-  for (std::size_t cam_idx = 0; cam_idx < n_cams; ++cam_idx) {
-    float dist = (cam_centers[cam_idx] - avg_cam_center).norm();
-    if (dist > max_dist) max_dist = dist;
+  // Find maximum distance from centroid (bounding radius with 10% margin)
+  float max_dist = 0.0f;
+  for (const auto& center : cam_centers) {
+    max_dist = std::max(max_dist, (center - centroid).norm());
   }
 
-  float radius = max_dist * 1.1;
-
-  Eigen::Vector3f translate = -avg_cam_center;
-
-  return std::make_tuple(translate, radius);
+  return {-centroid, max_dist * 1.1f};
 }
