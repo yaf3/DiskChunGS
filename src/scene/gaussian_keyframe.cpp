@@ -18,21 +18,46 @@
 
 #include "utils/depth_utils.h"
 
-// Helper function to set pose from rotation matrix and translation
+//==============================================================================
+// Static Helper Functions
+//==============================================================================
+
+void GaussianKeyframe::transferTensorToDevice(torch::Tensor& tensor,
+                                              torch::DeviceType target,
+                                              bool restore_grad) {
+  if (!tensor.defined()) return;
+
+  bool is_cuda = tensor.device().is_cuda();
+  bool want_cuda = (target == torch::kCUDA);
+
+  if (is_cuda != want_cuda) {
+    tensor = tensor.to(target);
+    if (restore_grad && want_cuda) {
+      tensor.requires_grad_(true);
+    }
+  }
+}
+
+void GaussianKeyframe::clearTensor(torch::Tensor& tensor) {
+  if (tensor.defined()) {
+    tensor.reset();
+  }
+}
+
+//==============================================================================
+// Pose Management
+//==============================================================================
+
 void GaussianKeyframe::setPoseImpl(const Eigen::Matrix3d& R,
                                    const Eigen::Vector3d& t) {
-  // Initialize tensor representation
-  rW2C_ = torch::zeros({3, 2}, torch::TensorOptions()
-                                   .dtype(torch::kFloat32)
-                                   .device(torch::kCUDA)
-                                   .requires_grad(true));
+  auto tensor_opts = torch::TensorOptions()
+                         .dtype(torch::kFloat32)
+                         .device(torch::kCUDA)
+                         .requires_grad(true);
 
-  tW2C_ = torch::zeros({3}, torch::TensorOptions()
-                                .dtype(torch::kFloat32)
-                                .device(torch::kCUDA)
-                                .requires_grad(true));
+  rW2C_ = torch::zeros({3, 2}, tensor_opts);
+  tW2C_ = torch::zeros({3}, tensor_opts);
 
-  // Copy pose to tensor parameters
   {
     torch::NoGradGuard no_grad;
     for (int i = 0; i < 3; i++) {
@@ -43,31 +68,21 @@ void GaussianKeyframe::setPoseImpl(const Eigen::Matrix3d& R,
     }
   }
 
-  this->set_pose_ = true;
+  set_pose_ = true;
 }
 
-void GaussianKeyframe::setPose(const double qw,
-                               const double qx,
-                               const double qy,
-                               const double qz,
-                               const double tx,
-                               const double ty,
-                               const double tz) {
+void GaussianKeyframe::setPose(double qw, double qx, double qy, double qz,
+                               double tx, double ty, double tz) {
   Eigen::Quaterniond q(qw, qx, qy, qz);
   q.normalize();
-  Eigen::Matrix3d R = q.toRotationMatrix();
-  Eigen::Vector3d t(tx, ty, tz);
-  setPoseImpl(R, t);
+  setPoseImpl(q.toRotationMatrix(), Eigen::Vector3d(tx, ty, tz));
 }
 
 void GaussianKeyframe::setPose(const Eigen::Quaterniond& q,
                                const Eigen::Vector3d& t) {
-  Eigen::Quaterniond q_norm = q.normalized();
-  Eigen::Matrix3d R = q_norm.toRotationMatrix();
-  setPoseImpl(R, t);
+  setPoseImpl(q.normalized().toRotationMatrix(), t);
 }
 
-// Helper function to convert rotation tensor to Eigen matrix
 Eigen::Matrix3d GaussianKeyframe::tensorToRotationMatrix() const {
   torch::Tensor R_tensor = sixD2RotationMatrix(rW2C_);
   auto R_cpu = R_tensor.detach().cpu();
@@ -81,7 +96,6 @@ Eigen::Matrix3d GaussianKeyframe::tensorToRotationMatrix() const {
   return R_eigen;
 }
 
-// Helper function to convert translation tensor to Eigen vector
 Eigen::Vector3d GaussianKeyframe::tensorToTranslation() const {
   auto t_cpu = tW2C_.detach().cpu();
 
@@ -93,117 +107,13 @@ Eigen::Vector3d GaussianKeyframe::tensorToTranslation() const {
 }
 
 Sophus::SE3d GaussianKeyframe::getPose() {
-  Eigen::Matrix3d R_eigen = tensorToRotationMatrix();
-  Eigen::Vector3d t_eigen = tensorToTranslation();
-  Eigen::Quaterniond q(R_eigen);
-  return Sophus::SE3d(q, t_eigen);
+  Eigen::Matrix3d R = tensorToRotationMatrix();
+  Eigen::Vector3d t = tensorToTranslation();
+  return Sophus::SE3d(Eigen::Quaterniond(R), t);
 }
 
 Sophus::SE3f GaussianKeyframe::getPosef() {
-  return this->getPose().cast<float>();
-}
-
-void GaussianKeyframe::setCameraParams(const Camera& camera) {
-  this->camera_id_ = camera.camera_id_;
-  this->camera_model_id_ = camera.model_id_;
-  this->image_height_ = camera.height_;
-  this->image_width_ = camera.width_;
-
-  this->num_gaus_pyramid_sub_levels_ = camera.num_gaus_pyramid_sub_levels_;
-  this->gaus_pyramid_height_ = camera.gaus_pyramid_height_;
-  this->gaus_pyramid_width_ = camera.gaus_pyramid_width_;
-
-  this->intr_.resize(camera.params_.size());
-  for (std::size_t i = 0; i < camera.params_.size(); ++i)
-    this->intr_[i] = static_cast<float>(camera.params_[i]);
-
-  switch (this->camera_model_id_) {
-    case 1:  // Pinhole
-    {
-      float focal_length_x = static_cast<float>(camera.params_[0]);
-      float focal_length_y = static_cast<float>(camera.params_[1]);
-      this->FoVx_ = graphics_utils::focal2fov(focal_length_x, camera.width_);
-      this->FoVy_ = graphics_utils::focal2fov(focal_length_y, camera.height_);
-      this->set_camera_ = true;
-    } break;
-
-    default: {
-      throw std::runtime_error(
-          "Colmap camera model not handled: only undistorted datasets (PINHOLE "
-          "or SIMPLE_PINHOLE cameras) supported!");
-    } break;
-  }
-}
-
-void GaussianKeyframe::setPoints2D(
-    const std::vector<Eigen::Vector2d>& points2D) {
-  this->points2D_.clear();
-  auto num_points2D = points2D.size();
-  this->points2D_.resize(num_points2D);
-  for (point2D_idx_t point2D_idx = 0; point2D_idx < num_points2D;
-       ++point2D_idx) {
-    points2D_[point2D_idx].xy_ = points2D[point2D_idx];
-  }
-}
-
-void GaussianKeyframe::setPoint3DIdxForPoint2D(const point2D_idx_t point2D_idx,
-                                               const point3D_id_t point3D_id) {
-  points2D_.at(point2D_idx).point3D_id_ = point3D_id;
-}
-
-void GaussianKeyframe::computeTransformTensors() {
-  if (this->set_pose_ && this->set_camera_) {
-    this->world_view_transform_ =
-        tensor_utils::EigenMatrix2TorchTensor(
-            this->getWorld2View2(this->trans_, this->scale_), torch::kCUDA)
-            .transpose(0, 1);
-
-    if (!this->set_projection_matrix_) {
-      this->projection_matrix_ =
-          this->getProjectionMatrix(this->znear_, this->zfar_, this->FoVx_,
-                                    this->FoVy_, torch::kCUDA)
-              .transpose(0, 1);
-      this->set_projection_matrix_ = true;
-    }
-
-    this->full_proj_transform_ = (this->world_view_transform_.unsqueeze(0).bmm(
-                                      this->projection_matrix_.unsqueeze(0)))
-                                     .squeeze(0);
-
-    this->camera_center_ = this->world_view_transform_.inverse().index(
-        {3, torch::indexing::Slice(0, 3)});
-  } else if (!this->set_pose_ && this->set_camera_) {
-    std::cerr << "Could not compute transform tensors for keyframe "
-              << this->fid_ << " because POSE is not set!" << std::endl;
-  } else if (!this->set_camera_) {
-    std::cerr << "Could not compute transform tensors for keyframe "
-              << this->fid_ << " because CAMERA is not set!" << std::endl;
-  } else {
-    std::cerr << "Could not compute transform tensors for keyframe "
-              << this->fid_ << " because POSE and CAMERA are not set!"
-              << std::endl;
-  }
-}
-
-Eigen::Matrix4f GaussianKeyframe::getWorld2View2(const Eigen::Vector3f& trans,
-                                                 float scale) {
-  // Get current pose from tensors using helper functions
-  Eigen::Matrix3f R = tensorToRotationMatrix().cast<float>();
-  Eigen::Vector3f t = tensorToTranslation().cast<float>();
-
-  Eigen::Matrix4f Rt;
-  Rt.setZero();
-  Rt.topLeftCorner<3, 3>() = R;
-  Rt.topRightCorner<3, 1>() = t;
-  Rt(3, 3) = 1.0f;
-
-  Eigen::Matrix4f C2W = Rt.inverse();
-  Eigen::Vector3f cam_center = C2W.block<3, 1>(0, 3);
-  cam_center += trans;
-  cam_center *= scale;
-  C2W.block<3, 1>(0, 3) = cam_center;
-  Rt = C2W.inverse();
-  return Rt;
+  return getPose().cast<float>();
 }
 
 Eigen::Matrix3d GaussianKeyframe::getRotationMatrix() {
@@ -223,19 +133,144 @@ Eigen::Vector3f GaussianKeyframe::getTranslationf() {
 }
 
 Eigen::Quaterniond GaussianKeyframe::getQuaternion() {
-  Eigen::Matrix3d R = getRotationMatrix();
-  return Eigen::Quaterniond(R);
+  return Eigen::Quaterniond(getRotationMatrix());
 }
 
 Eigen::Quaternionf GaussianKeyframe::getQuaternionf() {
   return getQuaternion().cast<float>();
 }
 
+//==============================================================================
+// Tensor Pose Accessors
+//==============================================================================
+
+torch::Tensor GaussianKeyframe::sixD2RotationMatrix(
+    const torch::Tensor& rW2C) const {
+  // 6D representation: first two columns of rotation matrix
+  // Recover full rotation via Gram-Schmidt orthogonalization
+  auto a1 = rW2C.select(1, 0);
+  auto a2 = rW2C.select(1, 1);
+
+  auto b1 = torch::nn::functional::normalize(
+      a1, torch::nn::functional::NormalizeFuncOptions().dim(0));
+
+  auto b2 = a2 - torch::sum(b1 * a2) * b1;
+  b2 = torch::nn::functional::normalize(
+      b2, torch::nn::functional::NormalizeFuncOptions().dim(0));
+
+  auto b3 = torch::cross(b1, b2, 0);
+
+  return torch::stack({b1, b2, b3}, 1);
+}
+
+torch::Tensor GaussianKeyframe::getR() {
+  return sixD2RotationMatrix(rW2C_);
+}
+
+torch::Tensor GaussianKeyframe::getT() {
+  return tW2C_;
+}
+
+torch::Tensor GaussianKeyframe::getRT() {
+  torch::Tensor RT = torch::eye(
+      {4}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
+  RT.index_put_({torch::indexing::Slice(0, 3), torch::indexing::Slice(0, 3)},
+                getR());
+  RT.index_put_({torch::indexing::Slice(0, 3), 3}, getT());
+  return RT;
+}
+
+torch::Tensor GaussianKeyframe::getCenter() {
+  return -getR().transpose(0, 1).mv(getT());
+}
+
+//==============================================================================
+// Camera Setup
+//==============================================================================
+
+void GaussianKeyframe::setCameraParams(const Camera& camera) {
+  camera_id_ = camera.camera_id_;
+  camera_model_id_ = camera.model_id_;
+  image_height_ = camera.height_;
+  image_width_ = camera.width_;
+
+  num_gaus_pyramid_sub_levels_ = camera.num_gaus_pyramid_sub_levels_;
+  gaus_pyramid_height_ = camera.gaus_pyramid_height_;
+  gaus_pyramid_width_ = camera.gaus_pyramid_width_;
+
+  intr_.resize(camera.params_.size());
+  for (std::size_t i = 0; i < camera.params_.size(); ++i) {
+    intr_[i] = static_cast<float>(camera.params_[i]);
+  }
+
+  switch (camera_model_id_) {
+    case 1: {  // Pinhole
+      float fx = static_cast<float>(camera.params_[0]);
+      float fy = static_cast<float>(camera.params_[1]);
+      FoVx_ = graphics_utils::focal2fov(fx, camera.width_);
+      FoVy_ = graphics_utils::focal2fov(fy, camera.height_);
+      set_camera_ = true;
+      break;
+    }
+    default:
+      throw std::runtime_error(
+          "Colmap camera model not handled: only undistorted datasets "
+          "(PINHOLE or SIMPLE_PINHOLE cameras) supported!");
+  }
+}
+
+void GaussianKeyframe::computeTransformTensors() {
+  if (!set_pose_) {
+    std::cerr << "Could not compute transform tensors for keyframe " << fid_
+              << " because POSE is not set!" << std::endl;
+    return;
+  }
+  if (!set_camera_) {
+    std::cerr << "Could not compute transform tensors for keyframe " << fid_
+              << " because CAMERA is not set!" << std::endl;
+    return;
+  }
+
+  world_view_transform_ =
+      tensor_utils::EigenMatrix2TorchTensor(getWorld2View2(trans_, scale_),
+                                            torch::kCUDA)
+          .transpose(0, 1);
+
+  if (!set_projection_matrix_) {
+    projection_matrix_ =
+        getProjectionMatrix(znear_, zfar_, FoVx_, FoVy_, torch::kCUDA)
+            .transpose(0, 1);
+    set_projection_matrix_ = true;
+  }
+
+  full_proj_transform_ =
+      (world_view_transform_.unsqueeze(0).bmm(projection_matrix_.unsqueeze(0)))
+          .squeeze(0);
+
+  camera_center_ =
+      world_view_transform_.inverse().index({3, torch::indexing::Slice(0, 3)});
+}
+
+Eigen::Matrix4f GaussianKeyframe::getWorld2View2(const Eigen::Vector3f& trans,
+                                                 float scale) {
+  Eigen::Matrix3f R = tensorToRotationMatrix().cast<float>();
+  Eigen::Vector3f t = tensorToTranslation().cast<float>();
+
+  Eigen::Matrix4f Rt = Eigen::Matrix4f::Zero();
+  Rt.topLeftCorner<3, 3>() = R;
+  Rt.topRightCorner<3, 1>() = t;
+  Rt(3, 3) = 1.0f;
+
+  Eigen::Matrix4f C2W = Rt.inverse();
+  Eigen::Vector3f cam_center = C2W.block<3, 1>(0, 3);
+  cam_center = (cam_center + trans) * scale;
+  C2W.block<3, 1>(0, 3) = cam_center;
+
+  return C2W.inverse();
+}
+
 torch::Tensor GaussianKeyframe::getProjectionMatrix(
-    float znear,
-    float zfar,
-    float fovX,
-    float fovY,
+    float znear, float zfar, float fovX, float fovY,
     torch::DeviceType device_type) {
   float tanHalfFovY = std::tan(fovY / 2);
   float tanHalfFovX = std::tan(fovX / 2);
@@ -248,56 +283,259 @@ torch::Tensor GaussianKeyframe::getProjectionMatrix(
   torch::Tensor P =
       torch::zeros({4, 4}, torch::TensorOptions().device(device_type));
 
-  float z_sign = 1.0f;
+  constexpr float z_sign = 1.0f;
 
-  P.index({0, 0}) = 2.0 * znear / (right - left);
-  P.index({1, 1}) = 2.0 * znear / (top - bottom);
+  P.index({0, 0}) = 2.0f * znear / (right - left);
+  P.index({1, 1}) = 2.0f * znear / (top - bottom);
   P.index({0, 2}) = (right + left) / (right - left);
   P.index({1, 2}) = (top + bottom) / (top - bottom);
   P.index({3, 2}) = z_sign;
   P.index({2, 2}) = z_sign * zfar / (zfar - znear);
   P.index({2, 3}) = -(zfar * znear) / (zfar - znear);
+
   return P;
 }
 
+//==============================================================================
+// 2D/3D Point Correspondences
+//==============================================================================
+
+void GaussianKeyframe::setPoints2D(
+    const std::vector<Eigen::Vector2d>& points2D) {
+  points2D_.clear();
+  points2D_.resize(points2D.size());
+  for (std::size_t i = 0; i < points2D.size(); ++i) {
+    points2D_[i].xy_ = points2D[i];
+  }
+}
+
+void GaussianKeyframe::setPoint3DIdxForPoint2D(point2D_idx_t point2D_idx,
+                                               point3D_id_t point3D_id) {
+  points2D_.at(point2D_idx).point3D_id_ = point3D_id;
+}
+
+std::tuple<std::vector<float>, std::vector<float>>
+GaussianKeyframe::extractValidKeypointsForDepthAlignment() const {
+  std::vector<float> valid_pixel_coords;
+  std::vector<float> valid_depths;
+
+  assert(kps_pixel_.size() % 2 == 0);
+  assert(kps_point_local_.size() % 3 == 0);
+
+  int num_keypoints = kps_pixel_.size() / 2;
+
+  for (int i = 0; i < num_keypoints; i++) {
+    float u = kps_pixel_[2 * i];
+    float v = kps_pixel_[2 * i + 1];
+    float x = kps_point_local_[3 * i];
+    float y = kps_point_local_[3 * i + 1];
+    float z = kps_point_local_[3 * i + 2];
+
+    bool has_valid_3d = (z > 0.0f) &&
+                        (u >= 0 && u < image_width_) &&
+                        (v >= 0 && v < image_height_) &&
+                        std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
+
+    if (has_valid_3d) {
+      valid_pixel_coords.push_back(u);
+      valid_pixel_coords.push_back(v);
+      valid_depths.push_back(z);
+    }
+  }
+
+  return {valid_pixel_coords, valid_depths};
+}
+
+//==============================================================================
+// Depth Estimation Setup
+//==============================================================================
+
+void GaussianKeyframe::setupStereoData(
+    const cv::Mat& img_undist,
+    const cv::Mat& img_auxiliary_undist,
+    float baseline,
+    torch::DeviceType device_type,
+    std::shared_ptr<StereoDepth> depth_estimator,
+    float min_depth,
+    float max_depth) {
+  if (img_auxiliary_undist.empty()) return;
+
+  // Convert to uint8 for stereo matching
+  cv::Mat left_img_uint8, right_img_uint8;
+  img_undist.convertTo(left_img_uint8, CV_8UC3, 255.0);
+  img_auxiliary_undist.convertTo(right_img_uint8, CV_8UC3, 255.0);
+
+  cv::Mat depth = depth_estimator->estimate_metric_depth(
+      left_img_uint8, right_img_uint8, intr_[0], baseline);
+
+  // Clamp and invert depth
+  constexpr float kMinDepthClamp = 1e-8f;
+  cv::max(depth, kMinDepthClamp, depth);
+
+  cv::Mat inverted_depth;
+  cv::divide(1.0f, depth, inverted_depth);
+
+  torch::Tensor depth_image =
+      tensor_utils::cvMat2TorchTensor_Float32(inverted_depth, torch::kCUDA)
+          .unsqueeze(0)
+          .unsqueeze(0);
+
+  depth_confidence_ = depth_utils::computeDepthConfidence(depth_image);
+  generateInverseDepthPyramid(inverted_depth);
+}
+
+void GaussianKeyframe::setupMonoData(
+    const cv::Mat& img_undist,
+    torch::DeviceType device_type,
+    std::shared_ptr<MonoDepth> depth_estimator,
+    float min_depth,
+    float max_depth) {
+  auto [relative_depth, depth_confidence] =
+      depth_estimator->estimate_depth(img_undist, intr_[0]);
+
+  depth_confidence_ = depth_confidence;
+
+  auto [valid_pixel_coords, valid_depths] =
+      extractValidKeypointsForDepthAlignment();
+
+  if (valid_depths.size() < 5) {
+    std::cout << "Not enough valid depths for monocular depth alignment: "
+              << valid_depths.size() << std::endl;
+    return;
+  }
+
+  torch::Tensor aligned_inv_depth = depth_estimator->align_depth(
+      relative_depth, valid_pixel_coords, valid_depths,
+      image_width_, image_height_);
+
+  torch::Tensor inv_depth =
+      torch::nn::functional::interpolate(
+          aligned_inv_depth,
+          torch::nn::functional::InterpolateFuncOptions()
+              .size(std::vector<int64_t>{image_height_, image_width_})
+              .mode(torch::kBilinear)
+              .align_corners(true))
+          .squeeze(0)
+          .squeeze(0);
+
+  cv::Mat inverted_depth_mat =
+      tensor_utils::torchTensor2CvMat_Float32(inv_depth);
+  generateInverseDepthPyramid(inverted_depth_mat);
+}
+
+void GaussianKeyframe::setupRGBDData(const cv::Mat& img_auxiliary_undist) {
+  cv::Mat clamped_depth;
+  cv::max(img_auxiliary_undist, 1e-8, clamped_depth);
+
+  cv::Mat inverse_depth;
+  cv::divide(1.0, clamped_depth, inverse_depth);
+
+  torch::Tensor depth_image =
+      tensor_utils::cvMat2TorchTensor_Float32(inverse_depth, torch::kCUDA)
+          .unsqueeze(0)
+          .unsqueeze(0);
+
+  depth_confidence_ = depth_utils::computeDepthConfidence(depth_image);
+  generateInverseDepthPyramid(inverse_depth);
+}
+
+//==============================================================================
+// Image Pyramid Generation
+//==============================================================================
+
+void GaussianKeyframe::generateImagePyramid(const cv::Mat& img_undist) {
+  assert(!img_undist.empty());
+
+  cv::cuda::GpuMat img_gpu;
+  img_gpu.upload(img_undist);
+  gaus_pyramid_original_image_.resize(num_gaus_pyramid_sub_levels_);
+
+  for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
+    cv::cuda::GpuMat img_resized;
+    cv::cuda::resize(img_gpu, img_resized,
+                     cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]));
+    gaus_pyramid_original_image_[l] =
+        tensor_utils::cvGpuMat2TorchTensor_Float32(img_resized);
+  }
+}
+
+void GaussianKeyframe::generateInverseDepthPyramid(const cv::Mat& depth_mat) {
+  if (depth_mat.empty()) return;
+
+  gaus_pyramid_inv_depth_image_.resize(num_gaus_pyramid_sub_levels_);
+
+  cv::cuda::GpuMat depth_gpu;
+  depth_gpu.upload(depth_mat);
+
+  for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
+    cv::cuda::GpuMat depth_resized;
+    cv::cuda::resize(
+        depth_gpu, depth_resized,
+        cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]),
+        0, 0, cv::INTER_NEAREST);
+    gaus_pyramid_inv_depth_image_[l] =
+        tensor_utils::cvGpuMat2TorchTensor_Float32(depth_resized);
+  }
+}
+
 int GaussianKeyframe::getCurrentGausPyramidLevel() {
-  // Start from the highest level (smallest image) and work down
+  // Start from highest level (smallest image) and work down
   for (int i = num_gaus_pyramid_sub_levels_ - 1; i >= 0; --i) {
     if (gaus_pyramid_times_of_use_[i]) {
       --gaus_pyramid_times_of_use_[i];
       return i;
     }
   }
-  // If all sub levels have been used up, default to level 0 (largest/original)
-  return 0;
+  return 0;  // Default to full resolution
 }
 
-// Initialize appearance parameters with defaults
+//==============================================================================
+// Training Data Access
+//==============================================================================
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, int, int>
+GaussianKeyframe::getTrainingData(
+    const torch::Tensor& undistort_mask,
+    const std::vector<torch::Tensor>& pyramid_masks) {
+  int level = getCurrentGausPyramidLevel();
+
+  int height = gaus_pyramid_height_[level];
+  int width = gaus_pyramid_width_[level];
+  torch::Tensor gt_image = gaus_pyramid_original_image_[level].cuda();
+  torch::Tensor mask = pyramid_masks[level];
+
+  torch::Tensor gt_inv_depth;
+  if (!gaus_pyramid_inv_depth_image_.empty() &&
+      level < static_cast<int>(gaus_pyramid_inv_depth_image_.size())) {
+    gt_inv_depth = gaus_pyramid_inv_depth_image_[level].cuda();
+    gt_inv_depth = gt_inv_depth * depth_scale_ + depth_bias_;
+  }
+
+  return {gt_image, gt_inv_depth, mask, height, width};
+}
+
+//==============================================================================
+// Optimization
+//==============================================================================
+
 void GaussianKeyframe::initOptimizer(torch::DeviceType device_type,
                                      float pose_lr,
                                      float exposure_lr,
                                      float depth_scale_bias_lr) {
-  std::vector<torch::Tensor> params_to_optimize;
-
   pose_lr_ = pose_lr;
 
-  // Initialize as 3x4 identity matrix [I|0]
-  exposure_transform_ = torch::zeros(
-      {3, 4},
-      torch::TensorOptions().dtype(torch::kFloat32).device(device_type));
+  auto tensor_opts =
+      torch::TensorOptions().dtype(torch::kFloat32).device(device_type);
 
-  // Set identity for 3x3 part
-  exposure_transform_.slice(1, 0, 3) = torch::eye(
-      3, torch::TensorOptions().dtype(torch::kFloat32).device(device_type));
-
+  // Initialize exposure as identity transform [I|0]
+  exposure_transform_ = torch::zeros({3, 4}, tensor_opts);
+  exposure_transform_.slice(1, 0, 3) = torch::eye(3, tensor_opts);
   exposure_transform_.requires_grad_(true);
 
-  depth_scale_ = torch::ones(
-      {1}, torch::TensorOptions().dtype(torch::kFloat32).device(device_type));
+  depth_scale_ = torch::ones({1}, tensor_opts);
   depth_scale_.requires_grad_(true);
 
-  depth_bias_ = torch::zeros(
-      {1}, torch::TensorOptions().dtype(torch::kFloat32).device(device_type));
+  depth_bias_ = torch::zeros({1}, tensor_opts);
   depth_bias_.requires_grad_(true);
 
   Tensor_vec_rW2C_ = {rW2C_};
@@ -306,11 +544,9 @@ void GaussianKeyframe::initOptimizer(torch::DeviceType device_type,
   Tensor_vec_depth_scale_ = {depth_scale_};
   Tensor_vec_depth_bias_ = {depth_bias_};
 
-  torch::optim::AdamOptions adam_options;
-  adam_options.lr(pose_lr);
-  optimizer_ =
-      std::make_shared<torch::optim::Adam>(Tensor_vec_rW2C_, adam_options);
-  optimizer_->param_groups()[0].options().set_lr(pose_lr);
+  torch::optim::AdamOptions adam_options(pose_lr);
+  optimizer_ = std::make_shared<torch::optim::Adam>(Tensor_vec_rW2C_,
+                                                    adam_options);
 
   optimizer_->add_param_group(Tensor_vec_tW2C_);
   optimizer_->param_groups()[1].options().set_lr(pose_lr);
@@ -327,315 +563,57 @@ void GaussianKeyframe::initOptimizer(torch::DeviceType device_type,
 
 void GaussianKeyframe::step() {
   if (!optimizer_) return;
-
   optimizer_->step();
   optimizer_->zero_grad();
 }
 
-// Apply appearance transform to rendered colors
 torch::Tensor GaussianKeyframe::applyExposureTransform(torch::Tensor& colors) {
-  if (!exposure_transform_.defined()) {
-    return colors;
-  }
-  // Permute from [C, H, W] to [H, W, C]
-  auto colors_hwc = colors.permute({1, 2, 0});
-  auto original_shape = colors_hwc.sizes();  // [H, W, C]
+  if (!exposure_transform_.defined()) return colors;
 
-  // Flatten to [H*W, C] for matrix multiplication
-  auto colors_flat = colors_hwc.view({-1, 3});  // [H*W, 3]
+  // [C, H, W] -> [H, W, C]
+  auto colors_hwc = colors.permute({1, 2, 0});
+  auto original_shape = colors_hwc.sizes();
+
+  // Flatten to [H*W, 3] for matrix multiplication
+  auto colors_flat = colors_hwc.view({-1, 3});
 
   // Extract 3x3 transform and bias from 3x4 matrix
-  auto transform_3x3 = exposure_transform_.slice(1, 0, 3);    // [3, 3]
-  auto bias = exposure_transform_.slice(1, 3, 4).squeeze(1);  // [3]
+  auto transform_3x3 = exposure_transform_.slice(1, 0, 3);
+  auto bias = exposure_transform_.slice(1, 3, 4).squeeze(1);
 
-  // Apply transform: (H*W, 3) @ (3, 3) -> (H*W, 3)
-  auto transformed =
-      torch::mm(colors_flat, transform_3x3.t()) + bias.unsqueeze(0);
+  // Apply affine transform
+  auto transformed = torch::mm(colors_flat, transform_3x3.t()) + bias.unsqueeze(0);
 
-  // Reshape back to [H, W, C] then permute to [C, H, W]
-  auto result = transformed.view(original_shape).permute({2, 0, 1});
-
-  // Clamp to [0, 1] like the Python version
-  return result.clamp(0.0f, 1.0f);
+  // Reshape back to [C, H, W]
+  return transformed.view(original_shape).permute({2, 0, 1}).clamp(0.0f, 1.0f);
 }
 
-torch::Tensor GaussianKeyframe::sixD2RotationMatrix(
-    const torch::Tensor& rW2C) const {
-  // Convert 6D representation to rotation matrix
-  // Input: rW2C [3, 2] - first two columns of rotation matrix
-  // Output: R [3, 3] - full rotation matrix
-
-  auto a1 = rW2C.select(1, 0);  // First column
-  auto a2 = rW2C.select(1, 1);  // Second column
-
-  // Normalize first column
-  auto b1 = torch::nn::functional::normalize(
-      a1, torch::nn::functional::NormalizeFuncOptions().dim(0));
-
-  // Gram-Schmidt orthogonalization for second column
-  auto b2 = a2 - torch::sum(b1 * a2) * b1;
-  b2 = torch::nn::functional::normalize(
-      b2, torch::nn::functional::NormalizeFuncOptions().dim(0));
-
-  // Cross product for third column
-  auto b3 = torch::cross(b1, b2, 0);
-
-  // Stack to form rotation matrix
-  return torch::stack({b1, b2, b3}, 1);  // [3, 3]
-}
-
-torch::Tensor GaussianKeyframe::getR() { return sixD2RotationMatrix(rW2C_); }
-
-torch::Tensor GaussianKeyframe::getT() { return tW2C_; }
-
-torch::Tensor GaussianKeyframe::getRT() {
-  torch::Tensor RT = torch::eye(
-      {4}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
-  RT.index_put_({torch::indexing::Slice(0, 3), torch::indexing::Slice(0, 3)},
-                getR());
-  RT.index_put_({torch::indexing::Slice(0, 3), 3}, getT());
-  return RT;
-}
-
-torch::Tensor GaussianKeyframe::getCenter() {
-  return -getR().transpose(0, 1).mv(getT());
-}
-
-void GaussianKeyframe::setupStereoData(
-    const cv::Mat& img_undist,
-    const cv::Mat& img_auxiliary_undist,
-    float baseline,
-    torch::DeviceType device_type,
-    std::shared_ptr<StereoDepth> depth_estimator,
-    float min_depth,
-    float max_depth) {
-  if (img_auxiliary_undist.empty()) {
-    return;  // No stereo image available
-  }
-
-  // Convert float32 [0,1] images to uint8 [0,255] images
-  cv::Mat left_img_uint8, right_img_uint8;
-  img_undist.convertTo(left_img_uint8, CV_8UC3, 255.0);
-  img_auxiliary_undist.convertTo(right_img_uint8, CV_8UC3, 255.0);
-
-  // Now estimate depth with properly formatted images
-  cv::Mat depth = depth_estimator->estimate_metric_depth(
-      left_img_uint8, right_img_uint8, this->intr_[0], baseline);
-
-  // Clamp to minimum value (e.g., 0.1 meters)
-  float min_depth_clamp = 1e-8f;
-  cv::max(depth, min_depth_clamp, depth);
-
-  // Invert the depth values
-  cv::Mat inverted_depth;
-  cv::divide(1.0f, depth, inverted_depth);
-
-  torch::Tensor depth_image =
-      tensor_utils::cvMat2TorchTensor_Float32(inverted_depth, torch::kCUDA)
-          .unsqueeze(0)
-          .unsqueeze(0);
-
-  // Compute depth confidence using edge detection
-  depth_confidence_ = depth_utils::computeDepthConfidence(depth_image);
-
-  // Create multi-resolution depth images for pyramid training
-  generateInverseDepthPyramid(inverted_depth);
-}
-
-/**
- * Extract valid keypoints with 3D coordinates for depth alignment
- */
-std::tuple<std::vector<float>, std::vector<float>>
-GaussianKeyframe::extractValidKeypointsForDepthAlignment() const {
-  std::vector<float> valid_pixel_coords;
-  std::vector<float> valid_depths;
-
-  assert(kps_pixel_.size() % 2 == 0);
-  assert(kps_point_local_.size() % 3 == 0);
-
-  int num_keypoints = kps_pixel_.size() / 2;
-
-  for (int i = 0; i < num_keypoints; i++) {
-    float u = kps_pixel_[2 * i];      // u coordinate
-    float v = kps_pixel_[2 * i + 1];  // v coordinate
-
-    // Get 3D point in local camera frame
-    float x = kps_point_local_[3 * i];
-    float y = kps_point_local_[3 * i + 1];
-    float z = kps_point_local_[3 * i + 2];
-
-    // Check if keypoint has valid 3D coordinates
-    bool has_valid_3d = (z > 0.0) &&
-                        (u >= 0 && u < image_width_) &&  // within image bounds
-                        (v >= 0 && v < image_height_) && std::isfinite(x) &&
-                        std::isfinite(y) && std::isfinite(z);
-
-    if (has_valid_3d) {
-      valid_pixel_coords.push_back(u);
-      valid_pixel_coords.push_back(v);
-      valid_depths.push_back(z);  // depth in camera coordinate system
-    }
-  }
-
-  // std::cout << "Found " << valid_depths.size() << " valid keypoints out of "
-  //           << num_keypoints << " total keypoints" << std::endl;
-
-  return std::make_tuple(valid_pixel_coords, valid_depths);
-}
-
-void GaussianKeyframe::setupMonoData(const cv::Mat& img_undist,
-                                     torch::DeviceType device_type,
-                                     std::shared_ptr<MonoDepth> depth_estimator,
-                                     float min_depth,
-                                     float max_depth) {
-  auto [relative_depth, depth_confidence] =
-      depth_estimator->estimate_depth(img_undist, intr_[0]);
-
-  depth_confidence_ = depth_confidence;
-
-  // Extract keypoint pixels and depths
-  auto [valid_pixel_coords, valid_depths] =
-      extractValidKeypointsForDepthAlignment();
-
-  if (valid_depths.size() < 5) {
-    std::cout << "Not enough valid depths for monocular depth alignment: "
-              << valid_depths.size() << std::endl;
-    return;
-  }
-
-  // Align depth to keypoints
-  torch::Tensor aligned_inv_depth =
-      depth_estimator->align_depth(relative_depth, valid_pixel_coords,
-                                   valid_depths, image_width_, image_height_);
-
-  torch::Tensor inv_depth =
-      torch::nn::functional::interpolate(
-          aligned_inv_depth,
-          torch::nn::functional::InterpolateFuncOptions()
-              .size(std::vector<int64_t>{image_height_, image_width_})
-              .mode(torch::kBilinear)
-              .align_corners(true))
-          .squeeze(0)
-          .squeeze(0);
-
-  cv::Mat inverted_depth_mat =
-      tensor_utils::torchTensor2CvMat_Float32(inv_depth);
-
-  generateInverseDepthPyramid(inverted_depth_mat);
-}
-
-void GaussianKeyframe::setupRGBDData(const cv::Mat& img_auxiliary_undist) {
-  cv::Mat depth = img_auxiliary_undist;
-
-  // Clamp minimum to 1e-8
-  cv::Mat clamped_depth;
-  cv::max(depth, 1e-8, clamped_depth);
-
-  // Take inverse (1 / clamped_depth)
-  cv::Mat inverse_depth;
-  cv::divide(1.0, clamped_depth, inverse_depth);
-
-  torch::Tensor depth_image =
-      tensor_utils::cvMat2TorchTensor_Float32(inverse_depth, torch::kCUDA)
-          .unsqueeze(0)
-          .unsqueeze(0);
-
-  // Compute depth confidence using edge detection
-  depth_confidence_ = depth_utils::computeDepthConfidence(depth_image);
-
-  generateInverseDepthPyramid(inverse_depth);
-}
-
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, int, int>
-GaussianKeyframe::getTrainingData(
-    const torch::Tensor& undistort_mask,
-    const std::vector<torch::Tensor>& pyramid_masks) {
-  int training_level = getCurrentGausPyramidLevel();
-
-  torch::Tensor gt_image, gt_inv_depth, mask;
-  int image_height, image_width;
-
-  // Pyramid level
-  image_height = gaus_pyramid_height_[training_level];
-  image_width = gaus_pyramid_width_[training_level];
-  gt_image = gaus_pyramid_original_image_[training_level].cuda();
-  mask = pyramid_masks[training_level];
-
-  if (!gaus_pyramid_inv_depth_image_.empty() &&
-      training_level < gaus_pyramid_inv_depth_image_.size()) {
-    gt_inv_depth = gaus_pyramid_inv_depth_image_[training_level].cuda();
-  }
-
-  if (gt_inv_depth.defined()) {
-    gt_inv_depth = gt_inv_depth * depth_scale_ + depth_bias_;
-  }
-
-  return std::make_tuple(gt_image, gt_inv_depth, mask, image_height,
-                         image_width);
-}
-
-void GaussianKeyframe::generateImagePyramid(const cv::Mat& img_undist) {
-  assert(!img_undist.empty());
-  cv::cuda::GpuMat img_gpu;
-  img_gpu.upload(img_undist);
-  gaus_pyramid_original_image_.resize(num_gaus_pyramid_sub_levels_);
-
-  for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-    cv::cuda::GpuMat img_resized;
-    cv::cuda::resize(img_gpu, img_resized,
-                     cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]));
-    gaus_pyramid_original_image_[l] =
-        tensor_utils::cvGpuMat2TorchTensor_Float32(img_resized);
-  }
-}
-
-void GaussianKeyframe::generateInverseDepthPyramid(const cv::Mat& depth_mat) {
-  if (!depth_mat.empty()) {
-    gaus_pyramid_inv_depth_image_.resize(num_gaus_pyramid_sub_levels_);
-
-    cv::cuda::GpuMat depth_gpu;
-    depth_gpu.upload(depth_mat);
-
-    for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
-      cv::cuda::GpuMat depth_resized;
-      cv::cuda::resize(
-          depth_gpu, depth_resized,
-          cv::Size(gaus_pyramid_width_[l], gaus_pyramid_height_[l]), 0, 0,
-          cv::INTER_NEAREST);
-      gaus_pyramid_inv_depth_image_[l] =
-          tensor_utils::cvGpuMat2TorchTensor_Float32(depth_resized);
-    }
-  }
-}
+//==============================================================================
+// Memory Management (Disk Serialization)
+//==============================================================================
 
 void GaussianKeyframe::saveDataToDisk() {
-  // std::cout << "Trying to save keyframe_data " + std::to_string(fid_)
-  //           << std::endl;
-  auto start_time = std::chrono::steady_clock::now();
   if (!loaded_) {
     throw std::runtime_error("Can't save keyframe to disk that isn't loaded");
   }
 
   if (!on_disk_) {
-    // Create directory if it doesn't exist
     std::filesystem::create_directories(keyframe_save_dir_);
 
-    // Save heavy image/depth tensors
     torch::serialize::OutputArchive archive;
 
     if (depth_confidence_.defined()) {
       archive.write("depth_confidence_", depth_confidence_);
     }
 
-    // Save feature map
     if (feature_map_.defined()) {
       archive.write("feature_map_", feature_map_);
     }
 
-    // Save pyramid image data (these can be large)
     if (!gaus_pyramid_original_image_.empty()) {
-      archive.write("pyramid_size", torch::tensor(static_cast<int64_t>(
-                                        gaus_pyramid_original_image_.size())));
+      archive.write("pyramid_size",
+                    torch::tensor(static_cast<int64_t>(
+                        gaus_pyramid_original_image_.size())));
       for (size_t i = 0; i < gaus_pyramid_original_image_.size(); ++i) {
         if (gaus_pyramid_original_image_[i].defined()) {
           archive.write("pyramid_image_" + std::to_string(i),
@@ -644,7 +622,6 @@ void GaussianKeyframe::saveDataToDisk() {
       }
     }
 
-    // Save pyramid depth data
     if (!gaus_pyramid_inv_depth_image_.empty()) {
       archive.write("pyramid_depth_size",
                     torch::tensor(static_cast<int64_t>(
@@ -664,52 +641,29 @@ void GaussianKeyframe::saveDataToDisk() {
     on_disk_ = true;
   }
 
-  if (depth_confidence_.defined()) {
-    depth_confidence_.reset();
-  }
+  // Clear tensors from memory
+  clearTensor(depth_confidence_);
+  clearTensor(feature_map_);
 
-  // Clear feature map
-  if (feature_map_.defined()) {
-    feature_map_.reset();
-  }
-
-  // Clear pyramid data
   for (auto& img : gaus_pyramid_original_image_) {
-    if (img.defined()) {
-      img.reset();
-    }
+    clearTensor(img);
   }
   gaus_pyramid_original_image_.clear();
 
   for (auto& depth : gaus_pyramid_inv_depth_image_) {
-    if (depth.defined()) {
-      depth.reset();
-    }
+    clearTensor(depth);
   }
   gaus_pyramid_inv_depth_image_.clear();
 
-  // c10::cuda::CUDACachingAllocator::emptyCache();
-
   loaded_ = false;
-
-  auto end_time = std::chrono::steady_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-      end_time - start_time);
-  // std::cout << "Keyframe " << fid_ << " saved. Save completed in "
-  //           << duration.count() << "ms" << std::endl;
-
-  // std::cout << "Keyframe data saved and cleared from memory for keyframe "
-  //           << fid_ << std::endl;
 }
 
 void GaussianKeyframe::loadDataFromDisk() {
-  // std::cout << "Trying to load keyframe_data " + std::to_string(fid_)
-  //           << std::endl;
-  auto start_time = std::chrono::steady_clock::now();
   if (loaded_) {
     std::cout << "WARN: Loading keyframe that is already marked as loaded!"
               << std::endl;
   }
+
   std::filesystem::path data_path =
       keyframe_save_dir_ / ("keyframe_data_" + std::to_string(fid_) + ".pt");
 
@@ -724,15 +678,12 @@ void GaussianKeyframe::loadDataFromDisk() {
   try {
     archive.load_from(data_path.string());
 
-    // Load depth confidence - throw on failure
     archive.read("depth_confidence_", depth_confidence_);
     depth_confidence_ = depth_confidence_.to(torch::kCUDA);
 
-    // Load feature map - throw on failure
     archive.read("feature_map_", feature_map_);
     feature_map_ = feature_map_.to(torch::kCUDA);
 
-    // Load pyramid images - throw on failure
     torch::Tensor pyramid_size_tensor;
     archive.read("pyramid_size", pyramid_size_tensor);
     int pyramid_size = pyramid_size_tensor.item<int64_t>();
@@ -745,7 +696,6 @@ void GaussianKeyframe::loadDataFromDisk() {
           gaus_pyramid_original_image_[i].to(torch::kCUDA);
     }
 
-    // Load pyramid depths - throw on failure
     torch::Tensor pyramid_depth_size_tensor;
     archive.read("pyramid_depth_size", pyramid_depth_size_tensor);
     int pyramid_depth_size = pyramid_depth_size_tensor.item<int64_t>();
@@ -758,149 +708,68 @@ void GaussianKeyframe::loadDataFromDisk() {
           gaus_pyramid_inv_depth_image_[i].to(torch::kCUDA);
     }
 
-    // std::cout << "Data loaded from disk for keyframe " << fid_ << std::endl;
-
     loaded_ = true;
   } catch (const std::exception& e) {
     std::cerr << "Error loading data for keyframe " << fid_ << ": " << e.what()
               << std::endl;
-    loaded_ = false;  // Ensure loaded status reflects failure
-    throw;            // Re-throw the exception
+    loaded_ = false;
+    throw;
   }
-
-  auto end_time = std::chrono::steady_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-      end_time - start_time);
-
-  // std::cout << "Keyframe " << fid_ << " loaded. Load completed in "
-  //           << duration.count() << "ms" << std::endl;
 }
 
 void GaussianKeyframe::transferToCPU() {
-  auto start_time = std::chrono::steady_clock::now();
-
   if (!loaded_) {
     std::cout << "WARN: Tried to transfer keyframe to CPU that isn't loaded!"
               << std::endl;
     return;
   }
 
-  // Transfer depth confidence to CPU
-  if (depth_confidence_.defined() && depth_confidence_.device().is_cuda()) {
-    depth_confidence_ = depth_confidence_.to(torch::kCPU);
-  }
+  transferTensorToDevice(depth_confidence_, torch::kCPU);
+  transferTensorToDevice(feature_map_, torch::kCPU);
 
-  // Transfer feature map to CPU
-  if (feature_map_.defined() && feature_map_.device().is_cuda()) {
-    feature_map_ = feature_map_.to(torch::kCPU);
-  }
-
-  // Transfer pyramid image data to CPU
   for (auto& img : gaus_pyramid_original_image_) {
-    if (img.defined() && img.device().is_cuda()) {
-      img = img.to(torch::kCPU);
-    }
+    transferTensorToDevice(img, torch::kCPU);
   }
 
-  // Transfer pyramid depth data to CPU
   for (auto& depth : gaus_pyramid_inv_depth_image_) {
-    if (depth.defined() && depth.device().is_cuda()) {
-      depth = depth.to(torch::kCPU);
-    }
+    transferTensorToDevice(depth, torch::kCPU);
   }
 
-  // Transfer pose parameters to CPU
-  if (rW2C_.defined() && rW2C_.device().is_cuda()) {
-    rW2C_ = rW2C_.to(torch::kCPU);
-  }
-  if (tW2C_.defined() && tW2C_.device().is_cuda()) {
-    tW2C_ = tW2C_.to(torch::kCPU);
-  }
-
-  // Transfer optimization parameters to CPU
-  if (exposure_transform_.defined() && exposure_transform_.device().is_cuda()) {
-    exposure_transform_ = exposure_transform_.to(torch::kCPU);
-  }
-  if (depth_scale_.defined() && depth_scale_.device().is_cuda()) {
-    depth_scale_ = depth_scale_.to(torch::kCPU);
-  }
-  if (depth_bias_.defined() && depth_bias_.device().is_cuda()) {
-    depth_bias_ = depth_bias_.to(torch::kCPU);
-  }
+  transferTensorToDevice(rW2C_, torch::kCPU);
+  transferTensorToDevice(tW2C_, torch::kCPU);
+  transferTensorToDevice(exposure_transform_, torch::kCPU);
+  transferTensorToDevice(depth_scale_, torch::kCPU);
+  transferTensorToDevice(depth_bias_, torch::kCPU);
 
   loaded_ = false;
-
-  // Clear GPU cache after transfer
-  // c10::cuda::CUDACachingAllocator::emptyCache();
-
-  auto end_time = std::chrono::steady_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-      end_time - start_time);
-
-  // std::cout << "Keyframe " << fid_ << " transferred to CPU in "
-  //           << duration.count() << "ms" << std::endl;
 }
 
 void GaussianKeyframe::transferToGPU() {
-  auto start_time = std::chrono::steady_clock::now();
-
   if (loaded_) {
-    std::cout
-        << "WARN: Tried to transfer keyframe to GPU that's already loaded!"
-        << std::endl;
+    std::cout << "WARN: Tried to transfer keyframe to GPU that's already loaded!"
+              << std::endl;
     return;
   }
 
-  // Transfer depth confidence to GPU
-  if (depth_confidence_.defined() && !depth_confidence_.device().is_cuda()) {
-    depth_confidence_ = depth_confidence_.to(torch::kCUDA);
-  }
+  transferTensorToDevice(depth_confidence_, torch::kCUDA);
+  transferTensorToDevice(feature_map_, torch::kCUDA);
 
-  // Transfer feature map to GPU
-  if (feature_map_.defined() && !feature_map_.device().is_cuda()) {
-    feature_map_ = feature_map_.to(torch::kCUDA);
-  }
-
-  // Transfer pyramid image data to GPU
   for (auto& img : gaus_pyramid_original_image_) {
-    if (img.defined() && !img.device().is_cuda()) {
-      img = img.to(torch::kCUDA);
-    }
+    transferTensorToDevice(img, torch::kCUDA);
   }
 
-  // Transfer pyramid depth data to GPU
   for (auto& depth : gaus_pyramid_inv_depth_image_) {
-    if (depth.defined() && !depth.device().is_cuda()) {
-      depth = depth.to(torch::kCUDA);
-    }
+    transferTensorToDevice(depth, torch::kCUDA);
   }
 
-  // Transfer pose parameters to GPU
-  if (rW2C_.defined() && !rW2C_.device().is_cuda()) {
-    rW2C_ = rW2C_.to(torch::kCUDA);
-    rW2C_.requires_grad_(true);  // Restore gradient requirement
-  }
-  if (tW2C_.defined() && !tW2C_.device().is_cuda()) {
-    tW2C_ = tW2C_.to(torch::kCUDA);
-    tW2C_.requires_grad_(true);  // Restore gradient requirement
-  }
+  // Pose and optimization params need gradients restored
+  transferTensorToDevice(rW2C_, torch::kCUDA, /*restore_grad=*/true);
+  transferTensorToDevice(tW2C_, torch::kCUDA, /*restore_grad=*/true);
+  transferTensorToDevice(exposure_transform_, torch::kCUDA, /*restore_grad=*/true);
+  transferTensorToDevice(depth_scale_, torch::kCUDA, /*restore_grad=*/true);
+  transferTensorToDevice(depth_bias_, torch::kCUDA, /*restore_grad=*/true);
 
-  // Transfer optimization parameters to GPU
-  if (exposure_transform_.defined() &&
-      !exposure_transform_.device().is_cuda()) {
-    exposure_transform_ = exposure_transform_.to(torch::kCUDA);
-    exposure_transform_.requires_grad_(true);  // Restore gradient requirement
-  }
-  if (depth_scale_.defined() && !depth_scale_.device().is_cuda()) {
-    depth_scale_ = depth_scale_.to(torch::kCUDA);
-    depth_scale_.requires_grad_(true);  // Restore gradient requirement
-  }
-  if (depth_bias_.defined() && !depth_bias_.device().is_cuda()) {
-    depth_bias_ = depth_bias_.to(torch::kCUDA);
-    depth_bias_.requires_grad_(true);  // Restore gradient requirement
-  }
-
-  // Update tensor vectors for optimizer if they exist
+  // Update optimizer param groups
   if (optimizer_) {
     Tensor_vec_rW2C_ = {rW2C_};
     Tensor_vec_tW2C_ = {tW2C_};
@@ -910,11 +779,4 @@ void GaussianKeyframe::transferToGPU() {
   }
 
   loaded_ = true;
-
-  auto end_time = std::chrono::steady_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-      end_time - start_time);
-
-  // std::cout << "Keyframe " << fid_ << " transferred to GPU in "
-  //           << duration.count() << "ms" << std::endl;
 }
