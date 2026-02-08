@@ -22,7 +22,7 @@ void GaussianModel::saveAndEvictChunks(const torch::Tensor& chunk_ids) {
   // IDs of requested that are loaded
   torch::Tensor chunks_to_save = chunk_ids.index({loaded_mask});
 
-  // Save updated chunks that have been loaded before
+  // Save chunks that were previously loaded from disk
   if (chunks_to_save.size(0) > 0) {
     saveChunks(chunks_to_save);
   }
@@ -41,33 +41,17 @@ void GaussianModel::saveAndEvictChunks(const torch::Tensor& chunk_ids) {
   if (non_loaded_with_gaussians.size(0) > 0) {
     // Distinguish spillover vs new chunks
 
-    // Mask of requested chunks that aren't loaded and have gaussians in memory
-    // and are saved on disk
+    // Spillover chunks: in memory but already saved on disk (will be discarded)
     torch::Tensor is_spillover_mask =
         torch::isin(non_loaded_with_gaussians, chunks_on_disk_);
 
-    // IDs of requested chunks that aren't loaded and have gaussians in memory
-    // and are saved on disk
-    torch::Tensor spillover_chunks =
-        non_loaded_with_gaussians.index({is_spillover_mask});
-
-    // IDs of requested chunks that aren't loaded and have gaussians in memory
-    // and aren't saved on disk
+    // New chunks: in memory but not yet on disk (need to be saved)
     torch::Tensor new_chunks =
         non_loaded_with_gaussians.index({~is_spillover_mask});
 
-    // Handle spillover chunks - discard without saving
-    if (spillover_chunks.size(0) > 0) {
-      // std::cout << "[Eviction] Discarding " << spillover_chunks.size(0)
-      //           << " spillover-only chunks" << std::endl;
-    }
-
-    // Handle new chunks - save them!
+    // Save new chunks (spillover chunks are discarded without saving)
     if (new_chunks.size(0) > 0) {
-      // std::cout << "[Eviction] Saving " << new_chunks.size(0) << " new
-      // chunks"
-      //           << std::endl;
-      saveChunks(new_chunks);  // Save the new chunks to disk
+      saveChunks(new_chunks); // Save the new chunks to disk
     }
   }
 
@@ -78,8 +62,7 @@ void GaussianModel::saveAndEvictChunks(const torch::Tensor& chunk_ids) {
     prunePoints(remove_mask);
   }
 
-  // Update tracking
-
+  // Update loaded chunk tracking
   // Mask of loaded chunks not in the requested chunks to save
   torch::Tensor keep_loaded_mask =
       ~torch::isin(chunks_loaded_from_disk_, chunk_ids);
@@ -103,32 +86,17 @@ size_t GaussianModel::getCurrentGPUMemoryUsage() const {
 }
 
 void GaussianModel::checkMemoryPressure() {
-  auto now = std::chrono::steady_clock::now();
-  // if (now - last_memory_check_ < std::chrono::milliseconds(100)) {
-  //   return;
-  // }
-  // last_memory_check_ = now;
-
   int current_gaussians = getXYZ().size(0);
-
   if (current_gaussians <= max_gaussians_in_memory_) {
     return;  // No pressure, exit early
   }
 
-  // Keep evicting until we reach our memory goal or run out of chunks
-  while (true) {
-    current_gaussians = getXYZ().size(0);
-    if (current_gaussians <= max_gaussians_in_memory_) {
-      // Goal reached, exit the loop
-      break;
-    }
-
-    // Get chunks that can be evicted (any chunk with gaussians in memory)
+  // Keep evicting until we reach memory goal or run out of chunks
+  while (current_gaussians > max_gaussians_in_memory_) {
     torch::Tensor evictable_chunks =
         std::get<0>(torch::_unique2(gaussian_chunk_ids_));
 
     if (evictable_chunks.size(0) == 0) {
-      // No chunks found to evict, break to avoid infinite loop
       std::cout << "[Memory] Warning: No evictable chunks found" << std::endl;
       break;
     }
@@ -136,8 +104,7 @@ void GaussianModel::checkMemoryPressure() {
     // Calculate how many gaussians to evict this iteration
     int64_t excess_gaussians = current_gaussians - max_gaussians_in_memory_;
     int64_t gaussians_to_evict =
-        std::max(excess_gaussians,
-                 static_cast<int64_t>(100000));  // Minimum 100k per iteration
+        std::max(excess_gaussians, static_cast<int64_t>(100000));
 
     // Get LRU chunks that total at least gaussians_to_evict
     torch::Tensor lru_chunks =
@@ -149,12 +116,8 @@ void GaussianModel::checkMemoryPressure() {
       break;
     }
 
-    // std::cout << "[Memory] Evicting " << lru_chunks.size(0)
-    //           << " LRU chunks (current Gaussians: " << current_gaussians
-    //           << " target: " << max_gaussians_in_memory_ << std::endl;
-
-    // Use updated saveAndEvictChunks
     saveAndEvictChunks(lru_chunks);
+    current_gaussians = getXYZ().size(0);
   }
 }
 
@@ -169,64 +132,40 @@ torch::Tensor GaussianModel::findLRUChunks(
   auto chunks_cpu = candidate_chunks.cpu();
   auto chunks_accessor = chunks_cpu.accessor<int64_t, 1>();
 
-  // Create vector of (chunk_id, access_time, gaussian_count) tuples
+  // Gather chunk metadata: (chunk_id, access_time, gaussian_count)
   std::vector<std::tuple<int64_t, float, int64_t>> chunk_data;
   for (int64_t i = 0; i < chunks_cpu.size(0); i++) {
     int64_t chunk_id = chunks_accessor[i];
     float access_time = chunk_access_times_.count(chunk_id)
                             ? chunk_access_times_[chunk_id]
                             : 0.0f;
-
-    // Get gaussian count for this chunk
     torch::Tensor chunk_mask = (gaussian_chunk_ids_ == chunk_id);
     int64_t gaussian_count = chunk_mask.sum().item<int64_t>();
-
     chunk_data.emplace_back(chunk_id, access_time, gaussian_count);
   }
 
-  // Sort by access time (oldest first)
+  // Sort by access time (oldest first for LRU eviction)
   std::sort(chunk_data.begin(), chunk_data.end(),
             [](const auto& a, const auto& b) {
               return std::get<1>(a) < std::get<1>(b);
             });
 
-  // Debug output
-  if (!chunk_data.empty()) {
-    float oldest_time = std::get<1>(chunk_data.front());
-    float newest_time = std::get<1>(chunk_data.back());
-    float time_delta = newest_time - oldest_time;
-    // std::cout << "[LRU DEBUG] After sorting (oldest first):" << std::endl;
-    // std::cout << "[LRU DEBUG] Time range: oldest=" << oldest_time
-    //           << ", newest=" << newest_time << ", delta=" << time_delta <<
-    //           "ms"
-    //           << std::endl;
-  }
-
-  // Accumulate chunks until we reach target gaussian count
+  // Select oldest chunks until target gaussian count is reached
   std::vector<int64_t> selected_chunks;
   int64_t accumulated_gaussians = 0;
-
   for (const auto& [chunk_id, access_time, gaussian_count] : chunk_data) {
     selected_chunks.push_back(chunk_id);
     accumulated_gaussians += gaussian_count;
-
     if (accumulated_gaussians >= target_gaussian_count) {
       break;
     }
   }
-
-  // std::cout << "[LRU DEBUG] Selected " << selected_chunks.size() << " chunks
-  // ("
-  //           << accumulated_gaussians << " gaussians) to reach target
-  //           eviction"
-  //           << target_gaussian_count << std::endl;
 
   // Convert to tensor
   torch::Tensor result = torch::empty(
       {static_cast<int64_t>(selected_chunks.size())},
       torch::TensorOptions().dtype(torch::kInt64).device(torch::kCPU));
   auto result_accessor = result.accessor<int64_t, 1>();
-
   for (size_t i = 0; i < selected_chunks.size(); i++) {
     result_accessor[i] = selected_chunks[i];
   }

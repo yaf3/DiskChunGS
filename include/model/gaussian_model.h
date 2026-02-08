@@ -693,8 +693,6 @@ class GaussianModel {
   // Memory management configuration
   int64_t max_gaussians_in_memory_ =
       3000000;  ///< Max Gaussians before eviction.
-  std::chrono::steady_clock::time_point
-      last_memory_check_;  ///< Rate-limiting for checks.
   std::unordered_map<int64_t, float>
       chunk_access_times_;  ///< Per-chunk access timestamps.
   int new_gaussian_chunk_density_ =
