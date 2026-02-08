@@ -11,7 +11,7 @@
  * See <http://www.gnu.org/licenses/>.
  */
 
-#include "utils/keyframe_selection.h"
+#include "scene/keyframe_selection.h"
 
 #include <algorithm>
 #include <iostream>

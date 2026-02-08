@@ -287,6 +287,7 @@ add_library(
     include/scene/gaussian_keyframe.h
     include/scene/gaussian_parameters.h
     include/scene/gaussian_scene.h
+    include/scene/keyframe_selection.h
     # Model
     include/model/gaussian_model.h
     # Rendering
@@ -308,7 +309,6 @@ add_library(
     include/utils/sh_utils.h
     include/utils/tensor_utils.h
     include/utils/profiling.h
-    include/utils/keyframe_selection.h
     include/utils/debugging_utils.h
     include/utils/trajectory_viewer.h
     # Gaussian mapper implementation
@@ -330,6 +330,7 @@ add_library(
     src/scene/gaussian_keyframe.cpp
     src/scene/gaussian_parameters.cpp
     src/scene/gaussian_scene.cpp
+    src/scene/keyframe_selection.cpp
     # Rendering implementation
     src/rendering/gaussian_rasterizer.cpp
     src/rendering/gaussian_renderer.cpp
@@ -339,7 +340,6 @@ add_library(
     src/depth/mono_depth.cpp
     src/depth/guided_mvs.cpp
     # Utils implementation
-    src/utils/keyframe_selection.cpp
     src/utils/debugging_utils.cpp
     src/utils/trajectory_viewer.cpp
 )

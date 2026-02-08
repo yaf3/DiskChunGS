@@ -65,8 +65,8 @@
 #include "geometry/operate_points.h"
 #include "scene/gaussian_keyframe.h"
 #include "scene/gaussian_scene.h"
+#include "scene/keyframe_selection.h"
 #include "slam_deps/xfeat_cpp/include/XFeat.h"
-#include "utils/keyframe_selection.h"
 #include "utils/tensor_utils.h"
 
 class KeyframeSelector;  // Forward declaration
