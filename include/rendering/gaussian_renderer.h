@@ -27,10 +27,40 @@
 #include "scene/gaussian_parameters.h"
 #include "utils/sh_utils.h"
 
+/**
+ * @brief Renders 3D Gaussian primitives to a 2D image using splatting.
+ *
+ * This class provides differentiable Gaussian splatting rendering, converting
+ * a set of 3D Gaussians into rendered images with depth information.
+ */
 class GaussianRenderer {
  public:
+  /**
+   * @brief Renders visible Gaussians from the given viewpoint.
+   *
+   * Performs differentiable rasterization of 3D Gaussians. Colors can be
+   * provided directly, computed from spherical harmonics (SH) on CPU, or
+   * converted from SH by the rasterizer on GPU.
+   *
+   * @param model The Gaussian model containing 3D Gaussian primitives.
+   * @param visible_gaussian_mask Boolean mask indicating which Gaussians are
+   *        visible from the current viewpoint.
+   * @param viewpoint_camera Camera keyframe containing pose and exposure info.
+   * @param image_height Output image height in pixels.
+   * @param image_width Output image width in pixels.
+   * @param pipe Pipeline parameters controlling SH conversion and covariance.
+   * @param bg_color Background color tensor (RGB).
+   * @param override_color Pre-computed colors to use (if use_override_color).
+   * @param scaling_modifier Scale factor applied to Gaussian sizes.
+   * @param use_override_color If true, use override_color instead of SH.
+   * @param FoVx Horizontal field of view in radians.
+   * @param FoVy Vertical field of view in radians.
+   * @param world_view_transform 4x4 world-to-camera transformation matrix.
+   * @param projection_matrix 4x4 camera projection matrix.
+   * @return Tuple of (depth, rendered_image, radii, main_gaussian_ids).
+   */
   static std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
-  render(std::shared_ptr<GaussianModel> pc,
+  render(std::shared_ptr<GaussianModel> model,
          const torch::Tensor& visible_gaussian_mask,
          std::shared_ptr<GaussianKeyframe> viewpoint_camera,
          int image_height,

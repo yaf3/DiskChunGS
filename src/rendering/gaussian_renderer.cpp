@@ -36,13 +36,10 @@ GaussianRenderer::render(std::shared_ptr<GaussianModel> model,
   int active_sh_degree = model->sh_degree_;
 
   torch::Tensor camera_center = viewpoint_camera->getCenter();
-
   torch::Tensor visible_indices = torch::where(visible_gaussian_mask)[0];
 
-  /* If precomputed colors are provided, use them. Otherwise, if it is desired
-     to precompute colors from SHs do it. If not, then SH -> RGB
-     conversion will be done by rasterizer.
-   */
+  // Prepare color data: either use override colors, convert SH to RGB on CPU,
+  // or pass SH coefficients to the rasterizer for GPU conversion.
   torch::Tensor dc, shs, colors_precomp;
   if (use_override_color) {
     colors_precomp = override_color.index({visible_indices}).contiguous();
@@ -96,6 +93,8 @@ GaussianRenderer::render(std::shared_ptr<GaussianModel> model,
   auto opacity =
       model->getOpacityActivation().index({visible_indices}).contiguous();
 
+  // Prepare Gaussian shape: either precompute 3D covariance or use
+  // scale/rotation.
   torch::Tensor scales, rotations, cov3D_precomp;
   if (pipe.compute_cov3D_) {
     cov3D_precomp =
@@ -107,7 +106,7 @@ GaussianRenderer::render(std::shared_ptr<GaussianModel> model,
         model->getRotationActivation().index({visible_indices}).contiguous();
   }
 
-  // Rasterization
+  // Setup and run rasterization
   float tanfovx = std::tan(FoVx * 0.5f);
   float tanfovy = std::tan(FoVy * 0.5f);
 
