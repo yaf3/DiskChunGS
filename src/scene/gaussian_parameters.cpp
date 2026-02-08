@@ -63,6 +63,8 @@ GaussianOptimizationParams::GaussianOptimizationParams(
     int auto_distribute,
     bool smooth_l1)
     : iterations_(iterations),
+      auto_distribute_(auto_distribute),
+      smooth_l1_(smooth_l1),
       position_lr_init_(position_lr_init),
       position_lr_decay_(position_lr_decay),
       feature_lr_(feature_lr),
@@ -73,6 +75,4 @@ GaussianOptimizationParams::GaussianOptimizationParams(
       exposure_lr_(exposure_lr),
       depth_scale_bias_lr_(depth_scale_bias_lr),
       lambda_dssim_(lambda_dssim),
-      lambda_depth_(lambda_depth),
-      auto_distribute_(auto_distribute),
-      smooth_l1_(smooth_l1) {}
+      lambda_depth_(lambda_depth) {}
