@@ -25,6 +25,13 @@
 #include "cuda_rasterizer/rasterize_points.h"
 #include "model/gaussian_model.h"
 
+/**
+ * @brief Configuration parameters for Gaussian rasterization.
+ *
+ * Encapsulates all settings needed to rasterize 3D Gaussians onto a 2D image
+ * plane, including camera intrinsics, projection matrices, and rendering
+ * options.
+ */
 struct GaussianRasterizationSettings {
   GaussianRasterizationSettings(int image_height,
                                 int image_width,
@@ -51,20 +58,30 @@ struct GaussianRasterizationSettings {
 
   int image_height_;
   int image_width_;
-  float tanfovx_;
-  float tanfovy_;
+  float tanfovx_;   ///< Tangent of horizontal field of view
+  float tanfovy_;   ///< Tangent of vertical field of view
   torch::Tensor bg_;
   float scale_modifier_;
   torch::Tensor projmatrix_;
-  int sh_degree_;
+  int sh_degree_;   ///< Spherical harmonics degree
   torch::Tensor campos_;
   bool prefiltered_;
   bool debug_;
 };
 
+/**
+ * @brief PyTorch autograd function for differentiable Gaussian rasterization.
+ *
+ * Implements forward and backward passes for rasterizing 3D Gaussians,
+ * enabling gradient-based optimization of Gaussian parameters.
+ */
 class GaussianRasterizerFunction
     : public torch::autograd::Function<GaussianRasterizerFunction> {
  public:
+  /**
+   * @brief Rasterizes 3D Gaussians to produce a rendered image.
+   * @return Tensor list containing: [color, invdepth, mainGaussID, radii]
+   */
   static torch::autograd::tensor_list forward(
       torch::autograd::AutogradContext* ctx,
       torch::Tensor means3D,
@@ -79,12 +96,17 @@ class GaussianRasterizerFunction
       torch::Tensor viewmatrix,
       GaussianRasterizationSettings raster_settings);
 
+  /**
+   * @brief Computes gradients for all rasterization inputs.
+   */
   static torch::autograd::tensor_list backward(
       torch::autograd::AutogradContext* ctx,
-      torch::autograd::tensor_list
-          grad_outputs);  // WARN_0205: Could need two args
+      torch::autograd::tensor_list grad_outputs);
 };
 
+/**
+ * @brief Convenience wrapper to invoke GaussianRasterizerFunction::apply().
+ */
 inline torch::autograd::tensor_list rasterizeGaussians(
     torch::Tensor& means3D,
     torch::Tensor& means2D,
@@ -102,17 +124,29 @@ inline torch::autograd::tensor_list rasterizeGaussians(
       cov3Ds_precomp, viewmatrix, raster_settings);
 }
 
+/**
+ * @brief PyTorch module wrapper for Gaussian rasterization.
+ *
+ * Provides a module-based interface for rasterizing 3D Gaussians, handling
+ * optional tensor initialization and delegating to GaussianRasterizerFunction.
+ */
 class GaussianRasterizer : public torch::nn::Module {
  public:
   explicit GaussianRasterizer(GaussianRasterizationSettings& raster_settings)
       : raster_settings_(raster_settings) {}
 
+  /**
+   * @brief Identifies which Gaussians are visible from the current viewpoint.
+   */
   torch::Tensor markVisibleGaussians(torch::Tensor& positions,
                                      torch::Tensor& viewmatrix) {
-    auto raster_settings = this->raster_settings_;
-    return markVisible(positions, viewmatrix, raster_settings.projmatrix_);
+    return markVisible(positions, viewmatrix, raster_settings_.projmatrix_);
   }
 
+  /**
+   * @brief Renders 3D Gaussians to produce color, depth, and auxiliary outputs.
+   * @return Tuple of [color, invdepth, mainGaussID, radii]
+   */
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
   forward(torch::Tensor means3D,
           torch::Tensor means2D,
@@ -125,10 +159,15 @@ class GaussianRasterizer : public torch::nn::Module {
           torch::Tensor cov3D_precomp,
           torch::Tensor viewmatrix);
 
- public:
   GaussianRasterizationSettings raster_settings_;
 };
 
+// Note: SparseGaussianAdam is defined here for convenience as it shares
+// dependencies with the rasterizer components.
+
+/**
+ * @brief Adam optimizer variant for sparse Gaussian parameter updates.
+ */
 class SparseGaussianAdam : public torch::optim::Adam {
  public:
   explicit SparseGaussianAdam(std::vector<torch::Tensor> parameters,
