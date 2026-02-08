@@ -231,8 +231,8 @@ int main(int argc, char **argv) {
     // Create Trajectory Viewer
     pTrajViewer = std::make_unique<TrajectoryViewer>(pGausMapper.get());
     pGausMapper->setTrajectoryViewer(pTrajViewer.get());
-    trajectory_viewer_thd =
-        std::thread(&TrajectoryViewer::run, pTrajViewer.get());
+    // trajectory_viewer_thd =
+    //     std::thread(&TrajectoryViewer::run, pTrajViewer.get());
   }
 
   // Vector for tracking time statistics
@@ -335,7 +335,7 @@ int main(int argc, char **argv) {
   if (use_viewer) {
     viewer_thd.join();
     pTrajViewer->signalStop();
-    trajectory_viewer_thd.join();
+    // trajectory_viewer_thd.join();
   }
 
   // GPU peak usage
