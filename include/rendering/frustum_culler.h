@@ -23,21 +23,55 @@
 #include "ORB-SLAM3/Thirdparty/Sophus/sophus/se3.hpp"
 #include "chunk_types.h"
 
-// Forward declarations
 class GaussianKeyframe;
 
+/**
+ * @brief Result of testing an AABB against a view frustum.
+ */
 enum FrustumTestResult { OUTSIDE = 0, INTERSECT = 1, INSIDE = 2 };
 
+/**
+ * @brief Performs frustum culling tests against axis-aligned bounding boxes.
+ *
+ * Extracts and normalizes the six frustum planes from a model-view-projection
+ * matrix, then provides AABB intersection tests.
+ */
 class FrustumCuller {
  public:
-  Eigen::Vector4f planes_[6];
-
- public:
+  /**
+   * @brief Constructs a FrustumCuller from a model-view-projection matrix.
+   * @param MVP The combined model-view-projection matrix.
+   */
   explicit FrustumCuller(const Eigen::Matrix4f& MVP);
-  FrustumTestResult test_AABB(const Eigen::Matrix4f& MVP, const AABB& aabb);
+
+  /**
+   * @brief Tests an AABB against the frustum planes.
+   * @param aabb The axis-aligned bounding box to test.
+   * @return OUTSIDE if fully outside, INSIDE if fully inside, INTERSECT if
+   *         partially visible.
+   */
+  FrustumTestResult testAABB(const AABB& aabb) const;
+
+ private:
+  Eigen::Vector4f planes_[6];  ///< Normalized frustum planes (left, right,
+                               ///< bottom, top, near, far)
 };
 
-// Standalone frustum culling function
+/**
+ * @brief Performs hierarchical frustum culling on a grid of chunks.
+ *
+ * Uses octree-style subdivision to efficiently cull large regions, with
+ * optional parallel processing for improved performance.
+ *
+ * @param view_projection_matrix Combined view-projection matrix for frustum
+ *                               extraction.
+ * @param camera_position World-space camera position for distance culling.
+ * @param camera_chunk Chunk coordinate containing the camera.
+ * @param search_radius Radius (in chunks) around camera_chunk to consider.
+ * @param chunk_size World-space size of each chunk.
+ * @param max_distance Maximum distance for chunk visibility.
+ * @return Vector of visible chunk coordinates.
+ */
 std::vector<ChunkCoord> cullChunksHierarchical(
     const Eigen::Matrix4f& view_projection_matrix,
     const Eigen::Vector3f& camera_position,
@@ -46,63 +80,79 @@ std::vector<ChunkCoord> cullChunksHierarchical(
     float chunk_size,
     float max_distance);
 
-// Reusable frustum culling cache
+/**
+ * @brief Cache for frustum culling results to avoid redundant computation.
+ *
+ * Stores visible chunks per keyframe and reuses results when the keyframe
+ * pose hasn't changed significantly.
+ */
 class FrustumCullingCache {
  public:
+  /**
+   * @brief Cached visibility data for a single keyframe.
+   */
   struct CacheEntry {
-    Sophus::SE3d pose;  // Keyframe pose when visibility was calculated
-    std::vector<ChunkCoord> visible_chunks;  // Visible chunk coordinates
+    Sophus::SE3d pose;                       ///< Pose when visibility was computed
+    std::vector<ChunkCoord> visible_chunks;  ///< Cached visible chunks
   };
 
+  /**
+   * @brief Constructs a cache with the given chunk size for tolerance
+   *        calculation.
+   * @param chunk_size World-space chunk size.
+   */
   explicit FrustumCullingCache(float chunk_size) : chunk_size_(chunk_size) {}
 
-  // Try to get cached result
+  /**
+   * @brief Attempts to retrieve cached visibility results.
+   * @param keyframe_id Unique identifier for the keyframe.
+   * @param current_pose Current pose of the keyframe.
+   * @param[out] out_chunks Output vector for cached chunks if found.
+   * @return True if valid cached result was found and returned.
+   */
   bool getCached(size_t keyframe_id,
                  const Sophus::SE3d& current_pose,
-                 std::vector<ChunkCoord>& out_chunks) {
-    auto cache_it = cache_.find(keyframe_id);
+                 std::vector<ChunkCoord>& out_chunks);
 
-    if (cache_it != cache_.end()) {
-      auto& entry = cache_it->second;
-      if (poseNearlyEqual(current_pose, entry.pose)) {
-        out_chunks = entry.visible_chunks;
-        return true;
-      }
-    }
-    return false;
-  }
-
-  // Update cache with new result
+  /**
+   * @brief Updates the cache with new visibility results.
+   * @param keyframe_id Unique identifier for the keyframe.
+   * @param pose Pose at which visibility was computed.
+   * @param visible_chunks The computed visible chunks.
+   */
   void updateCache(size_t keyframe_id,
                    const Sophus::SE3d& pose,
-                   const std::vector<ChunkCoord>& visible_chunks) {
-    CacheEntry entry;
-    entry.pose = pose;
-    entry.visible_chunks = visible_chunks;
-    cache_[keyframe_id] = entry;
-  }
+                   const std::vector<ChunkCoord>& visible_chunks);
 
+  /**
+   * @brief Clears all cached entries.
+   */
   void clearCache() { cache_.clear(); }
 
  private:
   float chunk_size_;
   std::unordered_map<size_t, CacheEntry> cache_;
 
-  // Helper to compare poses for cache validity
-  bool poseNearlyEqual(const Sophus::SE3d& a, const Sophus::SE3d& b) {
-    // Translation tolerance: small fraction of chunk size
-    const double translation_tol = chunk_size_ * 0.05;  // 5% of chunk size
-
-    // Rotation tolerance: a few degrees
-    const double rotation_tol = 0.05;  // ~3 degrees in radians
-
-    return (a.translation() - b.translation()).norm() < translation_tol &&
-           a.unit_quaternion().angularDistance(b.unit_quaternion()) <
-               rotation_tol;
-  }
+  /**
+   * @brief Checks if two poses are similar enough to reuse cached results.
+   * @param a First pose.
+   * @param b Second pose.
+   * @return True if poses are within tolerance thresholds.
+   */
+  bool poseNearlyEqual(const Sophus::SE3d& a, const Sophus::SE3d& b) const;
 };
 
-// Standalone frustumCullChunks function
+/**
+ * @brief Computes visible chunks for a keyframe with optional caching.
+ *
+ * Extracts camera parameters from the keyframe, performs hierarchical
+ * frustum culling, and optionally caches results for reuse.
+ *
+ * @param keyframe The keyframe to compute visibility for.
+ * @param chunk_size World-space chunk size.
+ * @param cache Optional cache for result storage/retrieval.
+ * @return Vector of visible chunk coordinates.
+ */
 std::vector<ChunkCoord> frustumCullChunks(
     std::shared_ptr<GaussianKeyframe> keyframe,
     float chunk_size,
