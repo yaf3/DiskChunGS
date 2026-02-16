@@ -118,7 +118,7 @@ RUN export workdir=/workspace && \
     -DOPENCV_EXTRA_MODULES_PATH=/workspace/third_party/opencv_contrib/modules \
     -DCMAKE_INSTALL_PREFIX=/workspace/third_party/install/opencv \
     third_party/opencv && \
-    cmake --build third_party/opencv/build && \
+    cmake --build third_party/opencv/build -j 8 && \
     cmake --install third_party/opencv/build
 
 # Create environment setup script for OpenCV
@@ -198,6 +198,29 @@ RUN git clone https://github.com/pytorch/vision.git && \
     TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6" \
     python3 setup.py install
 
+# Install tensorrt runtime
+RUN wget https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/secure/8.6.1/local_repos/nv-tensorrt-local-repo-ubuntu2004-8.6.1-cuda-11.8_1.0-1_amd64.deb && \
+    os="ubuntu2004" && \
+    tag="8.6.1-cuda-11.8" && \
+    dpkg -i nv-tensorrt-local-repo-${os}-${tag}_1.0-1_amd64.deb && \
+    cp /var/nv-tensorrt-local-repo-${os}-${tag}/*-keyring.gpg /usr/share/keyrings/ && \
+    echo "Package: *\nPin: origin \"\"\nPin-Priority: 1001" > /etc/apt/preferences.d/tensorrt-local && \
+    apt-get update && \
+    apt-get install -y \
+    tensorrt=8.6.1.6-1+cuda11.8 \
+    libnvinfer8=8.6.1.6-1+cuda11.8 \
+    libnvinfer-plugin8=8.6.1.6-1+cuda11.8 \
+    libnvonnxparsers8=8.6.1.6-1+cuda11.8 \
+    libnvinfer-bin=8.6.1.6-1+cuda11.8 \
+    libnvinfer-dev=8.6.1.6-1+cuda11.8 \
+    libnvinfer-plugin-dev=8.6.1.6-1+cuda11.8 \
+    libnvonnxparsers-dev=8.6.1.6-1+cuda11.8 \
+    libnvinfer-samples=8.6.1.6-1+cuda11.8 \
+    python3-libnvinfer-dev=8.6.1.6-1+cuda11.8 \
+    python3-libnvinfer=8.6.1.6-1+cuda11.8 && \
+    rm nv-tensorrt-local-repo-${os}-${tag}_1.0-1_amd64.deb && \
+    rm -rf /var/lib/apt/lists/*
+
 # Create environment setup for all dependencies
 RUN echo 'source /opt/ros/noetic/setup.bash' >> /workspace/setup_env.sh && \
     echo 'export LD_LIBRARY_PATH=/opt/ros/noetic/lib:/workspace/third_party/libtorch/lib:$LD_LIBRARY_PATH' >> /workspace/setup_env.sh && \
@@ -207,17 +230,9 @@ RUN echo 'source /opt/ros/noetic/setup.bash' >> /workspace/setup_env.sh && \
 RUN ln -sf /workspace/third_party/install/opencv /usr/local/opencv && \
     ln -sf /workspace/third_party/libtorch /usr/local/libtorch
 
-# Create a custom entrypoint script
-COPY docker-entrypoint.sh /
-RUN chmod +x /docker-entrypoint.sh
-
 # Create ROS workspace for user
 RUN mkdir -p /root/catkin_ws/src && \
     cd /root/catkin_ws && \
     bash -c "source /opt/ros/noetic/setup.bash && catkin init"
 
-# Create workspace subdirectories
-RUN mkdir -p /workspace/bin /workspace/build /workspace/src
-
-ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["bash"]

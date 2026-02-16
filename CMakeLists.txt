@@ -55,55 +55,6 @@ find_package(glfw3 REQUIRED)
 find_package(realsense2)
 find_package(OpenMP REQUIRED)
 
-# Find ONNX Runtime
-find_library(ONNXRUNTIME_LIB 
-    NAMES onnxruntime
-    PATHS /usr/local/lib /usr/lib
-    REQUIRED
-)
-
-find_path(ONNXRUNTIME_INCLUDE_DIR 
-    NAMES onnxruntime_cxx_api.h
-    PATHS /usr/local/include /usr/include
-    REQUIRED
-)
-
-message(STATUS "Found ONNX Runtime headers: ${ONNXRUNTIME_INCLUDE_DIR}")
-message(STATUS "Found ONNX Runtime library: ${ONNXRUNTIME_LIB}")
-
-
-# # Find TensorRT
-# find_path(TENSORRT_INCLUDE_DIR 
-#     NAMES NvInfer.h
-#     PATHS /usr/include/x86_64-linux-gnu /usr/include /usr/local/include
-#     REQUIRED
-# )
-
-# find_library(TENSORRT_LIB 
-#     NAMES nvinfer
-#     PATHS /usr/lib/x86_64-linux-gnu /usr/lib /usr/local/lib
-#     REQUIRED
-# )
-
-# # Check for TensorRT provider library (modern approach)
-# find_library(ONNXRUNTIME_TENSORRT_PROVIDER_LIB 
-#     NAMES onnxruntime_providers_tensorrt
-#     PATHS /usr/local/lib /usr/lib
-# )
-
-# if(ONNXRUNTIME_TENSORRT_PROVIDER_LIB)
-#     message(STATUS "ONNX Runtime TensorRT provider found: ${ONNXRUNTIME_TENSORRT_PROVIDER_LIB}")
-#     set(HAVE_TENSORRT_PROVIDER TRUE)
-# else()
-#     message(WARNING "ONNX Runtime TensorRT provider not found - TensorRT support disabled")
-#     set(HAVE_TENSORRT_PROVIDER FALSE)
-# endif()
-
-# # Add TensorRT and ONNX Runtime include directories
-# include_directories(
-#     ${TENSORRT_INCLUDE_DIR}
-#     ${ONNXRUNTIME_INCLUDE_DIR}
-# )
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS} -pthread ${OpenMP_CXX_FLAGS}")
 
@@ -354,15 +305,9 @@ target_link_libraries(
     cuda_rasterizer
     xfeat
     OpenMP::OpenMP_CXX
-    ${ONNXRUNTIME_LIB}
-    depth_anything_tensorrt  # <-- ADD THIS LINE
-    ${TENSORRT_LIBS}         # <-- ADD THIS LINE
+    depth_anything_tensorrt 
+    ${TENSORRT_LIBS} 
 )
-
-# if(HAVE_TENSORRT_PROVIDER)
-#     target_compile_definitions(gaussian_mapper PRIVATE -DHAVE_TENSORRT_PROVIDER)
-#     target_link_libraries(gaussian_mapper ${TENSORRT_LIB} ${ONNXRUNTIME_TENSORRT_PROVIDER_LIB})
-# endif()
 
 ##################################################################################
 ##  Build the viewer library to ${PROJECT_SOURCE_DIR}/lib
@@ -464,22 +409,6 @@ target_link_libraries(vkitti_rgbd
     gaussian_viewer    
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
-
-# ACVNET Stereo Test
-add_executable(test_acvnet examples/test_acvnet.cpp)
-target_link_libraries(test_acvnet
-    ${ONNXRUNTIME_LIB}
-    gaussian_viewer    
-    gaussian_mapper
-    ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
-
-# ACVNET Stereo Test
-# add_executable(inspect_onnx examples/inspect_onnx.cpp)
-# target_link_libraries(inspect_onnx
-#     ${ONNXRUNTIME_LIB}
-#     gaussian_viewer    
-#     gaussian_mapper
-#     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
 
 # Camera Mono
 add_executable(camera_mono examples/camera_mono.cpp)

@@ -20,38 +20,7 @@ RUN apt-get update && apt-get install -y \
     git-lfs \
     clang-format \
     && rm -rf /var/lib/apt/lists/*
-
-# Install onnx runtime
-RUN wget https://github.com/microsoft/onnxruntime/releases/download/v1.18.1/onnxruntime-linux-x64-gpu-1.18.1.tgz && \
-    tar -xzf onnxruntime-linux-x64-gpu-1.18.1.tgz && \
-    rm onnxruntime-linux-x64-gpu-1.18.1.tgz && \
-    sudo cp -r onnxruntime-linux-x64-gpu-1.18.1/* /usr/local/ && \
-    rm -rf onnxruntime-linux-x64-gpu-1.18.1 && \
-    sudo ldconfig
-
-# Install tensorrt runtime
-RUN wget https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/secure/8.6.1/local_repos/nv-tensorrt-local-repo-ubuntu2004-8.6.1-cuda-11.8_1.0-1_amd64.deb && \
-    os="ubuntu2004" && \
-    tag="8.6.1-cuda-11.8" && \
-    dpkg -i nv-tensorrt-local-repo-${os}-${tag}_1.0-1_amd64.deb && \
-    cp /var/nv-tensorrt-local-repo-${os}-${tag}/*-keyring.gpg /usr/share/keyrings/ && \
-    echo "Package: *\nPin: origin \"\"\nPin-Priority: 1001" > /etc/apt/preferences.d/tensorrt-local && \
-    apt-get update && \
-    apt-get install -y \
-    tensorrt=8.6.1.6-1+cuda11.8 \
-    libnvinfer8=8.6.1.6-1+cuda11.8 \
-    libnvinfer-plugin8=8.6.1.6-1+cuda11.8 \
-    libnvonnxparsers8=8.6.1.6-1+cuda11.8 \
-    libnvinfer-bin=8.6.1.6-1+cuda11.8 \
-    libnvinfer-dev=8.6.1.6-1+cuda11.8 \
-    libnvinfer-plugin-dev=8.6.1.6-1+cuda11.8 \
-    libnvonnxparsers-dev=8.6.1.6-1+cuda11.8 \
-    libnvinfer-samples=8.6.1.6-1+cuda11.8 \
-    python3-libnvinfer-dev=8.6.1.6-1+cuda11.8 \
-    python3-libnvinfer=8.6.1.6-1+cuda11.8 && \
-    rm nv-tensorrt-local-repo-${os}-${tag}_1.0-1_amd64.deb && \
-    rm -rf /var/lib/apt/lists/*
-
+    
 # Update library paths
 WORKDIR /workspace
 RUN echo "export LD_LIBRARY_PATH=/workspace/repo/slam_deps/ORB-SLAM3/lib:\$LD_LIBRARY_PATH" >> /root/.bashrc

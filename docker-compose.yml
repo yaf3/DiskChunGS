@@ -4,7 +4,7 @@ services:
     image: casimirfeldmann/diskchungs:base
     build:
       context: .
-      dockerfile: Dockerfile.base
+      dockerfile: docker/Dockerfile.base
       target: base-dev
     profiles: ["build-base"]  # Only build when this profile is active
     privileged: true
@@ -28,7 +28,7 @@ services:
     image: casimirfeldmann/diskchungs:dev
     build:
       context: .
-      dockerfile: Dockerfile.dev
+      dockerfile: docker/Dockerfile.dev
       target: dev
     privileged: true
     network_mode: host

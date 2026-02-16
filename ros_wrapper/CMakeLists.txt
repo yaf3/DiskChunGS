@@ -67,22 +67,6 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS} -pthread")
 find_package(CUDA REQUIRED)
 find_package(Eigen3 REQUIRED)
 
-# Find ONNX Runtime
-find_library(ONNXRUNTIME_LIB 
-    NAMES onnxruntime
-    PATHS /usr/local/lib /usr/lib
-    REQUIRED
-)
-
-find_path(ONNXRUNTIME_INCLUDE_DIR 
-    NAMES onnxruntime_cxx_api.h
-    PATHS /usr/local/include /usr/include
-    REQUIRED
-)
-
-message(STATUS "Found ONNX Runtime headers: ${ONNXRUNTIME_INCLUDE_DIR}")
-message(STATUS "Found ONNX Runtime library: ${ONNXRUNTIME_LIB}")
-
 find_package(jsoncpp REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(glm REQUIRED)
@@ -139,7 +123,6 @@ add_executable(${PROJECT_NAME}_node src/node.cpp)
 target_link_libraries(${PROJECT_NAME}_node
   ${PROJECT_NAME}
   ${catkin_LIBRARIES}
-  ${ONNXRUNTIME_LIB}
 )
 
 catkin_install_python(PROGRAMS
