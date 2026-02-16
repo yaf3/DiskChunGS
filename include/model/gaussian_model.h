@@ -601,6 +601,24 @@ class GaussianModel {
   void checkMemoryPressure();
 
   /**
+   * @brief Evicts LRU chunks until excess Gaussians are freed.
+   * @param protected_chunk_ids Chunk IDs that must not be evicted.
+   * @param excess_gaussians Minimum number of Gaussians to free.
+   *
+   * Applies a 5% hysteresis buffer on top of the requested eviction amount
+   * to reduce eviction frequency.
+   */
+  void evictExcessChunks(const torch::Tensor& protected_chunk_ids,
+                         int64_t excess_gaussians);
+
+  /**
+   * @brief Computes exact Gaussian count for chunks to be loaded from disk.
+   * @param chunks_ids_needing_load Chunk IDs to look up.
+   * @return Total number of Gaussians across the requested chunks.
+   */
+  int64_t countGaussiansToLoad(const torch::Tensor& chunks_ids_needing_load);
+
+  /**
    * @brief Updates access timestamps for chunks.
    * @param accessed_chunk_ids Chunks that were accessed.
    */
