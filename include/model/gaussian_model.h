@@ -115,6 +115,10 @@ class SparseGaussianAdam;
  */
 class GaussianModel {
  public:
+  /// Number of optimizer parameter groups: xyz, features_dc, features_rest,
+  /// opacity, scaling, rotation.
+  static constexpr int kNumParamGroups = 6;
+
   //============================================================================
   // Nested Types
   //============================================================================
@@ -380,14 +384,6 @@ class GaussianModel {
    */
   void pruneLowOpacityGaussians(std::shared_ptr<GaussianKeyframe> pkf,
                                 const torch::Tensor& visible_gaussian_mask);
-
-  /**
-   * @brief Prunes Gaussians by opacity and world-space size.
-   * @param min_opacity Minimum opacity threshold.
-   * @param extent Scene extent for size calculation.
-   * @param max_screen_size Maximum allowed screen-space size (0 to disable).
-   */
-  void prune(float min_opacity, float extent, int max_screen_size);
 
   //============================================================================
   // Point Management
@@ -687,7 +683,7 @@ class GaussianModel {
   torch::Tensor chunk_gaussian_counts_;  ///< Gaussian count per disk chunk.
   torch::Tensor gaussian_ids_;  ///< Unique ID per Gaussian for tracking.
   int64_t next_gaussian_id_ =
-      0;                             ///< Counter for generating unique Gaussian IDs.
+      0;  ///< Counter for generating unique Gaussian IDs.
   std::string storage_base_path_;  ///< Directory for chunk file storage.
 
   // Memory management configuration
@@ -697,6 +693,21 @@ class GaussianModel {
       chunk_access_times_;  ///< Per-chunk access timestamps.
   int new_gaussian_chunk_density_ =
       100;  ///< Min Gaussians/chunk for new points.
+
+ private:
+  //============================================================================
+  // Private Helpers
+  //============================================================================
+
+  /**
+   * @brief Assigns optimized tensors back to member variables after
+   * pruning/densification.
+   * @param tensors Vector of 6 tensors corresponding to the parameter groups.
+   *
+   * Updates xyz_, features_dc_, features_rest_, opacity_, scaling_, rotation_
+   * and their optimizer vector wrappers.
+   */
+  void assignOptimizedTensors(const std::vector<torch::Tensor>& tensors);
 
  protected:
   //============================================================================
