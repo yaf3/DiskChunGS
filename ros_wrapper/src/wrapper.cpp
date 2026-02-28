@@ -75,7 +75,7 @@ WrapperConfig WrapperConfig::loadFromROS(ros::NodeHandle &pnh) {
   ROS_INFO("  timeout_duration: %.1f seconds", config.timeout_duration);
   ROS_INFO("  use_viewer: %d", config.use_viewer);
 
-  if (config.slam_mode == "external" || config.slam_mode == "hybrid") {
+  if (config.slam_mode == "external") {
     ROS_INFO("  target_frame: %s", config.target_frame.c_str());
     ROS_INFO("  source_frame: %s", config.source_frame.c_str());
   }
@@ -109,7 +109,7 @@ GaussianSLAMWrapper::GaussianSLAMWrapper(ros::NodeHandle &nh,
         sync_pol(30), rgb_sub_, depth_sub_));
   }
 
-  if (config_.slam_mode == "orbslam" || config_.slam_mode == "hybrid") {
+  if (config_.slam_mode == "orbslam") {
     initializeSLAMSystem();
   }
 
@@ -165,11 +165,18 @@ bool GaussianSLAMWrapper::getExternalPose(Sophus::SE3f &pose,
                           transformStamped.transform.translation.y,
                           transformStamped.transform.translation.z);
 
-    // This is Twc (world to camera) from ROS
+    // Twc: pose of camera in world frame
     Sophus::SE3f Twc_ros(quat, trans);
 
-    // ORBSLAM expects Tcw (camera to world), so invert
-    pose = Twc_ros.inverse();
+    // Normalize so that the first received frame is the world origin
+    if (first_frame) {
+      T_init = Twc_ros;
+      first_frame = false;
+    }
+    Sophus::SE3f Twc_normalized = T_init.inverse() * Twc_ros;
+
+    // Return Tcw (camera-to-world inverse) as expected by the mapper
+    pose = Twc_normalized.inverse();
 
     return true;
   } catch (tf2::TransformException &ex) {
@@ -195,35 +202,10 @@ void GaussianSLAMWrapper::initializeSLAMSystem() {
 
     slam_system_ = std::make_shared<ORB_SLAM3::System>(
         config_.vocabulary_path, config_.orb_settings_path, system_mode);
-    ROS_INFO("SLAM system object created successfully with mode: %d",
-             static_cast<int>(system_mode));
     ROS_INFO("SLAM system object created successfully");
   } catch (const std::exception &e) {
     ROS_ERROR("Exception during SLAM system initialization: %s", e.what());
     throw;
-  }
-}
-
-void GaussianSLAMWrapper::imuCallback(const sensor_msgs::ImuConstPtr &msg) {
-  std::lock_guard<std::mutex> lock(imu_mutex_);
-
-  // Extract IMU measurements
-  const double ax = msg->linear_acceleration.x;
-  const double ay = msg->linear_acceleration.y;
-  const double az = msg->linear_acceleration.z;
-  const double gx = msg->angular_velocity.x;
-  const double gy = msg->angular_velocity.y;
-  const double gz = msg->angular_velocity.z;
-  const double timestamp = msg->header.stamp.toSec();
-
-  // Create IMU measurement point and add to buffer
-  ORB_SLAM3::IMU::Point imu_point(ax, ay, az, gx, gy, gz, timestamp);
-  imu_buffer_.push_back(imu_point);
-
-  // Optionally, limit buffer size to prevent unbounded growth
-  const size_t MAX_IMU_BUFFER_SIZE = 1000;
-  if (imu_buffer_.size() > MAX_IMU_BUFFER_SIZE) {
-    imu_buffer_.erase(imu_buffer_.begin());
   }
 }
 
@@ -253,7 +235,7 @@ void GaussianSLAMWrapper::initializeGaussianMapper() {
     mapper_thread_ = std::thread(&GaussianMapper::run_external_poses,
                                  gaussian_mapper_.get());
 
-  } else if (config_.slam_mode == "orbslam" || config_.slam_mode == "hybrid") {
+  } else if (config_.slam_mode == "orbslam") {
     gaussian_mapper_ = std::make_shared<GaussianMapper>(
         slam_system_, config_.gaussian_settings_path, config_.output_directory,
         0,            // stream id
@@ -331,14 +313,11 @@ void GaussianSLAMWrapper::stereoCallback(
 
   try {
     if (config_.slam_mode == "external") {
-      Sophus::SE3f Twc;
-      if (getExternalPose(Twc, timestamp)) {
-        // Process frame with GT pose
+      Sophus::SE3f Tcw;
+      if (getExternalPose(Tcw, timestamp)) {
         gaussian_mapper_->handleNewFrameExternal(
-            cv_left->image, cv_right->image, Twc, timestamp);
+            cv_left->image, cv_right->image, Tcw, timestamp);
       }
-    } else if (config_.slam_mode == "hybrid") {
-      ROS_ERROR("Hyrbid not yet implemented for stereo");
     } else if (config_.slam_mode == "orbslam") {
       if (!slam_system_) {
         ROS_ERROR("SLAM system pointer is null!");
@@ -391,83 +370,23 @@ void GaussianSLAMWrapper::rgbdCallback(
     // Get timestamp from message
     double timestamp = msg_rgb->header.stamp.toSec();
 
-    // CRITICAL: Process IMU data for the frame
-    std::vector<ORB_SLAM3::IMU::Point> vImuMeas;
-    {
-      std::lock_guard<std::mutex> lock(imu_mutex_);
-
-      // Find relevant IMU measurements for this frame
-      if (config_.mode == "rgbd-imu") {
-        // Only use IMU measurements between the last frame and this one
-        double min_time = last_processed_image_ts_;
-        std::cout << "min_time: " << min_time << std::endl;
-        if (min_time == 0) {
-          // For the first frame, use a window before the current timestamp
-          min_time = timestamp - 0.1;  // 100ms window before first frame
-        }
-
-        // Collect all IMU measurements in the window
-        for (const auto &imu_point : imu_buffer_) {
-          if (imu_point.t >= min_time && imu_point.t <= timestamp) {
-            vImuMeas.push_back(imu_point);
-          }
-        }
-
-        // Log IMU integration status
-        if (vImuMeas.empty()) {
-          ROS_WARN(
-              "No IMU measurements for frame at time %.3f (last frame: %.3f)",
-              timestamp, last_processed_image_ts_);
-          ROS_WARN("Buffer has %zu IMU measurements", imu_buffer_.size());
-          if (!imu_buffer_.empty()) {
-            ROS_WARN("IMU buffer time range: %.3f to %.3f",
-                     imu_buffer_.front().t, imu_buffer_.back().t);
-          }
-        } else {
-          ROS_INFO("Using %zu IMU measurements for frame at time %.3f",
-                   vImuMeas.size(), timestamp);
-        }
-
-        // Update last processed timestamp
-        last_processed_image_ts_ = timestamp;
-      }
-    }
-
     // Tracking logic
     try {
       if (config_.slam_mode == "external") {
-        Sophus::SE3f Twc;
-        if (getExternalPose(Twc, timestamp)) {
+        Sophus::SE3f Tcw;
+        if (getExternalPose(Tcw, timestamp)) {
           gaussian_mapper_->handleNewFrameExternal(
-              cv_rgb->image, cv_depth->image, Twc, timestamp);
+              cv_rgb->image, cv_depth->image, Tcw, timestamp);
         }
-
-      } else if (config_.slam_mode == "hybrid") {
-        Sophus::SE3f Twc;
-        if (getExternalPose(Twc, timestamp)) {
-          try {
-            slam_system_->TrackRGBDWithPose(
-                cv_rgb->image.clone(), depth_converted.clone(), Twc, timestamp,
-                std::to_string(msg_rgb->header.seq));
-          } catch (const std::exception &e) {
-            std::cerr << "Exception: " << e.what() << std::endl;
-          } catch (...) {
-            std::cerr << "Unknown exception!" << std::endl;
-          }
-        }
-
       } else if (config_.slam_mode == "orbslam") {
         if (!slam_system_) {
           ROS_ERROR("SLAM system pointer is null!");
           return;
         }
 
-        // Track with or without IMU data
         slam_system_->TrackRGBD(cv_rgb->image, depth_converted, timestamp,
-                                vImuMeas, std::to_string(msg_rgb->header.seq));
+                                {}, std::to_string(msg_rgb->header.seq));
       }
-      // Other modes (external, hybrid) remain unchanged
-
     } catch (const std::exception &e) {
       ROS_ERROR("Exception in TrackRGBD: %s", e.what());
     }

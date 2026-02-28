@@ -176,7 +176,7 @@ roscore
 
 Then you can run the node:
 ```bash
-rosrun lsgs_ros lsgs_ros_node \
+rosrun diskchungs_ros diskchungs_ros_node \
 __name:=gaussian_slam \
 _vocabulary_path:=/workspace/repo/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
 _orb_settings_path:=/workspace/repo/cfg/ORB_SLAM3/RGB-D/RSL/arche_train1.yaml \
@@ -213,7 +213,7 @@ You may also have to add ```--clock --pause``` in case you are using rosbags so 
 | `mono_topic` | string | `"/camera/image_raw"` | Topic for monocular image (mono mode) |
 | `rgb_topic` | string | `"/camera/rgb/image_raw"` | Topic for RGB image (rgbd mode) |
 | `depth_topic` | string | `"/camera/depth/image_raw"` | Topic for depth image (rgbd mode) |
-| `slam_mode` | string | `"orbslam"` | SLAM mode. Options: `"orbslam"`, `"hybrid"` |
+| `slam_mode` | string | `"orbslam"` | SLAM mode. Options: `"orbslam"` (use ORB-SLAM3 for poses), `"external"` (use TF poses from another source) |
 | `target_frame` | string | `"map"` | Target frame for TF transformations (external mode) |
 | `source_frame` | string | `"zed2i_left_camera_frame"` | Source frame for TF transformations (external mode) |
 | `timeout_duration` | double | `20.0` | Duration (in seconds) after which the system considers data stream stopped |

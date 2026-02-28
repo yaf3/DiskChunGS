@@ -22,7 +22,6 @@
 #include <message_filters/synchronizer.h>
 #include <ros/ros.h>
 #include <sensor_msgs/Image.h>
-#include <sensor_msgs/Imu.h>
 #include <tf2_eigen/tf2_eigen.h>
 #include <tf2_ros/transform_listener.h>
 #include <torch/torch.h>
@@ -56,15 +55,14 @@ struct WrapperConfig {
   std::string mono_topic;
   std::string rgb_topic;
   std::string depth_topic;
-  std::string imu_topic;
 
   // Frame names for external pose mode
   std::string target_frame;
   std::string source_frame;
 
   // Operating modes
-  std::string mode;       // stereo, mono, rgbd, stereo-imu, rgbd-imu
-  std::string slam_mode;  // orbslam, external, hybrid
+  std::string mode;       // stereo, mono, rgbd
+  std::string slam_mode;  // orbslam, external
 
   // Settings
   bool use_viewer;
@@ -89,7 +87,6 @@ class GaussianSLAMWrapper {
   message_filters::Subscriber<sensor_msgs::Image> rgb_sub_;
   message_filters::Subscriber<sensor_msgs::Image> depth_sub_;
   ros::Subscriber mono_sub_;
-  ros::Subscriber imu_sub_;  // Added IMU subscriber
 
   // Synchronization
   typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image,
@@ -116,11 +113,6 @@ class GaussianSLAMWrapper {
   // Configuration
   WrapperConfig config_;
 
-  // IMU-related members
-  std::vector<ORB_SLAM3::IMU::Point> imu_buffer_;  // IMU measurements buffer
-  std::mutex imu_mutex_;  // Mutex for thread-safe access to IMU buffer
-  double last_processed_image_ts_ = 0;  // Timestamp of the last processed image
-
   // Timeout-related members
   ros::Timer timeout_timer_;        // Timer to check for timeouts
   ros::Time last_callback_time_;    // Time of the last callback
@@ -137,8 +129,7 @@ class GaussianSLAMWrapper {
                       const sensor_msgs::ImageConstPtr &right);
   void rgbdCallback(const sensor_msgs::ImageConstPtr &rgb,
                     const sensor_msgs::ImageConstPtr &depth);
-  void imuCallback(const sensor_msgs::ImuConstPtr &msg);  // Added IMU callback
-  void timeoutCallback(const ros::TimerEvent &event);  // Added timeout callback
+  void timeoutCallback(const ros::TimerEvent &event);
   void checkMappingStatus(const ros::TimerEvent &event);
 
   // Helper methods

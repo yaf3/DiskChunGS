@@ -22,7 +22,7 @@ python3 scripts/rosbag_extractor.py \
 rosbag play --clock --pause train1.bag 
 rosrun image_transport republish compressed in:=/zed2/zed_node/left/image_rect_color raw out:=/left_camera_rgb
 
-rosrun lsgs_ros lsgs_ros_node \
+rosrun diskchungs_ros diskchungs_ros_node \
 __name:=gaussian_slam \
 _vocabulary_path:=/workspace/repo/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
 _orb_settings_path:=/workspace/repo/cfg/ORB_SLAM3/RGB-D/RSL/arche_train1.yaml \
