@@ -49,7 +49,7 @@ RUN echo '#!/bin/bash' > /workspace/welcome.sh && \
 WORKDIR /workspace/repo
 
 # Copy entrypoint script
-COPY docker-entrypoint.sh /
+COPY docker/docker-entrypoint.sh /
 RUN chmod +x /docker-entrypoint.sh
 
 ENTRYPOINT ["/docker-entrypoint.sh"]

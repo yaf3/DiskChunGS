@@ -31,13 +31,13 @@ git clone --recursive git@github.com:leggedrobotics/DiskChunGS.git
 cd large_scale_gaussian_slam
 
 # Build the development container
-docker-compose build dev
+docker compose -f docker/docker-compose.yml build dev
 
 # Start the development container
-docker-compose run --rm dev
+docker compose -f docker/docker-compose.yml run --rm dev
 
 # Inside the container, build the application
-./build.sh
+./scripts/build.sh
 ```
 
 ## Getting Started
@@ -49,7 +49,7 @@ The benchmark datasets mentioned in our paper:
 - [TUM RGB-D](https://cvg.cit.tum.de/data/datasets/rgbd-dataset/download)
 - [KITTI](https://www.cvlibs.net/datasets/kitti/eval_odometry.php)
 
-1. Create a dataset folder which we can bind to the docker container. Then edit the dev section [docker-compose.yml](docker-compose.yml) to set the right path to your datasets.
+1. Create a dataset folder which we can bind to the docker container. Then edit the dev section [docker-compose.yml](docker/docker-compose.yml) to set the right path to your datasets.
    E.g. ```- /path/to/your/datasets:/data```
 
 2. Download the desired dataset:

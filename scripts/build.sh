@@ -1,9 +1,10 @@
 #!/bin/bash
 set -e  # Exit on any error
 
-# Get current directory
-workdir=$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )
+# Get repo root (parent of scripts/)
+workdir=$( cd -- "$(dirname "$0")/.." >/dev/null 2>&1 ; pwd -P )
 echo "Working directory: $workdir"
+cd "$workdir"
 
 export OPENCV_PATH=/workspace/third_party/opencv
 export OpenCV_DIR=/workspace/third_party/install/opencv/lib/cmake/opencv4

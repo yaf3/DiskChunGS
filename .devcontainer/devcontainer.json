@@ -1,6 +1,6 @@
 {
     "name": "DiskChunGS Development",
-    "dockerComposeFile": "../docker-compose.yml",
+    "dockerComposeFile": "../docker/docker-compose.yml",
     "service": "dev",
     "workspaceFolder": "/workspace/repo",
     "customizations": {

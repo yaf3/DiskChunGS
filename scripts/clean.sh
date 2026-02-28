@@ -1,8 +1,9 @@
 #!/bin/bash
 
-# current directory
-workdir=$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )
+# Get repo root (parent of scripts/)
+workdir=$( cd -- "$(dirname "$0")/.." >/dev/null 2>&1 ; pwd -P )
 echo "Cleaning build in: $workdir"
+cd "$workdir"
 
 # Clean main project build
 echo "Cleaning main project build directory..."

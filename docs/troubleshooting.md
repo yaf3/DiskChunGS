@@ -26,7 +26,7 @@ This document covers common issues and their solutions when using DiskChunGS.
 ### Dependency Issues
 **Problem**: Weird errors in the dependencies
 
-**Solution**: Try running `./clean.sh` and building fresh.
+**Solution**: Try running `./scripts/clean.sh` and building fresh.
 
 ## ROS Related Issues
 

@@ -2,7 +2,7 @@
 
 # Build the main project
 cd /workspace/repo
-./build.sh
+./scripts/build.sh
 
 # Build the ROS package
 cd /root/catkin_ws

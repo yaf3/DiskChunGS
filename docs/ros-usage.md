@@ -6,8 +6,8 @@ This document provides comprehensive information about using DiskChunGS with ROS
 
 In one terminal launch and build:
 ```bash
-docker-compose run --rm dev
-source build_ros.sh
+docker compose -f docker/docker-compose.yml run --rm dev
+source scripts/build_ros.sh
 ```
 
 In another terminal launch the roscore if needed:
