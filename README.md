@@ -131,9 +131,11 @@ results
     └── scene_n
 ```
 
-### Install the Python wrapper for rendering:
-```bash
-python3 setup.py install
+### Run experiments:
+Make sure to enable the following in your gaussian_mapper configs:
+```
+Record.record_rendered_image: 1
+Record.record_ground_truth_image: 1
 ```
 
 ### Convert Replica GT camera pose files for EVO package:
@@ -151,6 +153,71 @@ python3 eval.py --dataset_center_path PATH_TO_ALL_DATASET --result_main_folder R
 - PATH_TO_ALL_DATASET: Should be /data if you've bound your datasets folder to /data
 - Results will be summarized in two files: `RESULTS_PATH/log.txt` and `RESULTS_PATH/log.csv`.
 
+
+## ROS Usage
+
+### Setup
+
+In one terminal launch and build:
+```bash
+docker compose -f docker/docker-compose.yml run --rm dev
+source scripts/build_ros.sh
+```
+
+In another terminal launch the roscore if needed:
+```bash
+docker ps
+docker exec -it container_name bash
+source /opt/ros/noetic/setup.bash
+roscore
+```
+
+### Running the ROS Node
+
+Then you can run the node:
+```bash
+rosrun lsgs_ros lsgs_ros_node \
+__name:=gaussian_slam \
+_vocabulary_path:=/workspace/repo/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+_orb_settings_path:=/workspace/repo/cfg/ORB_SLAM3/RGB-D/RSL/arche_train1.yaml \
+_gaussian_settings_path:=/workspace/repo/cfg/gaussian_mapper/RGB-D/RSL/arche_train1.yaml \
+_output_directory:=/workspace/repo/results/rsl/train1 \
+_use_viewer:=true \
+_mode:=rgbd \
+_rgb_topic:=/left_camera_rgb \
+_depth_topic:=/zed2/zed_node/depth/depth_registered \
+_slam_mode:=external \
+_target_frame:=map \
+_source_frame:=zed2_left_camera_optical_frame
+```
+
+You may have to publish uncompressed images like:
+```bash
+rosrun image_transport republish compressed in:=/zed2/zed_node/left/image_rect_color raw out:=/left_camera_rgb
+```
+
+You may also have to add ```--clock --pause``` in case you are using rosbags so that tf data can be correctly used.
+
+### ROS Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `vocabulary_path` | string | (required) | Path to the ORB vocabulary file |
+| `orb_settings_path` | string | (required) | Path to the ORB SLAM settings file |
+| `gaussian_settings_path` | string | (required) | Path to the Gaussian settings file |
+| `output_directory` | string | (required) | Directory where the output will be saved |
+| `use_viewer` | bool | `false` | Whether to use the ImGui viewer for visualization |
+| `mode` | string | `"stereo"` | Sensor mode. Options: `"mono"`, `"stereo"`, `"rgbd"` |
+| `left_topic` | string | `"/camera/rgb/image_raw"` | Topic for left stereo image (stereo mode) |
+| `right_topic` | string | `"/camera/rgb/image_raw"` | Topic for right stereo image (stereo mode) |
+| `mono_topic` | string | `"/camera/image_raw"` | Topic for monocular image (mono mode) |
+| `rgb_topic` | string | `"/camera/rgb/image_raw"` | Topic for RGB image (rgbd mode) |
+| `depth_topic` | string | `"/camera/depth/image_raw"` | Topic for depth image (rgbd mode) |
+| `slam_mode` | string | `"orbslam"` | SLAM mode. Options: `"orbslam"`, `"hybrid"` |
+| `target_frame` | string | `"map"` | Target frame for TF transformations (external mode) |
+| `source_frame` | string | `"zed2i_left_camera_frame"` | Source frame for TF transformations (external mode) |
+| `timeout_duration` | double | `20.0` | Duration (in seconds) after which the system considers data stream stopped |
+
 ## Acknowledgements
 
 This work incorporates many open-source codes. Thanks for their great work!
@@ -167,5 +234,14 @@ This work incorporates many open-source codes. Thanks for their great work!
 
 If you find this work useful in your research, consider citing it:
 ```
-[Citation will be added here]
+@article{feldmann2025diskchungslargescale3dgaussian,
+        title = {DiskChunGS: Large-Scale 3D Gaussian SLAM Through Chunk-Based Memory Management}, 
+        author = {Casimir Feldmann and Maximum Wilder-Smith and Vaishakh Patil and Michael Oechsle and Michael Niemeyer and Keisuke Tateno and Marco Hutter},
+        journal = {arXiv preprint arXiv:2511.23030},
+        year = {2025},
+        eprint = {2511.23030},
+        archivePrefix = {arXiv},
+        primaryClass = {cs.RO},
+        url = {https://arxiv.org/abs/2511.23030}
+      }
 ```

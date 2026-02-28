@@ -35,8 +35,7 @@ RUN echo '#!/bin/bash' > /workspace/welcome.sh && \
     echo 'echo "Heavy dependencies are pre-built for you:"' >> /workspace/welcome.sh && \
     echo 'echo "- OpenCV"' >> /workspace/welcome.sh && \
     echo 'echo "- PyTorch"' >> /workspace/welcome.sh && \
-    echo 'echo "- libtorch"' >> /workspace/welcome.sh && \
-    echo 'echo "- ONNX Runtime"' >> /workspace/welcome.sh && \
+    echo 'echo "- LibTorch"' >> /workspace/welcome.sh && \
     echo 'echo "- TensorRT"' >> /workspace/welcome.sh && \
     echo 'echo ""' >> /workspace/welcome.sh && \
     echo 'echo "To build DiskChunGS:"' >> /workspace/welcome.sh && \
