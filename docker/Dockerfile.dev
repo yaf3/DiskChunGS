@@ -40,7 +40,7 @@ RUN echo '#!/bin/bash' > /workspace/welcome.sh && \
     echo 'echo "- TensorRT"' >> /workspace/welcome.sh && \
     echo 'echo ""' >> /workspace/welcome.sh && \
     echo 'echo "To build DiskChunGS:"' >> /workspace/welcome.sh && \
-    echo 'echo "1. Run ./build.sh to build DiskChunGS"' >> /workspace/welcome.sh && \
+    echo 'echo "1. Run ./scripts/build.sh to build DiskChunGS"' >> /workspace/welcome.sh && \
     echo 'echo ""' >> /workspace/welcome.sh && \
     chmod +x /workspace/welcome.sh && \
     echo "if [ -f /workspace/welcome.sh ]; then /workspace/welcome.sh; fi" >> /root/.bashrc

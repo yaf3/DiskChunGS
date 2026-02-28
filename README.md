@@ -28,7 +28,7 @@ Recent advances in 3D Gaussian Splatting (3DGS) have demonstrated impressive res
 # Clone this repo
 git clone --recursive git@github.com:leggedrobotics/DiskChunGS.git
 
-cd large_scale_gaussian_slam
+cd DiskChunGS
 
 # Build the development container
 docker compose -f docker/docker-compose.yml build dev
