@@ -5,147 +5,20 @@
             "name": "Debug",
             "type": "cppdbg",
             "request": "launch",
-            // "program": "${workspaceFolder}/bin/replica_mono",
-            // "args": [
-            //     "${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "${workspaceFolder}/cfg/ORB_SLAM3/Monocular/Replica/office2.yaml",
-            //     "${workspaceFolder}/cfg/gaussian_mapper/Monocular/Replica/replica_mono.yaml",
-            //     "/data/Replica/office2",
-            //     "${workspaceFolder}/results/replica_mono/office2"
-            // ],
-            // "program": "${workspaceFolder}/bin/replica_rgbd",
-            // "args": [
-            //     "${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/Replica/office2.yaml",
-            //     "${workspaceFolder}/cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml",
-            //     "/data/Replica/office2",
-            //     "${workspaceFolder}/results/replica_rgbd/office2"
-            // ],
-            // "program": "${workspaceFolder}/bin/view_result",
-            // "args": [
-            //     "${workspaceFolder}/results/replica_mono/office2/2646_shutdown/data",
-            // ],
-            // "program": "${workspaceFolder}/bin/kitti_mono",
-            // "args": [
-            //     "${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "${workspaceFolder}/cfg/ORB_SLAM3/Monocular/KITTI/KITTI04-12.yaml",
-            //     "${workspaceFolder}/cfg/gaussian_mapper/Monocular/KITTI/KITTI.yaml",
-            //     "/data/kitti/data_odometry_color/dataset/sequences/07",
-            //     "${workspaceFolder}/results/kitti_lc_mono/kitti_mono_0/07",
-            //     "viewer",
-            //     "20",
-            //     "true"
-            // ],
-            "program": "${workspaceFolder}/bin/kitti_stereo",
+            "program": "${workspaceFolder}/bin/replica_rgbd",
             "args": [
                 "${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-                "${workspaceFolder}/cfg/ORB_SLAM3/Stereo/KITTI/KITTI00-02.yaml",
-                "${workspaceFolder}/cfg/gaussian_mapper/Stereo/KITTI/KITTI.yaml",
-                "/data/kitti/data_odometry_color/dataset/sequences/00",
-                "${workspaceFolder}/results/kitti/kitti_stereo_0/00",
-                "viewer",
-                "20",
-                "true"
+                "${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/Replica/office0.yaml",
+                "${workspaceFolder}/cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml",
+                "/data/Replica/office0",
+                "${workspaceFolder}/results/replica_rgbd/office0"
             ],
-            // "program": "${workspaceFolder}/bin/view_result",
-            // "args": [
-            //     "${workspaceFolder}/results/kitti/kitti_stereo_0/07/12739_shutdown/data"
-            // ],
-            // "program": "${workspaceFolder}/bin/kitti_stereo",
-            // "args": [
-            //     "${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "${workspaceFolder}/cfg/ORB_SLAM3/Stereo/KITTI/KITTI04-12.yaml",
-            //     "${workspaceFolder}/cfg/gaussian_mapper/Stereo/KITTI/KITTI.yaml",
-            //     "/data/kitti/data_odometry_color/dataset/sequences/07",
-            //     "${workspaceFolder}/results/kitti/07",
-            //     "viewer",
-            //     "20",
-            //     "true"
-            // ],
-            // "program": "${workspaceFolder}/bin/kitti_rgbd",
-            // "args": [
-            //     "${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/KITTI/KITTI00-02.yaml",
-            //     "${workspaceFolder}/cfg/gaussian_mapper/RGB-D/KITTI/KITTI.yaml",
-            //     "/data/kitti/data_odometry_color/dataset/sequences/00",
-            //     "${workspaceFolder}/results/kitti_rgbd/00"
-            // ],
-            // "program": "${workspaceFolder}/bin/tum_mono",
-            // "args": [
-            //     "${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "${workspaceFolder}/cfg/ORB_SLAM3/Monocular/TUM/tum_freiburg3_long_office_household.yaml",
-            //     "${workspaceFolder}/cfg/gaussian_mapper/Monocular/TUM/tum_mono.yaml",
-            //     "/data/TUM/rgbd_dataset_freiburg3_long_office_household",
-            //     "${workspaceFolder}/results/TUM_mono/tum_mono_0/rgbd_dataset_freiburg3_long_office_household"
-            // ],
-            // "program": "${workspaceFolder}/bin/tum_rgbd",
-            // "args": [
-            //     "${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/TUM/tum_freiburg3_long_office_household.yaml",
-            //     "${workspaceFolder}/cfg/gaussian_mapper/RGB-D/TUM/tum_rgbd.yaml",
-            //     "/data/TUM/rgbd_dataset_freiburg3_long_office_household",
-            //     "${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/TUM/associations/tum_freiburg3_long_office_household.txt",
-            //     "${workspaceFolder}/results/TUM/tum_freiburg3_long_office_household"
-            // ],
-            // "program": "${workspaceFolder}/bin/test_foundation_stereo",
-            // "args": [
-            //     "${workspaceFolder}/models/foundation_stereo_23-51-11.onnx",
-            //     "/data/kitti/data_odometry_color/dataset/sequences/00/image_2/000000.png",
-            //     "/data/kitti/data_odometry_color/dataset/sequences/00/image_3/000000.png",
-            // ],
-            // "program": "${workspaceFolder}/bin/test_acvnet",
-            // "program": "${workspaceFolder}/bin/camera_mono",
-            // "args": [
-            //     "${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "${workspaceFolder}/cfg/ORB_SLAM3/Monocular/Smartphone/main.yaml",
-            //     "${workspaceFolder}/cfg/gaussian_mapper/Monocular/Smartphone/main.yaml",
-            //     "/data/diy/01",
-            //     "${workspaceFolder}/results/diy/01"
-            // ],
-            // "program": "${workspaceFolder}/bin/camera_mono",
-            // "args": [
-            //     "${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "${workspaceFolder}/cfg/ORB_SLAM3/Monocular/Smartphone/georg.yaml",
-            //     "${workspaceFolder}/cfg/gaussian_mapper/Monocular/Smartphone/georg.yaml",
-            //     "/data/smartphone/apartment",
-            //     "${workspaceFolder}/results/smartphone/apartment"
-            // ],
-            // "program": "${workspaceFolder}/bin/view_result",
-            // "args": [
-            //     "${workspaceFolder}/results/kitti/07/7900_shutdown/data"
-            // ],
-            // "program": "${workspaceFolder}/bin/vkitti_rgbd",
-            // "args": [
-            //     "${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/VKITTI/VKITTI.yaml",
-            //     "${workspaceFolder}/cfg/gaussian_mapper/RGB-D/VKITTI/VKITTI.yaml",
-            //     "/data/VKITTI_2/rgb/Scene01/clone/frames/rgb/Camera_0",
-            //     "/data/VKITTI_2/depth/Scene01/clone/frames/depth/Camera_0",
-            //     "${workspaceFolder}/results/vkitti_rgbd/test"
-            // ],
-            // "program": "${workspaceFolder}/bin/match",
-            // "args": [
-            //     "/data/kitti/data_odometry_color/dataset/sequences/07/image_2/000000.png",
-            //     "/data/kitti/data_odometry_color/dataset/sequences/07/image_2/000005.png"
-            // ],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [
                 {
                     "name": "DISPLAY",
                     "value": "${env:DISPLAY}"
-                },
-                {
-                    "name": "CUDA_LAUNCH_BLOCKING",
-                    "value": "0"
-                },
-                {
-                    "name": "TORCH_SHOW_CPP_STACKTRACES",
-                    "value": "0"
-                },
-                {
-                    "name": "TORCH_CPP_LOG_LEVEL",
-                    "value": "0"
                 }
             ],
             "externalConsole": false,
@@ -165,154 +38,20 @@
             "request": "launch",
             "program": "/root/catkin_ws/devel/lib/diskchungs_ros/diskchungs_ros_node",
             "cwd": "/root/catkin_ws",
-            // "args": [
-            //     "__name:=diskchungs_node",
-            //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/Monocular/VBR/pincio.yaml",
-            //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/Monocular/VBR/pincio_LOD.yaml",
-            //     "_output_directory:=${workspaceFolder}/results/vbr/pincio/00/LOD",
-            //     "_use_viewer:=true",
-            //     "_mono_topic:=/camera_left/image_raw",
-            //     "_mode:=mono"
-            // ],
-            // "args": [
-            //     "__name:=diskchungs_node",
-            //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/Stereo/VBR/pincio.yaml",
-            //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/Stereo/VBR/pincio.yaml",
-            //     "_output_directory:=${workspaceFolder}/results/vbr/pincio/00",
-            //     "_use_viewer:=true",
-            //     "_image_topic:=/camera_left/image_raw",
-            //     "_right_topic:=/camera_right/image_raw",
-            //     "_mode:=stereo",
-            //     "_slam_mode:=orbslam"
-            // ],
-            // "args": [
-            //     "__name:=diskchungs_node",
-            //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/Stereo/VBR/diag.yaml",
-            //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/Stereo/VBR/diag.yaml",
-            //     "_output_directory:=${workspaceFolder}/results/vbr/diag/00",
-            //     "_use_viewer:=true",
-            //     "_mono_topic:=/camera_left/image_raw",
-            //     "_left_topic:=/camera_left/image_raw",
-            //     "_right_topic:=/camera_right/image_raw",
-            //     "_mode:=stereo",
-            //     "_slam_mode:=orbslam"
-            // ],
-            // "args": [
-            //     "__name:=diskchungs_node",
-            //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/RSL/zed_grand_tour.yaml",
-            //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/RGB-D/RSL/zed_grand_tour.yaml",
-            //     "_output_directory:=${workspaceFolder}/results/RSL/grand_tour",
-            //     "_use_viewer:=true",
-            //     "_mode:=rgbd",
-            //     "_image_topic:=/boxi/zed2i/left/image_raw_uncompressed",
-            //     "_depth_topic:=/boxi/zed2i/depth/image_raw_uncompressed",
-            //     "_mono_topic:=/boxi/zed2i/left/image_raw_uncompressed",
-            //     "_imu_topic:=/boxi/zed2i/imu/data",
-            //     "_slam_mode:=hybrid",
-            //     "_target_frame:=dlio_map",
-            //     "_source_frame:=zed2i_left"
-            // ],
-            // "args": [
-            //     "__name:=diskchungs_node",
-            //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/RSL/zed.yaml",
-            //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/RGB-D/RSL/zed.yaml",
-            //     "_output_directory:=${workspaceFolder}/results/RSL/lab",
-            //     "_use_viewer:=true",
-            //     "_mode:=rgbd",
-            //     "_image_topic:=/zed2i/zed_node/rgb/image_rect_color",
-            //     "_depth_topic:=/zed2i/zed_node/depth/depth_registered",
-            //     "_slam_mode:=external",
-            //     "_target_frame:=map",
-            //     "_source_frame:=zed2i_left_camera_optical_frame"
-            // ],
-            // "args": [
-            //     "__name:=diskchungs_node",
-            //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/RSL/arche_train1.yaml",
-            //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/RGB-D/RSL/arche_train1.yaml",
-            //     "_output_directory:=${workspaceFolder}/results/24_04_RSL/RSL_rgbd/train1",
-            //     "_use_viewer:=true",
-            //     "_mode:=mono",
-            //     "_image_topic:=/left_camera_rgb",
-            //     "_depth_topic:=/zed2/zed_node/depth/depth_registered",
-            //     "_slam_mode:=external",
-            //     "_target_frame:=map",
-            //     "_source_frame:=zed2_left_camera_optical_frame"
-            // ],
-            // "args": [
-            //     "__name:=diskchungs_node",
-            //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/RSL/zed_grand_tour.yaml",
-            //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/RGB-D/RSL/zed_grand_tour.yaml",
-            //     "_output_directory:=${workspaceFolder}/results/RSL/grand_tour",
-            //     "_use_viewer:=true",
-            //     "_mode:=rgbd",
-            //     "_image_topic:=/boxi/zed2i/left/image_raw_uncompressed",
-            //     "_depth_topic:=/boxi/zed2i/depth/image_raw_uncompressed",
-            //     "_left_topic:=/boxi/zed2i/left/image_raw_uncompressed",
-            //     "_right_topic:=/boxi/zed2i/right/image_raw_uncompressed",
-            //     "_slam_mode:=external",
-            //     "_target_frame:=dlio_map",
-            //     "_source_frame:=zed2i_left"
-            // ],
-            // "args": [
-            //     "__name:=diskchungs_node",
-            //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/TUM/tum_freiburg3_long_office_household.yaml",
-            //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/RGB-D/TUM/tum_rgbd_lod.yaml",
-            //     "_output_directory:=${workspaceFolder}/results/TUM/ROS_LOD",
-            //     "_use_viewer:=true",
-            //     "_mode:=rgbd",
-            //     "_slam_mode:=orbslam",
-            //     "_image_topic:=/camera/rgb/image_color",
-            //     "_depth_topic:=/camera/depth/image",
-            //     "_target_frame:=world",
-            //     "_source_frame:=openni_rgb_optical_frame"
-            // ],
-            // "args": [
-            //     "__name:=diskchungs_node",
-            //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/uHumans2/apartment.yaml",
-            //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/RGB-D/uHumans2/apartment.yaml",
-            //     "_output_directory:=${workspaceFolder}/results/uHumans2/apartment",
-            //     "_use_viewer:=true",
-            //     "_mode:=rgbd",
-            //     "_image_topic:=/tesse/left_cam/rgb/image_raw",
-            //     "_depth_topic:=/tesse/depth_cam/mono/image_raw",
-            //     "_slam_mode:=orbslam",
-            // ],
-            // "args": [
-            //     "__name:=diskchungs_node",
-            //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/Stereo/HILTI/hilti_handheld.yaml",
-            //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/Stereo/HILTI/hilti_handheld.yaml",
-            //     "_output_directory:=${workspaceFolder}/results/HILTI/site1_handheld_1",
-            //     "_use_viewer:=true",
-            //     "_mode:=stereo",
-            //     "_mono_topic:=/alphasense/cam0/image_raw",
-            //     "_left_topic:=/alphasense/cam0/image_raw",
-            //     "_right_topic:=/alphasense/cam1/image_raw",
-            //     "_slam_mode:=orbslam",
-            // ],
-            // "args": [
-            //     "__name:=diskchungs_node",
-            //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-            //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/Stereo/TartanDrive2/TartanDrive2.yaml",
-            //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/Stereo/TartanDrive2/TartanDrive2.yaml",
-            //     "_output_directory:=${workspaceFolder}/results/TartanDrive2/Stereo/figure_8_to_turnpike_pt2",
-            //     "_use_viewer:=true",
-            //     "_mode:=stereo",
-            //     "_left_topic:=/multisense/left/image_rect_color",
-            //     "_right_topic:=/multisense/right/image_rect",
-            //     "_slam_mode:=orbslam",
-            //     "_target_frame:=map_o3d",
-            //     "_source_frame:=zed2_left_camera_optical_frame"
-            // ],
+            "args": [
+                "__name:=diskchungs_node",
+                "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
+                "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/RSL/arche_train1.yaml",
+                "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/RGB-D/RSL/arche_train1.yaml",
+                "_output_directory:=${workspaceFolder}/results/rsl/train1",
+                "_use_viewer:=true",
+                "_mode:=rgbd",
+                "_image_topic:=/left_camera_rgb",
+                "_depth_topic:=/zed2/zed_node/depth/depth_registered",
+                "_slam_mode:=external",
+                "_target_frame:=map",
+                "_source_frame:=zed2_left_camera_optical_frame"
+            ],
             "environment": [
                 {
                     "name": "ROS_MASTER_URI",
@@ -322,14 +61,6 @@
                     "name": "DISPLAY",
                     "value": "${env:DISPLAY}"
                 },
-                // {
-                //     "name": "TORCH_USE_CUDA_DSA",
-                //     "value": "1"
-                // },
-                // {
-                //     "name": "CUDA_LAUNCH_BLOCKING",
-                //     "value": "1"
-                // },
             ],
             "MIMode": "gdb",
             "setupCommands": [
