@@ -15,19 +15,6 @@ set(CMAKE_CUDA_STANDARD 17)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations")
 
-# Check for AVX support
-# include(CheckCXXCompilerFlag)
-# check_cxx_compiler_flag(-mavx COMPILER_SUPPORTS_AVX)
-# check_cxx_compiler_flag(-mavx2 COMPILER_SUPPORTS_AVX2)
-
-# if(COMPILER_SUPPORTS_AVX AND COMPILER_SUPPORTS_AVX2)
-#     message(STATUS "Compiler supports AVX and AVX2 - enabling optimizations")
-#     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mavx -mavx2")
-#     add_definitions(-DUSE_AVX)
-# else()
-#     message(STATUS "Compiler does not support AVX - using fallback implementation")
-# endif()
-
 set(CAFFE2_USE_CUDNN on)
 
 # Uncomment the following line if you want to solve CMake Warning "Failed to compute shorthash for libnvrtc.so"
@@ -37,9 +24,6 @@ set(CAFFE2_USE_CUDNN on)
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} "/workspace/third_party/libtorch")
 find_package(Torch REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS} -pthread")
-
-# set(ENV{CUDA_LAUNCH_BLOCKING} 1)
-# set(ENV{TORCH_USE_CUDA_DSA} 1)
 
 find_package(CUDA REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -355,7 +339,7 @@ target_link_libraries(
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so
 )
 
-# Replica Monocular
+# Replica RGBD
 add_executable(replica_rgbd examples/replica_rgbd.cpp)
 target_link_libraries(
     replica_rgbd
@@ -382,37 +366,9 @@ target_link_libraries(
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so
 )
 
-# KITTI Monocular
-add_executable(kitti_mono examples/kitti_mono.cpp)
-target_link_libraries(kitti_mono
-    gaussian_viewer    
-    gaussian_mapper
-    ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
-
 # KITTI Stereo
 add_executable(kitti_stereo examples/kitti_stereo.cpp)
 target_link_libraries(kitti_stereo
-    gaussian_viewer    
-    gaussian_mapper
-    ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
-
-# KITTI RGBD
-add_executable(kitti_rgbd examples/kitti_rgbd.cpp)
-target_link_libraries(kitti_rgbd
-    gaussian_viewer    
-    gaussian_mapper
-    ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
-
-# VKITTI RGBD
-add_executable(vkitti_rgbd examples/vkitti_rgbd.cpp)
-target_link_libraries(vkitti_rgbd
-    gaussian_viewer    
-    gaussian_mapper
-    ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
-
-# Camera Mono
-add_executable(camera_mono examples/camera_mono.cpp)
-target_link_libraries(camera_mono
     gaussian_viewer    
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
@@ -426,16 +382,3 @@ target_link_libraries(match
 ##################################################################################
 ##  Build the mapping examples to ${PROJECT_SOURCE_DIR}/bin
 ##################################################################################
-
-# Intel Realsense
-if(realsense2_FOUND)
-    add_executable(realsense_rgbd examples/realsense_rgbd.cpp)
-    target_include_directories(realsense_rgbd PUBLIC ${realsense_INCLUDE_DIR})
-    target_link_libraries(
-        realsense_rgbd
-        gaussian_viewer
-        gaussian_mapper
-        ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so
-        ${realsense2_LIBRARY}
-    )
-endif()
