@@ -191,6 +191,13 @@ _target_frame:=map \
 _source_frame:=zed2_left_camera_optical_frame
 ```
 
+Make sure to set the following in your gaussian_mapper config:
+```
+External.min_keyframe_translation: 
+External.min_keyframe_rotation: 
+External.min_keyframe_time: 
+```
+
 You may have to publish uncompressed images like:
 ```bash
 rosrun image_transport republish compressed in:=/zed2/zed_node/left/image_rect_color raw out:=/left_camera_rgb
