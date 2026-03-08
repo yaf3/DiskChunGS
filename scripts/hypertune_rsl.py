@@ -155,7 +155,7 @@ def objective(trial):
             f"_output_directory:={result_dir}",
             f"_use_viewer:=false",
             f"_mode:=rgbd",
-            f"_rgb_topic:=/left_camera_rgb",
+            f"_image_topic:=/left_camera_rgb",
             f"_depth_topic:=/zed2/zed_node/depth/depth_registered",
             f"_slam_mode:=external",
             f"_target_frame:=map",

@@ -24,7 +24,7 @@ do
         _output_directory:=/workspace/repo/results/${exp_name}/RSL_rgbd_$i/train1 \
         _use_viewer:=true \
         _mode:=rgbd \
-        _rgb_topic:=/left_camera_rgb \
+        _image_topic:=/left_camera_rgb \
         _depth_topic:=/zed2/zed_node/depth/depth_registered \
         _slam_mode:=external \
         _target_frame:=map \
@@ -46,7 +46,7 @@ do
         _output_directory:=/workspace/repo/results/${exp_name}/RSL_rgbd_$i/train2  \
         _use_viewer:=true \
         _mode:=rgbd \
-        _rgb_topic:=/left_camera_rgb \
+        _image_topic:=/left_camera_rgb \
         _depth_topic:=/zed2/zed_node/depth/depth_registered \
         _slam_mode:=external \
         _target_frame:=map \
@@ -68,7 +68,7 @@ do
         _output_directory:=/workspace/repo/results/${exp_name}/RSL_rgbd_$i/gazebo1  \
         _use_viewer:=true \
         _mode:=rgbd \
-        _rgb_topic:=/left_camera_rgb \
+        _image_topic:=/left_camera_rgb \
         _depth_topic:=/zed2/zed_node/depth/depth_registered \
         _slam_mode:=external \
         _target_frame:=map \

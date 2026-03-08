@@ -50,10 +50,8 @@ struct WrapperConfig {
   std::string output_directory;
 
   // Topic names
-  std::string left_topic;
+  std::string image_topic;  // primary camera (left for stereo, rgb for rgbd, sole camera for mono)
   std::string right_topic;
-  std::string mono_topic;
-  std::string rgb_topic;
   std::string depth_topic;
 
   // Frame names for external pose mode
@@ -82,9 +80,8 @@ class GaussianSLAMWrapper {
   ros::NodeHandle pnh_;
 
   // Topic subscribers
-  message_filters::Subscriber<sensor_msgs::Image> left_sub_;
+  message_filters::Subscriber<sensor_msgs::Image> image_sub_;
   message_filters::Subscriber<sensor_msgs::Image> right_sub_;
-  message_filters::Subscriber<sensor_msgs::Image> rgb_sub_;
   message_filters::Subscriber<sensor_msgs::Image> depth_sub_;
   ros::Subscriber mono_sub_;
 

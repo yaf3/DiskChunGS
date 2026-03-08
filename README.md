@@ -184,7 +184,7 @@ _gaussian_settings_path:=/workspace/repo/cfg/gaussian_mapper/RGB-D/RSL/arche_tra
 _output_directory:=/workspace/repo/results/rsl/train1 \
 _use_viewer:=true \
 _mode:=rgbd \
-_rgb_topic:=/left_camera_rgb \
+_image_topic:=/left_camera_rgb \
 _depth_topic:=/zed2/zed_node/depth/depth_registered \
 _slam_mode:=external \
 _target_frame:=map \
@@ -213,7 +213,7 @@ You may also have to add ```--clock --pause``` in case you are using rosbags so 
 | `mono_topic` | string | `"/camera/image_raw"` | Topic for monocular image (mono mode) |
 | `rgb_topic` | string | `"/camera/rgb/image_raw"` | Topic for RGB image (rgbd mode) |
 | `depth_topic` | string | `"/camera/depth/image_raw"` | Topic for depth image (rgbd mode) |
-| `slam_mode` | string | `"orbslam"` | SLAM mode. Options: `"orbslam"` (use ORB-SLAM3 for poses), `"external"` (use TF poses from another source) |
+| `slam_mode` | string | `"orbslam"` | SLAM mode. Options: `"orbslam"` (use ORB-SLAM3 for poses), `"external"` (use TF poses from another source, currently doesn't support mono mode) |
 | `target_frame` | string | `"map"` | Target frame for TF transformations (external mode) |
 | `source_frame` | string | `"zed2i_left_camera_frame"` | Source frame for TF transformations (external mode) |
 | `timeout_duration` | double | `20.0` | Duration (in seconds) after which the system considers data stream stopped |

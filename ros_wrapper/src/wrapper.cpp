@@ -35,19 +35,25 @@ WrapperConfig WrapperConfig::loadFromROS(ros::NodeHandle &pnh) {
   pnh.param<bool>("use_viewer", config.use_viewer, false);
   pnh.param<std::string>("mode", config.mode, "stereo");
   pnh.param<std::string>("slam_mode", config.slam_mode, "orbslam");
-  pnh.param<std::string>("left_topic", config.left_topic,
-                         "/camera/rgb/image_raw");
-  pnh.param<std::string>("right_topic", config.right_topic,
-                         "/camera/rgb/image_raw");
-  pnh.param<std::string>("mono_topic", config.mono_topic, "/camera/image_raw");
-  pnh.param<std::string>("rgb_topic", config.rgb_topic,
-                         "/camera/rgb/image_raw");
-  pnh.param<std::string>("depth_topic", config.depth_topic,
-                         "/camera/depth/image_raw");
+  pnh.param<std::string>("image_topic", config.image_topic,
+                         "/camera/image_raw");
+  if (config.mode == "stereo") {
+    pnh.param<std::string>("right_topic", config.right_topic,
+                           "/camera/right/image_raw");
+  } else if (config.mode == "rgbd") {
+    pnh.param<std::string>("depth_topic", config.depth_topic,
+                           "/camera/depth/image_raw");
+  }
   pnh.param<std::string>("target_frame", config.target_frame, "map");
   pnh.param<std::string>("source_frame", config.source_frame,
                          "zed2i_left_camera_frame");
   pnh.param<double>("timeout_duration", config.timeout_duration, 20.0);
+
+  // Validate mode combinations
+  if (config.slam_mode == "external" && config.mode == "mono") {
+    throw std::runtime_error(
+        "External slam_mode is not supported with mono mode");
+  }
 
   // Verify file paths exist
   if (!std::filesystem::exists(config.vocabulary_path)) {
@@ -98,15 +104,15 @@ GaussianSLAMWrapper::GaussianSLAMWrapper(ros::NodeHandle &nh,
 
   // Initialize subscribers based on mode
   if (config_.mode == "stereo") {
-    left_sub_.subscribe(nh_, config_.left_topic, 1);
+    image_sub_.subscribe(nh_, config_.image_topic, 1);
     right_sub_.subscribe(nh_, config_.right_topic, 1);
     sync_.reset(new message_filters::Synchronizer<sync_pol>(
-        sync_pol(30), left_sub_, right_sub_));
+        sync_pol(30), image_sub_, right_sub_));
   } else if (config_.mode == "rgbd") {
-    rgb_sub_.subscribe(nh_, config_.rgb_topic, 1);
+    image_sub_.subscribe(nh_, config_.image_topic, 1);
     depth_sub_.subscribe(nh_, config_.depth_topic, 1);
     rgbd_sync_.reset(new message_filters::Synchronizer<sync_pol>(
-        sync_pol(30), rgb_sub_, depth_sub_));
+        sync_pol(30), image_sub_, depth_sub_));
   }
 
   if (config_.slam_mode == "orbslam") {
@@ -118,21 +124,21 @@ GaussianSLAMWrapper::GaussianSLAMWrapper(ros::NodeHandle &nh,
   // Register appropriate callback based on mode
   if (config_.mode == "stereo") {
     ROS_INFO("Registering stereo callback...");
-    ROS_INFO("Left topic: %s", left_sub_.getTopic().c_str());
+    ROS_INFO("Left topic: %s", image_sub_.getTopic().c_str());
     ROS_INFO("Right topic: %s", right_sub_.getTopic().c_str());
     sync_->registerCallback(
         boost::bind(&GaussianSLAMWrapper::stereoCallback, this, _1, _2));
   } else if (config_.mode == "rgbd") {
     ROS_INFO("Registering RGB-D callback...");
-    ROS_INFO("RGB topic: %s", rgb_sub_.getTopic().c_str());
+    ROS_INFO("RGB topic: %s", image_sub_.getTopic().c_str());
     ROS_INFO("Depth topic: %s", depth_sub_.getTopic().c_str());
     rgbd_sync_->registerCallback(
         boost::bind(&GaussianSLAMWrapper::rgbdCallback, this, _1, _2));
   } else if (config_.mode == "mono") {
     ROS_INFO("Registering mono callback...");
-    mono_sub_ = nh_.subscribe(config_.mono_topic, 1,
+    mono_sub_ = nh_.subscribe(config_.image_topic, 1,
                               &GaussianSLAMWrapper::monoCallback, this);
-    ROS_INFO("Mono topic: %s", config_.mono_topic.c_str());
+    ROS_INFO("Image topic: %s", config_.image_topic.c_str());
   } else {
     throw std::runtime_error("Invalid mode: " + config_.mode);
   }
@@ -384,8 +390,8 @@ void GaussianSLAMWrapper::rgbdCallback(
           return;
         }
 
-        slam_system_->TrackRGBD(cv_rgb->image, depth_converted, timestamp,
-                                {}, std::to_string(msg_rgb->header.seq));
+        slam_system_->TrackRGBD(cv_rgb->image, depth_converted, timestamp, {},
+                                std::to_string(msg_rgb->header.seq));
       }
     } catch (const std::exception &e) {
       ROS_ERROR("Exception in TrackRGBD: %s", e.what());
