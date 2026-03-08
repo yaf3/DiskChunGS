@@ -52,8 +52,6 @@
 #include "rendering/frustum_culler.h"
 #include "scene/gaussian_keyframe.h"
 #include "scene/gaussian_parameters.h"
-#include "slam_deps/simple-knn/spatial.h"
-#include "slam_deps/tinyply/tinyply.h"
 #include "types.h"
 #include "utils/general_utils.h"
 #include "utils/sh_utils.h"

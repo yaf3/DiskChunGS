@@ -105,17 +105,6 @@ include_directories(
 ##################################################################################
 
 add_library(
-    simple_knn
-    SHARED
-    slam_deps/simple-knn/simple_knn.cu
-    slam_deps/simple-knn/simple_knn.h
-    slam_deps/simple-knn/spatial.cu
-    slam_deps/simple-knn/spatial.h
-)
-# target_compile_features(simple_knn PUBLIC cxx_std_17)
-target_link_libraries(simple_knn ${TORCH_LIBRARIES})
-
-add_library(
     xfeat
     SHARED
     slam_deps/xfeat_cpp/src/XFModel.cc
@@ -211,8 +200,6 @@ target_link_libraries(imgui glfw OpenGL::GL)
 add_library(
     gaussian_mapper
     SHARED
-    slam_deps/tinyply/tinyply.h
-    slam_deps/tinyply/tinyply.cpp
     # Core headers
     include/gaussian_mapper.h
     include/camera.h
@@ -285,7 +272,6 @@ target_link_libraries(
     jsoncpp_lib
     ${TORCH_LIBRARIES}
     Eigen3::Eigen
-    simple_knn
     cuda_rasterizer
     xfeat
     OpenMP::OpenMP_CXX
