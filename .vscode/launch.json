@@ -23,7 +23,7 @@
             // ],
             // "program": "${workspaceFolder}/bin/view_result",
             // "args": [
-            //     "${workspaceFolder}/results/kitti_lc_mono/kitti_mono_0/07/9482_shutdown/data",
+            //     "${workspaceFolder}/results/replica_mono/office2/2646_shutdown/data",
             // ],
             // "program": "${workspaceFolder}/bin/kitti_mono",
             // "args": [
@@ -49,7 +49,7 @@
             ],
             // "program": "${workspaceFolder}/bin/view_result",
             // "args": [
-            //     "${workspaceFolder}/results/kitti/kitti_stereo_0/06/19366_shutdown/data"
+            //     "${workspaceFolder}/results/kitti/kitti_stereo_0/07/12739_shutdown/data"
             // ],
             // "program": "${workspaceFolder}/bin/kitti_stereo",
             // "args": [
@@ -166,7 +166,7 @@
             "program": "/root/catkin_ws/devel/lib/diskchungs_ros/diskchungs_ros_node",
             "cwd": "/root/catkin_ws",
             // "args": [
-            //     "__name:=gaussian_slam",
+            //     "__name:=diskchungs_node",
             //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
             //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/Monocular/VBR/pincio.yaml",
             //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/Monocular/VBR/pincio_LOD.yaml",
@@ -176,20 +176,19 @@
             //     "_mode:=mono"
             // ],
             // "args": [
-            //     "__name:=gaussian_slam",
+            //     "__name:=diskchungs_node",
             //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
             //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/Stereo/VBR/pincio.yaml",
             //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/Stereo/VBR/pincio.yaml",
             //     "_output_directory:=${workspaceFolder}/results/vbr/pincio/00",
             //     "_use_viewer:=true",
-            //     "_mono_topic:=/camera_left/image_raw",
-            //     "_left_topic:=/camera_left/image_raw",
+            //     "_image_topic:=/camera_left/image_raw",
             //     "_right_topic:=/camera_right/image_raw",
             //     "_mode:=stereo",
             //     "_slam_mode:=orbslam"
             // ],
             // "args": [
-            //     "__name:=gaussian_slam",
+            //     "__name:=diskchungs_node",
             //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
             //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/Stereo/VBR/diag.yaml",
             //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/Stereo/VBR/diag.yaml",
@@ -202,14 +201,14 @@
             //     "_slam_mode:=orbslam"
             // ],
             // "args": [
-            //     "__name:=gaussian_slam",
+            //     "__name:=diskchungs_node",
             //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
             //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/RSL/zed_grand_tour.yaml",
             //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/RGB-D/RSL/zed_grand_tour.yaml",
             //     "_output_directory:=${workspaceFolder}/results/RSL/grand_tour",
             //     "_use_viewer:=true",
             //     "_mode:=rgbd",
-            //     "_rgb_topic:=/boxi/zed2i/left/image_raw_uncompressed",
+            //     "_image_topic:=/boxi/zed2i/left/image_raw_uncompressed",
             //     "_depth_topic:=/boxi/zed2i/depth/image_raw_uncompressed",
             //     "_mono_topic:=/boxi/zed2i/left/image_raw_uncompressed",
             //     "_imu_topic:=/boxi/zed2i/imu/data",
@@ -218,42 +217,42 @@
             //     "_source_frame:=zed2i_left"
             // ],
             // "args": [
-            //     "__name:=gaussian_slam",
+            //     "__name:=diskchungs_node",
             //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
             //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/RSL/zed.yaml",
             //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/RGB-D/RSL/zed.yaml",
             //     "_output_directory:=${workspaceFolder}/results/RSL/lab",
             //     "_use_viewer:=true",
             //     "_mode:=rgbd",
-            //     "_rgb_topic:=/zed2i/zed_node/rgb/image_rect_color",
+            //     "_image_topic:=/zed2i/zed_node/rgb/image_rect_color",
             //     "_depth_topic:=/zed2i/zed_node/depth/depth_registered",
             //     "_slam_mode:=external",
             //     "_target_frame:=map",
             //     "_source_frame:=zed2i_left_camera_optical_frame"
             // ],
-            "args": [
-                "__name:=gaussian_slam",
-                "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
-                "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/RSL/arche_train1.yaml",
-                "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/RGB-D/RSL/arche_train1.yaml",
-                "_output_directory:=${workspaceFolder}/results/24_04_RSL/RSL_rgbd/train1",
-                "_use_viewer:=true",
-                "_mode:=rgbd",
-                "_rgb_topic:=/left_camera_rgb",
-                "_depth_topic:=/zed2/zed_node/depth/depth_registered",
-                "_slam_mode:=external",
-                "_target_frame:=map",
-                "_source_frame:=zed2_left_camera_optical_frame"
-            ],
             // "args": [
-            //     "__name:=gaussian_slam",
+            //     "__name:=diskchungs_node",
+            //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
+            //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/RSL/arche_train1.yaml",
+            //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/RGB-D/RSL/arche_train1.yaml",
+            //     "_output_directory:=${workspaceFolder}/results/24_04_RSL/RSL_rgbd/train1",
+            //     "_use_viewer:=true",
+            //     "_mode:=mono",
+            //     "_image_topic:=/left_camera_rgb",
+            //     "_depth_topic:=/zed2/zed_node/depth/depth_registered",
+            //     "_slam_mode:=external",
+            //     "_target_frame:=map",
+            //     "_source_frame:=zed2_left_camera_optical_frame"
+            // ],
+            // "args": [
+            //     "__name:=diskchungs_node",
             //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
             //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/RSL/zed_grand_tour.yaml",
             //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/RGB-D/RSL/zed_grand_tour.yaml",
             //     "_output_directory:=${workspaceFolder}/results/RSL/grand_tour",
             //     "_use_viewer:=true",
             //     "_mode:=rgbd",
-            //     "_rgb_topic:=/boxi/zed2i/left/image_raw_uncompressed",
+            //     "_image_topic:=/boxi/zed2i/left/image_raw_uncompressed",
             //     "_depth_topic:=/boxi/zed2i/depth/image_raw_uncompressed",
             //     "_left_topic:=/boxi/zed2i/left/image_raw_uncompressed",
             //     "_right_topic:=/boxi/zed2i/right/image_raw_uncompressed",
@@ -262,7 +261,7 @@
             //     "_source_frame:=zed2i_left"
             // ],
             // "args": [
-            //     "__name:=gaussian_slam",
+            //     "__name:=diskchungs_node",
             //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
             //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/TUM/tum_freiburg3_long_office_household.yaml",
             //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/RGB-D/TUM/tum_rgbd_lod.yaml",
@@ -270,25 +269,25 @@
             //     "_use_viewer:=true",
             //     "_mode:=rgbd",
             //     "_slam_mode:=orbslam",
-            //     "_rgb_topic:=/camera/rgb/image_color",
+            //     "_image_topic:=/camera/rgb/image_color",
             //     "_depth_topic:=/camera/depth/image",
             //     "_target_frame:=world",
             //     "_source_frame:=openni_rgb_optical_frame"
             // ],
             // "args": [
-            //     "__name:=gaussian_slam",
+            //     "__name:=diskchungs_node",
             //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
             //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/uHumans2/apartment.yaml",
             //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/RGB-D/uHumans2/apartment.yaml",
             //     "_output_directory:=${workspaceFolder}/results/uHumans2/apartment",
             //     "_use_viewer:=true",
             //     "_mode:=rgbd",
-            //     "_rgb_topic:=/tesse/left_cam/rgb/image_raw",
+            //     "_image_topic:=/tesse/left_cam/rgb/image_raw",
             //     "_depth_topic:=/tesse/depth_cam/mono/image_raw",
             //     "_slam_mode:=orbslam",
             // ],
             // "args": [
-            //     "__name:=gaussian_slam",
+            //     "__name:=diskchungs_node",
             //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
             //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/Stereo/HILTI/hilti_handheld.yaml",
             //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/Stereo/HILTI/hilti_handheld.yaml",
@@ -301,7 +300,7 @@
             //     "_slam_mode:=orbslam",
             // ],
             // "args": [
-            //     "__name:=gaussian_slam",
+            //     "__name:=diskchungs_node",
             //     "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
             //     "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/Stereo/TartanDrive2/TartanDrive2.yaml",
             //     "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/Stereo/TartanDrive2/TartanDrive2.yaml",

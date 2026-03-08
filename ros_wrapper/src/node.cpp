@@ -17,7 +17,7 @@
 #include "wrapper.h"
 
 int main(int argc, char** argv) {
-  ros::init(argc, argv, "gaussian_slam_node");
+  ros::init(argc, argv, "diskchungs_node");
   ros::NodeHandle nh;
   ros::NodeHandle pnh("~");
 

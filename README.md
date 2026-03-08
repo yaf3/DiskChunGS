@@ -174,28 +174,26 @@ roscore
 
 ### Running the ROS Node
 
-Then you can run the node:
+In a new terminal, enter the container and source the workspace:
 ```bash
-rosrun diskchungs_ros diskchungs_ros_node \
-__name:=gaussian_slam \
-_vocabulary_path:=/workspace/repo/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
-_orb_settings_path:=/workspace/repo/cfg/ORB_SLAM3/RGB-D/RSL/arche_train1.yaml \
-_gaussian_settings_path:=/workspace/repo/cfg/gaussian_mapper/RGB-D/RSL/arche_train1.yaml \
-_output_directory:=/workspace/repo/results/rsl/train1 \
-_use_viewer:=true \
-_mode:=rgbd \
-_image_topic:=/left_camera_rgb \
-_depth_topic:=/zed2/zed_node/depth/depth_registered \
-_slam_mode:=external \
-_target_frame:=map \
-_source_frame:=zed2_left_camera_optical_frame
+docker exec -it container_name bash
+source /root/catkin_ws/devel/setup.bash
 ```
 
-Make sure to set the following in your gaussian_mapper config:
-```
-External.min_keyframe_translation: 
-External.min_keyframe_rotation: 
-External.min_keyframe_time: 
+Then you can run the node:
+```bash
+roslaunch diskchungs_ros diskchungs.launch \
+vocabulary_path:=/workspace/repo/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+orb_settings_path:=/workspace/repo/cfg/ORB_SLAM3/RGB-D/RSL/arche_train1.yaml \
+gaussian_settings_path:=/workspace/repo/cfg/gaussian_mapper/RGB-D/RSL/arche_train1.yaml \
+output_directory:=/workspace/repo/results/rsl/train1 \
+use_viewer:=true \
+mode:=rgbd \
+image_topic:=/left_camera_rgb \
+depth_topic:=/zed2/zed_node/depth/depth_registered \
+slam_mode:=external \
+target_frame:=map \
+source_frame:=zed2_left_camera_optical_frame
 ```
 
 You may have to publish uncompressed images like:
@@ -224,6 +222,13 @@ You may also have to add ```--clock --pause``` in case you are using rosbags so 
 | `target_frame` | string | `"map"` | Target frame for TF transformations (external mode) |
 | `source_frame` | string | `"zed2i_left_camera_frame"` | Source frame for TF transformations (external mode) |
 | `timeout_duration` | double | `20.0` | Duration (in seconds) after which the system considers data stream stopped |
+
+Make sure to set the following in your gaussian_mapper config if you are using external mode:
+```
+External.min_keyframe_translation: 
+External.min_keyframe_rotation: 
+External.min_keyframe_time: 
+```
 
 ## Acknowledgements
 

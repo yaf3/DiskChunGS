@@ -1,37 +1,55 @@
 
-#grand tour
+# Useful ROS commands for DiskChunGS
+
+# --- grand tour ---
+
+# Decompress topics from bag
 rosrun image_transport republish compressed in:=/boxi/zed2i/left/image_raw out:=/boxi/zed2i/left/image_raw_uncompressed
 rosrun image_transport republish compressed in:=/boxi/zed2i/right/image_raw out:=/boxi/zed2i/right/image_raw_uncompressed
 rosrun image_transport republish compressedDepth in:=/boxi/zed2i/depth/image_raw out:=/boxi/zed2i/depth/image_raw_uncompressed
-rosbag play --clock --pause 2024-11-11-12-07-40_jetson_zed2i_depth.bag 2024-11-11-12-07-40_jetson_zed2i_images.bag 2024-11-11-12-07-40_jetson_zed2i_prop.bag 2024-11-11-12-07-40_jetson_zed2i_prop_intrinsics.bag 2024-11-11-12-07-40_jetson_zed2i_tf.bag 2024-11-11-12-07-40_tf_minimal.bag 
 
-python3 scripts/rosbag_extractor.py \
-"/data/RSL/grand_tour/2024-11-11-12-07-40_jetson_zed2i_depth.bag \
-/data/RSL/grand_tour/2024-11-11-12-07-40_jetson_zed2i_images.bag \
-/data/RSL/grand_tour/2024-11-11-12-07-40_jetson_zed2i_prop.bag \
-/data/RSL/grand_tour/2024-11-11-12-07-40_jetson_zed2i_prop_intrinsics.bag \
-/data/RSL/grand_tour/2024-11-11-12-07-40_jetson_zed2i_tf.bag \
-/data/RSL/grand_tour/2024-11-11-12-07-40_tf_minimal.bag" \
-/data/RSL/datasets/grand_tour_mount_pilatus_stairs \
---image_topic /boxi/zed2i/left/image_raw_uncompressed \
---target_frame dlio_map \
---source_frame zed2i_left
+# Play bag
+rosbag play --clock --pause \
+    2024-11-11-12-07-40_jetson_zed2i_depth.bag \
+    2024-11-11-12-07-40_jetson_zed2i_images.bag \
+    2024-11-11-12-07-40_jetson_zed2i_prop.bag \
+    2024-11-11-12-07-40_jetson_zed2i_prop_intrinsics.bag \
+    2024-11-11-12-07-40_jetson_zed2i_tf.bag \
+    2024-11-11-12-07-40_tf_minimal.bag
+
+# Run node
+roslaunch diskchungs_ros diskchungs.launch \
+    vocabulary_path:=/workspace/repo/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    orb_settings_path:=/workspace/repo/cfg/ORB_SLAM3/RGB-D/RSL/zed_grand_tour.yaml \
+    gaussian_settings_path:=/workspace/repo/cfg/gaussian_mapper/RGB-D/RSL/zed_grand_tour.yaml \
+    output_directory:=/workspace/repo/results/RSL/grand_tour \
+    use_viewer:=true \
+    mode:=rgbd \
+    image_topic:=/boxi/zed2i/left/image_raw_uncompressed \
+    depth_topic:=/boxi/zed2i/depth/image_raw_uncompressed \
+    slam_mode:=external \
+    target_frame:=dlio_map \
+    source_frame:=zed2i_left
 
 
-#arche train 1
-rosbag play --clock --pause train1.bag 
+# --- arche train1 ---
+
+# Play bag
+rosbag play --clock --pause train1.bag
+
+# Decompress RGB topic
 rosrun image_transport republish compressed in:=/zed2/zed_node/left/image_rect_color raw out:=/left_camera_rgb
 
-rosrun diskchungs_ros diskchungs_ros_node \
-__name:=gaussian_slam \
-_vocabulary_path:=/workspace/repo/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
-_orb_settings_path:=/workspace/repo/cfg/ORB_SLAM3/RGB-D/RSL/arche_train1.yaml \
-_gaussian_settings_path:=/workspace/repo/cfg/gaussian_mapper/RGB-D/RSL/arche_gazebo1.yaml \
-_output_directory:=/workspace/repo/results/ros_test \
-_use_viewer:=true \
-_mode:=rgbd \
-_image_topic:=/left_camera_rgb \
-_depth_topic:=/zed2/zed_node/depth/depth_registered \
-_slam_mode:=external \
-_target_frame:=map \
-_source_frame:=zed2_left_camera_optical_frame
+# Run node
+roslaunch diskchungs_ros diskchungs.launch \
+    vocabulary_path:=/workspace/repo/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
+    orb_settings_path:=/workspace/repo/cfg/ORB_SLAM3/RGB-D/RSL/arche_train1.yaml \
+    gaussian_settings_path:=/workspace/repo/cfg/gaussian_mapper/RGB-D/RSL/arche_gazebo1.yaml \
+    output_directory:=/workspace/repo/results/ros_test \
+    use_viewer:=true \
+    mode:=rgbd \
+    image_topic:=/left_camera_rgb \
+    depth_topic:=/zed2/zed_node/depth/depth_registered \
+    slam_mode:=external \
+    target_frame:=map \
+    source_frame:=zed2_left_camera_optical_frame
