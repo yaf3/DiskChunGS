@@ -60,15 +60,7 @@ gt_dataset = {
             "10",
                 
         ],
-    },
-    "rsl": {
-        "path": os.path.join(dataset_center_path, "RSL/datasets"),
-        "scenes": [
-            "train1",
-            "train2",
-            "gazebo1",
-        ],
-    },
+    }
 }
 
 # path the all results
