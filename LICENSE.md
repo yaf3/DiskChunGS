@@ -51,6 +51,20 @@ additional restrictions from their original licenses.
    - License: MIT License
    - **Note: Freely redistributable under MIT terms**
 
+6. **ORB-SLAM3** (Copyright 2017-2021 Carlos Campos, Richard Elvira, Juan J. Gómez Rodríguez, José M.M. Montiel, Juan D. Tardós, University of Zaragoza)
+   - License: GPL v3
+   - Repository: [https://github.com/UZ-SLAMLab/ORB_SLAM3]
+
+7. **depth-anything-tensorrt** (Copyright spacewalk01; fork by Casimir Feldmann)
+   - License: MIT License
+   - Repository: [https://github.com/casimirfeldmann/depth-anything-tensorrt] (fork of [https://github.com/spacewalk01/depth-anything-tensorrt])
+   - **Note: Freely redistributable under MIT terms**
+
+8. **xfeat_cpp** (Copyright udaysankar01; fork by Casimir Feldmann)
+   - License: Apache-2.0
+   - Repository: [https://github.com/casimirfeldmann/xfeat_cpp] (fork of [https://github.com/udaysankar01/xfeat_cpp])
+   - **Note: Apache-2.0 is compatible with GPL v3; attribution notices must be preserved**
+
 ## Usage Terms
 
 ### For Non-Commercial Use (Research & Evaluation):
