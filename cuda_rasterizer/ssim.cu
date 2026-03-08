@@ -1,3 +1,10 @@
+/*
+ * From fused-ssim (https://github.com/rahul-goel/fused-ssim)
+ * Copyright (C) 2024 Rahul Goel et al.
+ * Licensed under the MIT License.
+ * See: https://github.com/rahul-goel/fused-ssim/blob/main/LICENSE
+ */
+
 #include <c10/cuda/CUDAGuard.h>
 #include <cooperative_groups.h>
 #include <torch/all.h>

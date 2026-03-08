@@ -230,6 +230,14 @@ External.min_keyframe_rotation:
 External.min_keyframe_time: 
 ```
 
+## License
+
+DiskChunGS is **source-available for non-commercial and research use only**. It is not open source in the OSI sense due to non-commercial restrictions on incorporated Inria components (3D Gaussian Splatting, On-The-Fly-NVS).
+
+For commercial use, separate licenses must be obtained from Inria: stip-sophia.transfert@inria.fr
+
+See [LICENSE.md](LICENSE.md) for full details including all upstream licenses.
+
 ## Acknowledgements
 
 This work incorporates many open-source codes. Thanks for their great work!

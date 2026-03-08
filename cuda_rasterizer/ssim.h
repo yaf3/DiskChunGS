@@ -1,3 +1,10 @@
+/*
+ * From fused-ssim (https://github.com/rahul-goel/fused-ssim)
+ * Copyright (C) 2024 Rahul Goel et al.
+ * Licensed under the MIT License.
+ * See: https://github.com/rahul-goel/fused-ssim/blob/main/LICENSE
+ */
+
 #pragma once
 #include <torch/all.h>
 

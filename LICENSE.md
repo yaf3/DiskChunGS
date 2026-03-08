@@ -2,10 +2,17 @@
 
 Copyright (C) 2025 Casimir Feldmann
 
-## Primary License: GNU General Public License v3.0
+## License Summary: Source-Available, Non-Commercial Research License
 
-DiskChunGS is primarily licensed under the GNU General Public License v3.0 (GPL-3.0).
-See the full license text below or at <http://www.gnu.org/licenses/>.
+DiskChunGS is **source-available for non-commercial/research use only**. It is not
+open source in the OSI sense, because it incorporates Inria-licensed components
+(3D Gaussian Splatting, On-The-Fly-NVS) that prohibit commercial use without
+a separate commercial license from Inria.
+
+The codebase uses GNU General Public License v3.0 (GPL-3.0) as its structural
+copyleft framework — see the full text below or at <http://www.gnu.org/licenses/> —
+but the non-commercial restriction from the Inria components applies to the
+work as a whole and takes precedence for commercial use.
 
 ## Important Notice: Mixed Licensing
 

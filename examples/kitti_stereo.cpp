@@ -1,3 +1,19 @@
+/**
+ * This file is part of DiskChunGS, modified from ORB-SLAM3.
+ *
+ * Original Copyright (C) 2017-2021 Carlos Campos, Richard Elvira,
+ *   Juan J. Gómez Rodríguez, José M.M. Montiel, Juan D. Tardós,
+ *   University of Zaragoza.
+ * Modified Copyright (C) 2025 Casimir Feldmann (DiskChunGS)
+ *
+ * This software is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your
+ * option) any later version.
+ *
+ * See <http://www.gnu.org/licenses/>.
+ */
+
 #include <torch/torch.h>
 
 #include <algorithm>

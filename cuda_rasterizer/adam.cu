@@ -1,6 +1,8 @@
 /*
  * Adapted from Taming 3DGS: High-Quality Radiance Fields with Limited Resources
  * https://github.com/humansensinglab/taming-3dgs
+ * Copyright (C) 2024 Mallick et al. (Taming 3DGS authors)
+ * Licensed under the MIT License.
  * Modified to handle general optimization (not sparse) and per-primitive
  * learning rates.
  */
