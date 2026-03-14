@@ -53,8 +53,13 @@ void MonoDepth::initialize_model(const std::string& user_model_path) {
   // Prefer cached engine if available, otherwise use ONNX model
   std::string model_path;
   if (std::filesystem::exists(engine_path)) {
+    std::cout << "Cached depth estimation engine file found." << std::endl;
     model_path = engine_path;
   } else {
+    std::cout
+        << "No engine file found (normal for first time run). Building engine "
+           "from ONNX. This can take a while (especially on Jetson)"
+        << std::endl;
     model_path = user_model_path;
   }
 
