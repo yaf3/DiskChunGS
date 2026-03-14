@@ -230,6 +230,13 @@ External.min_keyframe_rotation:
 External.min_keyframe_time: 
 ```
 
+## Notes
+
+**Jetson Usage:**
+In `cfg/gaussian_mapper/Stereo/KITTI/KITTI.yaml`, reduce `sh_degree` to `2`:
+```yaml
+Model.sh_degree: 2
+```
 ## License
 
 DiskChunGS is **source-available for non-commercial and research use only**. It is not open source in the OSI sense due to non-commercial restrictions on incorporated Inria components (3D Gaussian Splatting, On-The-Fly-NVS).
