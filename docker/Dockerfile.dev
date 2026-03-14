@@ -26,25 +26,6 @@ WORKDIR /workspace
 RUN echo "export LD_LIBRARY_PATH=/workspace/repo/slam_deps/ORB-SLAM3/lib:\$LD_LIBRARY_PATH" >> /root/.bashrc
 RUN echo "source /opt/ros/noetic/setup.bash" >> /root/.bashrc
 
-# Create a welcome message with instructions
-RUN echo '#!/bin/bash' > /workspace/welcome.sh && \
-    echo 'echo "==================================================="' >> /workspace/welcome.sh && \
-    echo 'echo "Welcome to the DiskChunGS Development Environment"' >> /workspace/welcome.sh && \
-    echo 'echo "==================================================="' >> /workspace/welcome.sh && \
-    echo 'echo ""' >> /workspace/welcome.sh && \
-    echo 'echo "Heavy dependencies are pre-built for you:"' >> /workspace/welcome.sh && \
-    echo 'echo "- OpenCV"' >> /workspace/welcome.sh && \
-    echo 'echo "- PyTorch"' >> /workspace/welcome.sh && \
-    echo 'echo "- LibTorch"' >> /workspace/welcome.sh && \
-    echo 'echo "- TensorRT"' >> /workspace/welcome.sh && \
-    echo 'echo ""' >> /workspace/welcome.sh && \
-    echo 'echo "To build DiskChunGS:"' >> /workspace/welcome.sh && \
-    echo 'echo "1. Run ./scripts/build.sh to build DiskChunGS"' >> /workspace/welcome.sh && \
-    echo 'echo ""' >> /workspace/welcome.sh && \
-    chmod +x /workspace/welcome.sh && \
-    echo "if [ -f /workspace/welcome.sh ]; then /workspace/welcome.sh; fi" >> /root/.bashrc
-
-
 WORKDIR /workspace/repo
 
 # Copy entrypoint script

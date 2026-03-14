@@ -48,6 +48,7 @@ echo "- ROS Noetic is configured"
 echo "- Environment variables are set"
 echo ""
 echo "Code is available at /workspace/repo"
+echo "Build DiskChunGS with ./scripts/build.sh"
 echo "==============================================="
 
 # Execute the command passed to docker run
