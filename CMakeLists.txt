@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
-project(lsgs LANGUAGES CXX CUDA)
+project(diskchungs LANGUAGES CXX CUDA)
 
 # Detect architecture
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
@@ -59,7 +59,6 @@ find_package(jsoncpp REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(glm REQUIRED)
 find_package(glfw3 REQUIRED)
-find_package(realsense2)
 find_package(OpenMP REQUIRED)
 
 
