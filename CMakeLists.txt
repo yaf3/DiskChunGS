@@ -1,5 +1,14 @@
-cmake_minimum_required(VERSION 3.20 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
 project(lsgs LANGUAGES CXX CUDA)
+
+# Detect architecture
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+    message(STATUS "Building for ARM / Jetson (aarch64)")
+    set(IS_ARM TRUE)
+else()
+    message(STATUS "Building for x86/x86_64")
+    set(IS_ARM FALSE)
+endif()
 
 set_property(GLOBAL PROPERTY JOB_POOLS link_pool=2)
 set(CMAKE_JOB_POOL_LINK link_pool)
@@ -13,6 +22,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CUDA_STANDARD 17)
 
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations")
 
 set(CAFFE2_USE_CUDNN on)
@@ -20,10 +31,22 @@ set(CAFFE2_USE_CUDNN on)
 # Uncomment the following line if you want to solve CMake Warning "Failed to compute shorthash for libnvrtc.so"
 # set(PYTHON_EXECUTABLE "/usr/bin/python3")
 
-# Updated path to libtorch in the base Docker image
-set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} "/workspace/third_party/libtorch")
-find_package(Torch REQUIRED)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS} -pthread")
+if(IS_ARM)
+    # Updated path to libtorch in the jetson Docker image
+    execute_process(
+        COMMAND python3 -c "import torch; print(torch.utils.cmake_prefix_path)"
+        OUTPUT_VARIABLE TORCH_CMAKE_PREFIX_PATH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${TORCH_CMAKE_PREFIX_PATH})
+    find_package(Torch REQUIRED)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
+else()
+    # Updated path to libtorch in the base Docker image
+    set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} "/workspace/third_party/libtorch")
+    find_package(Torch REQUIRED)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS} -pthread")
+endif()
 
 find_package(CUDA REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -159,7 +182,13 @@ add_library(
     cuda_rasterizer/ssim.cu
     cuda_rasterizer/ssim.h
 )
-set_target_properties(cuda_rasterizer PROPERTIES CUDA_ARCHITECTURES "86")
+
+if(IS_ARM)
+    set_target_properties(cuda_rasterizer PROPERTIES CUDA_ARCHITECTURES "87")
+else()
+    set_target_properties(cuda_rasterizer PROPERTIES CUDA_ARCHITECTURES "86")
+endif()
+
 # target_compile_features(cuda_rasterizer PUBLIC cxx_std_17)
 target_include_directories(
     cuda_rasterizer
@@ -358,12 +387,6 @@ target_link_libraries(kitti_stereo
     gaussian_viewer    
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
-
-
-# Xfeat matching
-add_executable(match examples/match.cpp)
-target_link_libraries(match
-    gaussian_mapper)
 
 ##################################################################################
 ##  Build the mapping examples to ${PROJECT_SOURCE_DIR}/bin

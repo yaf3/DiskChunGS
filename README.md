@@ -10,13 +10,6 @@ ETH Zurich<sup>1</sup>, Google<sup>2</sup>
 
 Recent advances in 3D Gaussian Splatting (3DGS) have demonstrated impressive results for novel view synthesis with real-time rendering capabilities. However, integrating 3DGS with SLAM systems faces a fundamental scalability limitation: methods are constrained by GPU memory capacity, restricting reconstruction to small-scale environments. We present DiskChunGS, a scalable 3DGS SLAM system that overcomes this bottleneck through an out-of-core approach that partitions scenes into spatial chunks and maintains only active regions in GPU memory while storing inactive areas on disk. Our architecture integrates seamlessly with existing SLAM frameworks for pose estimation and loop closure, enabling globally consistent reconstruction at scale. We validate DiskChunGS on indoor scenes (Replica, TUM-RGBD), urban driving scenarios (KITTI), and resource-constrained Nvidia Jetson platforms. Our method uniquely completes all 11 KITTI sequences without memory failures while achieving superior visual quality, demonstrating that algorithmic innovation can overcome the memory constraints that have limited previous 3DGS SLAM methods.
 
-At the time being, the following features have been released
-- [x] DiskChunGS Core Code
-- [x] DiskChunGS ROS Wrapper
-
-The following features are a work in progress:
-- [ ] DiskChunGS Jetson Code
-
 ## Table of Contents
 - [Overview](#overview)
 - [Installation](#installation)
@@ -37,10 +30,10 @@ git clone --recursive git@github.com:leggedrobotics/DiskChunGS.git
 
 cd DiskChunGS
 
-# Build the development container
+# Build the development container (for Jetson use docker-compose_jetson.yml)
 docker compose -f docker/docker-compose.yml build dev
 
-# Start the development container
+# Start the development container (for Jetson use docker-compose_jetson.yml)
 docker compose -f docker/docker-compose.yml run --rm dev
 
 # Inside the container, build the application
