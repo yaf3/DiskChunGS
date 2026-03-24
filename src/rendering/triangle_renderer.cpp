@@ -14,17 +14,17 @@
  * For inquiries contact george.drettakis@inria.fr
  */
 
-#include "rendering/gaussian_renderer.h"
+#include "rendering/triangle_renderer.h"
 
 #include "utils/profiling.h"
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
-GaussianRenderer::render(std::shared_ptr<GaussianModel> model,
-                         const torch::Tensor& visible_gaussian_mask,
-                         std::shared_ptr<GaussianKeyframe> viewpoint_camera,
+TriangleRenderer::render(std::shared_ptr<TriangleModel> model,
+                         const torch::Tensor& visible_triangle_mask,
+                         std::shared_ptr<TriangleKeyframe> viewpoint_camera,
                          int image_height,
                          int image_width,
-                         GaussianPipelineParams& pipe,
+                         TrianglePipelineParams& pipe,
                          torch::Tensor& bg_color,
                          torch::Tensor& override_color,
                          float scaling_modifier,
@@ -36,7 +36,7 @@ GaussianRenderer::render(std::shared_ptr<GaussianModel> model,
   int active_sh_degree = model->sh_degree_;
 
   torch::Tensor camera_center = viewpoint_camera->getCenter();
-  torch::Tensor visible_indices = torch::where(visible_gaussian_mask)[0];
+  torch::Tensor visible_indices = torch::where(visible_triangle_mask)[0];
 
   // Prepare color data: either use override colors, convert SH to RGB on CPU,
   // or pass SH coefficients to the rasterizer for GPU conversion.
@@ -55,7 +55,7 @@ GaussianRenderer::render(std::shared_ptr<GaussianModel> model,
       torch::Tensor shs_view = visible_features.transpose(1, 2).view(
           {-1, 3, max_sh_degree * max_sh_degree});
 
-      // Use visible gaussians count, not full model count
+      // Use visible triangles count, not full model count
       torch::Tensor dir_pp =
           (visible_xyz -
            viewpoint_camera->camera_center_.repeat({visible_xyz.size(0), 1}));
@@ -93,7 +93,7 @@ GaussianRenderer::render(std::shared_ptr<GaussianModel> model,
   auto opacity =
       model->getOpacityActivation().index({visible_indices}).contiguous();
 
-  // Prepare Gaussian shape: either precompute 3D covariance or use
+  // Prepare Triangle shape: either precompute 3D covariance or use
   // scale/rotation.
   torch::Tensor scales, rotations, cov3D_precomp;
   if (pipe.compute_cov3D_) {
@@ -110,11 +110,11 @@ GaussianRenderer::render(std::shared_ptr<GaussianModel> model,
   float tanfovx = std::tan(FoVx * 0.5f);
   float tanfovy = std::tan(FoVy * 0.5f);
 
-  GaussianRasterizationSettings raster_settings(
+  TriangleRasterizationSettings raster_settings(
       image_height, image_width, tanfovx, tanfovy, bg_color, scaling_modifier,
       projection_matrix, active_sh_degree, camera_center, false, false);
 
-  GaussianRasterizer rasterizer(raster_settings);
+  TriangleRasterizer rasterizer(raster_settings);
 
   auto rasterizer_result = rasterizer.forward(
       means3D, means2D, opacity, dc, shs, colors_precomp, scales, rotations,

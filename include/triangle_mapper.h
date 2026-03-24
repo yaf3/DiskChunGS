@@ -61,10 +61,10 @@
 #include "depth/mono_depth.h"
 #include "depth/stereo_depth.h"
 #include "depth/stereo_vision.h"
-#include "gaussian_mapper_external.h"
+#include "triangle_mapper_external.h"
 #include "geometry/operate_points.h"
-#include "scene/gaussian_keyframe.h"
-#include "scene/gaussian_scene.h"
+#include "scene/triangle_keyframe.h"
+#include "scene/triangle_scene.h"
 #include "scene/keyframe_selection.h"
 #include "slam_deps/xfeat_cpp/include/XFeat.h"
 #include "utils/tensor_utils.h"
@@ -133,12 +133,12 @@ void copyFolder(const std::filesystem::path &source,
                 const std::filesystem::path &destination);
 
 /**
- * @brief Main Gaussian Splatting mapper class
+ * @brief Main Triangle Splatting mapper class
  *
  * Supports monocular, stereo, and RGB-D sensors.
  * Manages incremental mapping, loop closure handling, and chunk-based memory.
  */
-class GaussianMapper {
+class TriangleMapper {
  public:
   // ========== Constructors ==========
 
@@ -146,16 +146,16 @@ class GaussianMapper {
    * @brief Construct mapper with ORB-SLAM integration
    *
    * @param pSLAM Shared pointer to ORB-SLAM3 system
-   * @param gaussian_config_file_path Path to configuration YAML file
+   * @param triangle_config_file_path Path to configuration YAML file
    * @param result_dir Output directory for results and visualizations
    * @param seed Random seed for reproducibility
    * @param device_type Torch device type (CUDA or CPU)
    * @param sensor_type Sensor configuration (MONOCULAR, STEREO, RGBD)
    * @param orb_settings_path Path to ORB-SLAM settings file
    */
-  GaussianMapper(
+  TriangleMapper(
       std::shared_ptr<ORB_SLAM3::System> pSLAM,
-      std::filesystem::path gaussian_config_file_path,
+      std::filesystem::path triangle_config_file_path,
       std::filesystem::path result_dir,
       int seed = 0,
       torch::DeviceType device_type = torch::kCUDA,
@@ -165,12 +165,12 @@ class GaussianMapper {
   /**
    * @brief Construct mapper for external pose mode (without ORB-SLAM)
    *
-   * @param gaussian_config_file_path Path to configuration YAML file
+   * @param triangle_config_file_path Path to configuration YAML file
    * @param result_dir Output directory for results and visualizations
    * @param seed Random seed for reproducibility
    * @param device_type Torch device type (CUDA or CPU)
    */
-  GaussianMapper(std::filesystem::path gaussian_config_file_path,
+  TriangleMapper(std::filesystem::path triangle_config_file_path,
                  std::filesystem::path result_dir,
                  int seed = 0,
                  torch::DeviceType device_type = torch::kCUDA);
@@ -191,17 +191,17 @@ class GaussianMapper {
   /**
    * @brief Main mapping loop - runs initial and incremental mapping phases
    *
-   * Coordinates with ORB-SLAM to process keyframes, perform Gaussian
+   * Coordinates with ORB-SLAM to process keyframes, perform Triangle
    * optimization, and handle loop closures. Runs until SLAM shutdown or
    * external stop signal.
    */
   void run();
 
   /**
-   * @brief Execute one iteration of Gaussian optimization
+   * @brief Execute one iteration of Triangle optimization
    *
-   * Selects a keyframe, renders Gaussians, computes losses (L1, SSIM, depth),
-   * performs backpropagation, and updates Gaussian parameters.
+   * Selects a keyframe, renders Triangles, computes losses (L1, SSIM, depth),
+   * performs backpropagation, and updates Triangle parameters.
    */
   void trainForOneIteration();
 
@@ -249,19 +249,19 @@ class GaussianMapper {
 
   // ========== Learning Rate Getters ==========
 
-  /** @brief Get initial learning rate for Gaussian positions */
+  /** @brief Get initial learning rate for Triangle positions */
   float positionLearningRateInit();
 
   /** @brief Get learning rate for spherical harmonic features */
   float featureLearningRate();
 
-  /** @brief Get learning rate for Gaussian opacity */
+  /** @brief Get learning rate for Triangle opacity */
   float opacityLearningRate();
 
-  /** @brief Get learning rate for Gaussian scaling */
+  /** @brief Get learning rate for Triangle scaling */
   float scalingLearningRate();
 
-  /** @brief Get learning rate for Gaussian rotation */
+  /** @brief Get learning rate for Triangle rotation */
   float rotationLearningRate();
 
   /** @brief Get SSIM loss weight (lambda_dssim) */
@@ -294,7 +294,7 @@ class GaussianMapper {
   void setNewKeyframeTimesOfUse(const int times);
 
   /**
-   * @brief Set stability threshold for Gaussian existence
+   * @brief Set stability threshold for Triangle existence
    * @param niter Number of iterations for stability
    */
   void setStableNumIterExistence(const int niter);
@@ -308,10 +308,10 @@ class GaussianMapper {
   // ========== Accessors and Configuration ==========
 
   /**
-   * @brief Get reference to Gaussian model parameters
+   * @brief Get reference to Triangle model parameters
    * @return Reference to model parameters
    */
-  GaussianModelParams &getGaussianModelParams() { return this->model_params_; }
+  TriangleModelParams &getTriangleModelParams() { return this->model_params_; }
 
   /**
    * @brief Set the sensor type for the mapper
@@ -336,11 +336,11 @@ class GaussianMapper {
    * @param pkf Keyframe to update
    * @param times Number of times to increment usage counter
    */
-  void increaseKeyframeTimesOfUse(std::shared_ptr<GaussianKeyframe> pkf,
+  void increaseKeyframeTimesOfUse(std::shared_ptr<TriangleKeyframe> pkf,
                                   int times);
 
   /**
-   * @brief Save complete scene to disk (Gaussians, keyframes, cameras)
+   * @brief Save complete scene to disk (Triangles, keyframes, cameras)
    * @param scene_dir Directory to save scene data
    * @return True if save successful, false otherwise
    */
@@ -458,8 +458,8 @@ class GaussianMapper {
   std::filesystem::path config_file_path_;
 
   // Core components
-  std::shared_ptr<GaussianModel> gaussians_;
-  std::shared_ptr<GaussianScene> scene_;
+  std::shared_ptr<TriangleModel> triangles_;
+  std::shared_ptr<TriangleScene> scene_;
   std::shared_ptr<KeyframeSelection> keyframe_selector_;
   std::shared_ptr<ORB_SLAM3::System> pSLAM_;
 
@@ -547,8 +547,8 @@ class GaussianMapper {
   struct TrainingMetrics {
     int iteration;
     double elapsed_time_seconds;
-    int active_gaussian_count;
-    int total_gaussian_count;
+    int active_triangle_count;
+    int total_triangle_count;
     float reserved_memory_mb;
     float allocated_memory_mb;
     float ram_usage_mb;
@@ -609,7 +609,7 @@ class GaussianMapper {
    * @brief Process queued mapping operations from ORB-SLAM
    *
    * Handles local bundle adjustment results and loop closure operations,
-   * updating keyframe poses and Gaussian positions accordingly.
+   * updating keyframe poses and Triangle positions accordingly.
    */
   void combineMappingOperations();
 
@@ -630,7 +630,7 @@ class GaussianMapper {
    * @brief Process loop closure sequentially for affected keyframes
    * @param associated_kfs Vector of keyframe tuples with updated poses
    * @param loop_kf_scale Scale factor for loop closure keyframes
-   * @return Number of gaussians transformed
+   * @return Number of triangles transformed
    */
   int processSequentialLoopClosure(
       const std::vector<KeyframeTuple> &associated_kfs,
@@ -642,11 +642,11 @@ class GaussianMapper {
    * @param kf_chunk_pairs Keyframe-chunk pairs to process
    * @param all_unique_chunks Set of unique chunk IDs involved
    * @param loop_kf_scale Scale factor for loop closure keyframes
-   * @return Number of gaussians transformed
+   * @return Number of triangles transformed
    */
   int processBatchedLoopClosure(
       std::vector<KeyframeTuple> &associated_kfs,
-      const std::vector<std::pair<std::shared_ptr<GaussianKeyframe>,
+      const std::vector<std::pair<std::shared_ptr<TriangleKeyframe>,
                                   torch::Tensor>> &kf_chunk_pairs,
       const std::unordered_set<int64_t> &all_unique_chunks,
       float loop_kf_scale);
@@ -666,7 +666,7 @@ class GaussianMapper {
 
   /**
    * @brief Get relevant chunk IDs visible from a keyframe (loaded, on-disk, or
-   * with gaussians)
+   * with triangles)
    * @param visible_chunk_ids Tensor of chunk IDs in keyframe frustum
    * @return Filtered tensor of relevant chunk IDs
    */
@@ -678,7 +678,7 @@ class GaussianMapper {
   /**
    * @brief Common keyframe initialization for both ORB-SLAM and external modes
    *
-   * Creates a keyframe, estimates depth, samples Gaussians, and adds to scene.
+   * Creates a keyframe, estimates depth, samples Triangles, and adds to scene.
    *
    * @param pkf Output keyframe pointer to initialize
    * @param rgb_image RGB image data
@@ -686,7 +686,7 @@ class GaussianMapper {
    * @param camera Camera parameters
    * @param filename Optional filename for tracking
    */
-  void createAndInitializeKeyframe(std::shared_ptr<GaussianKeyframe> &pkf,
+  void createAndInitializeKeyframe(std::shared_ptr<TriangleKeyframe> &pkf,
                                    cv::Mat &rgb_image,
                                    cv::Mat &aux_image,
                                    const Camera &camera,
@@ -705,18 +705,18 @@ class GaussianMapper {
    * @param k Stride for keyframe selection (default: 1)
    * @return Vector of closest keyframes
    */
-  std::vector<std::shared_ptr<GaussianKeyframe>> getClosestKeyframes(
-      std::shared_ptr<GaussianKeyframe> current_kf,
+  std::vector<std::shared_ptr<TriangleKeyframe>> getClosestKeyframes(
+      std::shared_ptr<TriangleKeyframe> current_kf,
       int n,
       int k = 1);
 
-  // ========== Gaussian Sampling and Recording ==========
+  // ========== Triangle Sampling and Recording ==========
 
   /**
-   * @brief Sample new Gaussians from keyframe
-   * @param pkf Keyframe to sample Gaussians from
+   * @brief Sample new Triangles from keyframe
+   * @param pkf Keyframe to sample Triangles from
    */
-  void sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf);
+  void sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf);
 
   /**
    * @brief Record rendered image, ground truth, and loss visualization
@@ -741,14 +741,14 @@ class GaussianMapper {
    * @param pkf Keyframe to render
    * @param dssim Output DSSIM metric
    * @param psnr Output PSNR metric
-   * @param psnr_gs Output Gaussian splatting PSNR
+   * @param psnr_gs Output Triangle splatting PSNR
    * @param render_time Output rendering time in seconds
    * @param result_img_dir Directory for rendered images
    * @param result_gt_dir Directory for ground truth images
    * @param result_loss_dir Directory for loss visualizations
    * @param name_suffix Optional filename suffix
    */
-  void renderAndRecordKeyframe(std::shared_ptr<GaussianKeyframe> pkf,
+  void renderAndRecordKeyframe(std::shared_ptr<TriangleKeyframe> pkf,
                                float &dssim,
                                float &psnr,
                                float &psnr_gs,
@@ -835,10 +835,10 @@ class GaussianMapper {
                                       float k3);
 
   /**
-   * @brief Save all Gaussians to PLY file
+   * @brief Save all Triangles to PLY file
    * @param name_suffix Filename suffix
    */
-  void saveTotalGaussians(std::string name_suffix);
+  void saveTotalTriangles(std::string name_suffix);
 
   // ========== Depth Estimation ==========
 
@@ -853,7 +853,7 @@ class GaussianMapper {
   float log_sigma_ = 3.0f;
 
   /**
-   * @brief Compute Laplacian of Gaussian (LoG) probability map for edge
+   * @brief Compute Laplacian of Triangle (LoG) probability map for edge
    * detection
    *
    * Applies a Laplacian filter followed by smoothing with a disc kernel to
@@ -899,7 +899,7 @@ class GaussianMapper {
    */
   std::tuple<std::vector<float>, std::vector<float>>
   extractValidKeypointsForDepthAlignment(
-      std::shared_ptr<GaussianKeyframe> pkf) const;
+      std::shared_ptr<TriangleKeyframe> pkf) const;
 
   /**
    * @brief Sample confidence values at specified UV coordinates
@@ -921,9 +921,9 @@ class GaussianMapper {
   // ========== Protected Data Members ==========
 
   // Model parameters
-  GaussianModelParams model_params_;
-  GaussianOptimizationParams opt_params_;
-  GaussianPipelineParams pipe_params_;
+  TriangleModelParams model_params_;
+  TriangleOptimizationParams opt_params_;
+  TrianglePipelineParams pipe_params_;
 
  private:
   // ========== Initialization Helpers ==========
@@ -951,11 +951,11 @@ class GaussianMapper {
   void initializeBackgroundAndOverrideColor();
 
   /**
-   * @brief Initialize core Gaussian components (model, scene, keyframe
+   * @brief Initialize core Triangle components (model, scene, keyframe
    * selector)
    * @param with_training_infrastructure If true, initialize training components
    */
-  void initializeGaussianComponents(bool with_training_infrastructure);
+  void initializeTriangleComponents(bool with_training_infrastructure);
 
   /**
    * @brief Load ORB-SLAM settings and extract camera information
@@ -1006,5 +1006,5 @@ class GaussianMapper {
   std::atomic<bool> pause_image_ingestion_{false};
   int loop_closure_optimization_iterations_ = 1000;
   float loop_closure_memory_multiplier_ =
-      8.0f;  ///< Multiplier for max_gaussians_in_memory during loop closure
+      8.0f;  ///< Multiplier for max_triangles_in_memory during loop closure
 };

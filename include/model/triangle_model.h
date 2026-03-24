@@ -15,11 +15,11 @@
  */
 
 /**
- * @file gaussian_model.h
+ * @file triangle_model.h
  * @brief 3D Gaussian Splatting model with disk-based chunk streaming.
  *
  * This class implements a 3D Gaussian Splatting model with support for
- * memory-efficient chunk-based storage. Gaussians are organized into spatial
+ * memory-efficient chunk-based storage. Triangles are organized into spatial
  * chunks that can be loaded/evicted from GPU memory on demand, enabling
  * processing of large-scale scenes that exceed GPU memory capacity.
  */
@@ -50,15 +50,15 @@
 #include "geometry/operate_points.h"
 #include "geometry/point3d.h"
 #include "rendering/frustum_culler.h"
-#include "scene/gaussian_keyframe.h"
-#include "scene/gaussian_parameters.h"
+#include "scene/triangle_keyframe.h"
+#include "scene/triangle_parameters.h"
 #include "types.h"
 #include "utils/general_utils.h"
 #include "utils/sh_utils.h"
 #include "utils/tensor_utils.h"
 
 // Forward declaration to avoid circular dependency
-class SparseGaussianAdam;
+class SparseTriangleAdam;
 
 /**
  * @brief Macro to populate tensor vectors from individual tensors.
@@ -66,7 +66,7 @@ class SparseGaussianAdam;
  * Used to update the std::vector wrappers that the optimizer requires
  * after any operation that modifies the underlying tensors.
  */
-#define GAUSSIAN_MODEL_TENSORS_TO_VEC                      \
+#define TRIANGLE_MODEL_TENSORS_TO_VEC                      \
   this->Tensor_vec_xyz_ = {this->xyz_};                    \
   this->Tensor_vec_feature_dc_ = {this->features_dc_};     \
   this->Tensor_vec_feature_rest_ = {this->features_rest_}; \
@@ -75,11 +75,11 @@ class SparseGaussianAdam;
   this->Tensor_vec_rotation_ = {this->rotation_};
 
 /**
- * @brief Macro to initialize all Gaussian tensors as empty on the specified
+ * @brief Macro to initialize all Triangle tensors as empty on the specified
  * device.
  * @param device_type The torch device (kCUDA or kCPU) for tensor allocation.
  */
-#define GAUSSIAN_MODEL_INIT_TENSORS(device_type)                            \
+#define TRIANGLE_MODEL_INIT_TENSORS(device_type)                            \
   this->xyz_ = torch::empty(0, torch::TensorOptions().device(device_type)); \
   this->features_dc_ =                                                      \
       torch::empty(0, torch::TensorOptions().device(device_type));          \
@@ -91,27 +91,27 @@ class SparseGaussianAdam;
       torch::empty(0, torch::TensorOptions().device(device_type));          \
   this->opacity_ =                                                          \
       torch::empty(0, torch::TensorOptions().device(device_type));          \
-  GAUSSIAN_MODEL_TENSORS_TO_VEC
+  TRIANGLE_MODEL_TENSORS_TO_VEC
 
 /**
- * @class GaussianModel
- * @brief Manages a collection of 3D Gaussians with disk-based chunk streaming.
+ * @class TriangleModel
+ * @brief Manages a collection of 3D Triangles with disk-based chunk streaming.
  *
- * The GaussianModel represents a scene as a set of 3D Gaussian primitives,
+ * The TriangleModel represents a scene as a set of 3D Triangle primitives,
  * each parameterized by position (xyz), color (spherical harmonics features),
  * opacity, scale, and rotation. The model supports:
  *
- * - **Chunk-based storage**: Gaussians are spatially partitioned into chunks
+ * - **Chunk-based storage**: Triangles are spatially partitioned into chunks
  *   that can be independently loaded/saved to disk.
  * - **LRU eviction**: When GPU memory is constrained, least-recently-used
  *   chunks are automatically evicted to disk.
  * - **Frustum culling**: Only chunks visible to a camera are loaded.
- * - **Sparse optimization**: Per-Gaussian learning rates with Adam optimizer.
+ * - **Sparse optimization**: Per-Triangle learning rates with Adam optimizer.
  *
- * The model maintains optimizer state (Adam momentum) alongside Gaussian
+ * The model maintains optimizer state (Adam momentum) alongside Triangle
  * parameters, enabling seamless save/restore of training state.
  */
-class GaussianModel {
+class TriangleModel {
  public:
   /// Number of optimizer parameter groups: xyz, features_dc, features_rest,
   /// opacity, scaling, rotation.
@@ -124,13 +124,13 @@ class GaussianModel {
   /**
    * @brief Container for all data associated with a spatial chunk.
    *
-   * Holds Gaussian parameters and optimizer state for serialization.
+   * Holds Triangle parameters and optimizer state for serialization.
    */
   struct ChunkData {
-    // Gaussian parameters
+    // Triangle parameters
     torch::Tensor xyz, features_dc, features_rest;
     torch::Tensor scaling, rotation, opacity;
-    torch::Tensor exist_since, position_lrs, gaussian_ids;
+    torch::Tensor exist_since, position_lrs, triangle_ids;
 
     // Adam optimizer states (one per parameter group)
     std::vector<torch::Tensor> exp_avg_states;  ///< First moment estimates [6].
@@ -138,7 +138,7 @@ class GaussianModel {
         exp_avg_sq_states;             ///< Second moment estimates [6].
     std::vector<int64_t> step_counts;  ///< Adam step counts [6].
 
-    int num_points;    ///< Number of Gaussians in this chunk.
+    int num_points;    ///< Number of Triangles in this chunk.
     int64_t chunk_id;  ///< Encoded spatial coordinate ID.
   };
 
@@ -159,13 +159,13 @@ class GaussianModel {
   //============================================================================
 
   /**
-   * @brief Constructs a GaussianModel with the given parameters.
+   * @brief Constructs a TriangleModel with the given parameters.
    * @param model_params Configuration including SH degree, device, and memory
    * limits.
    * @param storage_base_path Directory path for chunk file storage.
    * @param chunk_size Spatial size of each chunk in world units.
    */
-  explicit GaussianModel(const GaussianModelParams& model_params,
+  explicit TriangleModel(const TriangleModelParams& model_params,
                          std::string storage_base_path = "",
                          float chunk_size = 20.0f);
 
@@ -186,7 +186,7 @@ class GaussianModel {
   torch::Tensor getRotationActivation();
 
   /**
-   * @brief Returns raw Gaussian positions.
+   * @brief Returns raw Triangle positions.
    * @return Tensor of shape [N, 3] with XYZ coordinates.
    */
   torch::Tensor getXYZ();
@@ -215,12 +215,12 @@ class GaussianModel {
   //============================================================================
 
   /**
-   * @brief Applies a scaled rigid transformation to all Gaussians.
+   * @brief Applies a scaled rigid transformation to all Triangles.
    * @param s Scale factor applied before transformation.
    * @param T SE3 transformation (rotation + translation).
    *
    * Transforms positions as: xyz' = s * R * xyz + t
-   * Also scales the Gaussian scaling parameters accordingly.
+   * Also scales the Triangle scaling parameters accordingly.
    */
   void applyScaledTransformation(
       const float s = 1.0,
@@ -238,18 +238,18 @@ class GaussianModel {
                                    torch::Tensor& new_scaling);
 
   /**
-   * @brief Transforms Gaussians visible to a keyframe after pose update.
+   * @brief Transforms Triangles visible to a keyframe after pose update.
    * @param point_transformed_flags Output mask of which points were
    * transformed.
    * @param diff_pose Differential pose change.
    * @param kf_world_view_transform Keyframe's world-to-view transform.
    * @param kf_full_proj_transform Keyframe's full projection matrix.
    * @param kf_creation_iter Iteration when keyframe was created.
-   * @param stable_num_iter_existence Threshold for "stable" Gaussians.
-   * @param num_transformed Output count of transformed Gaussians.
+   * @param stable_num_iter_existence Threshold for "stable" Triangles.
+   * @param num_transformed Output count of transformed Triangles.
    * @param scale Optional scale factor.
    *
-   * Only transforms "unstable" Gaussians (recently created near the keyframe).
+   * Only transforms "unstable" Triangles (recently created near the keyframe).
    */
   void scaledTransformVisiblePointsOfKeyframe(
       torch::Tensor& point_transformed_flags,
@@ -269,54 +269,54 @@ class GaussianModel {
    * @brief Initializes the optimizer with per-parameter learning rates.
    * @param training_args Learning rate configuration for each parameter group.
    *
-   * Sets up a SparseGaussianAdam optimizer with 6 parameter groups:
+   * Sets up a SparseTriangleAdam optimizer with 6 parameter groups:
    * xyz (0), features_dc (1), features_rest (2), opacity (3), scaling (4),
-   * rotation (5). Position learning rates are per-Gaussian; others use scalar
+   * rotation (5). Position learning rates are per-Triangle; others use scalar
    * LRs.
    */
-  void trainingSetup(const GaussianOptimizationParams& training_args);
+  void trainingSetup(const TriangleOptimizationParams& training_args);
 
   /**
-   * @brief Decays position learning rates for visible Gaussians.
-   * @param visibility Boolean mask indicating which Gaussians were rendered.
+   * @brief Decays position learning rates for visible Triangles.
+   * @param visibility Boolean mask indicating which Triangles were rendered.
    *
-   * Applies exponential decay to per-Gaussian position learning rates,
+   * Applies exponential decay to per-Triangle position learning rates,
    * clamped to a minimum value.
    */
   void updateLearningRates(const torch::Tensor& visibility);
 
   /**
-   * @brief Performs sparse Adam update for visible Gaussians only.
-   * @param visibility Boolean mask of visible Gaussians.
-   * @param N Total number of Gaussians.
+   * @brief Performs sparse Adam update for visible Triangles only.
+   * @param visibility Boolean mask of visible Triangles.
+   * @param N Total number of Triangles.
    *
-   * Updates only the Gaussians that contributed to the rendered image,
-   * using per-Gaussian learning rates for positions.
+   * Updates only the Triangles that contributed to the rendered image,
+   * using per-Triangle learning rates for positions.
    */
   void optimizerStep(torch::Tensor& visibility, const uint32_t N);
 
   /**
-   * @brief Resets opacity of all Gaussians to a low value.
+   * @brief Resets opacity of all Triangles to a low value.
    *
-   * Used periodically during training to cull Gaussians that don't
+   * Used periodically during training to cull Triangles that don't
    * recover their opacity (indicating they're not needed).
    */
   void resetOpacity();
 
   /**
-   * @brief Resets opacity for a subset of Gaussians.
-   * @param gaussian_mask Boolean mask selecting Gaussians to reset.
+   * @brief Resets opacity for a subset of Triangles.
+   * @param triangle_mask Boolean mask selecting Triangles to reset.
    */
-  void resetOpacityForMask(const torch::Tensor& gaussian_mask);
+  void resetOpacityForMask(const torch::Tensor& triangle_mask);
 
   /**
    * @brief Resets position learning rates and Adam momentum for selected
-   * Gaussians.
-   * @param gaussian_mask Boolean mask selecting Gaussians to reset.
+   * Triangles.
+   * @param triangle_mask Boolean mask selecting Triangles to reset.
    *
-   * Used after loop closure to allow affected Gaussians to move freely again.
+   * Used after loop closure to allow affected Triangles to move freely again.
    */
-  void resetPositionLRAndOptimizerState(const torch::Tensor& gaussian_mask);
+  void resetPositionLRAndOptimizerState(const torch::Tensor& triangle_mask);
 
   /**
    * @brief Replaces a parameter tensor in the optimizer.
@@ -334,7 +334,7 @@ class GaussianModel {
   //============================================================================
 
   /**
-   * @brief Removes Gaussians indicated by the mask.
+   * @brief Removes Triangles indicated by the mask.
    * @param mask Boolean tensor where true indicates points to remove.
    *
    * Updates all parameter tensors and optimizer states accordingly.
@@ -342,22 +342,22 @@ class GaussianModel {
   void prunePoints(torch::Tensor& mask);
 
   /**
-   * @brief Appends new Gaussians to the model with optimizer state.
-   * @param new_xyz Positions of new Gaussians [M, 3].
+   * @brief Appends new Triangles to the model with optimizer state.
+   * @param new_xyz Positions of new Triangles [M, 3].
    * @param new_features_dc DC spherical harmonics coefficients.
    * @param new_features_rest Higher-order SH coefficients.
    * @param new_opacities Opacity values (pre-sigmoid).
    * @param new_scaling Scale values (pre-exp).
    * @param new_rotation Rotation quaternions.
-   * @param new_exist_since_iter Iteration when each Gaussian was created.
-   * @param new_chunk_ids Spatial chunk assignment for each Gaussian.
-   * @param new_position_lrs Per-Gaussian position learning rates.
-   * @param new_gaussian_ids Unique IDs for each Gaussian.
+   * @param new_exist_since_iter Iteration when each Triangle was created.
+   * @param new_chunk_ids Spatial chunk assignment for each Triangle.
+   * @param new_position_lrs Per-Triangle position learning rates.
+   * @param new_triangle_ids Unique IDs for each Triangle.
    * @param loaded_exp_avg Optional: Adam first moment from disk.
    * @param loaded_exp_avg_sq Optional: Adam second moment from disk.
    * @param loaded_step_counts Optional: Adam step counts from disk.
    *
-   * Concatenates new Gaussians to existing tensors and updates optimizer state.
+   * Concatenates new Triangles to existing tensors and updates optimizer state.
    * Used both for densification and loading chunks from disk.
    */
   void densificationPostfix(
@@ -370,25 +370,25 @@ class GaussianModel {
       torch::Tensor& new_exist_since_iter,
       torch::Tensor& new_chunk_ids,
       torch::Tensor& new_position_lrs,
-      torch::Tensor& new_gaussian_ids,
+      torch::Tensor& new_triangle_ids,
       const std::vector<torch::Tensor>& loaded_exp_avg = {},
       const std::vector<torch::Tensor>& loaded_exp_avg_sq = {},
       const std::vector<int64_t>& loaded_step_counts = {});
 
   /**
-   * @brief Prunes Gaussians with low opacity or excessive screen size.
+   * @brief Prunes Triangles with low opacity or excessive screen size.
    * @param pkf Keyframe used for screen-size calculation.
-   * @param visible_gaussian_mask Mask of Gaussians to consider.
+   * @param visible_triangle_mask Mask of Triangles to consider.
    */
-  void pruneLowOpacityGaussians(std::shared_ptr<GaussianKeyframe> pkf,
-                                const torch::Tensor& visible_gaussian_mask);
+  void pruneLowOpacityTriangles(std::shared_ptr<TriangleKeyframe> pkf,
+                                const torch::Tensor& visible_triangle_mask);
 
   //============================================================================
   // Point Management
   //============================================================================
 
   /**
-   * @brief Adds new Gaussians from observed 3D points.
+   * @brief Adds new Triangles from observed 3D points.
    * @param new_xyz Point positions [M, 3].
    * @param new_colors Point colors [M, 3] in RGB [0, 1].
    * @param new_scales Initial scale values [M, 3].
@@ -454,31 +454,31 @@ class GaussianModel {
    * @return Vector of visible chunk coordinates.
    */
   std::vector<ChunkCoord> frustumCullChunks(
-      std::shared_ptr<GaussianKeyframe> keyframe,
+      std::shared_ptr<TriangleKeyframe> keyframe,
       bool use_cache);
 
   /**
-   * @brief Creates a mask of Gaussians visible from a keyframe.
+   * @brief Creates a mask of Triangles visible from a keyframe.
    * @param keyframe The camera keyframe for visibility testing.
    * @param manage_memory If true, loads/evicts chunks as needed.
-   * @return Boolean mask [N] indicating visible Gaussians.
+   * @return Boolean mask [N] indicating visible Triangles.
    *
    * Performs frustum culling at chunk level, then creates a mask
-   * for all Gaussians in visible chunks.
+   * for all Triangles in visible chunks.
    */
-  torch::Tensor cullVisibleGaussians(std::shared_ptr<GaussianKeyframe> keyframe,
+  torch::Tensor cullVisibleTriangles(std::shared_ptr<TriangleKeyframe> keyframe,
                                      bool manage_memory = true);
 
   /**
-   * @brief Creates a Gaussian mask from a set of chunk IDs.
+   * @brief Creates a Triangle mask from a set of chunk IDs.
    * @param visible_chunk_ids Tensor of chunk IDs to include.
-   * @return Boolean mask [N] for Gaussians in those chunks.
+   * @return Boolean mask [N] for Triangles in those chunks.
    */
-  torch::Tensor createGaussianMaskFromChunks(
+  torch::Tensor createTriangleMaskFromChunks(
       const torch::Tensor& visible_chunk_ids);
 
   /**
-   * @brief Recomputes chunk IDs based on current Gaussian positions.
+   * @brief Recomputes chunk IDs based on current Triangle positions.
    */
   void updateChunkIDs();
 
@@ -546,7 +546,7 @@ class GaussianModel {
 
   /**
    * @brief Extracts chunk data from model tensors.
-   * @param chunk_mask Boolean mask selecting Gaussians in the chunk.
+   * @param chunk_mask Boolean mask selecting Triangles in the chunk.
    * @param chunk_id The chunk's encoded spatial ID.
    * @return ChunkData containing all parameters and optimizer state.
    */
@@ -587,11 +587,11 @@ class GaussianModel {
   /**
    * @brief Selects chunks to evict based on LRU policy.
    * @param candidate_chunks Chunks that may be evicted.
-   * @param target_gaussian_count Minimum Gaussians to free.
+   * @param target_triangle_count Minimum Triangles to free.
    * @return Tensor of chunk IDs to evict.
    */
   torch::Tensor findLRUChunks(const torch::Tensor& candidate_chunks,
-                              int64_t target_gaussian_count);
+                              int64_t target_triangle_count);
 
   /**
    * @brief Checks if memory limit exceeded and evicts if needed.
@@ -599,22 +599,22 @@ class GaussianModel {
   void checkMemoryPressure();
 
   /**
-   * @brief Evicts LRU chunks until excess Gaussians are freed.
+   * @brief Evicts LRU chunks until excess Triangles are freed.
    * @param protected_chunk_ids Chunk IDs that must not be evicted.
-   * @param excess_gaussians Minimum number of Gaussians to free.
+   * @param excess_triangles Minimum number of Triangles to free.
    *
    * Applies a 5% hysteresis buffer on top of the requested eviction amount
    * to reduce eviction frequency.
    */
   void evictExcessChunks(const torch::Tensor& protected_chunk_ids,
-                         int64_t excess_gaussians);
+                         int64_t excess_triangles);
 
   /**
-   * @brief Computes exact Gaussian count for chunks to be loaded from disk.
+   * @brief Computes exact Triangle count for chunks to be loaded from disk.
    * @param chunks_ids_needing_load Chunk IDs to look up.
-   * @return Total number of Gaussians across the requested chunks.
+   * @return Total number of Triangles across the requested chunks.
    */
-  int64_t countGaussiansToLoad(const torch::Tensor& chunks_ids_needing_load);
+  int64_t countTrianglesToLoad(const torch::Tensor& chunks_ids_needing_load);
 
   /**
    * @brief Updates access timestamps for chunks.
@@ -623,10 +623,10 @@ class GaussianModel {
   void updateChunkAccess(const torch::Tensor& accessed_chunk_ids);
 
   /**
-   * @brief Counts total Gaussians across memory and disk.
-   * @return Total Gaussian count.
+   * @brief Counts total Triangles across memory and disk.
+   * @return Total Triangle count.
    */
-  int64_t countAllGaussians();
+  int64_t countAllTriangles();
 
   /**
    * @brief Filters points to exclude sparse chunks.
@@ -634,7 +634,7 @@ class GaussianModel {
    * @param colors Point colors.
    * @param scales Point scales.
    * @param opacities Point opacities.
-   * @param min_gaussians_per_chunk Minimum points required per chunk.
+   * @param min_triangles_per_chunk Minimum points required per chunk.
    * @return Tuple of filtered tensors.
    */
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
@@ -642,16 +642,16 @@ class GaussianModel {
                              const torch::Tensor& colors,
                              const torch::Tensor& scales,
                              const torch::Tensor& opacities,
-                             int min_gaussians_per_chunk);
+                             int min_triangles_per_chunk);
 
   /**
-   * @brief Deletes chunks with too few Gaussians.
-   * @param min_gaussians_per_chunk Threshold for deletion.
+   * @brief Deletes chunks with too few Triangles.
+   * @param min_triangles_per_chunk Threshold for deletion.
    */
-  void deleteSparseChunks(int min_gaussians_per_chunk);
+  void deleteSparseChunks(int min_triangles_per_chunk);
 
   /**
-   * @brief Handles Gaussians that moved between chunks after loop closure.
+   * @brief Handles Triangles that moved between chunks after loop closure.
    * @param processed_chunk_ids Chunks that were recently optimized.
    *
    * Recomputes chunk assignments and loads destination chunks to avoid
@@ -667,28 +667,28 @@ class GaussianModel {
   torch::DeviceType device_type_;  ///< CUDA or CPU device for tensors.
   int sh_degree_;                  ///< Spherical harmonics degree (0-3).
 
-  // Core Gaussian parameters
-  torch::Tensor xyz_;               ///< Gaussian positions [N, 3].
+  // Core Triangle parameters
+  torch::Tensor xyz_;               ///< Triangle positions [N, 3].
   torch::Tensor features_dc_;       ///< DC SH coefficients [N, 1, 3].
   torch::Tensor features_rest_;     ///< Higher-order SH coefficients [N, K, 3].
   torch::Tensor scaling_;           ///< Log-space scaling [N, 3].
   torch::Tensor rotation_;          ///< Rotation quaternions [N, 4].
   torch::Tensor opacity_;           ///< Logit-space opacity [N, 1].
-  torch::Tensor exist_since_iter_;  ///< Creation iteration per Gaussian [N].
-  torch::Tensor gaussian_chunk_ids_;  ///< Spatial chunk ID per Gaussian [N].
+  torch::Tensor exist_since_iter_;  ///< Creation iteration per Triangle [N].
+  torch::Tensor triangle_chunk_ids_;  ///< Spatial chunk ID per Triangle [N].
 
   // Optimizer interface (vector wrappers required by optimizer API)
   std::vector<torch::Tensor> Tensor_vec_xyz_, Tensor_vec_feature_dc_,
       Tensor_vec_feature_rest_, Tensor_vec_opacity_, Tensor_vec_scaling_,
       Tensor_vec_rotation_;
 
-  std::shared_ptr<SparseGaussianAdam> optimizer_;  ///< Sparse Adam optimizer.
+  std::shared_ptr<SparseTriangleAdam> optimizer_;  ///< Sparse Adam optimizer.
   float spatial_lr_scale_;  ///< Scale factor for position learning rate.
 
   // Chunk visibility
   float chunk_size_;  ///< Spatial size of each chunk in world units.
   FrustumCullingCache
-      gaussian_visibility_cache_;  ///< Cache for visibility queries.
+      triangle_visibility_cache_;  ///< Cache for visibility queries.
   bool is_initialized_ =
       false;  ///< Whether the model has been initialized with points.
 
@@ -696,19 +696,19 @@ class GaussianModel {
   torch::Tensor
       chunks_loaded_from_disk_;   ///< IDs of chunks currently loaded from disk.
   torch::Tensor chunks_on_disk_;  ///< IDs of all chunks saved to disk.
-  torch::Tensor chunk_gaussian_counts_;  ///< Gaussian count per disk chunk.
-  torch::Tensor gaussian_ids_;  ///< Unique ID per Gaussian for tracking.
-  int64_t next_gaussian_id_ =
-      0;  ///< Counter for generating unique Gaussian IDs.
+  torch::Tensor chunk_triangle_counts_;  ///< Triangle count per disk chunk.
+  torch::Tensor triangle_ids_;  ///< Unique ID per Triangle for tracking.
+  int64_t next_triangle_id_ =
+      0;  ///< Counter for generating unique Triangle IDs.
   std::string storage_base_path_;  ///< Directory for chunk file storage.
 
   // Memory management configuration
-  int64_t max_gaussians_in_memory_ =
-      3000000;  ///< Max Gaussians before eviction.
+  int64_t max_triangles_in_memory_ =
+      3000000;  ///< Max Triangles before eviction.
   std::unordered_map<int64_t, float>
       chunk_access_times_;  ///< Per-chunk access timestamps.
-  int new_gaussian_chunk_density_ =
-      100;  ///< Min Gaussians/chunk for new points.
+  int new_triangle_chunk_density_ =
+      100;  ///< Min Triangles/chunk for new points.
 
  private:
   //============================================================================
@@ -742,7 +742,7 @@ class GaussianModel {
   float position_lr_decay_;  ///< Per-step decay factor for position LR.
   float position_lr_min_;    ///< Minimum position learning rate.
 
-  torch::Tensor position_lrs_;  ///< Per-Gaussian position learning rates [N].
+  torch::Tensor position_lrs_;  ///< Per-Triangle position learning rates [N].
 
   std::mutex mutex_settings_;  ///< Mutex for thread-safe settings access.
 };

@@ -19,7 +19,7 @@
 #include <cmath>
 #include <mutex>
 
-#include "scene/gaussian_keyframe.h"
+#include "scene/triangle_keyframe.h"
 
 // ============================================================================
 // FrustumCuller
@@ -292,7 +292,7 @@ std::vector<ChunkCoord> cullChunksHierarchical(
 // ============================================================================
 
 std::vector<ChunkCoord> frustumCullChunks(
-    std::shared_ptr<GaussianKeyframe> keyframe,
+    std::shared_ptr<TriangleKeyframe> keyframe,
     float chunk_size,
     FrustumCullingCache* cache) {
   if (!keyframe) {

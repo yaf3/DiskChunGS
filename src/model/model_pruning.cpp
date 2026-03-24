@@ -14,10 +14,10 @@
  * and further modified by Casimir Feldmann in 2025 as part of DiskChunGS.
  */
 
-#include "model/gaussian_model.h"
-#include "rendering/gaussian_rasterizer.h"
+#include "model/triangle_model.h"
+#include "rendering/triangle_rasterizer.h"
 
-void GaussianModel::assignOptimizedTensors(
+void TriangleModel::assignOptimizedTensors(
     const std::vector<torch::Tensor>& tensors) {
   xyz_ = tensors[0];
   features_dc_ = tensors[1];
@@ -25,10 +25,10 @@ void GaussianModel::assignOptimizedTensors(
   opacity_ = tensors[3];
   scaling_ = tensors[4];
   rotation_ = tensors[5];
-  GAUSSIAN_MODEL_TENSORS_TO_VEC
+  TRIANGLE_MODEL_TENSORS_TO_VEC
 }
 
-void GaussianModel::resetOpacity() {
+void TriangleModel::resetOpacity() {
   torch::Tensor opacities_new = general_utils::inverse_sigmoid(torch::min(
       getOpacityActivation(), torch::ones_like(getOpacityActivation() * 0.01)));
   torch::Tensor optimizable_tensors =
@@ -37,24 +37,24 @@ void GaussianModel::resetOpacity() {
   Tensor_vec_opacity_ = {opacity_};
 }
 
-void GaussianModel::resetOpacityForMask(const torch::Tensor& gaussian_mask) {
+void TriangleModel::resetOpacityForMask(const torch::Tensor& triangle_mask) {
   torch::NoGradGuard no_grad;
 
-  int num_reset = torch::sum(gaussian_mask).item<int>();
+  int num_reset = torch::sum(triangle_mask).item<int>();
   std::cout << "[Opacity Reset] Resetting opacity for " << num_reset
-            << " gaussians" << std::endl;
+            << " triangles" << std::endl;
 
   torch::Tensor current_opacity_activated = getOpacityActivation();
 
-  // min(current, 0.05) for masked gaussians, then convert back to logit space
+  // min(current, 0.05) for masked triangles, then convert back to logit space
   torch::Tensor target_opacity =
       torch::min(current_opacity_activated,
                  torch::ones_like(current_opacity_activated) * 0.05f);
   torch::Tensor new_opacity_values =
       general_utils::inverse_sigmoid(target_opacity);
 
-  opacity_.index_put_({gaussian_mask},
-                      new_opacity_values.index({gaussian_mask}));
+  opacity_.index_put_({triangle_mask},
+                      new_opacity_values.index({triangle_mask}));
 
   std::cout << "[Opacity Reset] Opacity reset complete - max="
             << torch::sigmoid(opacity_).max().item<float>()
@@ -62,8 +62,8 @@ void GaussianModel::resetOpacityForMask(const torch::Tensor& gaussian_mask) {
             << std::endl;
 }
 
-void GaussianModel::resetPositionLRAndOptimizerState(
-    const torch::Tensor& gaussian_mask) {
+void TriangleModel::resetPositionLRAndOptimizerState(
+    const torch::Tensor& triangle_mask) {
   torch::NoGradGuard no_grad;
 
   if (!optimizer_) {
@@ -73,12 +73,12 @@ void GaussianModel::resetPositionLRAndOptimizerState(
     return;
   }
 
-  int num_reset = torch::sum(gaussian_mask).item<int>();
+  int num_reset = torch::sum(triangle_mask).item<int>();
   std::cout << "[Optimizer Reset] Resetting position LR and Adam states for "
-            << num_reset << " gaussians" << std::endl;
+            << num_reset << " triangles" << std::endl;
 
   // Reset position learning rates back to initial value
-  position_lrs_.index_put_({gaussian_mask}, position_lr_init_);
+  position_lrs_.index_put_({triangle_mask}, position_lr_init_);
 
   // Reset Adam optimizer states for positions (group 0 = xyz)
   auto& param_group = optimizer_->param_groups()[0];
@@ -101,7 +101,7 @@ void GaussianModel::resetPositionLRAndOptimizerState(
   torch::Tensor exp_avg_sq = param_state.exp_avg_sq();
 
   // Expand mask to match xyz dimensions [N, 3]
-  torch::Tensor xyz_mask = gaussian_mask.unsqueeze(1).expand({-1, 3});
+  torch::Tensor xyz_mask = triangle_mask.unsqueeze(1).expand({-1, 3});
   exp_avg.index_put_({xyz_mask}, 0.0f);
   exp_avg_sq.index_put_({xyz_mask}, 0.0f);
 
@@ -111,7 +111,7 @@ void GaussianModel::resetPositionLRAndOptimizerState(
             << ", mean=" << position_lrs_.mean().item<float>() << std::endl;
 }
 
-torch::Tensor GaussianModel::replaceTensorToOptimizer(torch::Tensor& tensor,
+torch::Tensor TriangleModel::replaceTensorToOptimizer(torch::Tensor& tensor,
                                                       int tensor_idx) {
   if (!optimizer_) {
     throw std::runtime_error("Null optimizer in replaceTensorToOptimizer");
@@ -153,7 +153,7 @@ torch::Tensor GaussianModel::replaceTensorToOptimizer(torch::Tensor& tensor,
   return param;
 }
 
-void GaussianModel::prunePoints(torch::Tensor& mask) {
+void TriangleModel::prunePoints(torch::Tensor& mask) {
   torch::NoGradGuard no_grad;
   auto valid_points_mask = ~mask;
   auto valid_indices = torch::nonzero(valid_points_mask).squeeze(1);
@@ -190,11 +190,11 @@ void GaussianModel::prunePoints(torch::Tensor& mask) {
 
   exist_since_iter_ = exist_since_iter_.index({valid_points_mask});
   position_lrs_ = position_lrs_.index({valid_points_mask});
-  gaussian_chunk_ids_ = gaussian_chunk_ids_.index({valid_points_mask});
-  gaussian_ids_ = gaussian_ids_.index({valid_points_mask});
+  triangle_chunk_ids_ = triangle_chunk_ids_.index({valid_points_mask});
+  triangle_ids_ = triangle_ids_.index({valid_points_mask});
 }
 
-void GaussianModel::densificationPostfix(
+void TriangleModel::densificationPostfix(
     torch::Tensor& new_xyz,
     torch::Tensor& new_features_dc,
     torch::Tensor& new_features_rest,
@@ -204,7 +204,7 @@ void GaussianModel::densificationPostfix(
     torch::Tensor& new_exist_since_iter,
     torch::Tensor& new_chunk_ids,
     torch::Tensor& new_position_lrs,
-    torch::Tensor& new_gaussian_ids,
+    torch::Tensor& new_triangle_ids,
     const std::vector<torch::Tensor>& loaded_exp_avg,
     const std::vector<torch::Tensor>& loaded_exp_avg_sq,
     const std::vector<int64_t>& loaded_step_counts) {
@@ -283,36 +283,36 @@ void GaussianModel::densificationPostfix(
 
   exist_since_iter_ = torch::cat({exist_since_iter_, new_exist_since_iter}, 0);
   position_lrs_ = torch::cat({position_lrs_, new_position_lrs}, 0);
-  gaussian_chunk_ids_ = torch::cat({gaussian_chunk_ids_, new_chunk_ids}, 0);
-  gaussian_ids_ = torch::cat({gaussian_ids_, new_gaussian_ids}, 0);
+  triangle_chunk_ids_ = torch::cat({triangle_chunk_ids_, new_chunk_ids}, 0);
+  triangle_ids_ = torch::cat({triangle_ids_, new_triangle_ids}, 0);
 }
 
-void GaussianModel::pruneLowOpacityGaussians(
-    std::shared_ptr<GaussianKeyframe> pkf,
-    const torch::Tensor& visible_gaussian_mask) {
+void TriangleModel::pruneLowOpacityTriangles(
+    std::shared_ptr<TriangleKeyframe> pkf,
+    const torch::Tensor& visible_triangle_mask) {
   torch::NoGradGuard no_grad;
 
-  torch::Tensor visible_indices = torch::where(visible_gaussian_mask)[0];
+  torch::Tensor visible_indices = torch::where(visible_triangle_mask)[0];
 
   // Keyframe camera parameters
   torch::Tensor keyframe_center = pkf->getCenter();
   float focal_length = pkf->intr_[0];  // fx
   int image_width = pkf->image_width_;
 
-  // Gaussian parameters for visible subset
+  // Triangle parameters for visible subset
   torch::Tensor positions = getXYZ().index({visible_indices});
   torch::Tensor opacities = getOpacityActivation().index({visible_indices});
   torch::Tensor scalings = getScalingActivation().index({visible_indices});
 
-  int n_gaussians = positions.size(0);
+  int n_triangles = positions.size(0);
   torch::Tensor valid_mask = torch::ones(
-      n_gaussians,
+      n_triangles,
       torch::TensorOptions().dtype(torch::kBool).device(positions.device()));
 
-  // Remove Gaussians with low opacity
+  // Remove Triangles with low opacity
   valid_mask &= opacities.squeeze(1) > 0.05f;
 
-  // Remove Gaussians that appear too large on screen
+  // Remove Triangles that appear too large on screen
   torch::Tensor distances =
       torch::norm(positions - keyframe_center.unsqueeze(0), 2, /*dim=*/1);
   torch::Tensor max_scaling = std::get<0>(torch::max(scalings, /*dim=*/1));
@@ -329,19 +329,19 @@ void GaussianModel::pruneLowOpacityGaussians(
   prunePoints(full_model_prune_mask);
 }
 
-void GaussianModel::deleteSparseChunks(int min_gaussians_per_chunk) {
+void TriangleModel::deleteSparseChunks(int min_triangles_per_chunk) {
   torch::NoGradGuard no_grad;
 
   if (!is_initialized_ || xyz_.size(0) == 0) {
     return;
   }
 
-  // Count gaussians per spatial chunk
+  // Count triangles per spatial chunk
   auto [unique_chunks, inverse_indices, counts] =
-      torch::_unique2(gaussian_chunk_ids_, /*sorted=*/false,
+      torch::_unique2(triangle_chunk_ids_, /*sorted=*/false,
                       /*return_inverse=*/true, /*return_counts=*/true);
 
-  torch::Tensor sparse_mask = counts < min_gaussians_per_chunk;
+  torch::Tensor sparse_mask = counts < min_triangles_per_chunk;
   torch::Tensor sparse_chunk_ids = unique_chunks.index({sparse_mask});
 
   if (sparse_chunk_ids.size(0) == 0) {
@@ -350,7 +350,7 @@ void GaussianModel::deleteSparseChunks(int min_gaussians_per_chunk) {
 
   // Create removal mask and update tracking state
   torch::Tensor remove_mask =
-      torch::isin(gaussian_chunk_ids_, sparse_chunk_ids);
+      torch::isin(triangle_chunk_ids_, sparse_chunk_ids);
 
   torch::Tensor keep_loaded_mask =
       ~torch::isin(chunks_loaded_from_disk_, sparse_chunk_ids);
@@ -359,7 +359,7 @@ void GaussianModel::deleteSparseChunks(int min_gaussians_per_chunk) {
   torch::Tensor keep_disk_mask =
       ~torch::isin(chunks_on_disk_, sparse_chunk_ids);
   chunks_on_disk_ = chunks_on_disk_.index({keep_disk_mask});
-  chunk_gaussian_counts_ = chunk_gaussian_counts_.index({keep_disk_mask});
+  chunk_triangle_counts_ = chunk_triangle_counts_.index({keep_disk_mask});
 
   // Clear access times for deleted chunks
   auto sparse_ids_cpu = sparse_chunk_ids.cpu();
@@ -372,7 +372,7 @@ void GaussianModel::deleteSparseChunks(int min_gaussians_per_chunk) {
   prunePoints(remove_mask);
 }
 
-void GaussianModel::deleteSparseChunkFiles(const torch::Tensor& chunk_ids) {
+void TriangleModel::deleteSparseChunkFiles(const torch::Tensor& chunk_ids) {
   auto chunks_cpu = chunk_ids.cpu();
   auto accessor = chunks_cpu.accessor<int64_t, 1>();
 

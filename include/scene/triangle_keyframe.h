@@ -44,18 +44,18 @@
 /**
  * @brief Represents a keyframe in the Gaussian Splatting SLAM system.
  *
- * A GaussianKeyframe stores camera pose, intrinsics, image pyramids, and depth
- * data needed for training and rendering Gaussian splats. It supports
+ * A TriangleKeyframe stores camera pose, intrinsics, image pyramids, and depth
+ * data needed for training and rendering Triangle splats. It supports
  * optimizable pose and exposure parameters, and can be serialized to/from disk
  * for memory management.
  */
-class GaussianKeyframe {
+class TriangleKeyframe {
  public:
   //============================================================================
   // Construction
   //============================================================================
 
-  GaussianKeyframe() = default;
+  TriangleKeyframe() = default;
 
   /**
    * @brief Constructs a keyframe with the given frame ID.
@@ -63,7 +63,7 @@ class GaussianKeyframe {
    * @param creation_iter Iteration at which the keyframe was created
    * @param keyframe_save_dir Directory for saving keyframe data to disk
    */
-  explicit GaussianKeyframe(std::size_t fid,
+  explicit TriangleKeyframe(std::size_t fid,
                             int creation_iter = 0,
                             std::filesystem::path keyframe_save_dir = "")
       : fid_(fid),

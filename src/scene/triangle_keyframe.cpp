@@ -14,7 +14,7 @@
  * <http://www.gnu.org/licenses/>.
  */
 
-#include "scene/gaussian_keyframe.h"
+#include "scene/triangle_keyframe.h"
 
 #include "utils/depth_utils.h"
 
@@ -22,7 +22,7 @@
 // Static Helper Functions
 //==============================================================================
 
-void GaussianKeyframe::transferTensorToDevice(torch::Tensor& tensor,
+void TriangleKeyframe::transferTensorToDevice(torch::Tensor& tensor,
                                               torch::DeviceType target,
                                               bool restore_grad) {
   if (!tensor.defined()) return;
@@ -38,7 +38,7 @@ void GaussianKeyframe::transferTensorToDevice(torch::Tensor& tensor,
   }
 }
 
-void GaussianKeyframe::clearTensor(torch::Tensor& tensor) {
+void TriangleKeyframe::clearTensor(torch::Tensor& tensor) {
   if (tensor.defined()) {
     tensor.reset();
   }
@@ -48,7 +48,7 @@ void GaussianKeyframe::clearTensor(torch::Tensor& tensor) {
 // Pose Management
 //==============================================================================
 
-void GaussianKeyframe::setPoseImpl(const Eigen::Matrix3d& R,
+void TriangleKeyframe::setPoseImpl(const Eigen::Matrix3d& R,
                                    const Eigen::Vector3d& t) {
   auto tensor_opts = torch::TensorOptions()
                          .dtype(torch::kFloat32)
@@ -71,19 +71,19 @@ void GaussianKeyframe::setPoseImpl(const Eigen::Matrix3d& R,
   set_pose_ = true;
 }
 
-void GaussianKeyframe::setPose(double qw, double qx, double qy, double qz,
+void TriangleKeyframe::setPose(double qw, double qx, double qy, double qz,
                                double tx, double ty, double tz) {
   Eigen::Quaterniond q(qw, qx, qy, qz);
   q.normalize();
   setPoseImpl(q.toRotationMatrix(), Eigen::Vector3d(tx, ty, tz));
 }
 
-void GaussianKeyframe::setPose(const Eigen::Quaterniond& q,
+void TriangleKeyframe::setPose(const Eigen::Quaterniond& q,
                                const Eigen::Vector3d& t) {
   setPoseImpl(q.normalized().toRotationMatrix(), t);
 }
 
-Eigen::Matrix3d GaussianKeyframe::tensorToRotationMatrix() const {
+Eigen::Matrix3d TriangleKeyframe::tensorToRotationMatrix() const {
   torch::Tensor R_tensor = sixD2RotationMatrix(rW2C_);
   auto R_cpu = R_tensor.detach().cpu();
 
@@ -96,7 +96,7 @@ Eigen::Matrix3d GaussianKeyframe::tensorToRotationMatrix() const {
   return R_eigen;
 }
 
-Eigen::Vector3d GaussianKeyframe::tensorToTranslation() const {
+Eigen::Vector3d TriangleKeyframe::tensorToTranslation() const {
   auto t_cpu = tW2C_.detach().cpu();
 
   Eigen::Vector3d t_eigen;
@@ -106,37 +106,37 @@ Eigen::Vector3d GaussianKeyframe::tensorToTranslation() const {
   return t_eigen;
 }
 
-Sophus::SE3d GaussianKeyframe::getPose() {
+Sophus::SE3d TriangleKeyframe::getPose() {
   Eigen::Matrix3d R = tensorToRotationMatrix();
   Eigen::Vector3d t = tensorToTranslation();
   return Sophus::SE3d(Eigen::Quaterniond(R), t);
 }
 
-Sophus::SE3f GaussianKeyframe::getPosef() {
+Sophus::SE3f TriangleKeyframe::getPosef() {
   return getPose().cast<float>();
 }
 
-Eigen::Matrix3d GaussianKeyframe::getRotationMatrix() {
+Eigen::Matrix3d TriangleKeyframe::getRotationMatrix() {
   return tensorToRotationMatrix();
 }
 
-Eigen::Matrix3f GaussianKeyframe::getRotationMatrixf() {
+Eigen::Matrix3f TriangleKeyframe::getRotationMatrixf() {
   return getRotationMatrix().cast<float>();
 }
 
-Eigen::Vector3d GaussianKeyframe::getTranslation() {
+Eigen::Vector3d TriangleKeyframe::getTranslation() {
   return tensorToTranslation();
 }
 
-Eigen::Vector3f GaussianKeyframe::getTranslationf() {
+Eigen::Vector3f TriangleKeyframe::getTranslationf() {
   return getTranslation().cast<float>();
 }
 
-Eigen::Quaterniond GaussianKeyframe::getQuaternion() {
+Eigen::Quaterniond TriangleKeyframe::getQuaternion() {
   return Eigen::Quaterniond(getRotationMatrix());
 }
 
-Eigen::Quaternionf GaussianKeyframe::getQuaternionf() {
+Eigen::Quaternionf TriangleKeyframe::getQuaternionf() {
   return getQuaternion().cast<float>();
 }
 
@@ -144,7 +144,7 @@ Eigen::Quaternionf GaussianKeyframe::getQuaternionf() {
 // Tensor Pose Accessors
 //==============================================================================
 
-torch::Tensor GaussianKeyframe::sixD2RotationMatrix(
+torch::Tensor TriangleKeyframe::sixD2RotationMatrix(
     const torch::Tensor& rW2C) const {
   // 6D representation: first two columns of rotation matrix
   // Recover full rotation via Gram-Schmidt orthogonalization
@@ -163,15 +163,15 @@ torch::Tensor GaussianKeyframe::sixD2RotationMatrix(
   return torch::stack({b1, b2, b3}, 1);
 }
 
-torch::Tensor GaussianKeyframe::getR() {
+torch::Tensor TriangleKeyframe::getR() {
   return sixD2RotationMatrix(rW2C_);
 }
 
-torch::Tensor GaussianKeyframe::getT() {
+torch::Tensor TriangleKeyframe::getT() {
   return tW2C_;
 }
 
-torch::Tensor GaussianKeyframe::getRT() {
+torch::Tensor TriangleKeyframe::getRT() {
   torch::Tensor RT = torch::eye(
       {4}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
   RT.index_put_({torch::indexing::Slice(0, 3), torch::indexing::Slice(0, 3)},
@@ -180,7 +180,7 @@ torch::Tensor GaussianKeyframe::getRT() {
   return RT;
 }
 
-torch::Tensor GaussianKeyframe::getCenter() {
+torch::Tensor TriangleKeyframe::getCenter() {
   return -getR().transpose(0, 1).mv(getT());
 }
 
@@ -188,7 +188,7 @@ torch::Tensor GaussianKeyframe::getCenter() {
 // Camera Setup
 //==============================================================================
 
-void GaussianKeyframe::setCameraParams(const Camera& camera) {
+void TriangleKeyframe::setCameraParams(const Camera& camera) {
   camera_id_ = camera.camera_id_;
   camera_model_id_ = camera.model_id_;
   image_height_ = camera.height_;
@@ -219,7 +219,7 @@ void GaussianKeyframe::setCameraParams(const Camera& camera) {
   }
 }
 
-void GaussianKeyframe::computeTransformTensors() {
+void TriangleKeyframe::computeTransformTensors() {
   if (!set_pose_) {
     std::cerr << "Could not compute transform tensors for keyframe " << fid_
               << " because POSE is not set!" << std::endl;
@@ -251,7 +251,7 @@ void GaussianKeyframe::computeTransformTensors() {
       world_view_transform_.inverse().index({3, torch::indexing::Slice(0, 3)});
 }
 
-Eigen::Matrix4f GaussianKeyframe::getWorld2View2(const Eigen::Vector3f& trans,
+Eigen::Matrix4f TriangleKeyframe::getWorld2View2(const Eigen::Vector3f& trans,
                                                  float scale) {
   Eigen::Matrix3f R = tensorToRotationMatrix().cast<float>();
   Eigen::Vector3f t = tensorToTranslation().cast<float>();
@@ -269,7 +269,7 @@ Eigen::Matrix4f GaussianKeyframe::getWorld2View2(const Eigen::Vector3f& trans,
   return C2W.inverse();
 }
 
-torch::Tensor GaussianKeyframe::getProjectionMatrix(
+torch::Tensor TriangleKeyframe::getProjectionMatrix(
     float znear, float zfar, float fovX, float fovY,
     torch::DeviceType device_type) {
   float tanHalfFovY = std::tan(fovY / 2);
@@ -300,7 +300,7 @@ torch::Tensor GaussianKeyframe::getProjectionMatrix(
 // 2D/3D Point Correspondences
 //==============================================================================
 
-void GaussianKeyframe::setPoints2D(
+void TriangleKeyframe::setPoints2D(
     const std::vector<Eigen::Vector2d>& points2D) {
   points2D_.clear();
   points2D_.resize(points2D.size());
@@ -309,13 +309,13 @@ void GaussianKeyframe::setPoints2D(
   }
 }
 
-void GaussianKeyframe::setPoint3DIdxForPoint2D(point2D_idx_t point2D_idx,
+void TriangleKeyframe::setPoint3DIdxForPoint2D(point2D_idx_t point2D_idx,
                                                point3D_id_t point3D_id) {
   points2D_.at(point2D_idx).point3D_id_ = point3D_id;
 }
 
 std::tuple<std::vector<float>, std::vector<float>>
-GaussianKeyframe::extractValidKeypointsForDepthAlignment() const {
+TriangleKeyframe::extractValidKeypointsForDepthAlignment() const {
   std::vector<float> valid_pixel_coords;
   std::vector<float> valid_depths;
 
@@ -350,7 +350,7 @@ GaussianKeyframe::extractValidKeypointsForDepthAlignment() const {
 // Depth Estimation Setup
 //==============================================================================
 
-void GaussianKeyframe::setupStereoData(
+void TriangleKeyframe::setupStereoData(
     const cv::Mat& img_undist,
     const cv::Mat& img_auxiliary_undist,
     float baseline,
@@ -384,7 +384,7 @@ void GaussianKeyframe::setupStereoData(
   generateInverseDepthPyramid(inverted_depth);
 }
 
-void GaussianKeyframe::setupMonoData(
+void TriangleKeyframe::setupMonoData(
     const cv::Mat& img_undist,
     torch::DeviceType device_type,
     std::shared_ptr<MonoDepth> depth_estimator,
@@ -423,7 +423,7 @@ void GaussianKeyframe::setupMonoData(
   generateInverseDepthPyramid(inverted_depth_mat);
 }
 
-void GaussianKeyframe::setupRGBDData(const cv::Mat& img_auxiliary_undist) {
+void TriangleKeyframe::setupRGBDData(const cv::Mat& img_auxiliary_undist) {
   cv::Mat clamped_depth;
   cv::max(img_auxiliary_undist, 1e-8, clamped_depth);
 
@@ -443,7 +443,7 @@ void GaussianKeyframe::setupRGBDData(const cv::Mat& img_auxiliary_undist) {
 // Image Pyramid Generation
 //==============================================================================
 
-void GaussianKeyframe::generateImagePyramid(const cv::Mat& img_undist) {
+void TriangleKeyframe::generateImagePyramid(const cv::Mat& img_undist) {
   assert(!img_undist.empty());
 
   cv::cuda::GpuMat img_gpu;
@@ -459,7 +459,7 @@ void GaussianKeyframe::generateImagePyramid(const cv::Mat& img_undist) {
   }
 }
 
-void GaussianKeyframe::generateInverseDepthPyramid(const cv::Mat& depth_mat) {
+void TriangleKeyframe::generateInverseDepthPyramid(const cv::Mat& depth_mat) {
   if (depth_mat.empty()) return;
 
   gaus_pyramid_inv_depth_image_.resize(num_gaus_pyramid_sub_levels_);
@@ -478,7 +478,7 @@ void GaussianKeyframe::generateInverseDepthPyramid(const cv::Mat& depth_mat) {
   }
 }
 
-int GaussianKeyframe::getCurrentGausPyramidLevel() {
+int TriangleKeyframe::getCurrentGausPyramidLevel() {
   // Start from highest level (smallest image) and work down
   for (int i = num_gaus_pyramid_sub_levels_ - 1; i >= 0; --i) {
     if (gaus_pyramid_times_of_use_[i]) {
@@ -494,7 +494,7 @@ int GaussianKeyframe::getCurrentGausPyramidLevel() {
 //==============================================================================
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, int, int>
-GaussianKeyframe::getTrainingData(
+TriangleKeyframe::getTrainingData(
     const torch::Tensor& undistort_mask,
     const std::vector<torch::Tensor>& pyramid_masks) {
   int level = getCurrentGausPyramidLevel();
@@ -518,7 +518,7 @@ GaussianKeyframe::getTrainingData(
 // Optimization
 //==============================================================================
 
-void GaussianKeyframe::initOptimizer(torch::DeviceType device_type,
+void TriangleKeyframe::initOptimizer(torch::DeviceType device_type,
                                      float pose_lr,
                                      float exposure_lr,
                                      float depth_scale_bias_lr) {
@@ -561,13 +561,13 @@ void GaussianKeyframe::initOptimizer(torch::DeviceType device_type,
   optimizer_->param_groups()[4].options().set_lr(depth_scale_bias_lr);
 }
 
-void GaussianKeyframe::step() {
+void TriangleKeyframe::step() {
   if (!optimizer_) return;
   optimizer_->step();
   optimizer_->zero_grad();
 }
 
-torch::Tensor GaussianKeyframe::applyExposureTransform(torch::Tensor& colors) {
+torch::Tensor TriangleKeyframe::applyExposureTransform(torch::Tensor& colors) {
   if (!exposure_transform_.defined()) return colors;
 
   // [C, H, W] -> [H, W, C]
@@ -592,7 +592,7 @@ torch::Tensor GaussianKeyframe::applyExposureTransform(torch::Tensor& colors) {
 // Memory Management (Disk Serialization)
 //==============================================================================
 
-void GaussianKeyframe::saveDataToDisk() {
+void TriangleKeyframe::saveDataToDisk() {
   if (!loaded_) {
     throw std::runtime_error("Can't save keyframe to disk that isn't loaded");
   }
@@ -658,7 +658,7 @@ void GaussianKeyframe::saveDataToDisk() {
   loaded_ = false;
 }
 
-void GaussianKeyframe::loadDataFromDisk() {
+void TriangleKeyframe::loadDataFromDisk() {
   if (loaded_) {
     std::cout << "WARN: Loading keyframe that is already marked as loaded!"
               << std::endl;
@@ -717,7 +717,7 @@ void GaussianKeyframe::loadDataFromDisk() {
   }
 }
 
-void GaussianKeyframe::transferToCPU() {
+void TriangleKeyframe::transferToCPU() {
   if (!loaded_) {
     std::cout << "WARN: Tried to transfer keyframe to CPU that isn't loaded!"
               << std::endl;
@@ -744,7 +744,7 @@ void GaussianKeyframe::transferToCPU() {
   loaded_ = false;
 }
 
-void GaussianKeyframe::transferToGPU() {
+void TriangleKeyframe::transferToGPU() {
   if (loaded_) {
     std::cout << "WARN: Tried to transfer keyframe to GPU that's already loaded!"
               << std::endl;

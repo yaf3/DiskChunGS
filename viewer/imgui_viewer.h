@@ -38,7 +38,7 @@
 #include "imgui/imgui.h"
 #include "imgui/imgui_impl_glfw.h"
 #include "imgui/imgui_impl_opengl3.h"
-#include "gaussian_mapper.h"
+#include "triangle_mapper.h"
 #include "utils/graphics_utils.h"
 #include "map_drawer.h"
 
@@ -56,7 +56,7 @@ class ImGuiViewer {
  public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
   ImGuiViewer(std::shared_ptr<ORB_SLAM3::System> pSLAM,
-              std::shared_ptr<GaussianMapper> pGausMapper,
+              std::shared_ptr<TriangleMapper> pTriMapper,
               bool training = true,
               bool external_mode = false);
   void readConfigFromFile(std::filesystem::path cfg_path);
@@ -75,7 +75,7 @@ class ImGuiViewer {
 
  protected:
   std::shared_ptr<ORB_SLAM3::System> pSLAM_;
-  std::shared_ptr<GaussianMapper> pGausMapper_;
+  std::shared_ptr<TriangleMapper> pTriMapper_;
 
   ORB_SLAM3::FrameDrawer* pSlamFrameDrawer_;
   ORB_SLAM3::MapDrawer* pSlamMapDrawer_;

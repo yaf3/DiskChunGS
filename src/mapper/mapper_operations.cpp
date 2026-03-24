@@ -14,15 +14,15 @@
  * <http://www.gnu.org/licenses/>.
  */
 
-#include "gaussian_mapper.h"
-#include "rendering/gaussian_renderer.h"
+#include "triangle_mapper.h"
+#include "rendering/triangle_renderer.h"
 #include "utils/profiling.h"
 
 // ============================================================================
 // Helper Methods
 // ============================================================================
 
-bool GaussianMapper::isPoseDivergenceLarge(
+bool TriangleMapper::isPoseDivergenceLarge(
     const Sophus::SE3f &diff_pose) const {
   bool large_rot = !diff_pose.rotationMatrix().isApprox(
       Eigen::Matrix3f::Identity(), large_rot_th_);
@@ -31,18 +31,18 @@ bool GaussianMapper::isPoseDivergenceLarge(
   return large_rot || large_trans;
 }
 
-torch::Tensor GaussianMapper::filterRelevantChunks(
+torch::Tensor TriangleMapper::filterRelevantChunks(
     const torch::Tensor &visible_chunk_ids) const {
   torch::Tensor loaded_mask =
-      torch::isin(visible_chunk_ids, gaussians_->chunks_loaded_from_disk_);
+      torch::isin(visible_chunk_ids, triangles_->chunks_loaded_from_disk_);
   torch::Tensor on_disk_mask =
-      torch::isin(visible_chunk_ids, gaussians_->chunks_on_disk_);
+      torch::isin(visible_chunk_ids, triangles_->chunks_on_disk_);
   torch::Tensor spatial_chunks =
-      std::get<0>(torch::_unique2(gaussians_->gaussian_chunk_ids_));
-  torch::Tensor has_gaussians_mask =
+      std::get<0>(torch::_unique2(triangles_->triangle_chunk_ids_));
+  torch::Tensor has_triangles_mask =
       torch::isin(visible_chunk_ids, spatial_chunks);
 
-  torch::Tensor relevant_mask = loaded_mask | on_disk_mask | has_gaussians_mask;
+  torch::Tensor relevant_mask = loaded_mask | on_disk_mask | has_triangles_mask;
   return visible_chunk_ids.index({relevant_mask});
 }
 
@@ -50,7 +50,7 @@ torch::Tensor GaussianMapper::filterRelevantChunks(
 // Mapping Operations Processing
 // ============================================================================
 
-void GaussianMapper::combineMappingOperations() {
+void TriangleMapper::combineMappingOperations() {
   // Group operations by type
   std::vector<ORB_SLAM3::MappingOperation> localBAOps;
   std::vector<ORB_SLAM3::MappingOperation> loopClosureOps;
@@ -129,11 +129,11 @@ void GaussianMapper::combineMappingOperations() {
   }
 }
 
-void GaussianMapper::processLocalMappingBABatch(
+void TriangleMapper::processLocalMappingBABatch(
     std::vector<ORB_SLAM3::MappingOperation> &operations) {
   if (operations.empty()) return;
 
-  std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>
+  std::map<std::size_t, std::shared_ptr<TriangleKeyframe>>
       associated_keyframe_map;
 
   for (auto &opr : operations) {
@@ -141,7 +141,7 @@ void GaussianMapper::processLocalMappingBABatch(
 
     for (auto &kf : associated_kfs) {
       auto kfid = std::get<0>(kf);
-      std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
+      std::shared_ptr<TriangleKeyframe> pkf = scene_->getKeyframe(kfid);
 
       if (pkf) {
         auto &orb_pose = std::get<2>(kf);
@@ -152,8 +152,8 @@ void GaussianMapper::processLocalMappingBABatch(
                        orb_pose.translation().cast<double>());
         } else {
           // Selectively update if poses have diverged significantly
-          Sophus::SE3f gaussian_pose = pkf->getPosef();
-          Sophus::SE3f diff_pose = orb_pose.inverse() * gaussian_pose;
+          Sophus::SE3f triangle_pose = pkf->getPosef();
+          Sophus::SE3f diff_pose = orb_pose.inverse() * triangle_pose;
 
           constexpr float kRotationThreshold = 0.1f;
           constexpr float kTranslationThreshold = 0.05f;
@@ -180,7 +180,7 @@ void GaussianMapper::processLocalMappingBABatch(
 // Loop Closure Processing
 // ============================================================================
 
-void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation &opr) {
+void TriangleMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation &opr) {
   std::cout << "[Loop Closure] Starting with scale factor: " << opr.mfScale
             << std::endl;
 
@@ -200,7 +200,7 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation &opr) {
   // First pass: Handle new keyframes
   for (auto &kf : associated_kfs) {
     auto kfid = std::get<0>(kf);
-    std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
+    std::shared_ptr<TriangleKeyframe> pkf = scene_->getKeyframe(kfid);
     if (!pkf) {
       std::cout << "[Loop Closure] New frame in loop-closure" << std::endl;
       handleNewKeyframeFromORBSLAM(kf);
@@ -209,15 +209,15 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation &opr) {
 
   std::unique_lock<std::mutex> lock_render(mutex_render_);
 
-  // Estimate total gaussians needed and collect keyframe-chunk pairs
-  int64_t total_gaussians_needed = 0;
-  std::vector<std::pair<std::shared_ptr<GaussianKeyframe>, torch::Tensor>>
+  // Estimate total triangles needed and collect keyframe-chunk pairs
+  int64_t total_triangles_needed = 0;
+  std::vector<std::pair<std::shared_ptr<TriangleKeyframe>, torch::Tensor>>
       kf_chunk_pairs;
   std::unordered_set<int64_t> all_unique_chunks;
 
   for (auto &kf : associated_kfs) {
     auto kfid = std::get<0>(kf);
-    std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
+    std::shared_ptr<TriangleKeyframe> pkf = scene_->getKeyframe(kfid);
     if (!pkf) continue;
 
     auto &pose = std::get<2>(kf);
@@ -226,10 +226,10 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation &opr) {
 
     if (isPoseDivergenceLarge(diff_pose)) {
       std::vector<ChunkCoord> visible_chunk_coords =
-          gaussians_->frustumCullChunks(pkf, /*use_cache=*/true);
+          triangles_->frustumCullChunks(pkf, /*use_cache=*/true);
 
       torch::Tensor visible_chunk_coords_tensor = chunkCoordVectorToTensor(
-          visible_chunk_coords, gaussians_->device_type_);
+          visible_chunk_coords, triangles_->device_type_);
       torch::Tensor visible_chunk_ids =
           encodeChunkCoordsTensor(visible_chunk_coords_tensor);
 
@@ -250,42 +250,42 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation &opr) {
 
   // Save and evict all current chunks for clean memory calculation
   torch::Tensor all_spatial_chunks =
-      std::get<0>(torch::_unique2(gaussians_->gaussian_chunk_ids_));
+      std::get<0>(torch::_unique2(triangles_->triangle_chunk_ids_));
   if (all_spatial_chunks.size(0) > 0) {
     std::cout << "[Loop Closure] Saving and evicting "
               << all_spatial_chunks.size(0) << " chunks" << std::endl;
-    gaussians_->saveAndEvictChunks(all_spatial_chunks);
+    triangles_->saveAndEvictChunks(all_spatial_chunks);
   }
 
-  // Calculate gaussian count for needed chunks
+  // Calculate triangle count for needed chunks
   for (int64_t chunk_id : all_unique_chunks) {
     torch::Tensor chunk_id_tensor =
         torch::tensor({chunk_id}, torch::TensorOptions()
                                       .dtype(torch::kInt64)
-                                      .device(gaussians_->device_type_));
+                                      .device(triangles_->device_type_));
 
-    // Check if chunk is on disk and get its gaussian count
-    auto disk_mask = torch::eq(gaussians_->chunks_on_disk_, chunk_id_tensor);
+    // Check if chunk is on disk and get its triangle count
+    auto disk_mask = torch::eq(triangles_->chunks_on_disk_, chunk_id_tensor);
     if (torch::any(disk_mask).item<bool>()) {
       auto indices = torch::where(disk_mask)[0];
       if (indices.size(0) > 0) {
         int64_t count =
-            gaussians_->chunk_gaussian_counts_[indices[0].item<int64_t>()]
+            triangles_->chunk_triangle_counts_[indices[0].item<int64_t>()]
                 .item<int64_t>();
-        total_gaussians_needed += count;
+        total_triangles_needed += count;
       }
     }
     // Note: No else case needed since we evicted all spatial chunks above
   }
 
-  int64_t current_gaussians = gaussians_->xyz_.size(0);
-  int64_t projected_total = total_gaussians_needed + current_gaussians;
+  int64_t current_triangles = triangles_->xyz_.size(0);
+  int64_t projected_total = total_triangles_needed + current_triangles;
 
   // =========================================================================
   // Loop Closure Memory Management Strategy:
   //
-  // During loop closure, we temporarily increase the gaussian memory limit to
-  // allow processing more gaussians than during normal operation. This is safe
+  // During loop closure, we temporarily increase the triangle memory limit to
+  // allow processing more triangles than during normal operation. This is safe
   // because we don't render during loop closure (no VRAM needed for rendering).
   //
   // The increased limit is: original_limit * loop_closure_memory_multiplier_
@@ -301,20 +301,20 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation &opr) {
   // The limit is always restored to the original value at the end.
   // =========================================================================
 
-  int64_t original_limit = gaussians_->max_gaussians_in_memory_;
+  int64_t original_limit = triangles_->max_triangles_in_memory_;
   int64_t increased_limit =
       static_cast<int64_t>(original_limit * loop_closure_memory_multiplier_);
 
-  std::cout << "[Loop Closure] Gaussian estimation - Current: "
-            << current_gaussians
-            << ", Additional needed: " << total_gaussians_needed
+  std::cout << "[Loop Closure] Triangle estimation - Current: "
+            << current_triangles
+            << ", Additional needed: " << total_triangles_needed
             << ", Projected total: " << projected_total
             << ", Original limit: " << original_limit << ", Increased limit (x"
             << loop_closure_memory_multiplier_ << "): " << increased_limit
             << std::endl;
 
   // Temporarily increase the memory limit for loop closure processing
-  gaussians_->max_gaussians_in_memory_ = increased_limit;
+  triangles_->max_triangles_in_memory_ = increased_limit;
 
   for (const auto &[index, keyframe] : scene_->keyframes_) {
     if (keyframe->loaded_) keyframe->saveDataToDisk();
@@ -339,12 +339,12 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation &opr) {
   }
 
   // Always restore the original memory limit
-  gaussians_->max_gaussians_in_memory_ = original_limit;
+  triangles_->max_triangles_in_memory_ = original_limit;
 
   // Update chunk-keyframe mappings
   for (auto &kf : associated_kfs) {
     auto kfid = std::get<0>(kf);
-    std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
+    std::shared_ptr<TriangleKeyframe> pkf = scene_->getKeyframe(kfid);
     keyframe_selector_->updateChunkKeyframeMapping(pkf, false);
   }
 
@@ -361,13 +361,13 @@ void GaussianMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation &opr) {
       std::chrono::duration_cast<std::chrono::seconds>(time_end - time_start)
           .count();
   std::cout << "[Loop Closure] Completed in " << duration
-            << "s - Total gaussians transformed: " << total_transformed
+            << "s - Total triangles transformed: " << total_transformed
             << std::endl;
 }
 
-int GaussianMapper::processBatchedLoopClosure(
+int TriangleMapper::processBatchedLoopClosure(
     std::vector<KeyframeTuple> &associated_kfs,
-    const std::vector<std::pair<std::shared_ptr<GaussianKeyframe>,
+    const std::vector<std::pair<std::shared_ptr<TriangleKeyframe>,
                                 torch::Tensor>> &kf_chunk_pairs,
     const std::unordered_set<int64_t> &all_unique_chunks,
     float loop_kf_scale) {
@@ -384,24 +384,24 @@ int GaussianMapper::processBatchedLoopClosure(
     for (int64_t chunk_id : all_unique_chunks) {
       accessor[idx++] = chunk_id;
     }
-    all_chunk_ids = all_chunk_ids.to(gaussians_->device_type_);
+    all_chunk_ids = all_chunk_ids.to(triangles_->device_type_);
 
     std::cout << "[Batched Loop] Loading " << all_unique_chunks.size()
               << " unique chunks" << std::endl;
-    gaussians_->loadChunks(all_chunk_ids);
+    triangles_->loadChunks(all_chunk_ids);
   }
 
-  // Global transform mask to track which gaussians have been transformed
+  // Global transform mask to track which triangles have been transformed
   torch::Tensor global_transform_mask = torch::zeros(
-      {gaussians_->xyz_.size(0)}, torch::TensorOptions()
+      {triangles_->xyz_.size(0)}, torch::TensorOptions()
                                       .dtype(torch::kBool)
-                                      .device(gaussians_->device_type_));
+                                      .device(triangles_->device_type_));
 
   std::vector<torch::Tensor> chunks_to_redistribute;
 
   for (auto &kf : associated_kfs) {
     auto kfid = std::get<0>(kf);
-    std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
+    std::shared_ptr<TriangleKeyframe> pkf = scene_->getKeyframe(kfid);
 
     if (!pkf) continue;
 
@@ -409,15 +409,15 @@ int GaussianMapper::processBatchedLoopClosure(
     Sophus::SE3f original_pose = pkf->getPosef();
     Sophus::SE3f diff_pose = pose.inverse() * original_pose;
 
-    // Handle loop closure keyframes (reset opacity for visible gaussians)
+    // Handle loop closure keyframes (reset opacity for visible triangles)
     bool is_loop_closure_kf = std::get<4>(kf);
     if (is_loop_closure_kf) {
       std::cout << "[Batched Loop] Loop closure keyframe: " << kfid
                 << std::endl;
-      torch::Tensor visible_gaussians =
-          gaussians_->cullVisibleGaussians(pkf, false);
-      if (torch::any(visible_gaussians).item<bool>()) {
-        gaussians_->resetPositionLRAndOptimizerState(visible_gaussians);
+      torch::Tensor visible_triangles =
+          triangles_->cullVisibleTriangles(pkf, false);
+      if (torch::any(visible_triangles).item<bool>()) {
+        triangles_->resetPositionLRAndOptimizerState(visible_triangles);
       }
     }
 
@@ -434,20 +434,20 @@ int GaussianMapper::processBatchedLoopClosure(
 
         torch::Tensor diff_pose_tensor =
             tensor_utils::EigenMatrix2TorchTensor(diff_pose.matrix(),
-                                                  gaussians_->device_type_)
+                                                  triangles_->device_type_)
                 .transpose(0, 1);
 
-        int gaussians_transformed_by_this_kf = 0;
+        int triangles_transformed_by_this_kf = 0;
         float scale = 1.0f;  // Scale factor for transformation
 
-        gaussians_->scaledTransformVisiblePointsOfKeyframe(
+        triangles_->scaledTransformVisiblePointsOfKeyframe(
             global_transform_mask, diff_pose_tensor, pkf->world_view_transform_,
             pkf->full_proj_transform_, pkf->creation_iter_,
-            stableNumIterExistence(), gaussians_transformed_by_this_kf, scale);
+            stableNumIterExistence(), triangles_transformed_by_this_kf, scale);
 
-        total_transformed += gaussians_transformed_by_this_kf;
+        total_transformed += triangles_transformed_by_this_kf;
         std::cout << "[Batched Loop] Keyframe " << kfid << " transformed "
-                  << gaussians_transformed_by_this_kf << " points" << std::endl;
+                  << triangles_transformed_by_this_kf << " points" << std::endl;
 
         chunks_to_redistribute.push_back(relevant_chunk_ids);
         increaseKeyframeTimesOfUse(pkf, loop_closure_increased_times_of_use_);
@@ -468,33 +468,33 @@ int GaussianMapper::processBatchedLoopClosure(
 
     std::cout << "[Batched Loop] Redistributing "
               << unique_redistrib_chunks.size(0) << " chunks" << std::endl;
-    gaussians_->handleBatchChunkRedistribution(unique_redistrib_chunks);
+    triangles_->handleBatchChunkRedistribution(unique_redistrib_chunks);
   }
 
   return total_transformed;
 }
 
-int GaussianMapper::processSequentialLoopClosure(
+int TriangleMapper::processSequentialLoopClosure(
     const std::vector<KeyframeTuple> &associated_kfs,
     float loop_kf_scale) {
   int total_transformed = 0;
 
-  int64_t total_gaussian_count = gaussians_->countAllGaussians();
-  int64_t buffer_size = static_cast<int64_t>(total_gaussian_count * 1.1);
+  int64_t total_triangle_count = triangles_->countAllTriangles();
+  int64_t buffer_size = static_cast<int64_t>(total_triangle_count * 1.1);
 
-  // Buffer to track which gaussians have been transformed (by stable ID).
-  // Used to avoid double-transforming gaussians visible from multiple
+  // Buffer to track which triangles have been transformed (by stable ID).
+  // Used to avoid double-transforming triangles visible from multiple
   // keyframes. We use IDs rather than indices because indices change as chunks
   // load/unload.
-  torch::Tensor transformed_gaussian_ids =
+  torch::Tensor transformed_triangle_ids =
       torch::full({buffer_size}, -1,
                   torch::TensorOptions()
                       .dtype(torch::kInt64)
-                      .device(gaussians_->device_type_));
+                      .device(triangles_->device_type_));
   int next_slot = 0;
 
-  // Helper: Record newly transformed gaussians by their IDs
-  // Compares old vs new transform flags to find which gaussians were just
+  // Helper: Record newly transformed triangles by their IDs
+  // Compares old vs new transform flags to find which triangles were just
   // transformed, then stores their stable IDs in the tracking buffer.
   auto updateTransformTracking = [&](const torch::Tensor &old_flags,
                                      const torch::Tensor &new_flags) {
@@ -502,25 +502,25 @@ int GaussianMapper::processSequentialLoopClosure(
     torch::Tensor new_indices = torch::where(newly_transformed_mask)[0];
 
     if (new_indices.size(0) > 0) {
-      torch::Tensor new_ids = gaussians_->gaussian_ids_.index({new_indices});
+      torch::Tensor new_ids = triangles_->triangle_ids_.index({new_indices});
       int end_slot = next_slot + new_ids.size(0);
-      transformed_gaussian_ids.slice(0, next_slot, end_slot).copy_(new_ids);
+      transformed_triangle_ids.slice(0, next_slot, end_slot).copy_(new_ids);
       next_slot = end_slot;
     }
   };
 
   // Helper: Convert tracked IDs back to current index mask
   // Since indices change as chunks load/unload, we must recompute the mask
-  // each time by checking which current gaussians have IDs in our tracked set.
+  // each time by checking which current triangles have IDs in our tracked set.
   auto getCurrentTransformFlags = [&]() -> torch::Tensor {
-    torch::Tensor valid_ids = transformed_gaussian_ids.slice(0, 0, next_slot);
-    return torch::isin(gaussians_->gaussian_ids_, valid_ids);
+    torch::Tensor valid_ids = transformed_triangle_ids.slice(0, 0, next_slot);
+    return torch::isin(triangles_->triangle_ids_, valid_ids);
   };
 
   // Process each keyframe sequentially
   for (const auto &kf : associated_kfs) {
     auto kfid = std::get<0>(kf);
-    std::shared_ptr<GaussianKeyframe> pkf = scene_->getKeyframe(kfid);
+    std::shared_ptr<TriangleKeyframe> pkf = scene_->getKeyframe(kfid);
 
     if (!pkf) continue;
 
@@ -530,21 +530,21 @@ int GaussianMapper::processSequentialLoopClosure(
     Sophus::SE3f diff_pose = pose.inverse() * original_pose;
 
     // Handle loop closure keyframes: reset optimizer state for visible
-    // gaussians Must reset IMMEDIATELY while gaussians are loaded (before
+    // triangles Must reset IMMEDIATELY while triangles are loaded (before
     // potential eviction)
     bool is_loop_closure_kf = std::get<4>(kf);
     if (is_loop_closure_kf) {
       std::cout << "[Sequential Loop] Loop closure keyframe: " << kfid
                 << std::endl;
-      // cullVisibleGaussians handles chunk loading internally
-      torch::Tensor visible_gaussians = gaussians_->cullVisibleGaussians(pkf);
+      // cullVisibleTriangles handles chunk loading internally
+      torch::Tensor visible_triangles = triangles_->cullVisibleTriangles(pkf);
 
-      if (torch::any(visible_gaussians).item<bool>()) {
-        gaussians_->resetPositionLRAndOptimizerState(visible_gaussians);
+      if (torch::any(visible_triangles).item<bool>()) {
+        triangles_->resetPositionLRAndOptimizerState(visible_triangles);
       }
     }
 
-    // Handle large pose corrections: transform visible gaussians
+    // Handle large pose corrections: transform visible triangles
     // Only process if pose changed significantly (rotation or translation).
     if (isPoseDivergenceLarge(diff_pose)) {
       std::cout << "[Sequential Loop] Large correction for kf" << kfid
@@ -553,15 +553,15 @@ int GaussianMapper::processSequentialLoopClosure(
       // Convert pose difference to tensor for GPU operations
       torch::Tensor diff_pose_tensor =
           tensor_utils::EigenMatrix2TorchTensor(diff_pose.matrix(),
-                                                gaussians_->device_type_)
+                                                triangles_->device_type_)
               .transpose(0, 1);
 
       // Find and load chunks visible from this keyframe's frustum
       std::vector<ChunkCoord> visible_chunk_coords =
-          gaussians_->frustumCullChunks(pkf, /*use_cache=*/true);
+          triangles_->frustumCullChunks(pkf, /*use_cache=*/true);
 
       torch::Tensor visible_chunk_coords_tensor = chunkCoordVectorToTensor(
-          visible_chunk_coords, gaussians_->device_type_);
+          visible_chunk_coords, triangles_->device_type_);
       torch::Tensor visible_chunk_ids =
           encodeChunkCoordsTensor(visible_chunk_coords_tensor);
 
@@ -570,29 +570,29 @@ int GaussianMapper::processSequentialLoopClosure(
 
       if (relevant_chunk_ids.size(0) <= 0) continue;
 
-      gaussians_->loadChunks(relevant_chunk_ids);
+      triangles_->loadChunks(relevant_chunk_ids);
 
       // Get current transform state (recomputed since chunks just loaded)
       torch::Tensor old_transform_flags = getCurrentTransformFlags();
       torch::Tensor current_transform_flags = old_transform_flags.clone();
 
-      // Transform visible gaussians that haven't been transformed yet
-      int gaussians_transformed_by_this_kf = 0;
-      gaussians_->scaledTransformVisiblePointsOfKeyframe(
+      // Transform visible triangles that haven't been transformed yet
+      int triangles_transformed_by_this_kf = 0;
+      triangles_->scaledTransformVisiblePointsOfKeyframe(
           current_transform_flags, diff_pose_tensor, pkf->world_view_transform_,
           pkf->full_proj_transform_, pkf->creation_iter_,
-          stableNumIterExistence(), gaussians_transformed_by_this_kf,
+          stableNumIterExistence(), triangles_transformed_by_this_kf,
           loop_kf_scale);
 
-      // Record newly transformed gaussian IDs
+      // Record newly transformed triangle IDs
       updateTransformTracking(old_transform_flags, current_transform_flags);
 
-      total_transformed += gaussians_transformed_by_this_kf;
+      total_transformed += triangles_transformed_by_this_kf;
       std::cout << "[Sequential Loop] Keyframe " << kfid << " transformed "
-                << gaussians_transformed_by_this_kf << " points" << std::endl;
+                << triangles_transformed_by_this_kf << " points" << std::endl;
 
-      // Reassign gaussians to correct spatial chunks after transformation
-      gaussians_->handleBatchChunkRedistribution(relevant_chunk_ids);
+      // Reassign triangles to correct spatial chunks after transformation
+      triangles_->handleBatchChunkRedistribution(relevant_chunk_ids);
       increaseKeyframeTimesOfUse(pkf, loop_closure_increased_times_of_use_);
     }
 
@@ -605,7 +605,7 @@ int GaussianMapper::processSequentialLoopClosure(
   return total_transformed;
 }
 
-void GaussianMapper::processScaleRefinement(ORB_SLAM3::MappingOperation &opr) {
+void TriangleMapper::processScaleRefinement(ORB_SLAM3::MappingOperation &opr) {
   throw std::runtime_error("Scale refinement not implemented!");
 }
 
@@ -613,8 +613,8 @@ void GaussianMapper::processScaleRefinement(ORB_SLAM3::MappingOperation &opr) {
 // Keyframe Management
 // ============================================================================
 
-void GaussianMapper::createAndInitializeKeyframe(
-    std::shared_ptr<GaussianKeyframe> &pkf,
+void TriangleMapper::createAndInitializeKeyframe(
+    std::shared_ptr<TriangleKeyframe> &pkf,
     cv::Mat &rgb_image,
     cv::Mat &aux_image,
     const Camera &camera,
@@ -666,15 +666,15 @@ void GaussianMapper::createAndInitializeKeyframe(
 
   pkf->loaded_ = true;
 
-  // Sample gaussians (requires render lock)
+  // Sample triangles (requires render lock)
   std::unique_lock<std::mutex> lock_render(mutex_render_);
-  sampleGaussians(pkf);
+  sampleTriangles(pkf);
 
   pkf->allow_eviction_ = true;
 }
 
-void GaussianMapper::handleNewKeyframeFromORBSLAM(KeyframeTuple &kf) {
-  std::shared_ptr<GaussianKeyframe> pkf = std::make_shared<GaussianKeyframe>(
+void TriangleMapper::handleNewKeyframeFromORBSLAM(KeyframeTuple &kf) {
+  std::shared_ptr<TriangleKeyframe> pkf = std::make_shared<TriangleKeyframe>(
       std::get<0>(kf), getIteration(), keyframe_save_dir_);
 
   // Set pose from ORB-SLAM data
@@ -701,23 +701,23 @@ void GaussianMapper::handleNewKeyframeFromORBSLAM(KeyframeTuple &kf) {
 
   } catch (std::out_of_range) {
     throw std::runtime_error(
-        "[GaussianMapper::handleNewKeyframeFromORBSLAM] KeyFrame Camera not "
+        "[TriangleMapper::handleNewKeyframeFromORBSLAM] KeyFrame Camera not "
         "found!");
   }
 }
 
-void GaussianMapper::increaseKeyframeTimesOfUse(
-    std::shared_ptr<GaussianKeyframe> pkf,
+void TriangleMapper::increaseKeyframeTimesOfUse(
+    std::shared_ptr<TriangleKeyframe> pkf,
     int times) {
   pkf->remaining_times_of_use_ += times;
 }
 
-std::vector<std::shared_ptr<GaussianKeyframe>>
-GaussianMapper::getClosestKeyframes(
-    std::shared_ptr<GaussianKeyframe> current_kf,
+std::vector<std::shared_ptr<TriangleKeyframe>>
+TriangleMapper::getClosestKeyframes(
+    std::shared_ptr<TriangleKeyframe> current_kf,
     int n,
     int k) {
-  std::vector<std::shared_ptr<GaussianKeyframe>> closest_keyframes;
+  std::vector<std::shared_ptr<TriangleKeyframe>> closest_keyframes;
   if (n <= 0 || k <= 0) return closest_keyframes;
 
   auto all_keyframes = scene_->getAllKeyframes();
@@ -726,7 +726,7 @@ GaussianMapper::getClosestKeyframes(
   Eigen::Vector3f current_center = current_kf->getTranslationf();
 
   // Build candidate list sorted by spatial distance
-  std::vector<std::pair<float, std::shared_ptr<GaussianKeyframe>>> candidates;
+  std::vector<std::pair<float, std::shared_ptr<TriangleKeyframe>>> candidates;
   for (const auto &kf_pair : all_keyframes) {
     if (kf_pair.second != current_kf) {
       Eigen::Vector3f candidate_center = kf_pair.second->getTranslationf();
@@ -748,7 +748,7 @@ GaussianMapper::getClosestKeyframes(
 
   // Fill remaining slots with closest unused keyframes
   if (selected_count < n) {
-    std::set<std::shared_ptr<GaussianKeyframe>> selected_set(
+    std::set<std::shared_ptr<TriangleKeyframe>> selected_set(
         closest_keyframes.begin(), closest_keyframes.end());
 
     for (int i = 0;
@@ -764,13 +764,13 @@ GaussianMapper::getClosestKeyframes(
 }
 
 // ============================================================================
-// Gaussian Sampling
+// Triangle Sampling
 // ============================================================================
 
-void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
+void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
   torch::NoGradGuard no_grad;
 
-  std::vector<std::shared_ptr<GaussianKeyframe>> newly_loaded_keyframes;
+  std::vector<std::shared_ptr<TriangleKeyframe>> newly_loaded_keyframes;
   if (!pkf->loaded_) {
     pkf->loadDataFromDisk();
     newly_loaded_keyframes.push_back(pkf);
@@ -801,23 +801,23 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   // Render current view and compute penalty if scene is initialized
   torch::Tensor penalty = torch::zeros_like(init_proba);
   torch::Tensor rendered_depth;
-  torch::Tensor main_gaussian_ids;
-  torch::Tensor visible_gaussian_mask;
+  torch::Tensor main_triangle_ids;
+  torch::Tensor visible_triangle_mask;
   bool has_rendered_depth = false;
 
   if (initial_mapped_) {
-    visible_gaussian_mask = gaussians_->cullVisibleGaussians(pkf);
+    visible_triangle_mask = triangles_->cullVisibleTriangles(pkf);
 
     torch::Tensor view_matrix = pkf->getRT().transpose(0, 1);
-    auto render_pkg = GaussianRenderer::render(
-        gaussians_, visible_gaussian_mask, pkf, pkf->image_height_,
+    auto render_pkg = TriangleRenderer::render(
+        triangles_, visible_triangle_mask, pkf, pkf->image_height_,
         pkf->image_width_, pipe_params_, background_, override_color_, 1.0f,
         false, pkf->FoVx_, pkf->FoVy_, view_matrix, pkf->projection_matrix_);
 
     torch::Tensor rendered_image = std::get<1>(render_pkg);
     rendered_depth = 1 / std::get<0>(render_pkg).clamp_min(1e-8);
     has_rendered_depth = true;
-    main_gaussian_ids = std::get<3>(render_pkg)[0];
+    main_triangle_ids = std::get<3>(render_pkg)[0];
     penalty = computeLoGProbability(rendered_image);
   }
 
@@ -844,7 +844,7 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   torch::Tensor sampled_uv = uv_.view({-1, 2}).index({sample_mask.flatten()});
 
   // Get closest keyframes for MVS
-  std::vector<std::shared_ptr<GaussianKeyframe>> prev_keyframes =
+  std::vector<std::shared_ptr<TriangleKeyframe>> prev_keyframes =
       getClosestKeyframes(pkf, guided_mvs_->getNumCams(), 6);
 
   for (const auto &kf : prev_keyframes) {
@@ -890,7 +890,7 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
   sampled_uv = sampled_uv.index({valid_mask});
   accurate_mask = accurate_mask.index({valid_mask});
 
-  // Handle Gaussian removal for coarser Gaussians
+  // Handle Triangle removal for coarser Triangles
   if (has_rendered_depth) {
     torch::Tensor accurate_sample_mask = torch::zeros_like(sample_mask);
     torch::Tensor current_flat_indices =
@@ -901,16 +901,16 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
         {accurate_positions.to(torch::kLong)}, true);
 
     if (accurate_sample_mask.any().item<bool>()) {
-      torch::Tensor selected_main_gaussians =
-          main_gaussian_ids.index({accurate_sample_mask});
-      torch::Tensor valid_ids_mask = selected_main_gaussians >= 0;
+      torch::Tensor selected_main_triangles =
+          main_triangle_ids.index({accurate_sample_mask});
+      torch::Tensor valid_ids_mask = selected_main_triangles >= 0;
 
       if (valid_ids_mask.any().item<bool>()) {
-        selected_main_gaussians =
-            selected_main_gaussians.index({valid_ids_mask});
+        selected_main_triangles =
+            selected_main_triangles.index({valid_ids_mask});
 
         auto unique_result =
-            torch::_unique2(selected_main_gaussians, false, false, true);
+            torch::_unique2(selected_main_triangles, false, false, true);
         torch::Tensor unique_ids = std::get<0>(unique_result);
         torch::Tensor counts = std::get<2>(unique_result);
 
@@ -918,25 +918,25 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
         torch::Tensor removal_mask = counts >= kMinCountForRemoval;
 
         if (removal_mask.any().item<bool>()) {
-          torch::Tensor gaussians_to_remove_subset =
+          torch::Tensor triangles_to_remove_subset =
               unique_ids.index({removal_mask});
           torch::Tensor visible_indices =
-              torch::where(visible_gaussian_mask)[0];
-          torch::Tensor gaussians_to_remove_full =
-              visible_indices.index({gaussians_to_remove_subset});
+              torch::where(visible_triangle_mask)[0];
+          torch::Tensor triangles_to_remove_full =
+              visible_indices.index({triangles_to_remove_subset});
 
           torch::Tensor full_model_prune_mask = torch::zeros(
-              {gaussians_->getXYZ().size(0)},
+              {triangles_->getXYZ().size(0)},
               torch::TensorOptions().dtype(torch::kBool).device(torch::kCUDA));
 
-          full_model_prune_mask.index_put_({gaussians_to_remove_full}, true);
-          gaussians_->prunePoints(full_model_prune_mask);
+          full_model_prune_mask.index_put_({triangles_to_remove_full}, true);
+          triangles_->prunePoints(full_model_prune_mask);
 
-          visible_gaussian_mask = gaussians_->cullVisibleGaussians(pkf);
+          visible_triangle_mask = triangles_->cullVisibleTriangles(pkf);
 
           torch::Tensor view_matrix = pkf->getRT().transpose(0, 1);
-          auto updated_render_pkg = GaussianRenderer::render(
-              gaussians_, visible_gaussian_mask, pkf, pkf->image_height_,
+          auto updated_render_pkg = TriangleRenderer::render(
+              triangles_, visible_triangle_mask, pkf, pkf->image_height_,
               pkf->image_width_, pipe_params_, background_, override_color_,
               1.0f, false, pkf->FoVx_, pkf->FoVy_, view_matrix,
               pkf->projection_matrix_);
@@ -1141,15 +1141,15 @@ void GaussianMapper::sampleGaussians(std::shared_ptr<GaussianKeyframe> pkf) {
         matched_opacities;
   }
 
-  // Prune low opacity gaussians
+  // Prune low opacity triangles
   if (initial_mapped_) {
-    gaussians_->pruneLowOpacityGaussians(pkf, visible_gaussian_mask);
+    triangles_->pruneLowOpacityTriangles(pkf, visible_triangle_mask);
   }
 
   // Add all points to scene
   torch::Tensor final_opacities = general_utils::inverse_sigmoid(all_opacities);
 
-  gaussians_->addPoints(all_points3D, all_colors, all_scales, final_opacities,
+  triangles_->addPoints(all_points3D, all_colors, all_scales, final_opacities,
                         getIteration(), scene_->cameras_extent_);
 
   // Save keyframes that were loaded during this operation

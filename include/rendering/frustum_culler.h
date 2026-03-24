@@ -23,7 +23,7 @@
 #include "ORB-SLAM3/Thirdparty/Sophus/sophus/se3.hpp"
 #include "chunk_types.h"
 
-class GaussianKeyframe;
+class TriangleKeyframe;
 
 /**
  * @brief Result of testing an AABB against a view frustum.
@@ -154,6 +154,6 @@ class FrustumCullingCache {
  * @return Vector of visible chunk coordinates.
  */
 std::vector<ChunkCoord> frustumCullChunks(
-    std::shared_ptr<GaussianKeyframe> keyframe,
+    std::shared_ptr<TriangleKeyframe> keyframe,
     float chunk_size,
     FrustumCullingCache* cache = nullptr);

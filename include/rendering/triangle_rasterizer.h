@@ -23,17 +23,17 @@
 #include <vector>
 
 #include "cuda_rasterizer/rasterize_points.h"
-#include "model/gaussian_model.h"
+#include "model/triangle_model.h"
 
 /**
- * @brief Configuration parameters for Gaussian rasterization.
+ * @brief Configuration parameters for Triangle rasterization.
  *
- * Encapsulates all settings needed to rasterize 3D Gaussians onto a 2D image
+ * Encapsulates all settings needed to rasterize 3D Triangles onto a 2D image
  * plane, including camera intrinsics, projection matrices, and rendering
  * options.
  */
-struct GaussianRasterizationSettings {
-  GaussianRasterizationSettings(int image_height,
+struct TriangleRasterizationSettings {
+  TriangleRasterizationSettings(int image_height,
                                 int image_width,
                                 float tanfovx,
                                 float tanfovy,
@@ -70,16 +70,16 @@ struct GaussianRasterizationSettings {
 };
 
 /**
- * @brief PyTorch autograd function for differentiable Gaussian rasterization.
+ * @brief PyTorch autograd function for differentiable Triangle rasterization.
  *
- * Implements forward and backward passes for rasterizing 3D Gaussians,
- * enabling gradient-based optimization of Gaussian parameters.
+ * Implements forward and backward passes for rasterizing 3D Triangles,
+ * enabling gradient-based optimization of Triangle parameters.
  */
-class GaussianRasterizerFunction
-    : public torch::autograd::Function<GaussianRasterizerFunction> {
+class TriangleRasterizerFunction
+    : public torch::autograd::Function<TriangleRasterizerFunction> {
  public:
   /**
-   * @brief Rasterizes 3D Gaussians to produce a rendered image.
+   * @brief Rasterizes 3D Triangles to produce a rendered image.
    * @return Tensor list containing: [color, invdepth, mainGaussID, radii]
    */
   static torch::autograd::tensor_list forward(
@@ -94,7 +94,7 @@ class GaussianRasterizerFunction
       torch::Tensor rotations,
       torch::Tensor cov3Ds_precomp,
       torch::Tensor viewmatrix,
-      GaussianRasterizationSettings raster_settings);
+      TriangleRasterizationSettings raster_settings);
 
   /**
    * @brief Computes gradients for all rasterization inputs.
@@ -105,9 +105,9 @@ class GaussianRasterizerFunction
 };
 
 /**
- * @brief Convenience wrapper to invoke GaussianRasterizerFunction::apply().
+ * @brief Convenience wrapper to invoke TriangleRasterizerFunction::apply().
  */
-inline torch::autograd::tensor_list rasterizeGaussians(
+inline torch::autograd::tensor_list rasterizeTriangles(
     torch::Tensor& means3D,
     torch::Tensor& means2D,
     torch::Tensor& dc,
@@ -118,33 +118,33 @@ inline torch::autograd::tensor_list rasterizeGaussians(
     torch::Tensor& rotations,
     torch::Tensor& cov3Ds_precomp,
     torch::Tensor& viewmatrix,
-    GaussianRasterizationSettings& raster_settings) {
-  return GaussianRasterizerFunction::apply(
+    TriangleRasterizationSettings& raster_settings) {
+  return TriangleRasterizerFunction::apply(
       means3D, means2D, dc, sh, colors_precomp, opacities, scales, rotations,
       cov3Ds_precomp, viewmatrix, raster_settings);
 }
 
 /**
- * @brief PyTorch module wrapper for Gaussian rasterization.
+ * @brief PyTorch module wrapper for Triangle rasterization.
  *
- * Provides a module-based interface for rasterizing 3D Gaussians, handling
- * optional tensor initialization and delegating to GaussianRasterizerFunction.
+ * Provides a module-based interface for rasterizing 3D Triangles, handling
+ * optional tensor initialization and delegating to TriangleRasterizerFunction.
  */
-class GaussianRasterizer : public torch::nn::Module {
+class TriangleRasterizer : public torch::nn::Module {
  public:
-  explicit GaussianRasterizer(GaussianRasterizationSettings& raster_settings)
+  explicit TriangleRasterizer(TriangleRasterizationSettings& raster_settings)
       : raster_settings_(raster_settings) {}
 
   /**
-   * @brief Identifies which Gaussians are visible from the current viewpoint.
+   * @brief Identifies which Triangles are visible from the current viewpoint.
    */
-  torch::Tensor markVisibleGaussians(torch::Tensor& positions,
+  torch::Tensor markVisibleTriangles(torch::Tensor& positions,
                                      torch::Tensor& viewmatrix) {
     return markVisible(positions, viewmatrix, raster_settings_.projmatrix_);
   }
 
   /**
-   * @brief Renders 3D Gaussians to produce color, depth, and auxiliary outputs.
+   * @brief Renders 3D Triangles to produce color, depth, and auxiliary outputs.
    * @return Tuple of [color, invdepth, mainGaussID, radii]
    */
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
@@ -159,18 +159,18 @@ class GaussianRasterizer : public torch::nn::Module {
           torch::Tensor cov3D_precomp,
           torch::Tensor viewmatrix);
 
-  GaussianRasterizationSettings raster_settings_;
+  TriangleRasterizationSettings raster_settings_;
 };
 
-// Note: SparseGaussianAdam is defined here for convenience as it shares
+// Note: SparseTriangleAdam is defined here for convenience as it shares
 // dependencies with the rasterizer components.
 
 /**
- * @brief Adam optimizer variant for sparse Gaussian parameter updates.
+ * @brief Adam optimizer variant for sparse Triangle parameter updates.
  */
-class SparseGaussianAdam : public torch::optim::Adam {
+class SparseTriangleAdam : public torch::optim::Adam {
  public:
-  explicit SparseGaussianAdam(std::vector<torch::Tensor> parameters,
+  explicit SparseTriangleAdam(std::vector<torch::Tensor> parameters,
                               const torch::optim::AdamOptions& options)
       : torch::optim::Adam(parameters, options) {}
 

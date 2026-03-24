@@ -11,8 +11,8 @@
  * See <http://www.gnu.org/licenses/>.
  */
 
-#include "gaussian_mapper.h"
-#include "gaussian_mapper_external.h"
+#include "triangle_mapper.h"
+#include "triangle_mapper_external.h"
 
 // ============================================================================
 // Frame and LeakyFrameQueue implementations
@@ -73,17 +73,17 @@ size_t LeakyFrameQueue::size() const {
 }
 
 // ============================================================================
-// GaussianMapper external pose mode methods
+// TriangleMapper external pose mode methods
 // ============================================================================
 
-void GaussianMapper::handleNewFrameExternal(const cv::Mat& rgb_image,
+void TriangleMapper::handleNewFrameExternal(const cv::Mat& rgb_image,
                                             const cv::Mat& depth_or_right_image,
                                             const Sophus::SE3f& pose,
                                             const double timestamp) {
   frame_queue_.push(Frame(rgb_image, depth_or_right_image, pose, timestamp));
 }
 
-void GaussianMapper::run_external_poses() {
+void TriangleMapper::run_external_poses() {
   training_start_time_ = std::chrono::steady_clock::now();
 
   // Initialize output directories
@@ -108,7 +108,7 @@ void GaussianMapper::run_external_poses() {
                                   frame.pose, frame.timestamp);
 
     std::unique_lock<std::mutex> lock_render(mutex_render_);
-    gaussians_->trainingSetup(opt_params_);
+    triangles_->trainingSetup(opt_params_);
     initial_mapped_ = true;
   }
 
@@ -126,7 +126,7 @@ void GaussianMapper::run_external_poses() {
   frame_queue_.stop();
 
   // Save final results
-  saveTotalGaussians("_shutdown");
+  saveTotalTriangles("_shutdown");
   renderAndRecordAllKeyframes("_shutdown");
   saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
             "data");
@@ -139,7 +139,7 @@ void GaussianMapper::run_external_poses() {
   }
 }
 
-bool GaussianMapper::isKeyframe(const Sophus::SE3f& current_pose,
+bool TriangleMapper::isKeyframe(const Sophus::SE3f& current_pose,
                                 double current_time) {
   if (scene_->keyframes().empty()) {
     return true;
@@ -164,7 +164,7 @@ bool GaussianMapper::isKeyframe(const Sophus::SE3f& current_pose,
   return false;
 }
 
-void GaussianMapper::handleNewKeyframeFromExternal(
+void TriangleMapper::handleNewKeyframeFromExternal(
     cv::Mat& rgb_image,
     cv::Mat& depth_or_right_image,
     const Sophus::SE3f& pose,
@@ -178,7 +178,7 @@ void GaussianMapper::handleNewKeyframeFromExternal(
   last_keyframe_pose_ = pose;
   last_keyframe_timestamp_ = timestamp;
 
-  std::shared_ptr<GaussianKeyframe> pkf = std::make_shared<GaussianKeyframe>(
+  std::shared_ptr<TriangleKeyframe> pkf = std::make_shared<TriangleKeyframe>(
       scene_->keyframes().size(), getIteration(), keyframe_save_dir_);
 
   pkf->setPose(pose.unit_quaternion().cast<double>(),
@@ -189,7 +189,7 @@ void GaussianMapper::handleNewKeyframeFromExternal(
   createAndInitializeKeyframe(pkf, rgb_image, depth_or_right_image, camera);
 }
 
-void GaussianMapper::setRecentExternalData(const cv::Mat& rgb_image,
+void TriangleMapper::setRecentExternalData(const cv::Mat& rgb_image,
                                            const Sophus::SE3f& pose) {
   std::unique_lock<std::mutex> lock(mutex_external_data_);
 
@@ -198,12 +198,12 @@ void GaussianMapper::setRecentExternalData(const cv::Mat& rgb_image,
 }
 
 std::tuple<const cv::Mat, const Sophus::SE3f>
-GaussianMapper::getRecentExternalData() {
+TriangleMapper::getRecentExternalData() {
   std::unique_lock<std::mutex> lock(mutex_external_data_);
 
   return std::make_tuple(external_image_, external_pose_);
 }
 
-void GaussianMapper::setCompletionCallback(std::function<void()> callback) {
+void TriangleMapper::setCompletionCallback(std::function<void()> callback) {
   completion_callback_ = callback;
 }

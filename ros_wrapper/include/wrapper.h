@@ -38,15 +38,15 @@
 #include <vector>
 
 #include "ORB-SLAM3/include/System.h"
-#include "gaussian_mapper.h"
+#include "triangle_mapper.h"
 #include "viewer/imgui_viewer.h"
 
-// Configuration structure for GaussianSLAMWrapper
+// Configuration structure for TriangleSLAMWrapper
 struct WrapperConfig {
   // File paths
   std::string vocabulary_path;
   std::string orb_settings_path;
-  std::string gaussian_settings_path;
+  std::string triangle_settings_path;
   std::string output_directory;
 
   // Topic names
@@ -70,10 +70,10 @@ struct WrapperConfig {
   static WrapperConfig loadFromROS(ros::NodeHandle& pnh);
 };
 
-class GaussianSLAMWrapper {
+class TriangleSLAMWrapper {
  public:
-  GaussianSLAMWrapper(ros::NodeHandle &nh, ros::NodeHandle &pnh);
-  ~GaussianSLAMWrapper();
+  TriangleSLAMWrapper(ros::NodeHandle &nh, ros::NodeHandle &pnh);
+  ~TriangleSLAMWrapper();
 
  private:
   ros::NodeHandle nh_;
@@ -100,7 +100,7 @@ class GaussianSLAMWrapper {
 
   // SLAM system
   std::shared_ptr<ORB_SLAM3::System> slam_system_;
-  std::shared_ptr<GaussianMapper> gaussian_mapper_;
+  std::shared_ptr<TriangleMapper> triangle_mapper_;
   std::shared_ptr<ImGuiViewer> viewer_;
 
   // Threads
@@ -131,7 +131,7 @@ class GaussianSLAMWrapper {
 
   // Helper methods
   void initializeSLAMSystem();
-  void initializeGaussianMapper();
+  void initializeTriangleMapper();
   bool getExternalPose(Sophus::SE3f &pose, double timestamp);
   void updateCallbackTime();  // Helper to update the last callback time
 };

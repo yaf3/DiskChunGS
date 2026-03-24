@@ -14,9 +14,9 @@
  * <http://www.gnu.org/licenses/>.
  */
 
-#include "gaussian_mapper.h"
-#include "rendering/gaussian_rasterizer.h"
-#include "rendering/gaussian_renderer.h"
+#include "triangle_mapper.h"
+#include "rendering/triangle_rasterizer.h"
+#include "rendering/triangle_renderer.h"
 #include "utils/loss_utils.h"
 #include "utils/profiling.h"
 #include "utils/trajectory_viewer.h"
@@ -36,7 +36,7 @@ float getCurrentRAMUsageMB() {
   return 0.0f;  // Return 0 if unable to read
 }
 
-void GaussianMapper::run() {
+void TriangleMapper::run() {
   std::chrono::steady_clock::time_point training_start =
       std::chrono::steady_clock::now();
   training_start_time_ = training_start;
@@ -52,7 +52,7 @@ void GaussianMapper::run() {
   std::filesystem::remove_all(keyframe_save_dir_);
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(keyframe_save_dir_)
 
-  // First loop: Initial gaussian mapping
+  // First loop: Initial triangle mapping
   while (!isStopped()) {
     // Check conditions for initial mapping
     if (hasMetInitialMappingConditions()) {
@@ -89,7 +89,7 @@ void GaussianMapper::run() {
 
           // Setup training on first keyframe
           if (!initial_mapped_) {
-            gaussians_->trainingSetup(opt_params_);
+            triangles_->trainingSetup(opt_params_);
             initial_mapped_ = true;
           }
         }
@@ -108,7 +108,7 @@ void GaussianMapper::run() {
     }
   }
 
-  // Second loop: Incremental gaussian mapping
+  // Second loop: Incremental triangle mapping
   int SLAM_stop_iter = 0;
   while (!isStopped()) {
     auto timer_TotalLoop = ProfilingUtils::Timer("TotalLoop");
@@ -152,7 +152,7 @@ void GaussianMapper::run() {
   }
 
   // Finalization: save outputs and clean up
-  saveTotalGaussians("_shutdown");
+  saveTotalTriangles("_shutdown");
   renderAndRecordAllKeyframes("_shutdown");
   saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
             "data");
@@ -169,7 +169,7 @@ void GaussianMapper::run() {
   }
 }
 
-void GaussianMapper::trainForOneIteration() {
+void TriangleMapper::trainForOneIteration() {
   increaseIteration(1);
 
   // Collect training metrics at regular intervals
@@ -180,8 +180,8 @@ void GaussianMapper::trainForOneIteration() {
         current_time - training_start_time_);
     double elapsed_seconds = elapsed.count() / 1000.0;
 
-    int totalGaussians = gaussians_->countAllGaussians();
-    int activeGaussians = int(gaussians_->getXYZ().size(0));
+    int totalTriangles = triangles_->countAllTriangles();
+    int activeTriangles = int(triangles_->getXYZ().size(0));
 
     // Get VRAM usage
     namespace c10Alloc = c10::cuda::CUDACachingAllocator;
@@ -201,8 +201,8 @@ void GaussianMapper::trainForOneIteration() {
     TrainingMetrics metrics;
     metrics.iteration = current_iteration;
     metrics.elapsed_time_seconds = elapsed_seconds;
-    metrics.active_gaussian_count = activeGaussians;
-    metrics.total_gaussian_count = totalGaussians;
+    metrics.active_triangle_count = activeTriangles;
+    metrics.total_triangle_count = totalTriangles;
     metrics.reserved_memory_mb = reserved_MB;
     metrics.allocated_memory_mb = alloc_MB;
     metrics.ram_usage_mb = getCurrentRAMUsageMB();
@@ -214,13 +214,13 @@ void GaussianMapper::trainForOneIteration() {
   auto iter_start_timing = std::chrono::steady_clock::now();
 
   // Select keyframe for training
-  std::shared_ptr<GaussianKeyframe> viewpoint_cam =
+  std::shared_ptr<TriangleKeyframe> viewpoint_cam =
       keyframe_selector_->getNextKeyframe();
 
   if (!viewpoint_cam) {
     increaseIteration(-1);
     throw std::runtime_error(
-        "[GaussianMapper] Keyframe not found for training");
+        "[TriangleMapper] Keyframe not found for training");
     return;
   }
 
@@ -247,21 +247,21 @@ void GaussianMapper::trainForOneIteration() {
           scene_->cameras_.at(viewpoint_cam->camera_id_)
               .gaus_pyramid_undistort_mask_);
 
-  // Mutex lock for usage of the gaussian model (Since we allow rendering at the
+  // Mutex lock for usage of the triangle model (Since we allow rendering at the
   // same time from e.g. GUI)
   std::unique_lock<std::mutex> lock_render(mutex_render_);
 
-  // Get mask for gaussians in visible chunks, also load/evict chunks as
+  // Get mask for triangles in visible chunks, also load/evict chunks as
   // necessary
-  torch::Tensor visible_gaussian_mask =
-      gaussians_->cullVisibleGaussians(viewpoint_cam);
+  torch::Tensor visible_triangle_mask =
+      triangles_->cullVisibleTriangles(viewpoint_cam);
 
   // Get view matrix of keyframe
   torch::Tensor view_matrix = viewpoint_cam->getRT().transpose(0, 1);
 
-  // Rasterize gaussians for selected keyframe
+  // Rasterize triangles for selected keyframe
   std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> render_pkg =
-      GaussianRenderer::render(gaussians_, visible_gaussian_mask, viewpoint_cam,
+      TriangleRenderer::render(triangles_, visible_triangle_mask, viewpoint_cam,
                                image_height, image_width, pipe_params_,
                                background_, override_color_, 1.0f, false,
                                viewpoint_cam->FoVx_, viewpoint_cam->FoVy_,
@@ -296,32 +296,32 @@ void GaussianMapper::trainForOneIteration() {
   // Optimizer step
   if (getIteration() < opt_params_.iterations_ ||
       opt_params_.iterations_ == -1) {
-    // visibility_filter from renderer is only for visible gaussians
+    // visibility_filter from renderer is only for visible triangles
     torch::Tensor subset_contributed = (radii > 0);
 
     // Map back to full model indices
     torch::Tensor full_model_contributed = torch::zeros(
-        {gaussians_->getXYZ().size(0)},
+        {triangles_->getXYZ().size(0)},
         torch::TensorOptions().dtype(torch::kBool).device(torch::kCUDA));
 
     // Compute indices only when needed for mapping radii back to full model
-    torch::Tensor visible_gaussian_indices =
-        torch::nonzero(visible_gaussian_mask).squeeze(1);
+    torch::Tensor visible_triangle_indices =
+        torch::nonzero(visible_triangle_mask).squeeze(1);
 
-    // Set true for gaussians that were both visible AND had radii > 0
-    full_model_contributed.index_put_({visible_gaussian_indices},
+    // Set true for triangles that were both visible AND had radii > 0
+    full_model_contributed.index_put_({visible_triangle_indices},
                                       subset_contributed);
 
-    gaussians_->optimizerStep(full_model_contributed,
-                              gaussians_->getXYZ().size(0));
+    triangles_->optimizerStep(full_model_contributed,
+                              triangles_->getXYZ().size(0));
   }
 
   // Zero out gradients
-  gaussians_->optimizer_->zero_grad(true);
+  triangles_->optimizer_->zero_grad(true);
 
-  // Occasionally, prune low opacity gaussians
+  // Occasionally, prune low opacity triangles
   if (getIteration() % 10 == 0) {
-    gaussians_->pruneLowOpacityGaussians(viewpoint_cam, visible_gaussian_mask);
+    triangles_->pruneLowOpacityTriangles(viewpoint_cam, visible_triangle_mask);
   }
 
   // Training statistics
@@ -366,17 +366,17 @@ void GaussianMapper::trainForOneIteration() {
   }
 }
 
-bool GaussianMapper::isStopped() {
+bool TriangleMapper::isStopped() {
   std::unique_lock<std::mutex> lock_status(this->mutex_status_);
   return this->stopped_;
 }
 
-void GaussianMapper::signalStop(const bool going_to_stop) {
+void TriangleMapper::signalStop(const bool going_to_stop) {
   std::unique_lock<std::mutex> lock_status(this->mutex_status_);
   this->stopped_ = going_to_stop;
 }
 
-bool GaussianMapper::hasMetInitialMappingConditions() {
+bool TriangleMapper::hasMetInitialMappingConditions() {
   if (!pSLAM_->isShutDown() &&
       pSLAM_->GetNumKeyframes() >= min_num_initial_map_kfs_ &&
       pSLAM_->getAtlas()->hasMappingOperation())
@@ -386,7 +386,7 @@ bool GaussianMapper::hasMetInitialMappingConditions() {
   return conditions_met;
 }
 
-bool GaussianMapper::hasMetIncrementalMappingConditions() {
+bool TriangleMapper::hasMetIncrementalMappingConditions() {
   if (!pSLAM_->isShutDown() && pSLAM_->getAtlas()->hasMappingOperation())
     return true;
 

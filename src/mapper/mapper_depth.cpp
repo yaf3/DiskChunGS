@@ -32,11 +32,11 @@
 #include <filesystem>
 #include <iostream>
 
-#include "gaussian_mapper.h"
+#include "triangle_mapper.h"
 #include "geometry/operate_points.h"
 #include "utils/tensor_utils.h"
 
-torch::Tensor GaussianMapper::computeLoGProbability(
+torch::Tensor TriangleMapper::computeLoGProbability(
     const torch::Tensor& image) {
   // Create Laplacian kernel for edge detection
   torch::Tensor laplacian_kernel = torch::tensor(
@@ -79,7 +79,7 @@ torch::Tensor GaussianMapper::computeLoGProbability(
   return torch::clamp(result, 0.0f, 1.0f);
 }
 
-void GaussianMapper::initializeLaplacianOfGaussianKernel() {
+void TriangleMapper::initializeLaplacianOfGaussianKernel() {
   constexpr int radius = LOG_KERNEL_RADIUS;
   constexpr int kernel_size = 2 * radius + 1;
 
@@ -106,7 +106,7 @@ void GaussianMapper::initializeLaplacianOfGaussianKernel() {
   disc_kernel_ = disc_kernel_.to(device_type_);
 }
 
-void GaussianMapper::initializeStereoDepthEstimator() {
+void TriangleMapper::initializeStereoDepthEstimator() {
   // Construct model path for configured resolution
   std::string onnx_path =
       std::string(DEPTH_MODEL_BASE_DIR) +
@@ -117,14 +117,14 @@ void GaussianMapper::initializeStereoDepthEstimator() {
   this->stereo_depth_estimator_ = std::make_shared<StereoDepth>(onnx_path);
 }
 
-void GaussianMapper::initializeMonocularDepthEstimator() {
+void TriangleMapper::initializeMonocularDepthEstimator() {
   std::string onnx_path =
       std::string(DEPTH_MODEL_BASE_DIR) + "depth_anything_v2_vitl.onnx";
 
   this->monocular_depth_estimator_ = std::make_shared<MonoDepth>(onnx_path);
 }
 
-torch::Tensor GaussianMapper::sampleConf(const torch::Tensor& mono_depth_conf,
+torch::Tensor TriangleMapper::sampleConf(const torch::Tensor& mono_depth_conf,
                                          const torch::Tensor& uv,
                                          int width,
                                          int height) {

@@ -123,7 +123,7 @@ include_directories(
 )
 
 ##################################################################################
-##  Build the gaussian splatting component libraries to ${PROJECT_SOURCE_DIR}/lib
+##  Build the triangle splatting component libraries to ${PROJECT_SOURCE_DIR}/lib
 ##################################################################################
 
 add_library(
@@ -222,27 +222,27 @@ add_library(
 target_link_libraries(imgui glfw OpenGL::GL)
 
 ##################################################################################
-##  Build the gaussian mapper library to ${PROJECT_SOURCE_DIR}/lib
+##  Build the triangle mapper library to ${PROJECT_SOURCE_DIR}/lib
 ##################################################################################
 
 add_library(
-    gaussian_mapper
+    triangle_mapper
     SHARED
     # Core headers
-    include/gaussian_mapper.h
+    include/triangle_mapper.h
     include/camera.h
     include/types.h
     include/chunk_types.h
     # Scene
-    include/scene/gaussian_keyframe.h
-    include/scene/gaussian_parameters.h
-    include/scene/gaussian_scene.h
+    include/scene/triangle_keyframe.h
+    include/scene/triangle_parameters.h
+    include/scene/triangle_scene.h
     include/scene/keyframe_selection.h
     # Model
-    include/model/gaussian_model.h
+    include/model/triangle_model.h
     # Rendering
-    include/rendering/gaussian_rasterizer.h
-    include/rendering/gaussian_renderer.h
+    include/rendering/triangle_rasterizer.h
+    include/rendering/triangle_renderer.h
     include/rendering/frustum_culler.h
     # Depth
     include/depth/stereo_depth.h
@@ -261,7 +261,7 @@ add_library(
     include/utils/profiling.h
     include/utils/debugging_utils.h
     include/utils/trajectory_viewer.h
-    # Gaussian mapper implementation
+    # Triangle mapper implementation
     src/mapper/mapper_config.cpp
     src/mapper/mapper_initialization.cpp
     src/mapper/mapper_core.cpp
@@ -277,13 +277,13 @@ add_library(
     src/model/model_pruning.cpp
     src/model/model_storage.cpp
     # Scene implementation
-    src/scene/gaussian_keyframe.cpp
-    src/scene/gaussian_parameters.cpp
-    src/scene/gaussian_scene.cpp
+    src/scene/triangle_keyframe.cpp
+    src/scene/triangle_parameters.cpp
+    src/scene/triangle_scene.cpp
     src/scene/keyframe_selection.cpp
     # Rendering implementation
-    src/rendering/gaussian_rasterizer.cpp
-    src/rendering/gaussian_renderer.cpp
+    src/rendering/triangle_rasterizer.cpp
+    src/rendering/triangle_renderer.cpp
     src/rendering/frustum_culler.cpp
     # Depth implementation
     src/depth/stereo_depth.cpp
@@ -294,7 +294,7 @@ add_library(
     src/utils/trajectory_viewer.cpp
 )
 target_link_libraries(
-    gaussian_mapper
+    triangle_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so
     ${OpenCV_LIBRARIES}
     jsoncpp_lib
@@ -312,7 +312,7 @@ target_link_libraries(
 ##################################################################################
 
 add_library(
-    gaussian_viewer
+    triangle_viewer
     SHARED
     viewer/drawer_utils.h
     viewer/imgui_viewer.cpp
@@ -321,9 +321,9 @@ add_library(
     viewer/map_drawer.h
 )
 target_link_libraries(
-    gaussian_viewer
+    triangle_viewer
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so
-    gaussian_mapper
+    triangle_mapper
     imgui
     ${OpenCV_LIBRARIES}
     jsoncpp_lib
@@ -338,7 +338,7 @@ target_link_libraries(
 ##################################################################################
 
 add_executable(view_result examples/view_result.cpp)
-target_link_libraries(view_result gaussian_viewer gaussian_mapper)
+target_link_libraries(view_result triangle_viewer triangle_mapper)
 
 ##################################################################################
 ##  Build the mapping examples to ${PROJECT_SOURCE_DIR}/bin
@@ -348,8 +348,8 @@ target_link_libraries(view_result gaussian_viewer gaussian_mapper)
 add_executable(replica_mono examples/replica_mono.cpp)
 target_link_libraries(
     replica_mono
-    gaussian_viewer
-    gaussian_mapper
+    triangle_viewer
+    triangle_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so
 )
 
@@ -357,8 +357,8 @@ target_link_libraries(
 add_executable(replica_rgbd examples/replica_rgbd.cpp)
 target_link_libraries(
     replica_rgbd
-    gaussian_viewer
-    gaussian_mapper
+    triangle_viewer
+    triangle_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so
 )
 
@@ -366,8 +366,8 @@ target_link_libraries(
 add_executable(tum_mono examples/tum_mono.cpp)
 target_link_libraries(
     tum_mono
-    gaussian_viewer
-    gaussian_mapper
+    triangle_viewer
+    triangle_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so
 )
 
@@ -375,16 +375,16 @@ target_link_libraries(
 add_executable(tum_rgbd examples/tum_rgbd.cpp)
 target_link_libraries(
     tum_rgbd
-    gaussian_viewer
-    gaussian_mapper
+    triangle_viewer
+    triangle_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so
 )
 
 # KITTI Stereo
 add_executable(kitti_stereo examples/kitti_stereo.cpp)
 target_link_libraries(kitti_stereo
-    gaussian_viewer    
-    gaussian_mapper
+    triangle_viewer    
+    triangle_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
 
 ##################################################################################

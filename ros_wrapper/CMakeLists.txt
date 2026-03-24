@@ -73,8 +73,8 @@ find_package(glm REQUIRED)
 find_package(glfw3 REQUIRED)
 
 # Set the path to project root and ORB_SLAM3
-set(GAUSSIAN_SLAM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/..)
-set(ORB_SLAM3_SOURCE_DIR "${GAUSSIAN_SLAM_DIR}/slam_deps/ORB-SLAM3")
+set(TRIANGLE_SLAM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/..)
+set(ORB_SLAM3_SOURCE_DIR "${TRIANGLE_SLAM_DIR}/slam_deps/ORB-SLAM3")
 
 # Specify catkin package information
 catkin_package(
@@ -109,8 +109,8 @@ add_library(${PROJECT_NAME}
 
 target_link_libraries(${PROJECT_NAME}
   ${catkin_LIBRARIES}
-  ${DiskChunGS_MAIN_DIR}/lib/libgaussian_mapper.so
-  ${DiskChunGS_MAIN_DIR}/lib/libgaussian_viewer.so
+  ${DiskChunGS_MAIN_DIR}/lib/libtriangle_mapper.so
+  ${DiskChunGS_MAIN_DIR}/lib/libtriangle_viewer.so
   ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so
   ${OpenCV_LIBRARIES}
   ${CUDA_LIBRARIES}

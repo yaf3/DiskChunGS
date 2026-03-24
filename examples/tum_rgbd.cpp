@@ -32,7 +32,7 @@
 #include <thread>
 
 #include "ORB-SLAM3/include/System.h"
-#include "gaussian_mapper.h"
+#include "triangle_mapper.h"
 #include "viewer/imgui_viewer.h"
 
 void LoadImages(const std::string &strAssociationFilename,
@@ -48,7 +48,7 @@ int main(int argc, char **argv) {
     std::cerr << std::endl
               << "Usage: " << argv[0] << " path_to_vocabulary" /*1*/
               << " path_to_ORB_SLAM3_settings"                 /*2*/
-              << " path_to_gaussian_mapping_settings"          /*3*/
+              << " path_to_triangle_mapping_settings"          /*3*/
               << " path_to_sequence"                           /*4*/
               << " path_to_association"                        /*5*/
               << " path_to_trajectory_output_directory/"       /*6*/
@@ -102,18 +102,18 @@ int main(int argc, char **argv) {
   float imageScale = pSLAM->GetImageScale();
   std::cout << imageScale << std::endl;
 
-  // Create GaussianMapper
-  std::filesystem::path gaussian_cfg_path(argv[3]);
-  std::shared_ptr<GaussianMapper> pGausMapper =
-      std::make_shared<GaussianMapper>(pSLAM, gaussian_cfg_path, output_dir, 0,
+  // Create TriangleMapper
+  std::filesystem::path triangle_cfg_path(argv[3]);
+  std::shared_ptr<TriangleMapper> pTriMapper =
+      std::make_shared<TriangleMapper>(pSLAM, triangle_cfg_path, output_dir, 0,
                                        device_type);
-  std::thread training_thd(&GaussianMapper::run, pGausMapper.get());
+  std::thread training_thd(&TriangleMapper::run, pTriMapper.get());
 
-  // Create Gaussian Viewer
+  // Create Triangle Viewer
   std::thread viewer_thd;
   std::shared_ptr<ImGuiViewer> pViewer;
   if (use_viewer) {
-    pViewer = std::make_shared<ImGuiViewer>(pSLAM, pGausMapper);
+    pViewer = std::make_shared<ImGuiViewer>(pSLAM, pTriMapper);
     viewer_thd = std::thread(&ImGuiViewer::run, pViewer.get());
   }
 

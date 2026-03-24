@@ -25,7 +25,7 @@ static void glfw_error_callback(int error, const char* description) {
 }
 
 ImGuiViewer::ImGuiViewer(std::shared_ptr<ORB_SLAM3::System> pSLAM,
-                         std::shared_ptr<GaussianMapper> pGausMapper,
+                         std::shared_ptr<TriangleMapper> pTriMapper,
                          bool training,
                          bool external_mode)
     : glfw_window_width_(1600),
@@ -37,7 +37,7 @@ ImGuiViewer::ImGuiViewer(std::shared_ptr<ORB_SLAM3::System> pSLAM,
       SLAM_image_viewer_scale_(1.0f),
       training_(training) {
   this->pSLAM_ = pSLAM;
-  this->pGausMapper_ = pGausMapper;
+  this->pTriMapper_ = pTriMapper;
   this->external_mode_ = external_mode;
 
   cv::Size im_size;
@@ -54,16 +54,16 @@ ImGuiViewer::ImGuiViewer(std::shared_ptr<ORB_SLAM3::System> pSLAM,
     viewpointZ_ = settings->viewPointZ();
     viewpointF_ = settings->camera1()->getParameter(1);
   } else {
-    image_height_ = pGausMapper->scene_->cameras_.begin()->second.height_;
-    image_width_ = pGausMapper->scene_->cameras_.begin()->second.width_;
-    viewpointF_ = pGausMapper->scene_->cameras_.begin()->second.params_[1];
+    image_height_ = pTriMapper->scene_->cameras_.begin()->second.height_;
+    image_width_ = pTriMapper->scene_->cameras_.begin()->second.width_;
+    viewpointF_ = pTriMapper->scene_->cameras_.begin()->second.params_[1];
   }
 
-  main_fx_ = pGausMapper->scene_->cameras_.begin()->second.params_[0];
-  main_fy_ = pGausMapper->scene_->cameras_.begin()->second.params_[1];
+  main_fx_ = pTriMapper->scene_->cameras_.begin()->second.params_[0];
+  main_fy_ = pTriMapper->scene_->cameras_.begin()->second.params_[1];
 
-  // Gaussian Mapper settings
-  std::filesystem::path cfg_file_path = pGausMapper->config_file_path_;
+  // Triangle Mapper settings
+  std::filesystem::path cfg_file_path = pTriMapper->config_file_path_;
   readConfigFromFile(cfg_file_path);
   SLAM_image_viewer_scale_ =
       static_cast<float>(rendered_image_width_) / image_width_;
@@ -99,14 +99,14 @@ void ImGuiViewer::readConfigFromFile(std::filesystem::path cfg_path) {
   std::cout << "[ImGuiViewer]Reading parameters from " << cfg_path << std::endl;
 
   glfw_window_width_ =
-      settings_file["GaussianViewer.glfw_window_width"].operator int();
+      settings_file["TriangleViewer.glfw_window_width"].operator int();
   glfw_window_height_ =
-      settings_file["GaussianViewer.glfw_window_height"].operator int();
+      settings_file["TriangleViewer.glfw_window_height"].operator int();
   main_cx_ = glfw_window_width_ / 2;
   main_cy_ = glfw_window_height_ / 2;
 
   rendered_image_viewer_scale_ =
-      settings_file["GaussianViewer.image_scale"].operator float();
+      settings_file["TriangleViewer.image_scale"].operator float();
   rendered_image_height_ = image_height_ * rendered_image_viewer_scale_;
   rendered_image_width_ = image_width_ * rendered_image_viewer_scale_;
 
@@ -114,7 +114,7 @@ void ImGuiViewer::readConfigFromFile(std::filesystem::path cfg_path) {
   padded_sub_image_width_ = rendered_image_width_ + 4 - (temp == 0 ? 4 : temp);
 
   rendered_image_viewer_scale_main_ =
-      settings_file["GaussianViewer.image_scale_main"].operator float();
+      settings_file["TriangleViewer.image_scale_main"].operator float();
   rendered_image_height_main_ =
       image_height_ * rendered_image_viewer_scale_main_;
   rendered_image_width_main_ = image_width_ * rendered_image_viewer_scale_main_;
@@ -124,17 +124,17 @@ void ImGuiViewer::readConfigFromFile(std::filesystem::path cfg_path) {
       rendered_image_width_main_ + 4 - (temp == 0 ? 4 : temp);
 
   camera_watch_dist_ =
-      settings_file["GaussianViewer.camera_watch_dist"].operator float();
+      settings_file["TriangleViewer.camera_watch_dist"].operator float();
 
-  // Initialize configurations same as the GaussianMapper
-  position_lr_init_ = pGausMapper_->positionLearningRateInit();
-  feature_lr_ = pGausMapper_->featureLearningRate();
-  opacity_lr_ = pGausMapper_->opacityLearningRate();
-  scaling_lr_ = pGausMapper_->scalingLearningRate();
-  rotation_lr_ = pGausMapper_->rotationLearningRate();
-  lambda_dssim_ = pGausMapper_->lambdaDssim();
-  new_kf_times_of_use_ = pGausMapper_->newKeyframeTimesOfUse();
-  stable_num_iter_existence_ = pGausMapper_->stableNumIterExistence();
+  // Initialize configurations same as the TriangleMapper
+  position_lr_init_ = pTriMapper_->positionLearningRateInit();
+  feature_lr_ = pTriMapper_->featureLearningRate();
+  opacity_lr_ = pTriMapper_->opacityLearningRate();
+  scaling_lr_ = pTriMapper_->scalingLearningRate();
+  rotation_lr_ = pTriMapper_->rotationLearningRate();
+  lambda_dssim_ = pTriMapper_->lambdaDssim();
+  new_kf_times_of_use_ = pTriMapper_->newKeyframeTimesOfUse();
+  stable_num_iter_existence_ = pTriMapper_->stableNumIterExistence();
 }
 
 void ImGuiViewer::run() {
@@ -280,7 +280,7 @@ void ImGuiViewer::run() {
         pMapDrawer_->GetOpenGLCameraMatrix(false, TcwInit, glmTwcInit, OwInit);
     } else if (external_mode_) {
       auto [external_img, external_pose] =
-          pGausMapper_->getRecentExternalData();
+          pTriMapper_->getRecentExternalData();
       if (!external_img.empty()) {
         // external_pose is Tcw, so invert to get Twc first
         Eigen::Matrix4f Twc = external_pose.inverse().matrix();
@@ -379,10 +379,10 @@ void ImGuiViewer::run() {
         ImGui::End();
       }
 
-      //--------------Draw current gaussian mapper frame image--------------
+      //--------------Draw current triangle mapper frame image--------------
       if (show_current_rendered_) {
-        // Render gaussian mapper frame
-        auto render_result = pGausMapper_->renderFromPose(
+        // Render triangle mapper frame
+        auto render_result = pTriMapper_->renderFromPose(
             Tcw, rendered_image_width_, rendered_image_height_, false);
         cv::Mat rendered_img =
             show_depth_view_ ? applyInfernoColormap(std::get<1>(render_result))
@@ -419,7 +419,7 @@ void ImGuiViewer::run() {
       cv::Mat SLAM_img_to_show;
       // cv::Mat SLAM_img_with_text = pSlamFrameDrawer_->DrawFrame(1.0f);
       auto [external_img, external_pose] =
-          pGausMapper_->getRecentExternalData();
+          pTriMapper_->getRecentExternalData();
       if (!external_img.empty()) {
         cv::Mat SLAM_img_with_text = external_img;
         if (SLAM_image_viewer_scale_ != 1.0f) {
@@ -454,10 +454,10 @@ void ImGuiViewer::run() {
           ImGui::End();
         }
       }
-      //--------------Draw current gaussian mapper frame image--------------
+      //--------------Draw current triangle mapper frame image--------------
       if (show_current_rendered_) {
-        // Render gaussian mapper frame
-        auto render_result = pGausMapper_->renderFromPose(
+        // Render triangle mapper frame
+        auto render_result = pTriMapper_->renderFromPose(
             Tcw, rendered_image_width_, rendered_image_height_, false);
         cv::Mat rendered_img =
             show_depth_view_ ? applyInfernoColormap(std::get<1>(render_result))
@@ -496,7 +496,7 @@ void ImGuiViewer::run() {
       auto drawlist = ImGui::GetBackgroundDrawList();
       if (tracking_vision_) {
         if (!show_current_rendered_) {
-          auto render_result = pGausMapper_->renderFromPose(
+          auto render_result = pTriMapper_->renderFromPose(
               Tcw, rendered_image_width_, rendered_image_height_, false);
           cv::Mat rendered_img =
               show_depth_view_
@@ -516,7 +516,7 @@ void ImGuiViewer::run() {
                            ImVec2(glfw_window_width_, glfw_window_height_));
       } else {
         auto main_render_result =
-            pGausMapper_->renderFromPose(Tcw_main_, rendered_image_width_main_,
+            pTriMapper_->renderFromPose(Tcw_main_, rendered_image_width_main_,
                                          rendered_image_height_main_, true);
         cv::Mat main_img =
             show_depth_view_
@@ -570,7 +570,7 @@ void ImGuiViewer::run() {
         ImGui::Begin("Training Insight");
 
         // Get current iteration and time
-        int current_iteration = pGausMapper_->getIteration();
+        int current_iteration = pTriMapper_->getIteration();
         double current_time = glfwGetTime();
 
         // Calculate iterations per second
@@ -583,19 +583,19 @@ void ImGuiViewer::run() {
 
         ImGui::Text("Iteration: %d", current_iteration);
         ImGui::Text("Speed: %.1f iter/s", iterations_per_second_);
-        if (pGausMapper_->gaussians_ &&
-            pGausMapper_->gaussians_->is_initialized_) {
-          ImGui::Text("Gaussians in VRAM: %d",
-                      static_cast<int>(pGausMapper_->gaussians_->xyz_.size(0)));
+        if (pTriMapper_->triangles_ &&
+            pTriMapper_->triangles_->is_initialized_) {
+          ImGui::Text("Triangles in VRAM: %d",
+                      static_cast<int>(pTriMapper_->triangles_->xyz_.size(0)));
           ImGui::Text(
               "Chunks loaded: %d",
               static_cast<int>(
-                  pGausMapper_->gaussians_->chunks_loaded_from_disk_.size(0)));
+                  pTriMapper_->triangles_->chunks_loaded_from_disk_.size(0)));
           ImGui::Text("Chunks on disk: %d",
                       static_cast<int>(
-                          pGausMapper_->gaussians_->chunks_on_disk_.size(0)));
+                          pTriMapper_->triangles_->chunks_on_disk_.size(0)));
         } else {
-          ImGui::Text("Gaussians in VRAM: Not initialized");
+          ImGui::Text("Triangles in VRAM: Not initialized");
           ImGui::Text("Active Chunks: Not initialized");
           ImGui::Text("Total Chunks: Not initialized");
         }
@@ -666,7 +666,7 @@ void ImGuiViewer::run() {
       last_render_time_ = glfwGetTime();
     }
 
-    if (!keep_training_ && pGausMapper_->isStopped()) signalStop();
+    if (!keep_training_ && pTriMapper_->isStopped()) signalStop();
   }
 
   // Cleanup
@@ -680,9 +680,9 @@ void ImGuiViewer::run() {
   if (pSLAM_ && !pSLAM_->isShutDown())
     pSLAM_->Shutdown();
   else
-    pGausMapper_->signalStop();
+    pTriMapper_->signalStop();
 
-  if (pGausMapper_->isKeepingTraining()) pGausMapper_->setKeepTraining(false);
+  if (pTriMapper_->isKeepingTraining()) pTriMapper_->setKeepTraining(false);
 }
 
 bool ImGuiViewer::isStopped() {
@@ -814,7 +814,7 @@ void ImGuiViewer::keyboardEvent() {
   if (ImGui::IsKeyDown(ImGuiKey_D)) translating.x() += 1.0f;
   // Velocity (scale with scene extent)
   translating *= keyboard_velocity_;
-  translating *= keyboard_velocity_ * pGausMapper_->scene_->cameras_extent_;
+  translating *= keyboard_velocity_ * pTriMapper_->scene_->cameras_extent_;
   //-------------
 
   //---Rotation---

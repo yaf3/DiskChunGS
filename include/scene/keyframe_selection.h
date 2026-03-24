@@ -21,8 +21,8 @@
 #include <memory>
 #include <random>
 
-#include "scene/gaussian_keyframe.h"
-#include "scene/gaussian_scene.h"
+#include "scene/triangle_keyframe.h"
+#include "scene/triangle_scene.h"
 
 /**
  * @brief Manages keyframe selection for Gaussian Splatting optimization.
@@ -37,7 +37,7 @@ class KeyframeSelection {
  public:
   /**
    * @brief Constructs a keyframe selection manager.
-   * @param scene Shared pointer to the Gaussian scene containing keyframes.
+   * @param scene Shared pointer to the Triangle scene containing keyframes.
    * @param chunk_size Spatial size of each chunk for grouping keyframes.
    * @param auto_distribute Divisor for selecting top-k high-loss keyframes
    *                        (selects top 1/auto_distribute fraction).
@@ -45,7 +45,7 @@ class KeyframeSelection {
    * @param used_times_map Optional pointer to map tracking keyframe usage
    * counts.
    */
-  KeyframeSelection(std::shared_ptr<GaussianScene> scene,
+  KeyframeSelection(std::shared_ptr<TriangleScene> scene,
                     float chunk_size = 200.0f,
                     int auto_distribute = 4,
                     const std::map<std::size_t, float>* loss_map = nullptr,
@@ -59,7 +59,7 @@ class KeyframeSelection {
    *
    * @return Shared pointer to the selected keyframe, or nullptr if unavailable.
    */
-  std::shared_ptr<GaussianKeyframe> getNextKeyframe();
+  std::shared_ptr<TriangleKeyframe> getNextKeyframe();
 
   /**
    * @brief Updates the chunk-to-keyframe mapping for a given keyframe.
@@ -68,7 +68,7 @@ class KeyframeSelection {
    *                        it to its chunk. If false, removes old associations
    *                        before re-adding (for pose updates).
    */
-  void updateChunkKeyframeMapping(std::shared_ptr<GaussianKeyframe> keyframe,
+  void updateChunkKeyframeMapping(std::shared_ptr<TriangleKeyframe> keyframe,
                                   bool is_new_keyframe = false);
 
   /**
@@ -78,27 +78,27 @@ class KeyframeSelection {
   int getQueueSize() const;
 
  private:
-  std::shared_ptr<GaussianScene> scene_;
+  std::shared_ptr<TriangleScene> scene_;
   float chunk_size_;
   int auto_distribute_;
 
   const std::map<std::size_t, float>* loss_map_;
   std::map<std::size_t, int>* used_times_map_;
 
-  std::shared_ptr<GaussianKeyframe> latest_keyframe_;
+  std::shared_ptr<TriangleKeyframe> latest_keyframe_;
 
   std::mt19937 rng_;
 
-  std::map<int64_t, std::vector<std::shared_ptr<GaussianKeyframe>>>
+  std::map<int64_t, std::vector<std::shared_ptr<TriangleKeyframe>>>
       chunk_to_keyframes_;
 
-  std::deque<std::shared_ptr<GaussianKeyframe>> gpu_queue_;
+  std::deque<std::shared_ptr<TriangleKeyframe>> gpu_queue_;
   size_t max_gpu_keyframes_ = 400;
 
   /** @brief Converts a 3D torch tensor to an Eigen vector. */
   Eigen::Vector3f tensorToEigen(const torch::Tensor& tensor) const;
 
   /** @brief Increases the remaining usage allowance for a keyframe. */
-  void increaseKeyframeTimesOfUse(std::shared_ptr<GaussianKeyframe> keyframe,
+  void increaseKeyframeTimesOfUse(std::shared_ptr<TriangleKeyframe> keyframe,
                                   int additional_uses);
 };

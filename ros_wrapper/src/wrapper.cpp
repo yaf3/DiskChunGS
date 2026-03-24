@@ -24,8 +24,8 @@ WrapperConfig WrapperConfig::loadFromROS(ros::NodeHandle &pnh) {
   if (!pnh.getParam("orb_settings_path", config.orb_settings_path)) {
     throw std::runtime_error("Failed to load orb_settings_path parameter");
   }
-  if (!pnh.getParam("gaussian_settings_path", config.gaussian_settings_path)) {
-    throw std::runtime_error("Failed to load gaussian_settings_path parameter");
+  if (!pnh.getParam("triangle_settings_path", config.triangle_settings_path)) {
+    throw std::runtime_error("Failed to load triangle_settings_path parameter");
   }
   if (!pnh.getParam("output_directory", config.output_directory)) {
     throw std::runtime_error("Failed to load output_directory parameter");
@@ -64,9 +64,9 @@ WrapperConfig WrapperConfig::loadFromROS(ros::NodeHandle &pnh) {
     throw std::runtime_error("ORB settings file not found: " +
                              config.orb_settings_path);
   }
-  if (!std::filesystem::exists(config.gaussian_settings_path)) {
-    throw std::runtime_error("Gaussian settings file not found: " +
-                             config.gaussian_settings_path);
+  if (!std::filesystem::exists(config.triangle_settings_path)) {
+    throw std::runtime_error("Triangle settings file not found: " +
+                             config.triangle_settings_path);
   }
 
   // Log configuration
@@ -75,8 +75,8 @@ WrapperConfig WrapperConfig::loadFromROS(ros::NodeHandle &pnh) {
   ROS_INFO("  slam_mode: %s", config.slam_mode.c_str());
   ROS_INFO("  vocabulary_path: %s", config.vocabulary_path.c_str());
   ROS_INFO("  orb_settings_path: %s", config.orb_settings_path.c_str());
-  ROS_INFO("  gaussian_settings_path: %s",
-           config.gaussian_settings_path.c_str());
+  ROS_INFO("  triangle_settings_path: %s",
+           config.triangle_settings_path.c_str());
   ROS_INFO("  output_directory: %s", config.output_directory.c_str());
   ROS_INFO("  timeout_duration: %.1f seconds", config.timeout_duration);
   ROS_INFO("  use_viewer: %d", config.use_viewer);
@@ -89,18 +89,18 @@ WrapperConfig WrapperConfig::loadFromROS(ros::NodeHandle &pnh) {
   return config;
 }
 
-GaussianSLAMWrapper::GaussianSLAMWrapper(ros::NodeHandle &nh,
+TriangleSLAMWrapper::TriangleSLAMWrapper(ros::NodeHandle &nh,
                                          ros::NodeHandle &pnh)
     : nh_(nh),
       pnh_(pnh),
       tfListener(tfBuffer),
       config_(WrapperConfig::loadFromROS(pnh)) {
-  ROS_INFO("GaussianSLAMWrapper constructor starting...");
+  ROS_INFO("TriangleSLAMWrapper constructor starting...");
 
   timeout_timer_ = nh_.createTimer(ros::Duration(1.0),
-                                   &GaussianSLAMWrapper::timeoutCallback, this);
+                                   &TriangleSLAMWrapper::timeoutCallback, this);
   status_check_timer_ = nh_.createTimer(
-      ros::Duration(1.0), &GaussianSLAMWrapper::checkMappingStatus, this);
+      ros::Duration(1.0), &TriangleSLAMWrapper::checkMappingStatus, this);
 
   // Initialize subscribers based on mode
   if (config_.mode == "stereo") {
@@ -119,7 +119,7 @@ GaussianSLAMWrapper::GaussianSLAMWrapper(ros::NodeHandle &nh,
     initializeSLAMSystem();
   }
 
-  initializeGaussianMapper();
+  initializeTriangleMapper();
 
   // Register appropriate callback based on mode
   if (config_.mode == "stereo") {
@@ -127,26 +127,26 @@ GaussianSLAMWrapper::GaussianSLAMWrapper(ros::NodeHandle &nh,
     ROS_INFO("Left topic: %s", image_sub_.getTopic().c_str());
     ROS_INFO("Right topic: %s", right_sub_.getTopic().c_str());
     sync_->registerCallback(
-        boost::bind(&GaussianSLAMWrapper::stereoCallback, this, _1, _2));
+        boost::bind(&TriangleSLAMWrapper::stereoCallback, this, _1, _2));
   } else if (config_.mode == "rgbd") {
     ROS_INFO("Registering RGB-D callback...");
     ROS_INFO("RGB topic: %s", image_sub_.getTopic().c_str());
     ROS_INFO("Depth topic: %s", depth_sub_.getTopic().c_str());
     rgbd_sync_->registerCallback(
-        boost::bind(&GaussianSLAMWrapper::rgbdCallback, this, _1, _2));
+        boost::bind(&TriangleSLAMWrapper::rgbdCallback, this, _1, _2));
   } else if (config_.mode == "mono") {
     ROS_INFO("Registering mono callback...");
     mono_sub_ = nh_.subscribe(config_.image_topic, 1,
-                              &GaussianSLAMWrapper::monoCallback, this);
+                              &TriangleSLAMWrapper::monoCallback, this);
     ROS_INFO("Image topic: %s", config_.image_topic.c_str());
   } else {
     throw std::runtime_error("Invalid mode: " + config_.mode);
   }
 
-  ROS_INFO("GaussianSLAMWrapper initialization complete!");
+  ROS_INFO("TriangleSLAMWrapper initialization complete!");
 }
 
-bool GaussianSLAMWrapper::getExternalPose(Sophus::SE3f &pose,
+bool TriangleSLAMWrapper::getExternalPose(Sophus::SE3f &pose,
                                           double timestamp) {
   // First attempt with waitForTransform to block until the transform is
   // available
@@ -191,7 +191,7 @@ bool GaussianSLAMWrapper::getExternalPose(Sophus::SE3f &pose,
   }
 }
 
-void GaussianSLAMWrapper::initializeSLAMSystem() {
+void TriangleSLAMWrapper::initializeSLAMSystem() {
   ROS_INFO("Initializing SLAM system...");
   try {
     ORB_SLAM3::System::eSensor system_mode;
@@ -215,8 +215,8 @@ void GaussianSLAMWrapper::initializeSLAMSystem() {
   }
 }
 
-void GaussianSLAMWrapper::initializeGaussianMapper() {
-  ROS_INFO("Creating Gaussian Mapper...");
+void TriangleSLAMWrapper::initializeTriangleMapper() {
+  ROS_INFO("Creating Triangle Mapper...");
 
   if (config_.slam_mode == "external") {
     ORB_SLAM3::System::eSensor sensor_type;
@@ -228,40 +228,40 @@ void GaussianSLAMWrapper::initializeGaussianMapper() {
     } else if (config_.mode == "rgbd") {
       sensor_type = ORB_SLAM3::System::RGBD;
     } else {
-      throw std::runtime_error("[Gaussian Mapper]Unsupported sensor type!");
+      throw std::runtime_error("[Triangle Mapper]Unsupported sensor type!");
     }
 
-    gaussian_mapper_ = std::make_shared<GaussianMapper>(
-        slam_system_, config_.gaussian_settings_path, config_.output_directory,
+    triangle_mapper_ = std::make_shared<TriangleMapper>(
+        slam_system_, config_.triangle_settings_path, config_.output_directory,
         0, torch::kCUDA, sensor_type, config_.orb_settings_path);
 
-    gaussian_mapper_->setCompletionCallback(
+    triangle_mapper_->setCompletionCallback(
         [this]() { this->mapping_completed_.store(true); });
 
-    mapper_thread_ = std::thread(&GaussianMapper::run_external_poses,
-                                 gaussian_mapper_.get());
+    mapper_thread_ = std::thread(&TriangleMapper::run_external_poses,
+                                 triangle_mapper_.get());
 
   } else if (config_.slam_mode == "orbslam") {
-    gaussian_mapper_ = std::make_shared<GaussianMapper>(
-        slam_system_, config_.gaussian_settings_path, config_.output_directory,
+    triangle_mapper_ = std::make_shared<TriangleMapper>(
+        slam_system_, config_.triangle_settings_path, config_.output_directory,
         0,            // stream id
         torch::kCUDA  // assuming CUDA is available
     );
 
-    mapper_thread_ = std::thread(&GaussianMapper::run, gaussian_mapper_.get());
+    mapper_thread_ = std::thread(&TriangleMapper::run, triangle_mapper_.get());
   }
 
   if (config_.use_viewer) {
     ROS_INFO("Initializing viewer...");
     viewer_ =
-        std::make_shared<ImGuiViewer>(slam_system_, gaussian_mapper_, true,
+        std::make_shared<ImGuiViewer>(slam_system_, triangle_mapper_, true,
                                       (config_.slam_mode == "external"));
     viewer_thread_ = std::thread(&ImGuiViewer::run, viewer_.get());
     ROS_INFO("Viewer initialized and started.");
   }
 }
 
-void GaussianSLAMWrapper::monoCallback(const sensor_msgs::ImageConstPtr &msg) {
+void TriangleSLAMWrapper::monoCallback(const sensor_msgs::ImageConstPtr &msg) {
   updateCallbackTime();
   cv_bridge::CvImageConstPtr cv_ptr;
   try {
@@ -289,7 +289,7 @@ void GaussianSLAMWrapper::monoCallback(const sensor_msgs::ImageConstPtr &msg) {
   }
 }
 
-void GaussianSLAMWrapper::stereoCallback(
+void TriangleSLAMWrapper::stereoCallback(
     const sensor_msgs::ImageConstPtr &msg_left,
     const sensor_msgs::ImageConstPtr &msg_right) {
   updateCallbackTime();
@@ -321,7 +321,7 @@ void GaussianSLAMWrapper::stereoCallback(
     if (config_.slam_mode == "external") {
       Sophus::SE3f Tcw;
       if (getExternalPose(Tcw, timestamp)) {
-        gaussian_mapper_->handleNewFrameExternal(
+        triangle_mapper_->handleNewFrameExternal(
             cv_left->image, cv_right->image, Tcw, timestamp);
       }
     } else if (config_.slam_mode == "orbslam") {
@@ -343,7 +343,7 @@ void GaussianSLAMWrapper::stereoCallback(
   }
 }
 
-void GaussianSLAMWrapper::rgbdCallback(
+void TriangleSLAMWrapper::rgbdCallback(
     const sensor_msgs::ImageConstPtr &msg_rgb,
     const sensor_msgs::ImageConstPtr &msg_depth) {
   updateCallbackTime();
@@ -381,7 +381,7 @@ void GaussianSLAMWrapper::rgbdCallback(
       if (config_.slam_mode == "external") {
         Sophus::SE3f Tcw;
         if (getExternalPose(Tcw, timestamp)) {
-          gaussian_mapper_->handleNewFrameExternal(
+          triangle_mapper_->handleNewFrameExternal(
               cv_rgb->image, cv_depth->image, Tcw, timestamp);
         }
       } else if (config_.slam_mode == "orbslam") {
@@ -402,7 +402,7 @@ void GaussianSLAMWrapper::rgbdCallback(
     return;
   }
 }
-void GaussianSLAMWrapper::timeoutCallback(const ros::TimerEvent &event) {
+void TriangleSLAMWrapper::timeoutCallback(const ros::TimerEvent &event) {
   std::lock_guard<std::mutex> lock(timeout_mutex_);
 
   // Only check for timeout if we've started receiving data and haven't already
@@ -416,19 +416,19 @@ void GaussianSLAMWrapper::timeoutCallback(const ros::TimerEvent &event) {
           "stopped",
           elapsed.toSec());
 
-      // Signal to the gaussian mapper that the external data has stopped
-      if (gaussian_mapper_) {
-        ROS_INFO("Calling signalExternalDataStopped on gaussian mapper");
-        gaussian_mapper_->signalExternalDataStopped();
+      // Signal to the triangle mapper that the external data has stopped
+      if (triangle_mapper_) {
+        ROS_INFO("Calling signalExternalDataStopped on triangle mapper");
+        triangle_mapper_->signalExternalDataStopped();
         stopped_ = true;
-        ROS_INFO("Called signalExternalDataStopped on gaussian mapper");
+        ROS_INFO("Called signalExternalDataStopped on triangle mapper");
       }
     }
   }
 }
 
 // Add a helper method to update the last callback time
-void GaussianSLAMWrapper::updateCallbackTime() {
+void TriangleSLAMWrapper::updateCallbackTime() {
   std::lock_guard<std::mutex> lock(timeout_mutex_);
   last_callback_time_ = ros::Time::now();
   if (!data_started_) {
@@ -437,7 +437,7 @@ void GaussianSLAMWrapper::updateCallbackTime() {
   }
 }
 
-void GaussianSLAMWrapper::checkMappingStatus(const ros::TimerEvent &event) {
+void TriangleSLAMWrapper::checkMappingStatus(const ros::TimerEvent &event) {
   // Check if mapper has signaled completion
   if (mapping_completed_) {
     ROS_INFO("Mapping process complete, shutting down node.");
@@ -445,11 +445,11 @@ void GaussianSLAMWrapper::checkMappingStatus(const ros::TimerEvent &event) {
   }
 }
 
-GaussianSLAMWrapper::~GaussianSLAMWrapper() {
+TriangleSLAMWrapper::~TriangleSLAMWrapper() {
   // Stop the timeout timer
   timeout_timer_.stop();
 
-  std::cout << "Shutting down GaussianSLAMWrapper..." << std::endl;
+  std::cout << "Shutting down TriangleSLAMWrapper..." << std::endl;
 
   if (slam_system_) {
     slam_system_->Shutdown();

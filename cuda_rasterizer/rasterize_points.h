@@ -27,7 +27,7 @@
  #include <string>
 	
 std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
-RasterizetrianglesCUDA(
+RasterizeTrianglesCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& triangles_points,
 	const torch::Tensor& sigma,
@@ -51,7 +51,7 @@ RasterizetrianglesCUDA(
 	const bool debug);
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
- RasterizetrianglesBackwardCUDA(
+ RasterizeTrianglesBackwardCUDA(
  	const torch::Tensor& background,
 	const torch::Tensor& triangles_points,
 	const torch::Tensor& sigma,

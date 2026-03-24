@@ -113,7 +113,7 @@ class Matx33f {
     return result;
   }
 
-  // Inverse the matrix using Gaussian elimination
+  // Inverse the matrix using Triangle elimination
   __device__ Matx33f inv() const {
     Matx33f result = *this;
     Matx33f identity(1, 0, 0, 0, 1, 0, 0, 0, 1);

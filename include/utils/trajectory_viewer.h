@@ -19,11 +19,11 @@
 #include <opencv2/opencv.hpp>
 
 // Forward declaration
-class GaussianMapper;
+class TriangleMapper;
 
 class TrajectoryViewer {
  public:
-  explicit TrajectoryViewer(GaussianMapper* pGausMapper);
+  explicit TrajectoryViewer(TriangleMapper* pTriMapper);
 
   void run();
 
@@ -34,7 +34,7 @@ class TrajectoryViewer {
   void recordKeyframeSelection(int keyframe_id);
 
  private:
-  GaussianMapper* pGausMapper_;
+  TriangleMapper* pTriMapper_;
 
   bool stopped_;
   std::mutex mutex_status_;

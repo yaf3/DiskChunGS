@@ -14,21 +14,21 @@
  * and further modified by Casimir Feldmann in 2025 as part of DiskChunGS.
  */
 
-#include "scene/gaussian_parameters.h"
+#include "scene/triangle_parameters.h"
 
-GaussianModelParams::GaussianModelParams(std::filesystem::path source_path,
+TriangleModelParams::TriangleModelParams(std::filesystem::path source_path,
                                          std::filesystem::path model_path,
                                          std::filesystem::path exec_path,
                                          int sh_degree,
                                          std::string images,
                                          bool white_background,
                                          std::string data_device,
-                                         long max_gaussians_in_memory)
+                                         long max_triangles_in_memory)
     : sh_degree_(sh_degree),
       images_(images),
       white_background_(white_background),
       data_device_(data_device),
-      max_gaussians_in_memory_(max_gaussians_in_memory) {
+      max_triangles_in_memory_(max_triangles_in_memory) {
   if (source_path.is_absolute())
     source_path_ = source_path;
   else
@@ -40,14 +40,14 @@ GaussianModelParams::GaussianModelParams(std::filesystem::path source_path,
     model_path_ = exec_path / model_path;
 }
 
-GaussianPipelineParams::GaussianPipelineParams(bool convert_SHs,
+TrianglePipelineParams::TrianglePipelineParams(bool convert_SHs,
                                                bool compute_cov3D,
                                                bool separate_sh)
     : convert_SHs_(convert_SHs),
       compute_cov3D_(compute_cov3D),
       separate_sh_(separate_sh) {}
 
-GaussianOptimizationParams::GaussianOptimizationParams(
+TriangleOptimizationParams::TriangleOptimizationParams(
     int iterations,
     float position_lr_init,
     float position_lr_decay,

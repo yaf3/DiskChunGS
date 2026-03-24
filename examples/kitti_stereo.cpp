@@ -29,7 +29,7 @@
 #include <thread>
 
 #include "ORB-SLAM3/include/System.h"
-#include "include/gaussian_mapper.h"
+#include "include/triangle_mapper.h"
 #include "include/utils/trajectory_viewer.h"
 #include "viewer/imgui_viewer.h"
 
@@ -114,7 +114,7 @@ int main(int argc, char **argv) {
     std::cerr << std::endl
               << "Usage: " << argv[0] << " path_to_vocabulary" /*1*/
               << " path_to_ORB_SLAM3_settings"                 /*2*/
-              << " path_to_gaussian_mapping_settings"          /*3*/
+              << " path_to_triangle_mapping_settings"          /*3*/
               << " path_to_sequence"                           /*4*/
               << " path_to_trajectory_output_directory/"       /*5*/
               << " (optional)no_viewer"                        /*6*/
@@ -230,23 +230,23 @@ int main(int argc, char **argv) {
           argv[1], orbslam_settings_path.c_str(), ORB_SLAM3::System::STEREO);
   float imageScale = pSLAM->GetImageScale();
 
-  // Create GaussianMapper
-  std::filesystem::path gaussian_cfg_path(argv[3]);
-  std::shared_ptr<GaussianMapper> pGausMapper =
-      std::make_shared<GaussianMapper>(pSLAM, gaussian_cfg_path, output_dir, 0,
+  // Create TriangleMapper
+  std::filesystem::path triangle_cfg_path(argv[3]);
+  std::shared_ptr<TriangleMapper> pTriMapper =
+      std::make_shared<TriangleMapper>(pSLAM, triangle_cfg_path, output_dir, 0,
                                        device_type);
-  std::thread training_thd(&GaussianMapper::run, pGausMapper.get());
+  std::thread training_thd(&TriangleMapper::run, pTriMapper.get());
 
-  // Create Gaussian Viewer
+  // Create Triangle Viewer
   std::thread viewer_thd, trajectory_viewer_thd;
   std::shared_ptr<ImGuiViewer> pViewer;
   std::unique_ptr<TrajectoryViewer> pTrajViewer;
   if (use_viewer) {
-    pViewer = std::make_shared<ImGuiViewer>(pSLAM, pGausMapper);
+    pViewer = std::make_shared<ImGuiViewer>(pSLAM, pTriMapper);
     viewer_thd = std::thread(&ImGuiViewer::run, pViewer.get());
     // Create Trajectory Viewer
-    pTrajViewer = std::make_unique<TrajectoryViewer>(pGausMapper.get());
-    pGausMapper->setTrajectoryViewer(pTrajViewer.get());
+    pTrajViewer = std::make_unique<TrajectoryViewer>(pTriMapper.get());
+    pTriMapper->setTrajectoryViewer(pTrajViewer.get());
     // trajectory_viewer_thd =
     //     std::thread(&TrajectoryViewer::run, pTrajViewer.get());
   }
@@ -317,9 +317,9 @@ int main(int argc, char **argv) {
 
     std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
 
-    // Check if GaussianMapper wants to pause (e.g., during loop closure
+    // Check if TriangleMapper wants to pause (e.g., during loop closure
     // optimization)
-    pGausMapper->waitWhilePaused();
+    pTriMapper->waitWhilePaused();
 
     // Pass the images to the SLAM system with scaled timestamp
     pSLAM->TrackStereo(imLeft, imRight, scaled_tframe,

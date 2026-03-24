@@ -3,7 +3,7 @@
   <!-- Required parameters -->
   <arg name="vocabulary_path" />
   <arg name="orb_settings_path" />
-  <arg name="gaussian_settings_path" />
+  <arg name="triangle_settings_path" />
   <arg name="output_directory" />
 
   <!-- Sensor mode: stereo, rgbd, mono -->
@@ -28,7 +28,7 @@
   <node pkg="diskchungs_ros" type="diskchungs_ros_node" name="diskchungs_node" output="screen">
     <param name="vocabulary_path"        value="$(arg vocabulary_path)" />
     <param name="orb_settings_path"      value="$(arg orb_settings_path)" />
-    <param name="gaussian_settings_path" value="$(arg gaussian_settings_path)" />
+    <param name="triangle_settings_path" value="$(arg triangle_settings_path)" />
     <param name="output_directory"       value="$(arg output_directory)" />
     <param name="mode"                   value="$(arg mode)" />
     <param name="slam_mode"              value="$(arg slam_mode)" />

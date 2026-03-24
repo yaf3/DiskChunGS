@@ -17,7 +17,7 @@
 #include <filesystem>
 #include <iostream>
 
-#include "gaussian_mapper.h"
+#include "triangle_mapper.h"
 
 // Helper template to read config values with less boilerplate
 template <typename T>
@@ -51,16 +51,16 @@ void copyFolder(const std::filesystem::path& source,
   }
 }
 
-void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
+void TriangleMapper::readConfigFromFile(std::filesystem::path cfg_path) {
   cv::FileStorage settings_file(cfg_path.string().c_str(),
                                 cv::FileStorage::READ);
   if (!settings_file.isOpened()) {
-    std::cerr << "[Gaussian Mapper]Failed to open settings file at: "
+    std::cerr << "[Triangle Mapper]Failed to open settings file at: "
               << cfg_path << std::endl;
     exit(-1);
   }
 
-  std::cout << "[Gaussian Mapper]Reading parameters from " << cfg_path
+  std::cout << "[Triangle Mapper]Reading parameters from " << cfg_path
             << std::endl;
   std::unique_lock<std::mutex> lock(mutex_settings_);
 
@@ -68,8 +68,8 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
   model_params_.sh_degree_ = readConfig<int>(settings_file, "Model.sh_degree");
   model_params_.white_background_ =
       readConfigBool(settings_file, "Model.white_background");
-  model_params_.max_gaussians_in_memory_ =
-      readConfig<int>(settings_file, "Model.max_gaussians_in_memory");
+  model_params_.max_triangles_in_memory_ =
+      readConfig<int>(settings_file, "Model.max_triangles_in_memory");
   init_proba_scaler_ =
       readConfig<float>(settings_file, "Model.init_proba_scaler");
   downsample_for_sampling_ =
@@ -111,7 +111,7 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
   pipe_params_.compute_cov3D_ =
       readConfigBool(settings_file, "Pipeline.compute_cov3D");
 
-  // ========== Gaussian Pyramid Parameters ==========
+  // ========== Triangle Pyramid Parameters ==========
   num_gaus_pyramid_sub_levels_ =
       readConfig<int>(settings_file, "GausPyramid.num_levels");
   int sub_level_times_of_use =
@@ -173,9 +173,9 @@ void GaussianMapper::readConfigFromFile(std::filesystem::path cfg_path) {
 
   // ========== Viewer Parameters ==========
   rendered_image_viewer_scale_ =
-      readConfig<float>(settings_file, "GaussianViewer.image_scale");
+      readConfig<float>(settings_file, "TriangleViewer.image_scale");
   rendered_image_viewer_scale_main_ =
-      readConfig<float>(settings_file, "GaussianViewer.image_scale_main");
+      readConfig<float>(settings_file, "TriangleViewer.image_scale_main");
 
   // ========== Chunking Parameters ==========
   chunk_size_ = readConfig<float>(settings_file, "Chunking.chunk_size");

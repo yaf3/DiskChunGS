@@ -21,29 +21,29 @@
 #include <memory>
 #include <tuple>
 
-#include "model/gaussian_model.h"
-#include "rendering/gaussian_rasterizer.h"
-#include "scene/gaussian_keyframe.h"
-#include "scene/gaussian_parameters.h"
+#include "model/triangle_model.h"
+#include "rendering/triangle_rasterizer.h"
+#include "scene/triangle_keyframe.h"
+#include "scene/triangle_parameters.h"
 #include "utils/sh_utils.h"
 
 /**
- * @brief Renders 3D Gaussian primitives to a 2D image using splatting.
+ * @brief Renders 3D Triangle primitives to a 2D image using splatting.
  *
- * This class provides differentiable Gaussian splatting rendering, converting
- * a set of 3D Gaussians into rendered images with depth information.
+ * This class provides differentiable Triangle splatting rendering, converting
+ * a set of 3D Triangles into rendered images with depth information.
  */
-class GaussianRenderer {
+class TriangleRenderer {
  public:
   /**
-   * @brief Renders visible Gaussians from the given viewpoint.
+   * @brief Renders visible Triangles from the given viewpoint.
    *
-   * Performs differentiable rasterization of 3D Gaussians. Colors can be
+   * Performs differentiable rasterization of 3D Triangles. Colors can be
    * provided directly, computed from spherical harmonics (SH) on CPU, or
    * converted from SH by the rasterizer on GPU.
    *
-   * @param model The Gaussian model containing 3D Gaussian primitives.
-   * @param visible_gaussian_mask Boolean mask indicating which Gaussians are
+   * @param model The Triangle model containing 3D Triangle primitives.
+   * @param visible_triangle_mask Boolean mask indicating which Triangles are
    *        visible from the current viewpoint.
    * @param viewpoint_camera Camera keyframe containing pose and exposure info.
    * @param image_height Output image height in pixels.
@@ -51,21 +51,21 @@ class GaussianRenderer {
    * @param pipe Pipeline parameters controlling SH conversion and covariance.
    * @param bg_color Background color tensor (RGB).
    * @param override_color Pre-computed colors to use (if use_override_color).
-   * @param scaling_modifier Scale factor applied to Gaussian sizes.
+   * @param scaling_modifier Scale factor applied to Triangle sizes.
    * @param use_override_color If true, use override_color instead of SH.
    * @param FoVx Horizontal field of view in radians.
    * @param FoVy Vertical field of view in radians.
    * @param world_view_transform 4x4 world-to-camera transformation matrix.
    * @param projection_matrix 4x4 camera projection matrix.
-   * @return Tuple of (depth, rendered_image, radii, main_gaussian_ids).
+   * @return Tuple of (depth, rendered_image, radii, main_triangle_ids).
    */
   static std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
-  render(std::shared_ptr<GaussianModel> model,
-         const torch::Tensor& visible_gaussian_mask,
-         std::shared_ptr<GaussianKeyframe> viewpoint_camera,
+  render(std::shared_ptr<TriangleModel> model,
+         const torch::Tensor& visible_triangle_mask,
+         std::shared_ptr<TriangleKeyframe> viewpoint_camera,
          int image_height,
          int image_width,
-         GaussianPipelineParams& pipe,
+         TrianglePipelineParams& pipe,
          torch::Tensor& bg_color,
          torch::Tensor& override_color,
          float scaling_modifier,

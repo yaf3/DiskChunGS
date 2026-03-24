@@ -20,20 +20,20 @@
 #include <string>
 
 /**
- * @brief Parameters for the Gaussian model configuration.
+ * @brief Parameters for the Triangle model configuration.
  *
  * Contains paths, spherical harmonics settings, and memory constraints.
  */
-class GaussianModelParams {
+class TriangleModelParams {
  public:
-  GaussianModelParams(std::filesystem::path source_path = "",
+  TriangleModelParams(std::filesystem::path source_path = "",
                       std::filesystem::path model_path = "",
                       std::filesystem::path exec_path = "",
                       int sh_degree = 3,
                       std::string images = "images",
                       bool white_background = false,
                       std::string data_device = "cuda",
-                      long max_gaussians_in_memory = 1500000);
+                      long max_triangles_in_memory = 1500000);
 
   int sh_degree_;                         ///< Degree of spherical harmonics.
   std::filesystem::path source_path_;     ///< Path to source data.
@@ -41,15 +41,15 @@ class GaussianModelParams {
   std::string images_;                    ///< Subdirectory name for images.
   bool white_background_;                 ///< Use white background if true.
   std::string data_device_;               ///< Device for data storage.
-  long max_gaussians_in_memory_;          ///< Maximum Gaussians to keep in GPU memory.
+  long max_triangles_in_memory_;          ///< Maximum Triangles to keep in GPU memory.
 };
 
 /**
  * @brief Parameters controlling the rendering pipeline.
  */
-class GaussianPipelineParams {
+class TrianglePipelineParams {
  public:
-  GaussianPipelineParams(bool convert_SHs = false,
+  TrianglePipelineParams(bool convert_SHs = false,
                          bool compute_cov3D = false,
                          bool separate_sh = true);
 
@@ -59,13 +59,13 @@ class GaussianPipelineParams {
 };
 
 /**
- * @brief Parameters for Gaussian optimization/training.
+ * @brief Parameters for Triangle optimization/training.
  *
  * Contains learning rates for different attributes and loss function weights.
  */
-class GaussianOptimizationParams {
+class TriangleOptimizationParams {
  public:
-  GaussianOptimizationParams(int iterations = 30'000,
+  TriangleOptimizationParams(int iterations = 30'000,
                              float position_lr_init = 0.00005f,
                              float position_lr_decay = 0.99998f,
                              float feature_lr = 0.0025f,

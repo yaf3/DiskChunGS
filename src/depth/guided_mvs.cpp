@@ -55,8 +55,8 @@ GuidedMVS::GuidedMVS(int num_prev_keyframes,
 // Implementation of guided MVS operator (see header for API documentation)
 std::pair<torch::Tensor, torch::Tensor> GuidedMVS::operator()(
     const torch::Tensor& uv,
-    const std::shared_ptr<GaussianKeyframe> refKeyframe,
-    const std::vector<std::shared_ptr<GaussianKeyframe>>& keyframes) {
+    const std::shared_ptr<TriangleKeyframe> refKeyframe,
+    const std::vector<std::shared_ptr<TriangleKeyframe>>& keyframes) {
   // Input validation
   if (uv.ndimension() != 2 || uv.size(1) != 2) {
     AT_ERROR("uv must have dimensions (num_points, 2)");

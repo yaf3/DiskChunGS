@@ -14,84 +14,84 @@
  * <http://www.gnu.org/licenses/>.
  */
 
-#include "gaussian_mapper.h"
+#include "triangle_mapper.h"
 
-int GaussianMapper::getIteration() {
+int TriangleMapper::getIteration() {
   std::unique_lock<std::mutex> lock(mutex_status_);
   return iteration_;
 }
 
-void GaussianMapper::increaseIteration(const int inc) {
+void TriangleMapper::increaseIteration(const int inc) {
   std::unique_lock<std::mutex> lock(mutex_status_);
   iteration_ += inc;
 }
 
-float GaussianMapper::positionLearningRateInit() {
+float TriangleMapper::positionLearningRateInit() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return opt_params_.position_lr_init_;
 }
 
-float GaussianMapper::featureLearningRate() {
+float TriangleMapper::featureLearningRate() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return opt_params_.feature_lr_;
 }
 
-float GaussianMapper::opacityLearningRate() {
+float TriangleMapper::opacityLearningRate() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return opt_params_.opacity_lr_;
 }
 
-float GaussianMapper::scalingLearningRate() {
+float TriangleMapper::scalingLearningRate() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return opt_params_.scaling_lr_;
 }
 
-float GaussianMapper::rotationLearningRate() {
+float TriangleMapper::rotationLearningRate() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return opt_params_.rotation_lr_;
 }
 
-float GaussianMapper::lambdaDssim() {
+float TriangleMapper::lambdaDssim() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return opt_params_.lambda_dssim_;
 }
 
-float GaussianMapper::lambdaDepth() {
+float TriangleMapper::lambdaDepth() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return opt_params_.lambda_depth_;
 }
 
-int GaussianMapper::newKeyframeTimesOfUse() {
+int TriangleMapper::newKeyframeTimesOfUse() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return new_keyframe_times_of_use_;
 }
 
-int GaussianMapper::stableNumIterExistence() {
+int TriangleMapper::stableNumIterExistence() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return stable_num_iter_existence_;
 }
 
-bool GaussianMapper::isKeepingTraining() {
+bool TriangleMapper::isKeepingTraining() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return keep_training_;
 }
 
-void GaussianMapper::setLambdaDssim(const float lambda_dssim) {
+void TriangleMapper::setLambdaDssim(const float lambda_dssim) {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   opt_params_.lambda_dssim_ = lambda_dssim;
 }
 
-void GaussianMapper::setNewKeyframeTimesOfUse(const int times) {
+void TriangleMapper::setNewKeyframeTimesOfUse(const int times) {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   new_keyframe_times_of_use_ = times;
 }
 
-void GaussianMapper::setStableNumIterExistence(const int niter) {
+void TriangleMapper::setStableNumIterExistence(const int niter) {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   stable_num_iter_existence_ = niter;
 }
 
-void GaussianMapper::setKeepTraining(const bool keep) {
+void TriangleMapper::setKeepTraining(const bool keep) {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   keep_training_ = keep;
 }

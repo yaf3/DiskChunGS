@@ -98,7 +98,7 @@ inline torch::Tensor psnr(torch::Tensor &img1, torch::Tensor &img2) {
  *     mse = (((img1 - img2)) ** 2).view(img1.shape[0], -1).mean(1,
  * keepdim=True) return 20 * torch.log10(1.0 / torch.sqrt(mse))
  */
-inline torch::Tensor psnr_gaussian_splatting(torch::Tensor &img1,
+inline torch::Tensor psnr_triangle_splatting(torch::Tensor &img1,
                                              torch::Tensor &img2) {
   auto mse = torch::pow(img1 - img2, 2)
                  .view({img1.size(0), -1})
@@ -106,7 +106,7 @@ inline torch::Tensor psnr_gaussian_splatting(torch::Tensor &img1,
   return 20.0f * torch::log10(1.0f / torch::sqrt(mse)).mean();
 }
 
-inline torch::Tensor gaussian(int window_size,
+inline torch::Tensor triangle(int window_size,
                               float sigma,
                               torch::DeviceType device_type = torch::kCUDA) {
   std::vector<float> gauss_values(window_size);
@@ -123,7 +123,7 @@ inline torch::autograd::Variable create_window(
     int window_size,
     int64_t channel,
     torch::DeviceType device_type = torch::kCUDA) {
-  auto _1D_window = gaussian(window_size, 1.5f, device_type).unsqueeze(1);
+  auto _1D_window = triangle(window_size, 1.5f, device_type).unsqueeze(1);
   auto _2D_window =
       _1D_window.mm(_1D_window.t()).to(torch::kFloat).unsqueeze(0).unsqueeze(0);
   auto window = torch::autograd::Variable(

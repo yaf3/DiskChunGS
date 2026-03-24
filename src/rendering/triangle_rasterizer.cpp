@@ -14,9 +14,9 @@
  * and further modified by Casimir Feldmann in 2025 as part of DiskChunGS.
  */
 
-#include "rendering/gaussian_rasterizer.h"
+#include "rendering/triangle_rasterizer.h"
 
-torch::autograd::tensor_list GaussianRasterizerFunction::forward(
+torch::autograd::tensor_list TriangleRasterizerFunction::forward(
     torch::autograd::AutogradContext* ctx,
     torch::Tensor means3D,
     torch::Tensor means2D,
@@ -28,11 +28,11 @@ torch::autograd::tensor_list GaussianRasterizerFunction::forward(
     torch::Tensor rotations,
     torch::Tensor cov3Ds_precomp,
     torch::Tensor viewmatrix,
-    GaussianRasterizationSettings raster_settings) {
+    TriangleRasterizationSettings raster_settings) {
   // Invoke C++/CUDA rasterizer
   auto [num_rendered, num_buckets, color, invdepth, mainGaussID, radii,
         geomBuffer, binningBuffer, imgBuffer, sampleBuffer] =
-      RasterizeGaussiansCUDA(
+      RasterizeTrianglesCUDA(
           raster_settings.bg_, means3D, colors_precomp, opacities, scales,
           rotations, raster_settings.scale_modifier_, cov3Ds_precomp,
           viewmatrix, raster_settings.projmatrix_, raster_settings.tanfovx_,
@@ -63,7 +63,7 @@ torch::autograd::tensor_list GaussianRasterizerFunction::forward(
   return {color, invdepth, mainGaussID, radii};
 }
 
-torch::autograd::tensor_list GaussianRasterizerFunction::backward(
+torch::autograd::tensor_list TriangleRasterizerFunction::backward(
     torch::autograd::AutogradContext* ctx,
     torch::autograd::tensor_list grad_outputs) {
   // Restore necessary values from context
@@ -107,7 +107,7 @@ torch::autograd::tensor_list GaussianRasterizerFunction::backward(
   auto [grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D,
         grad_cov3Ds_precomp, grad_dc, grad_sh, grad_scales, grad_rotations,
         grad_viewmatrix] =
-      RasterizeGaussiansBackwardCUDA(
+      RasterizeTrianglesBackwardCUDA(
           bg, means3D, radii, colors_precomp, opacities, scales, rotations,
           scale_modifier, cov3Ds_precomp, viewmatrix, projmatrix, tanfovx,
           tanfovy, grad_out_color, dc, sh, grad_out_invdepth, sh_degree, campos,
@@ -121,7 +121,7 @@ torch::autograd::tensor_list GaussianRasterizerFunction::backward(
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
-GaussianRasterizer::forward(torch::Tensor means3D,
+TriangleRasterizer::forward(torch::Tensor means3D,
                             torch::Tensor means2D,
                             torch::Tensor opacities,
                             torch::Tensor dc,
@@ -145,7 +145,7 @@ GaussianRasterizer::forward(torch::Tensor means3D,
   if (!cov3D_precomp.defined())
     cov3D_precomp = torch::tensor({}, options.device(torch::kCUDA));
 
-  auto result = rasterizeGaussians(means3D, means2D, dc, shs, colors_precomp,
+  auto result = rasterizeTriangles(means3D, means2D, dc, shs, colors_precomp,
                                    opacities, scales, rotations, cov3D_precomp,
                                    viewmatrix, raster_settings);
 

@@ -17,7 +17,7 @@
 #include <iostream>
 
 KeyframeSelection::KeyframeSelection(
-    std::shared_ptr<GaussianScene> scene,
+    std::shared_ptr<TriangleScene> scene,
     float chunk_size,
     int auto_distribute,
     const std::map<std::size_t, float>* loss_map,
@@ -29,7 +29,7 @@ KeyframeSelection::KeyframeSelection(
       used_times_map_(used_times_map),
       rng_(std::random_device{}()) {}
 
-std::shared_ptr<GaussianKeyframe> KeyframeSelection::getNextKeyframe() {
+std::shared_ptr<TriangleKeyframe> KeyframeSelection::getNextKeyframe() {
   if (!latest_keyframe_) {
     std::cout << "No latest keyframe available." << std::endl;
     return nullptr;
@@ -60,10 +60,10 @@ std::shared_ptr<GaussianKeyframe> KeyframeSelection::getNextKeyframe() {
   }
 
   const auto& candidates = it->second;
-  std::shared_ptr<GaussianKeyframe> selected_keyframe = nullptr;
+  std::shared_ptr<TriangleKeyframe> selected_keyframe = nullptr;
 
   // Apply loss and usage-based selection logic
-  std::vector<std::shared_ptr<GaussianKeyframe>> available_candidates;
+  std::vector<std::shared_ptr<TriangleKeyframe>> available_candidates;
 
   // First, check if any candidate has remaining times of use > 0
   for (const auto& candidate : candidates) {
@@ -187,7 +187,7 @@ std::shared_ptr<GaussianKeyframe> KeyframeSelection::getNextKeyframe() {
 
     // Evict oldest keyframes to stay within GPU memory budget
     while (gpu_queue_.size() > max_gpu_keyframes_) {
-      std::shared_ptr<GaussianKeyframe> oldest = gpu_queue_.back();
+      std::shared_ptr<TriangleKeyframe> oldest = gpu_queue_.back();
       gpu_queue_.pop_back();
 
       if (oldest->loaded_ && oldest != selected_keyframe) {
@@ -207,14 +207,14 @@ Eigen::Vector3f KeyframeSelection::tensorToEigen(
 }
 
 void KeyframeSelection::increaseKeyframeTimesOfUse(
-    std::shared_ptr<GaussianKeyframe> keyframe,
+    std::shared_ptr<TriangleKeyframe> keyframe,
     int additional_uses) {
   if (!keyframe) return;
   keyframe->remaining_times_of_use_ += additional_uses;
 }
 
 void KeyframeSelection::updateChunkKeyframeMapping(
-    std::shared_ptr<GaussianKeyframe> keyframe,
+    std::shared_ptr<TriangleKeyframe> keyframe,
     bool is_new_keyframe) {
   if (!keyframe) return;
 

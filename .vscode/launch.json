@@ -9,7 +9,7 @@
             "args": [
                 "${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
                 "${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/Replica/office0.yaml",
-                "${workspaceFolder}/cfg/gaussian_mapper/RGB-D/Replica/replica_rgbd.yaml",
+                "${workspaceFolder}/cfg/triangle_mapper/RGB-D/Replica/replica_rgbd.yaml",
                 "/data/Replica/office0",
                 "${workspaceFolder}/results/replica_rgbd/office0"
             ],
@@ -42,7 +42,7 @@
                 "__name:=diskchungs_node",
                 "_vocabulary_path:=${workspaceFolder}/slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt",
                 "_orb_settings_path:=${workspaceFolder}/cfg/ORB_SLAM3/RGB-D/RSL/arche_train1.yaml",
-                "_gaussian_settings_path:=${workspaceFolder}/cfg/gaussian_mapper/RGB-D/RSL/arche_train1.yaml",
+                "_triangle_settings_path:=${workspaceFolder}/cfg/triangle_mapper/RGB-D/RSL/arche_train1.yaml",
                 "_output_directory:=${workspaceFolder}/results/rsl/train1",
                 "_use_viewer:=true",
                 "_mode:=rgbd",

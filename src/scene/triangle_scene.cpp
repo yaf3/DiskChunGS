@@ -14,11 +14,11 @@
  * <http://www.gnu.org/licenses/>.
  */
 
-#include "scene/gaussian_scene.h"
+#include "scene/triangle_scene.h"
 
 #include <iostream>
 
-GaussianScene::GaussianScene(GaussianModelParams& args, int load_iteration) {
+TriangleScene::TriangleScene(TriangleModelParams& args, int load_iteration) {
   if (load_iteration) {
     loaded_iter_ = load_iteration;
     std::cout << "Loading trained model at iteration " << load_iteration
@@ -30,11 +30,11 @@ GaussianScene::GaussianScene(GaussianModelParams& args, int load_iteration) {
 // Camera management
 // ─────────────────────────────────────────────────────────────────────────────
 
-void GaussianScene::addCamera(Camera& camera) {
+void TriangleScene::addCamera(Camera& camera) {
   cameras_.emplace(camera.camera_id_, camera);
 }
 
-Camera& GaussianScene::getCamera(camera_id_t camera_id) {
+Camera& TriangleScene::getCamera(camera_id_t camera_id) {
   return cameras_[camera_id];
 }
 
@@ -42,24 +42,24 @@ Camera& GaussianScene::getCamera(camera_id_t camera_id) {
 // Keyframe management
 // ─────────────────────────────────────────────────────────────────────────────
 
-void GaussianScene::addKeyframe(std::shared_ptr<GaussianKeyframe> keyframe) {
+void TriangleScene::addKeyframe(std::shared_ptr<TriangleKeyframe> keyframe) {
   std::unique_lock<std::mutex> lock(mutex_kfs_);
   keyframes_.emplace(keyframe->fid_, keyframe);
 }
 
-std::shared_ptr<GaussianKeyframe> GaussianScene::getKeyframe(std::size_t fid) {
+std::shared_ptr<TriangleKeyframe> TriangleScene::getKeyframe(std::size_t fid) {
   std::unique_lock<std::mutex> lock(mutex_kfs_);
   auto it = keyframes_.find(fid);
   return (it != keyframes_.end()) ? it->second : nullptr;
 }
 
-std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>&
-GaussianScene::keyframes() {
+std::map<std::size_t, std::shared_ptr<TriangleKeyframe>>&
+TriangleScene::keyframes() {
   return keyframes_;
 }
 
-std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>
-GaussianScene::getAllKeyframes() {
+std::map<std::size_t, std::shared_ptr<TriangleKeyframe>>
+TriangleScene::getAllKeyframes() {
   std::unique_lock<std::mutex> lock(mutex_kfs_);
   return keyframes_;
 }
@@ -68,7 +68,7 @@ GaussianScene::getAllKeyframes() {
 // Transformations and normalization
 // ─────────────────────────────────────────────────────────────────────────────
 
-void GaussianScene::applyScaledTransformation(const float scale,
+void TriangleScene::applyScaledTransformation(const float scale,
                                               const Sophus::SE3f transform) {
   for (auto& [fid, keyframe] : keyframes_) {
     Sophus::SE3f Twc = keyframe->getPosef().inverse();
@@ -81,7 +81,7 @@ void GaussianScene::applyScaledTransformation(const float scale,
   }
 }
 
-std::tuple<Eigen::Vector3f, float> GaussianScene::getNerfppNorm() {
+std::tuple<Eigen::Vector3f, float> TriangleScene::getNerfppNorm() {
   auto kfs = getAllKeyframes();
   const std::size_t n_cams = kfs.size();
 

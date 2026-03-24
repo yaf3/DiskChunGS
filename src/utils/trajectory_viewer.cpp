@@ -19,10 +19,10 @@
 #include <unordered_set>
 #include <vector>
 
-#include "gaussian_mapper.h"
+#include "triangle_mapper.h"
 
-TrajectoryViewer::TrajectoryViewer(GaussianMapper* pGausMapper)
-    : pGausMapper_(pGausMapper), stopped_(false) {}
+TrajectoryViewer::TrajectoryViewer(TriangleMapper* pTriMapper)
+    : pTriMapper_(pTriMapper), stopped_(false) {}
 
 void TrajectoryViewer::run() {
   std::string window_name = "Trajectory Top-Down View";
@@ -34,8 +34,8 @@ void TrajectoryViewer::run() {
                     cv::Scalar(255, 255, 255));
 
     // Get keyframes from scene
-    if (pGausMapper_ && pGausMapper_->scene_) {
-      auto& keyframes_map = pGausMapper_->scene_->keyframes();
+    if (pTriMapper_ && pTriMapper_->scene_) {
+      auto& keyframes_map = pTriMapper_->scene_->keyframes();
 
       if (!keyframes_map.empty()) {
         // Struct to hold keyframe data for visualization

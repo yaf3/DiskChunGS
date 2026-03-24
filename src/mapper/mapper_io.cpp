@@ -14,8 +14,8 @@
  * <http://www.gnu.org/licenses/>.
  */
 
-#include "gaussian_mapper.h"
-#include "rendering/gaussian_renderer.h"
+#include "triangle_mapper.h"
+#include "rendering/triangle_renderer.h"
 #include "utils/loss_utils.h"
 #include "utils/profiling.h"
 
@@ -53,7 +53,7 @@ std::ofstream openOutputFile(const std::filesystem::path& file_path) {
 }
 }  // anonymous namespace
 
-void GaussianMapper::initializeCameraFromIntrinsics(
+void TriangleMapper::initializeCameraFromIntrinsics(
     camera_id_t camera_id,
     int width,
     int height,
@@ -104,7 +104,7 @@ void GaussianMapper::initializeCameraFromIntrinsics(
   scene_->addCamera(camera);
 }
 
-void GaussianMapper::recordKeyframeRendered(
+void TriangleMapper::recordKeyframeRendered(
     torch::Tensor& rendered,
     torch::Tensor& ground_truth,
     unsigned long kfid,
@@ -129,7 +129,7 @@ void GaussianMapper::recordKeyframeRendered(
   }
 }
 
-std::tuple<cv::Mat, cv::Mat> GaussianMapper::renderFromPose(
+std::tuple<cv::Mat, cv::Mat> TriangleMapper::renderFromPose(
     const Sophus::SE3f& Tcw,
     const int width,
     const int height,
@@ -140,7 +140,7 @@ std::tuple<cv::Mat, cv::Mat> GaussianMapper::renderFromPose(
     cv::Mat empty_depth(height, width, CV_32FC1, cv::Scalar(0.0f));
     return std::make_tuple(empty_rgb, empty_depth);
   }
-  std::shared_ptr<GaussianKeyframe> pkf = std::make_shared<GaussianKeyframe>();
+  std::shared_ptr<TriangleKeyframe> pkf = std::make_shared<TriangleKeyframe>();
   pkf->zfar_ = z_far_ * scene_->cameras_extent_;
   pkf->znear_ = z_near_ * scene_->cameras_extent_;
   // Pose
@@ -154,17 +154,17 @@ std::tuple<cv::Mat, cv::Mat> GaussianMapper::renderFromPose(
     pkf->computeTransformTensors();
   } catch (std::out_of_range) {
     throw std::runtime_error(
-        "[GaussianMapper::renderFromPose]KeyFrame Camera not found!");
+        "[TriangleMapper::renderFromPose]KeyFrame Camera not found!");
   }
 
   std::unique_lock lock_render(mutex_render_);
 
-  torch::Tensor visible_gaussian_mask = gaussians_->cullVisibleGaussians(pkf);
+  torch::Tensor visible_triangle_mask = triangles_->cullVisibleTriangles(pkf);
 
   // Render
   torch::Tensor view_matrix = pkf->getRT().transpose(0, 1);
-  auto render_pkg = GaussianRenderer::render(
-      gaussians_, visible_gaussian_mask, pkf, height, width, pipe_params_,
+  auto render_pkg = TriangleRenderer::render(
+      triangles_, visible_triangle_mask, pkf, height, width, pipe_params_,
       background_, override_color_, 1.0f, false, pkf->FoVx_, pkf->FoVy_,
       view_matrix, pkf->projection_matrix_);
 
@@ -191,8 +191,8 @@ std::tuple<cv::Mat, cv::Mat> GaussianMapper::renderFromPose(
   return std::make_tuple(rendered_rgb, rendered_depth);
 }
 
-void GaussianMapper::renderAndRecordKeyframe(
-    std::shared_ptr<GaussianKeyframe> pkf,
+void TriangleMapper::renderAndRecordKeyframe(
+    std::shared_ptr<TriangleKeyframe> pkf,
     float& dssim,
     float& psnr,
     float& psnr_gs,
@@ -209,11 +209,11 @@ void GaussianMapper::renderAndRecordKeyframe(
     had_to_load = true;
   }
 
-  torch::Tensor visible_gaussian_mask = gaussians_->cullVisibleGaussians(pkf);
+  torch::Tensor visible_triangle_mask = triangles_->cullVisibleTriangles(pkf);
 
   torch::Tensor view_matrix = pkf->getRT().transpose(0, 1);
-  auto render_pkg = GaussianRenderer::render(
-      gaussians_, visible_gaussian_mask, pkf, pkf->image_height_,
+  auto render_pkg = TriangleRenderer::render(
+      triangles_, visible_triangle_mask, pkf, pkf->image_height_,
       pkf->image_width_, pipe_params_, background_, override_color_, 1.0f,
       false, pkf->FoVx_, pkf->FoVy_, view_matrix, pkf->projection_matrix_);
 
@@ -228,7 +228,7 @@ void GaussianMapper::renderAndRecordKeyframe(
 
   dssim = loss_utils::fast_ssim(rendered_image, gt_image).item().toFloat();
   psnr = loss_utils::psnr(rendered_image, gt_image).item().toFloat();
-  psnr_gs = loss_utils::psnr_gaussian_splatting(rendered_image, gt_image)
+  psnr_gs = loss_utils::psnr_triangle_splatting(rendered_image, gt_image)
                 .item()
                 .toFloat();
 
@@ -240,7 +240,7 @@ void GaussianMapper::renderAndRecordKeyframe(
   }
 }
 
-void GaussianMapper::renderAndRecordAllKeyframes(std::string name_suffix) {
+void TriangleMapper::renderAndRecordAllKeyframes(std::string name_suffix) {
   std::filesystem::path result_dir =
       result_dir_ / (std::to_string(getIteration()) + name_suffix);
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
@@ -258,18 +258,18 @@ void GaussianMapper::renderAndRecordAllKeyframes(std::string name_suffix) {
     CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(image_loss_dir);
 
   std::ofstream out_time = openOutputFile(result_dir / "render_time.txt");
-  out_time << "##[Gaussian Mapper]Render time statistics: keyframe id, "
+  out_time << "##[Triangle Mapper]Render time statistics: keyframe id, "
               "time(milliseconds)\n";
 
   std::ofstream out_dssim = openOutputFile(result_dir / "dssim.txt");
-  out_dssim << "##[Gaussian Mapper]keyframe id, dssim\n";
+  out_dssim << "##[Triangle Mapper]keyframe id, dssim\n";
 
   std::ofstream out_psnr = openOutputFile(result_dir / "psnr.txt");
-  out_psnr << "##[Gaussian Mapper]keyframe id, psnr\n";
+  out_psnr << "##[Triangle Mapper]keyframe id, psnr\n";
 
   std::ofstream out_psnr_gs =
-      openOutputFile(result_dir / "psnr_gaussian_splatting.txt");
-  out_psnr_gs << "##[Gaussian Mapper]keyframe id, psnr_gaussian_splatting\n";
+      openOutputFile(result_dir / "psnr_triangle_splatting.txt");
+  out_psnr_gs << "##[Triangle Mapper]keyframe id, psnr_triangle_splatting\n";
 
   float dssim, psnr, psnr_gs;
   double render_time;
@@ -287,7 +287,7 @@ void GaussianMapper::renderAndRecordAllKeyframes(std::string name_suffix) {
   }
 }
 
-void GaussianMapper::keyframesToJson(std::filesystem::path result_dir) {
+void TriangleMapper::keyframesToJson(std::filesystem::path result_dir) {
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
 
   Json::Value json_root;
@@ -362,7 +362,7 @@ void GaussianMapper::keyframesToJson(std::filesystem::path result_dir) {
   writeJsonToFile(json_root, result_dir / "cameras.json");
 }
 
-void GaussianMapper::writeKeyframeUsedTimes(std::filesystem::path result_dir,
+void TriangleMapper::writeKeyframeUsedTimes(std::filesystem::path result_dir,
                                             std::string name_suffix) {
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
   std::filesystem::path result_path =
@@ -373,7 +373,7 @@ void GaussianMapper::writeKeyframeUsedTimes(std::filesystem::path result_dir,
     throw std::runtime_error("Cannot open file at " + result_path.string());
   }
 
-  out_stream << "##[Gaussian Mapper]Iteration " << getIteration()
+  out_stream << "##[Triangle Mapper]Iteration " << getIteration()
              << " keyframe id, used times, remaining times:\n";
   for (const auto& used_times_it : kfs_used_times_) {
     out_stream
@@ -384,28 +384,28 @@ void GaussianMapper::writeKeyframeUsedTimes(std::filesystem::path result_dir,
   out_stream << "##=========================================\n";
 }
 
-void GaussianMapper::writeTrainingMetricsCSV(std::filesystem::path result_dir) {
+void TriangleMapper::writeTrainingMetricsCSV(std::filesystem::path result_dir) {
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
   std::ofstream out_stream = openOutputFile(result_dir / "training_metrics.csv");
 
-  out_stream << "iteration,elapsed_time_seconds,active_gaussian_count,total_"
-                "gaussian_count,reserved_memory_"
+  out_stream << "iteration,elapsed_time_seconds,active_triangle_count,total_"
+                "triangle_count,reserved_memory_"
                 "mb,allocated_memory_mb,ram_usage_mb,queue_keyframes\n";
 
   for (const auto& metrics : training_metrics_) {
     out_stream << metrics.iteration << "," << metrics.elapsed_time_seconds
-               << "," << metrics.active_gaussian_count << ","
-               << metrics.total_gaussian_count << ","
+               << "," << metrics.active_triangle_count << ","
+               << metrics.total_triangle_count << ","
                << metrics.reserved_memory_mb << ","
                << metrics.allocated_memory_mb << "," << metrics.ram_usage_mb
                << "," << metrics.queue_keyframes << "\n";
   }
 
-  std::cout << "[GaussianMapper] Training metrics saved to "
+  std::cout << "[TriangleMapper] Training metrics saved to "
             << result_dir / "training_metrics.csv" << std::endl;
 }
 
-bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
+bool TriangleMapper::saveScene(std::filesystem::path scene_dir) {
   std::cout << "saveScene called" << std::endl;
   // Create directory if it doesn't exist
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(scene_dir);
@@ -415,7 +415,7 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
 
   // Need to save chunks before saving manifest since we need to update chunks
   // in memory map
-  gaussians_->saveAllChunks();
+  triangles_->saveAllChunks();
 
   // Save a manifest of all chunks on disk
   saveChunkManifest(scene_dir);
@@ -427,7 +427,7 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
   // Save config used to train the model
   try {
     std::filesystem::copy_file(
-        config_file_path_, scene_dir / "gaussian_mapper_cfg.yaml",
+        config_file_path_, scene_dir / "triangle_mapper_cfg.yaml",
         std::filesystem::copy_options::overwrite_existing);
     std::cout << "Config saved successfully" << std::endl;
   } catch (const std::filesystem::filesystem_error& e) {
@@ -446,8 +446,8 @@ bool GaussianMapper::saveScene(std::filesystem::path scene_dir) {
   return true;
 }
 
-// Implementation for loadScene in gaussian_mapper.cpp
-bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
+// Implementation for loadScene in triangle_mapper.cpp
+bool TriangleMapper::loadScene(std::filesystem::path scene_dir,
                                std::filesystem::path optional_camera_path) {
   std::filesystem::path cameras_exent_path = scene_dir / "cameras_extent.json";
 
@@ -469,8 +469,8 @@ bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
   std::cout << "Loaded cameras extent: " << scene_->cameras_extent_
             << std::endl;
 
-  gaussians_ =
-      std::make_shared<GaussianModel>(model_params_, chunk_save_dir_.string(),
+  triangles_ =
+      std::make_shared<TriangleModel>(model_params_, chunk_save_dir_.string(),
                                       chunk_size_ * scene_->cameras_extent_);
 
   if (!std::filesystem::exists(scene_dir)) {
@@ -481,16 +481,16 @@ bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
   // // Load camera parameters
   loadCamerasFromJson(scene_dir / "cameras.json");
 
-  if (!gaussians_->is_initialized_) {
-    gaussians_->initializeEmpty(scene_->cameras_extent_);
-    gaussians_->trainingSetup(opt_params_);
-    std::cout << "Initialized empty Gaussian model for loading" << std::endl;
+  if (!triangles_->is_initialized_) {
+    triangles_->initializeEmpty(scene_->cameras_extent_);
+    triangles_->trainingSetup(opt_params_);
+    std::cout << "Initialized empty Triangle model for loading" << std::endl;
   }
 
   // Load chunk information from the manifest
   loadChunkManifest(scene_dir);
 
-  std::cout << "Loaded " << gaussians_->chunks_on_disk_.size(0)
+  std::cout << "Loaded " << triangles_->chunks_on_disk_.size(0)
             << " chunks from manifest" << std::endl;
 
   // Optional new Camera configs
@@ -500,7 +500,7 @@ bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
                                 cv::FileStorage::READ);
     if (!camera_file.isOpened())
       throw std::runtime_error(
-          "[Gaussian Mapper]Failed to open settings file at: " +
+          "[Triangle Mapper]Failed to open settings file at: " +
           optional_camera_path.string());
 
     std::string camera_type = camera_file["Camera.type"].string();
@@ -519,7 +519,7 @@ bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
           camera_file["Camera.p2"].operator float(),
           camera_file["Camera.k3"].operator float());
     } else {
-      throw std::runtime_error("[Gaussian Mapper]Unsupported camera model: " +
+      throw std::runtime_error("[Triangle Mapper]Unsupported camera model: " +
                                optional_camera_path.string());
     }
   }
@@ -532,31 +532,31 @@ bool GaussianMapper::loadScene(std::filesystem::path scene_dir,
   return true;
 }
 
-void GaussianMapper::saveChunkManifest(std::filesystem::path scene_dir) {
+void TriangleMapper::saveChunkManifest(std::filesystem::path scene_dir) {
   Json::Value json_root;
 
-  // Save chunks_on_disk_ and chunk_gaussian_counts_
+  // Save chunks_on_disk_ and chunk_triangle_counts_
   Json::Value chunks_on_disk_array(Json::arrayValue);
-  Json::Value chunk_gaussian_counts_array(Json::arrayValue);
-  auto chunks_cpu = gaussians_->chunks_on_disk_.cpu();
-  auto chunk_gaussian_counts_cpu = gaussians_->chunk_gaussian_counts_.cpu();
+  Json::Value chunk_triangle_counts_array(Json::arrayValue);
+  auto chunks_cpu = triangles_->chunks_on_disk_.cpu();
+  auto chunk_triangle_counts_cpu = triangles_->chunk_triangle_counts_.cpu();
   auto accessor_id = chunks_cpu.accessor<int64_t, 1>();
-  auto accessor_count = chunk_gaussian_counts_cpu.accessor<int64_t, 1>();
+  auto accessor_count = chunk_triangle_counts_cpu.accessor<int64_t, 1>();
 
   for (int i = 0; i < chunks_cpu.size(0); ++i) {
     chunks_on_disk_array.append(
         Json::Value(static_cast<Json::Int64>(accessor_id[i])));
-    chunk_gaussian_counts_array.append(
+    chunk_triangle_counts_array.append(
         Json::Value(static_cast<Json::Int64>(accessor_count[i])));
   }
   json_root["chunks_on_disk"] = chunks_on_disk_array;
-  json_root["chunk_gaussian_counts"] = chunk_gaussian_counts_array;
+  json_root["chunk_triangle_counts"] = chunk_triangle_counts_array;
 
   writeJsonToFile(json_root, scene_dir / "chunk_manifest.json");
 }
 
 // Implementation for loadChunkManifest
-void GaussianMapper::loadChunkManifest(std::filesystem::path scene_dir) {
+void TriangleMapper::loadChunkManifest(std::filesystem::path scene_dir) {
   std::filesystem::path manifest_path = scene_dir / "chunk_manifest.json";
   if (!std::filesystem::exists(manifest_path)) {
     std::cerr << "Warning: Chunk manifest not found at " << manifest_path
@@ -574,10 +574,10 @@ void GaussianMapper::loadChunkManifest(std::filesystem::path scene_dir) {
   }
 
   // Clear existing sets before loading
-  gaussians_->chunks_on_disk_ = torch::empty(
+  triangles_->chunks_on_disk_ = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
 
-  gaussians_->chunks_loaded_from_disk_ = torch::empty(
+  triangles_->chunks_loaded_from_disk_ = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
 
   // Load chunks_on_disk_ (std::unordered_set<int64_t>)
@@ -596,54 +596,54 @@ void GaussianMapper::loadChunkManifest(std::filesystem::path scene_dir) {
 
     // Convert to tensor
     if (!chunks_on_disk_vec.empty()) {
-      gaussians_->chunks_on_disk_ =
+      triangles_->chunks_on_disk_ =
           torch::from_blob(chunks_on_disk_vec.data(),
                            {static_cast<int64_t>(chunks_on_disk_vec.size())},
                            torch::TensorOptions().dtype(torch::kInt64))
               .clone()
-              .to(gaussians_->device_type_);
+              .to(triangles_->device_type_);
     } else {
-      gaussians_->chunks_on_disk_ =
+      triangles_->chunks_on_disk_ =
           torch::empty({0}, torch::TensorOptions()
                                 .dtype(torch::kInt64)
-                                .device(gaussians_->device_type_));
+                                .device(triangles_->device_type_));
     }
   }
 
-  if (root.isMember("chunk_gaussian_counts") &&
-      root["chunk_gaussian_counts"].isArray()) {
-    const Json::Value& chunk_gaussian_counts_array =
-        root["chunk_gaussian_counts"];
+  if (root.isMember("chunk_triangle_counts") &&
+      root["chunk_triangle_counts"].isArray()) {
+    const Json::Value& chunk_triangle_counts_array =
+        root["chunk_triangle_counts"];
 
     // Collect into vector first
-    std::vector<int64_t> chunk_gaussian_counts_vec;
-    chunk_gaussian_counts_vec.reserve(chunk_gaussian_counts_array.size());
+    std::vector<int64_t> chunk_triangle_counts_vec;
+    chunk_triangle_counts_vec.reserve(chunk_triangle_counts_array.size());
 
-    for (const auto& chunk_value : chunk_gaussian_counts_array) {
+    for (const auto& chunk_value : chunk_triangle_counts_array) {
       if (chunk_value.isInt64()) {
-        chunk_gaussian_counts_vec.push_back(chunk_value.asInt64());
+        chunk_triangle_counts_vec.push_back(chunk_value.asInt64());
       }
     }
 
     // Convert to tensor
-    if (!chunk_gaussian_counts_vec.empty()) {
-      gaussians_->chunk_gaussian_counts_ =
+    if (!chunk_triangle_counts_vec.empty()) {
+      triangles_->chunk_triangle_counts_ =
           torch::from_blob(
-              chunk_gaussian_counts_vec.data(),
-              {static_cast<int64_t>(chunk_gaussian_counts_vec.size())},
+              chunk_triangle_counts_vec.data(),
+              {static_cast<int64_t>(chunk_triangle_counts_vec.size())},
               torch::TensorOptions().dtype(torch::kInt64))
               .clone()
-              .to(gaussians_->device_type_);
+              .to(triangles_->device_type_);
     } else {
-      gaussians_->chunk_gaussian_counts_ =
+      triangles_->chunk_triangle_counts_ =
           torch::empty({0}, torch::TensorOptions()
                                 .dtype(torch::kInt64)
-                                .device(gaussians_->device_type_));
+                                .device(triangles_->device_type_));
     }
   }
 }
 
-void GaussianMapper::loadCamerasFromJson(std::filesystem::path json_path) {
+void TriangleMapper::loadCamerasFromJson(std::filesystem::path json_path) {
   if (!std::filesystem::exists(json_path)) {
     throw std::runtime_error("Camera JSON not found at " + json_path.string());
   }
@@ -667,7 +667,7 @@ void GaussianMapper::loadCamerasFromJson(std::filesystem::path json_path) {
     unsigned long fid = camera_entry["id"].asUInt64();
 
     // Create a new keyframe
-    std::shared_ptr<GaussianKeyframe> pkf = std::make_shared<GaussianKeyframe>(
+    std::shared_ptr<TriangleKeyframe> pkf = std::make_shared<TriangleKeyframe>(
         fid, getIteration(), keyframe_save_dir_);
 
     // Set image dimensions
@@ -744,13 +744,13 @@ void GaussianMapper::loadCamerasFromJson(std::filesystem::path json_path) {
   }
 }
 
-void GaussianMapper::saveTotalGaussians(std::string name_suffix) {
-  int totalGaussians = gaussians_->countAllGaussians();
+void TriangleMapper::saveTotalTriangles(std::string name_suffix) {
+  int totalTriangles = triangles_->countAllTriangles();
 
   std::filesystem::path result_dir =
       result_dir_ / (std::to_string(getIteration()) + name_suffix);
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
 
-  std::ofstream out_file = openOutputFile(result_dir / "gaussianCount.txt");
-  out_file << totalGaussians;
+  std::ofstream out_file = openOutputFile(result_dir / "triangleCount.txt");
+  out_file << totalTriangles;
 }

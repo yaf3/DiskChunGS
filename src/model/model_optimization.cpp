@@ -14,11 +14,11 @@
  * and further modified by Casimir Feldmann in 2025 as part of DiskChunGS.
  */
 
-#include "model/gaussian_model.h"
-#include "rendering/gaussian_rasterizer.h"
+#include "model/triangle_model.h"
+#include "rendering/triangle_rasterizer.h"
 
-void GaussianModel::trainingSetup(
-    const GaussianOptimizationParams& training_args) {
+void TriangleModel::trainingSetup(
+    const TriangleOptimizationParams& training_args) {
   position_lr_init_ = training_args.position_lr_init_ * spatial_lr_scale_;
   position_lr_decay_ = training_args.position_lr_decay_;
   position_lr_min_ = position_lr_init_ * 0.1f * spatial_lr_scale_;
@@ -27,13 +27,13 @@ void GaussianModel::trainingSetup(
   adam_options.set_lr(0.0);
   adam_options.eps() = 1e-15;
 
-  optimizer_.reset(new SparseGaussianAdam(Tensor_vec_xyz_, adam_options));
+  optimizer_.reset(new SparseTriangleAdam(Tensor_vec_xyz_, adam_options));
   optimizer_->param_groups()[0].options().set_lr(0.0f);
 
-  // Per-Gaussian position learning rates
-  int num_gaussians = getXYZ().size(0);
+  // Per-Triangle position learning rates
+  int num_triangles = getXYZ().size(0);
   position_lrs_ = torch::full(
-      {num_gaussians}, position_lr_init_,
+      {num_triangles}, position_lr_init_,
       torch::TensorOptions().dtype(torch::kFloat32).device(device_type_));
 
   // Remaining parameter groups use scalar learning rates
@@ -54,7 +54,7 @@ void GaussianModel::trainingSetup(
   optimizer_->param_groups()[5].options().set_lr(training_args.rotation_lr_);
 }
 
-void GaussianModel::updateLearningRates(const torch::Tensor& visibility) {
+void TriangleModel::updateLearningRates(const torch::Tensor& visibility) {
   if (visibility.size(0) != position_lrs_.size(0)) {
     throw std::runtime_error(
         "Visibility tensor size doesn't match position_lrs_ size");
@@ -65,7 +65,7 @@ void GaussianModel::updateLearningRates(const torch::Tensor& visibility) {
   position_lrs_.clamp_min_(position_lr_min_);
 }
 
-void GaussianModel::optimizerStep(torch::Tensor& visibility,
+void TriangleModel::optimizerStep(torch::Tensor& visibility,
                                    const uint32_t N) {
   torch::NoGradGuard no_grad;
 
@@ -91,7 +91,7 @@ void GaussianModel::optimizerStep(torch::Tensor& visibility,
     auto& param_state = static_cast<torch::optim::AdamParamState&>(*state[key]);
     auto options = static_cast<torch::optim::AdamOptions&>(group.options());
 
-    // Group 0 uses per-Gaussian position LRs; others use a scalar LR
+    // Group 0 uses per-Triangle position LRs; others use a scalar LR
     torch::Tensor lr_tensor;
     if (group_idx == 0) {
       lr_tensor = position_lrs_;

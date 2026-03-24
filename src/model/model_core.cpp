@@ -14,21 +14,21 @@
  * and further modified by Casimir Feldmann in 2025 as part of DiskChunGS.
  */
 
-#include "model/gaussian_model.h"
-#include "rendering/gaussian_rasterizer.h"
+#include "model/triangle_model.h"
+#include "rendering/triangle_rasterizer.h"
 
-GaussianModel::GaussianModel(const GaussianModelParams& model_params,
+TriangleModel::TriangleModel(const TriangleModelParams& model_params,
                              std::string storage_base_path,
                              float chunk_size)
     : storage_base_path_(storage_base_path),
       chunk_size_(chunk_size),
-      max_gaussians_in_memory_(model_params.max_gaussians_in_memory_),
+      max_triangles_in_memory_(model_params.max_triangles_in_memory_),
       sh_degree_(0),
       spatial_lr_scale_(1.0),
       position_lr_init_(0.00005),
       position_lr_decay_(0.99998),
       local_iteration_(0),
-      gaussian_visibility_cache_(chunk_size) {
+      triangle_visibility_cache_(chunk_size) {
   this->sh_degree_ = model_params.sh_degree_;
 
   // Device
@@ -37,7 +37,7 @@ GaussianModel::GaussianModel(const GaussianModelParams& model_params,
   else
     this->device_type_ = torch::kCPU;
 
-  GAUSSIAN_MODEL_INIT_TENSORS(this->device_type_)
+  TRIANGLE_MODEL_INIT_TENSORS(this->device_type_)
 
   chunks_on_disk_ = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
@@ -45,36 +45,36 @@ GaussianModel::GaussianModel(const GaussianModelParams& model_params,
   chunks_loaded_from_disk_ = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
 
-  chunk_gaussian_counts_ = torch::empty(
+  chunk_triangle_counts_ = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
-  gaussian_ids_ = torch::empty(
+  triangle_ids_ = torch::empty(
       0, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
 
-  std::cout << "[GaussianModel] Initialized with storage path: "
+  std::cout << "[TriangleModel] Initialized with storage path: "
             << storage_base_path_ << " and chunk size: " << chunk_size_
             << std::endl;
 }
 
-torch::Tensor GaussianModel::getScalingActivation() {
+torch::Tensor TriangleModel::getScalingActivation() {
   return torch::exp(this->scaling_);
 }
 
-torch::Tensor GaussianModel::getRotationActivation() {
+torch::Tensor TriangleModel::getRotationActivation() {
   return torch::nn::functional::normalize(this->rotation_);
 }
 
-torch::Tensor GaussianModel::getXYZ() { return this->xyz_; }
+torch::Tensor TriangleModel::getXYZ() { return this->xyz_; }
 
-torch::Tensor GaussianModel::getFeatures() {
+torch::Tensor TriangleModel::getFeatures() {
   return torch::cat({this->features_dc_.clone(), this->features_rest_.clone()},
                     /*dim=*/1);
 }
 
-torch::Tensor GaussianModel::getOpacityActivation() {
+torch::Tensor TriangleModel::getOpacityActivation() {
   return torch::sigmoid(this->opacity_);
 }
 
-torch::Tensor GaussianModel::getCovarianceActivation(int scaling_modifier) {
+torch::Tensor TriangleModel::getCovarianceActivation(int scaling_modifier) {
   // build_rotation
   auto r = this->rotation_;
   auto R = general_utils::build_rotation(r);
@@ -94,7 +94,7 @@ torch::Tensor GaussianModel::getCovarianceActivation(int scaling_modifier) {
   return actual_covariance;
 }
 
-void GaussianModel::applyScaledTransformation(const float s,
+void TriangleModel::applyScaledTransformation(const float s,
                                               const Sophus::SE3f T) {
   torch::NoGradGuard no_grad;
   // pt <- (s * Ryw * pt + tyw)
@@ -108,7 +108,7 @@ void GaussianModel::applyScaledTransformation(const float s,
   scaledTransformationPostfix(this->xyz_, this->scaling_);
 }
 
-void GaussianModel::scaledTransformationPostfix(torch::Tensor& new_xyz,
+void TriangleModel::scaledTransformationPostfix(torch::Tensor& new_xyz,
                                                 torch::Tensor& new_scaling) {
   // param_groups[0] = xyz_
   torch::Tensor optimizable_xyz = this->replaceTensorToOptimizer(new_xyz, 0);
@@ -123,7 +123,7 @@ void GaussianModel::scaledTransformationPostfix(torch::Tensor& new_xyz,
   this->Tensor_vec_scaling_ = {this->scaling_};
 }
 
-void GaussianModel::scaledTransformVisiblePointsOfKeyframe(
+void TriangleModel::scaledTransformVisiblePointsOfKeyframe(
     torch::Tensor& point_transformed_flags,
     const torch::Tensor& diff_pose,
     torch::Tensor& kf_world_view_transform,
@@ -168,7 +168,7 @@ void GaussianModel::scaledTransformVisiblePointsOfKeyframe(
   }
 }
 
-void GaussianModel::addPoints(const torch::Tensor& new_xyz,
+void TriangleModel::addPoints(const torch::Tensor& new_xyz,
                               const torch::Tensor& new_colors,
                               const torch::Tensor& new_scales,
                               const torch::Tensor& new_opacities,
@@ -178,11 +178,11 @@ void GaussianModel::addPoints(const torch::Tensor& new_xyz,
 
   auto [filtered_xyz, filtered_colors, filtered_scales, filtered_opacities] =
       filterPointsByChunkDensity(new_xyz, new_colors, new_scales, new_opacities,
-                                 new_gaussian_chunk_density_);
+                                 new_triangle_chunk_density_);
 
   if (filtered_xyz.size(0) == 0) {
     std::cout
-        << "[Gaussian Model] Warning: No points passed chunk density filter"
+        << "[Triangle Model] Warning: No points passed chunk density filter"
         << std::endl;
     return;
   }
@@ -212,13 +212,13 @@ void GaussianModel::addPoints(const torch::Tensor& new_xyz,
   }
 }
 
-void GaussianModel::initializeFromPoints(const torch::Tensor& initial_xyz,
+void TriangleModel::initializeFromPoints(const torch::Tensor& initial_xyz,
                                          const torch::Tensor& initial_colors,
                                          const torch::Tensor& initial_scales,
                                          const torch::Tensor& initial_opacities,
                                          int iteration) {
   torch::NoGradGuard no_grad;
-  std::cout << "[Gaussian Model] Initializing from points: "
+  std::cout << "[Triangle Model] Initializing from points: "
             << initial_xyz.sizes() << std::endl;
 
   torch::Tensor fused_color = sh_utils::RGB2SH(initial_colors);
@@ -263,19 +263,19 @@ void GaussianModel::initializeFromPoints(const torch::Tensor& initial_xyz,
   this->rotation_ = rots.requires_grad_();
   this->opacity_ = opacities.requires_grad_();
 
-  gaussian_chunk_ids_ = computeChunkIds(initial_xyz, chunk_size_);
+  triangle_chunk_ids_ = computeChunkIds(initial_xyz, chunk_size_);
 
-  gaussian_ids_ = torch::arange(
-      next_gaussian_id_, next_gaussian_id_ + initial_xyz.size(0),
+  triangle_ids_ = torch::arange(
+      next_triangle_id_, next_triangle_id_ + initial_xyz.size(0),
       torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
-  next_gaussian_id_ += initial_xyz.size(0);
+  next_triangle_id_ += initial_xyz.size(0);
 
-  GAUSSIAN_MODEL_TENSORS_TO_VEC
+  TRIANGLE_MODEL_TENSORS_TO_VEC
 
   is_initialized_ = true;
 }
 
-void GaussianModel::appendPoints(const torch::Tensor& new_xyzs,
+void TriangleModel::appendPoints(const torch::Tensor& new_xyzs,
                                  const torch::Tensor& new_colors,
                                  const torch::Tensor& new_scales,
                                  const torch::Tensor& new_opacities,
@@ -326,30 +326,30 @@ void GaussianModel::appendPoints(const torch::Tensor& new_xyzs,
       torch::full({new_xyzs.size(0)}, position_lr_init_,
                   torch::TensorOptions().device(device_type_));
 
-  torch::Tensor new_gaussian_ids = torch::arange(
-      next_gaussian_id_, next_gaussian_id_ + new_xyzs.size(0),
+  torch::Tensor new_triangle_ids = torch::arange(
+      next_triangle_id_, next_triangle_id_ + new_xyzs.size(0),
       torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
-  next_gaussian_id_ += new_xyzs.size(0);
+  next_triangle_id_ += new_xyzs.size(0);
 
   torch::Tensor new_chunk_ids = computeChunkIds(new_xyzs, chunk_size_);
 
   densificationPostfix(new_xyz_tensor, new_features_dc, new_features_rest,
                        new_opacities_tensor, new_scaling, new_rotation,
                        new_exist_since_iter, new_chunk_ids, new_position_lrs,
-                       new_gaussian_ids);
+                       new_triangle_ids);
 }
 
-std::vector<ChunkCoord> GaussianModel::frustumCullChunks(
-    std::shared_ptr<GaussianKeyframe> keyframe,
+std::vector<ChunkCoord> TriangleModel::frustumCullChunks(
+    std::shared_ptr<TriangleKeyframe> keyframe,
     bool use_cache) {
   // Delegate to standalone function with our cache
   FrustumCullingCache* cache_ptr =
-      use_cache ? &gaussian_visibility_cache_ : nullptr;
+      use_cache ? &triangle_visibility_cache_ : nullptr;
   return ::frustumCullChunks(keyframe, chunk_size_, cache_ptr);
 }
 
-torch::Tensor GaussianModel::cullVisibleGaussians(
-    std::shared_ptr<GaussianKeyframe> keyframe,
+torch::Tensor TriangleModel::cullVisibleTriangles(
+    std::shared_ptr<TriangleKeyframe> keyframe,
     bool manage_memory) {
   torch::NoGradGuard no_grad;
 
@@ -373,28 +373,28 @@ torch::Tensor GaussianModel::cullVisibleGaussians(
     loadChunks(visible_chunk_ids);
   }
 
-  // Convert chunk visibility to gaussian visibility
+  // Convert chunk visibility to triangle visibility
   torch::Tensor chunk_visibility_mask =
-      createGaussianMaskFromChunks(visible_chunk_ids);
+      createTriangleMaskFromChunks(visible_chunk_ids);
 
   updateChunkAccess(visible_chunk_ids);
 
   return chunk_visibility_mask;
 }
 
-torch::Tensor GaussianModel::createGaussianMaskFromChunks(
+torch::Tensor TriangleModel::createTriangleMaskFromChunks(
     const torch::Tensor& visible_chunk_ids) {
   if (visible_chunk_ids.size(0) == 0) {
     return torch::zeros(
-        {gaussian_chunk_ids_.size(0)},
+        {triangle_chunk_ids_.size(0)},
         torch::TensorOptions().dtype(torch::kBool).device(device_type_));
   }
 
-  return torch::isin(gaussian_chunk_ids_, visible_chunk_ids);
+  return torch::isin(triangle_chunk_ids_, visible_chunk_ids);
 }
 
-void GaussianModel::initializeEmpty(float spatial_lr_scale) {
-  std::cout << "[Gaussian Model] Initializing empty model for loading"
+void TriangleModel::initializeEmpty(float spatial_lr_scale) {
+  std::cout << "[Triangle Model] Initializing empty model for loading"
             << std::endl;
 
   this->spatial_lr_scale_ = spatial_lr_scale;
@@ -434,14 +434,14 @@ void GaussianModel::initializeEmpty(float spatial_lr_scale) {
   // Initialize auxiliary tensors
   this->exist_since_iter_ = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
-  this->gaussian_chunk_ids_ = torch::empty(
+  this->triangle_chunk_ids_ = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
 
   // Initialize tensor vectors for optimizer
-  GAUSSIAN_MODEL_TENSORS_TO_VEC
+  TRIANGLE_MODEL_TENSORS_TO_VEC
 
   // Mark as initialized
   is_initialized_ = true;
 
-  std::cout << "[Gaussian Model] Empty model initialized" << std::endl;
+  std::cout << "[Triangle Model] Empty model initialized" << std::endl;
 }

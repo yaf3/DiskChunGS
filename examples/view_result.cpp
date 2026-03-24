@@ -24,7 +24,7 @@
 #include <iostream>
 #include <memory>
 
-#include "gaussian_mapper.h"
+#include "triangle_mapper.h"
 #include "viewer/imgui_viewer.h"
 
 int main(int argc, char** argv) {
@@ -45,18 +45,18 @@ int main(int argc, char** argv) {
     device_type = torch::kCPU;
   }
 
-  // Create GaussianMapper
+  // Create TriangleMapper
   std::filesystem::path result_path(argv[1]);
-  std::filesystem::path gaussian_cfg_path =
-      result_path / "gaussian_mapper_cfg.yaml";
-  std::shared_ptr<GaussianMapper> pGausMapper =
-      std::make_shared<GaussianMapper>(gaussian_cfg_path, result_path, 0,
+  std::filesystem::path triangle_cfg_path =
+      result_path / "triangle_mapper_cfg.yaml";
+  std::shared_ptr<TriangleMapper> pTriMapper =
+      std::make_shared<TriangleMapper>(triangle_cfg_path, result_path, 0,
                                        device_type);
 
-  // Create Gaussian Viewer
+  // Create Triangle Viewer
   std::thread viewer_thd;
   std::shared_ptr<ImGuiViewer> pViewer;
-  pViewer = std::make_shared<ImGuiViewer>(nullptr, pGausMapper, false);
+  pViewer = std::make_shared<ImGuiViewer>(nullptr, pTriMapper, false);
   pViewer->run();
 
   return 0;

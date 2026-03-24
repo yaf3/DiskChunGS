@@ -24,26 +24,26 @@
 
 #include "camera.h"
 #include "geometry/point3d.h"
-#include "model/gaussian_model.h"
-#include "scene/gaussian_keyframe.h"
-#include "scene/gaussian_parameters.h"
+#include "model/triangle_model.h"
+#include "scene/triangle_keyframe.h"
+#include "scene/triangle_parameters.h"
 #include "types.h"
 
 /**
  * @brief Manages a collection of cameras and keyframes for
- *        Gaussian splatting reconstruction.
+ *        Triangle splatting reconstruction.
  *
  * This class serves as the central container for scene data, providing
  * thread-safe access to keyframes and methods for coordinate transformations.
  */
-class GaussianScene {
+class TriangleScene {
  public:
   /**
-   * @brief Constructs a GaussianScene.
+   * @brief Constructs a TriangleScene.
    * @param args Model parameters configuration.
    * @param load_iteration Iteration to load from disk (0 = no loading).
    */
-  GaussianScene(GaussianModelParams& args, int load_iteration = 0);
+  TriangleScene(TriangleModelParams& args, int load_iteration = 0);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Camera management
@@ -70,26 +70,26 @@ class GaussianScene {
    * @brief Adds a keyframe to the scene (thread-safe).
    * @param keyframe Shared pointer to the keyframe.
    */
-  void addKeyframe(std::shared_ptr<GaussianKeyframe> keyframe);
+  void addKeyframe(std::shared_ptr<TriangleKeyframe> keyframe);
 
   /**
    * @brief Retrieves a keyframe by frame ID (thread-safe).
    * @param fid Frame identifier.
    * @return Shared pointer to keyframe, or nullptr if not found.
    */
-  std::shared_ptr<GaussianKeyframe> getKeyframe(std::size_t fid);
+  std::shared_ptr<TriangleKeyframe> getKeyframe(std::size_t fid);
 
   /**
    * @brief Returns a reference to the keyframes map (not thread-safe).
    * @warning Direct access bypasses mutex protection.
    */
-  std::map<std::size_t, std::shared_ptr<GaussianKeyframe>>& keyframes();
+  std::map<std::size_t, std::shared_ptr<TriangleKeyframe>>& keyframes();
 
   /**
    * @brief Returns a copy of all keyframes (thread-safe).
    * @return Copy of the keyframes map.
    */
-  std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> getAllKeyframes();
+  std::map<std::size_t, std::shared_ptr<TriangleKeyframe>> getAllKeyframes();
 
   // ─────────────────────────────────────────────────────────────────────────
   // Transformations and normalization
@@ -123,7 +123,7 @@ class GaussianScene {
   int loaded_iter_ = 0;          ///< Iteration loaded from disk (0 = none).
 
   std::map<camera_id_t, Camera> cameras_;
-  std::map<std::size_t, std::shared_ptr<GaussianKeyframe>> keyframes_;
+  std::map<std::size_t, std::shared_ptr<TriangleKeyframe>> keyframes_;
   std::map<point3D_id_t, Point3D> cached_point_cloud_;
 
  protected:

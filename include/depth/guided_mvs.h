@@ -19,7 +19,7 @@
 #include <utility>
 #include <vector>
 
-#include "scene/gaussian_keyframe.h"
+#include "scene/triangle_keyframe.h"
 /**
  * @brief Multi-view stereo depth estimation guided by monocular depth
  *
@@ -59,8 +59,8 @@ class GuidedMVS {
    */
   std::pair<torch::Tensor, torch::Tensor> operator()(
       const torch::Tensor& uv,
-      const std::shared_ptr<GaussianKeyframe> refKeyframe,
-      const std::vector<std::shared_ptr<GaussianKeyframe>>& keyframes);
+      const std::shared_ptr<TriangleKeyframe> refKeyframe,
+      const std::vector<std::shared_ptr<TriangleKeyframe>>& keyframes);
 
   // Getters
   int getNumCams() const { return n_cams; }

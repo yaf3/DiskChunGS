@@ -2,7 +2,7 @@
 
 Model.white_background: 0  # 0:false, 1 or other integer:true
 Model.sh_degree: 3
-Model.max_gaussians_in_memory: 1500000
+Model.max_triangles_in_memory: 1500000
 Model.init_proba_scaler: 2.0
 Model.downsample_for_sampling: 0
 
@@ -45,15 +45,15 @@ Optimization.feature_lr: 0.005
 Optimization.opacity_lr: 0.1
 Optimization.scaling_lr: 0.01
 Optimization.rotation_lr: 0.002
-Optimization.pose_lr: 0.0000
+Optimization.pose_lr: 0.00
 Optimization.exposure_lr: 0.00
 Optimization.depth_scale_bias_lr: 0.0001
 Optimization.lambda_dssim: 0.2
 Optimization.lambda_depth: 0.1
 Optimization.exposure_optimization: 0 # 0:false, 1 or other integer:true
 
-GaussianViewer.glfw_window_width: 1400
-GaussianViewer.glfw_window_height: 1050
-GaussianViewer.image_scale: 0.5
-GaussianViewer.image_scale_main: 1.0
-GaussianViewer.camera_watch_dist: 0.000001
+TriangleViewer.glfw_window_width: 1400
+TriangleViewer.glfw_window_height: 1050
+TriangleViewer.image_scale: 0.5
+TriangleViewer.image_scale_main: 1.0
+TriangleViewer.camera_watch_dist: 0.000001

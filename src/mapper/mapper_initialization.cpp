@@ -14,10 +14,10 @@
  * <http://www.gnu.org/licenses/>.
  */
 
-#include "gaussian_mapper.h"
+#include "triangle_mapper.h"
 
-GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
-                               std::filesystem::path gaussian_config_file_path,
+TriangleMapper::TriangleMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
+                               std::filesystem::path triangle_config_file_path,
                                std::filesystem::path result_dir,
                                int seed,
                                torch::DeviceType device_type,
@@ -42,12 +42,12 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   result_dir_ = result_dir;
   initializeDirectories();
 
-  config_file_path_ = gaussian_config_file_path;
-  readConfigFromFile(gaussian_config_file_path);
+  config_file_path_ = triangle_config_file_path;
+  readConfigFromFile(triangle_config_file_path);
 
   initializeBackgroundAndOverrideColor();
 
-  initializeGaussianComponents(true);
+  initializeTriangleComponents(true);
 
   initializeLaplacianOfGaussianKernel();
 
@@ -65,7 +65,7 @@ GaussianMapper::GaussianMapper(std::shared_ptr<ORB_SLAM3::System> pSLAM,
   }
 }
 
-GaussianMapper::GaussianMapper(std::filesystem::path gaussian_config_file_path,
+TriangleMapper::TriangleMapper(std::filesystem::path triangle_config_file_path,
                                std::filesystem::path result_dir,
                                int seed,
                                torch::DeviceType device_type)
@@ -87,12 +87,12 @@ GaussianMapper::GaussianMapper(std::filesystem::path gaussian_config_file_path,
   result_dir_ = result_dir;
   initializeDirectories();
 
-  config_file_path_ = gaussian_config_file_path;
-  readConfigFromFile(gaussian_config_file_path);
+  config_file_path_ = triangle_config_file_path;
+  readConfigFromFile(triangle_config_file_path);
 
   initializeBackgroundAndOverrideColor();
 
-  initializeGaussianComponents(false);
+  initializeTriangleComponents(false);
 
   initializeLaplacianOfGaussianKernel();
 
@@ -101,25 +101,25 @@ GaussianMapper::GaussianMapper(std::filesystem::path gaussian_config_file_path,
 
 // ========== Initialization Helper Methods ==========
 
-void GaussianMapper::initializeRandomSeed(int seed) {
+void TriangleMapper::initializeRandomSeed(int seed) {
   std::srand(seed);
   torch::manual_seed(seed);
 }
 
-void GaussianMapper::initializeDevice(torch::DeviceType device_type) {
+void TriangleMapper::initializeDevice(torch::DeviceType device_type) {
   if (device_type == torch::kCUDA && torch::cuda::is_available()) {
-    std::cout << "[Gaussian Mapper]CUDA available! Training on GPU."
+    std::cout << "[Triangle Mapper]CUDA available! Training on GPU."
               << std::endl;
     device_type_ = torch::kCUDA;
     model_params_.data_device_ = "cuda";
   } else {
-    std::cout << "[Gaussian Mapper]Training on CPU." << std::endl;
+    std::cout << "[Triangle Mapper]Training on CPU." << std::endl;
     device_type_ = torch::kCPU;
     model_params_.data_device_ = "cpu";
   }
 }
 
-void GaussianMapper::initializeDirectories() {
+void TriangleMapper::initializeDirectories() {
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir_)
   chunk_save_dir_ = result_dir_ / "chunks";
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(chunk_save_dir_)
@@ -127,7 +127,7 @@ void GaussianMapper::initializeDirectories() {
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(keyframe_save_dir_)
 }
 
-void GaussianMapper::initializeBackgroundAndOverrideColor() {
+void TriangleMapper::initializeBackgroundAndOverrideColor() {
   std::vector<float> bg_color;
   if (model_params_.white_background_)
     bg_color = {1.0f, 1.0f, 1.0f};
@@ -141,12 +141,12 @@ void GaussianMapper::initializeBackgroundAndOverrideColor() {
       torch::empty(0, torch::TensorOptions().device(device_type_));
 }
 
-void GaussianMapper::initializeGaussianComponents(
+void TriangleMapper::initializeTriangleComponents(
     bool with_training_infrastructure) {
-  scene_ = std::make_shared<GaussianScene>(model_params_);
+  scene_ = std::make_shared<TriangleScene>(model_params_);
 
   if (with_training_infrastructure) {
-    gaussians_ = std::make_shared<GaussianModel>(
+    triangles_ = std::make_shared<TriangleModel>(
         model_params_, chunk_save_dir_.string(), chunk_size_);
 
     keyframe_selector_ = std::make_shared<KeyframeSelection>(
@@ -159,7 +159,7 @@ std::tuple<ORB_SLAM3::Settings*,
            std::vector<ORB_SLAM3::GeometricCamera*>,
            cv::Size,
            UndistortParams>
-GaussianMapper::initializeORBSettings(ORB_SLAM3::System::eSensor sensor_type,
+TriangleMapper::initializeORBSettings(ORB_SLAM3::System::eSensor sensor_type,
                                       const std::string& orb_settings_path) {
   ORB_SLAM3::Settings* orb_settings;
   std::vector<ORB_SLAM3::GeometricCamera*> vpCameras;
@@ -199,7 +199,7 @@ GaussianMapper::initializeORBSettings(ORB_SLAM3::System::eSensor sensor_type,
                          undistort_params);
 }
 
-void GaussianMapper::initializeSensorType(
+void TriangleMapper::initializeSensorType(
     ORB_SLAM3::System::eSensor sensor_type,
     ORB_SLAM3::Settings* orb_settings) {
   ORB_SLAM3::System::eSensor actual_sensor_type = sensor_type;
@@ -224,12 +224,12 @@ void GaussianMapper::initializeSensorType(
       this->sensor_type_ = RGBD;
     } break;
     default: {
-      throw std::runtime_error("[Gaussian Mapper]Unsupported sensor type!");
+      throw std::runtime_error("[Triangle Mapper]Unsupported sensor type!");
     } break;
   }
 }
 
-float GaussianMapper::initializeDepthEstimation() {
+float TriangleMapper::initializeDepthEstimation() {
   float mvs_inverse_depth_range;
   if (sensor_type_ == STEREO) {
     initializeStereoDepthEstimator();
@@ -243,7 +243,7 @@ float GaussianMapper::initializeDepthEstimation() {
   return mvs_inverse_depth_range;
 }
 
-void GaussianMapper::initializeMVSAndFeatures(float mvs_inverse_depth_range) {
+void TriangleMapper::initializeMVSAndFeatures(float mvs_inverse_depth_range) {
   int num_prev_keyframes = 6;
   int num_depth_candidates = 16;
 
@@ -253,7 +253,7 @@ void GaussianMapper::initializeMVSAndFeatures(float mvs_inverse_depth_range) {
   feat_extractor_ = std::make_unique<XFeat::XFDetector>(4096, 0.05, true);
 }
 
-void GaussianMapper::processCameraFromORBSLAM(
+void TriangleMapper::processCameraFromORBSLAM(
     ORB_SLAM3::GeometricCamera* SLAM_camera,
     const UndistortParams& undistort_params,
     const cv::Size& SLAM_im_size) {
