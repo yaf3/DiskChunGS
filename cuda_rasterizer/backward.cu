@@ -1,874 +1,852 @@
 /*
- * Copyright (C) 2023 - 2025 - 2025, Inria
+ * The original code is under the following copyright:
+ * Copyright (C) 2023, Inria
  * GRAPHDECO research group, https://team.inria.fr/graphdeco
  * All rights reserved.
  *
- * This software is free for non-commercial, research and evaluation use
- * under the terms of the LICENSE.md file.
+ * This software is free for non-commercial, research and evaluation use 
+ * under the terms of the LICENSE_GS.md file.
  *
  * For inquiries contact  george.drettakis@inria.fr
+ * 
+ * The modifications of the code are under the following copyright:
+ * Copyright (C) 2024, University of Liege, KAUST and University of Oxford
+ * TELIM research group, http://www.telecom.ulg.ac.be/
+ * IVUL research group, https://ivul.kaust.edu.sa/
+ * VGG research group, https://www.robots.ox.ac.uk/~vgg/
+ * All rights reserved.
+ * The modifications are under the LICENSE.md file.
+ *
+ * For inquiries contact jan.held@uliege.be
  */
 
-#include <cooperative_groups.h>
-#include <cooperative_groups/reduce.h>
-
-#include "auxiliary.h"
-#include "backward.h"
-namespace cg = cooperative_groups;
-
-__device__ __forceinline__ float sq(float x) { return x * x; }
-
-// Backward pass for conversion of spherical harmonics to RGB for
-// each Gaussian.
-__device__ void computeColorFromSH(int idx,
-                                   int deg,
-                                   int max_coeffs,
-                                   const glm::vec3* means,
-                                   glm::vec3 campos,
-                                   const float* dc,
-                                   const float* shs,
-                                   const bool* clamped,
-                                   const glm::vec3* dL_dcolor,
-                                   glm::vec3* dL_dmeans,
-                                   glm::vec3* dL_ddc,
-                                   glm::vec3* dL_dshs) {
-  // Compute intermediate values, as it is done during forward
-  glm::vec3 pos = means[idx];
-  glm::vec3 dir_orig = pos - campos;
-  glm::vec3 dir = dir_orig / glm::length(dir_orig);
-
-  glm::vec3* direct_color = ((glm::vec3*)dc) + idx;
-  glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
-
-  // Use PyTorch rule for clamping: if clamping was applied,
-  // gradient becomes 0.
-  glm::vec3 dL_dRGB = dL_dcolor[idx];
-  dL_dRGB.x *= clamped[3 * idx + 0] ? 0 : 1;
-  dL_dRGB.y *= clamped[3 * idx + 1] ? 0 : 1;
-  dL_dRGB.z *= clamped[3 * idx + 2] ? 0 : 1;
-
-  glm::vec3 dRGBdx(0, 0, 0);
-  glm::vec3 dRGBdy(0, 0, 0);
-  glm::vec3 dRGBdz(0, 0, 0);
-  float x = dir.x;
-  float y = dir.y;
-  float z = dir.z;
-
-  // Target location for this Gaussian to write SH gradients to
-  glm::vec3* dL_ddirect_color = dL_ddc + idx;
-  glm::vec3* dL_dsh = dL_dshs + idx * max_coeffs;
-
-  // No tricks here, just high school-level calculus.
-  float dRGBdsh0 = SH_C0;
-  dL_ddirect_color[0] = dRGBdsh0 * dL_dRGB;
-  if (deg > 0) {
-    float dRGBdsh1 = -SH_C1 * y;
-    float dRGBdsh2 = SH_C1 * z;
-    float dRGBdsh3 = -SH_C1 * x;
-    dL_dsh[0] = dRGBdsh1 * dL_dRGB;
-    dL_dsh[1] = dRGBdsh2 * dL_dRGB;
-    dL_dsh[2] = dRGBdsh3 * dL_dRGB;
-
-    dRGBdx = -SH_C1 * sh[2];
-    dRGBdy = -SH_C1 * sh[0];
-    dRGBdz = SH_C1 * sh[1];
-
-    if (deg > 1) {
-      float xx = x * x, yy = y * y, zz = z * z;
-      float xy = x * y, yz = y * z, xz = x * z;
-
-      float dRGBdsh4 = SH_C2[0] * xy;
-      float dRGBdsh5 = SH_C2[1] * yz;
-      float dRGBdsh6 = SH_C2[2] * (2.f * zz - xx - yy);
-      float dRGBdsh7 = SH_C2[3] * xz;
-      float dRGBdsh8 = SH_C2[4] * (xx - yy);
-      dL_dsh[3] = dRGBdsh4 * dL_dRGB;
-      dL_dsh[4] = dRGBdsh5 * dL_dRGB;
-      dL_dsh[5] = dRGBdsh6 * dL_dRGB;
-      dL_dsh[6] = dRGBdsh7 * dL_dRGB;
-      dL_dsh[7] = dRGBdsh8 * dL_dRGB;
-
-      dRGBdx += SH_C2[0] * y * sh[3] + SH_C2[2] * 2.f * -x * sh[5] +
-                SH_C2[3] * z * sh[6] + SH_C2[4] * 2.f * x * sh[7];
-      dRGBdy += SH_C2[0] * x * sh[3] + SH_C2[1] * z * sh[4] +
-                SH_C2[2] * 2.f * -y * sh[5] + SH_C2[4] * 2.f * -y * sh[7];
-      dRGBdz += SH_C2[1] * y * sh[4] + SH_C2[2] * 2.f * 2.f * z * sh[5] +
-                SH_C2[3] * x * sh[6];
-
-      if (deg > 2) {
-        float dRGBdsh9 = SH_C3[0] * y * (3.f * xx - yy);
-        float dRGBdsh10 = SH_C3[1] * xy * z;
-        float dRGBdsh11 = SH_C3[2] * y * (4.f * zz - xx - yy);
-        float dRGBdsh12 = SH_C3[3] * z * (2.f * zz - 3.f * xx - 3.f * yy);
-        float dRGBdsh13 = SH_C3[4] * x * (4.f * zz - xx - yy);
-        float dRGBdsh14 = SH_C3[5] * z * (xx - yy);
-        float dRGBdsh15 = SH_C3[6] * x * (xx - 3.f * yy);
-        dL_dsh[8] = dRGBdsh9 * dL_dRGB;
-        dL_dsh[9] = dRGBdsh10 * dL_dRGB;
-        dL_dsh[10] = dRGBdsh11 * dL_dRGB;
-        dL_dsh[11] = dRGBdsh12 * dL_dRGB;
-        dL_dsh[12] = dRGBdsh13 * dL_dRGB;
-        dL_dsh[13] = dRGBdsh14 * dL_dRGB;
-        dL_dsh[14] = dRGBdsh15 * dL_dRGB;
-
-        dRGBdx += (SH_C3[0] * sh[8] * 3.f * 2.f * xy + SH_C3[1] * sh[9] * yz +
-                   SH_C3[2] * sh[10] * -2.f * xy +
-                   SH_C3[3] * sh[11] * -3.f * 2.f * xz +
-                   SH_C3[4] * sh[12] * (-3.f * xx + 4.f * zz - yy) +
-                   SH_C3[5] * sh[13] * 2.f * xz +
-                   SH_C3[6] * sh[14] * 3.f * (xx - yy));
-
-        dRGBdy +=
-            (SH_C3[0] * sh[8] * 3.f * (xx - yy) + SH_C3[1] * sh[9] * xz +
-             SH_C3[2] * sh[10] * (-3.f * yy + 4.f * zz - xx) +
-             SH_C3[3] * sh[11] * -3.f * 2.f * yz +
-             SH_C3[4] * sh[12] * -2.f * xy + SH_C3[5] * sh[13] * -2.f * yz +
-             SH_C3[6] * sh[14] * -3.f * 2.f * xy);
-
-        dRGBdz += (SH_C3[1] * sh[9] * xy + SH_C3[2] * sh[10] * 4.f * 2.f * yz +
-                   SH_C3[3] * sh[11] * 3.f * (2.f * zz - xx - yy) +
-                   SH_C3[4] * sh[12] * 4.f * 2.f * xz +
-                   SH_C3[5] * sh[13] * (xx - yy));
-      }
-    }
-  }
-
-  // The view direction is an input to the computation. View direction
-  // is influenced by the Gaussian's mean, so SHs gradients
-  // must propagate back into 3D position.
-  glm::vec3 dL_ddir(glm::dot(dRGBdx, dL_dRGB), glm::dot(dRGBdy, dL_dRGB),
-                    glm::dot(dRGBdz, dL_dRGB));
-
-  // Account for normalization of direction
-  float3 dL_dmean = dnormvdv(float3{dir_orig.x, dir_orig.y, dir_orig.z},
-                             float3{dL_ddir.x, dL_ddir.y, dL_ddir.z});
-
-  // Gradients of loss w.r.t. Gaussian means, but only the portion
-  // that is caused because the mean affects the view-dependent color.
-  // Additional mean gradient is accumulated in below methods.
-  dL_dmeans[idx] += glm::vec3(dL_dmean.x, dL_dmean.y, dL_dmean.z);
-}
-
-// Backward version of INVERSE 2D covariance matrix computation
-// (due to length launched as separate kernel before other
-// backward steps contained in preprocess)
-__global__ void computeCov2DCUDA(int P,
-                                 const float3* means,
-                                 const int* radii,
-                                 const float* cov3Ds,
-                                 const float h_x,
-                                 float h_y,
-                                 const float tan_fovx,
-                                 float tan_fovy,
-                                 const float* viewmatrix,
-                                 const float* opacities,
-                                 const float* dL_dconics,
-                                 float* dL_dopacity,
-                                 const float* dL_dinvdepth,
-                                 float3* dL_dmeans_loc,
-                                 float* dL_dcov,
-                                 glm::mat3* dL_dRs) {
-  auto idx = cg::this_grid().thread_rank();
-  if (idx >= P || !(radii[idx] > 0)) return;
-
-  // Reading location of 3D covariance for this Gaussian
-  const float* cov3D = cov3Ds + 6 * idx;
-
-  // Fetch gradients, recompute 2D covariance and relevant
-  // intermediate forward results needed in the backward.
-  float3 mean = means[idx];
-  float3 dL_dconic = {dL_dconics[4 * idx], dL_dconics[4 * idx + 1],
-                      dL_dconics[4 * idx + 3]};
-  float3 t = transformPoint4x3(mean, viewmatrix);  // rot
-
-  const float limx = 1.3f * tan_fovx;
-  const float limy = 1.3f * tan_fovy;
-  const float txtz = t.x / t.z;
-  const float tytz = t.y / t.z;
-  t.x = min(limx, max(-limx, txtz)) * t.z;
-  t.y = min(limy, max(-limy, tytz)) * t.z;
-
-  const float x_grad_mul = txtz < -limx || txtz > limx ? 0 : 1;
-  const float y_grad_mul = tytz < -limy || tytz > limy ? 0 : 1;
-
-  glm::mat3 J = glm::mat3(h_x / t.z, 0.0f, -(h_x * t.x) / (t.z * t.z), 0.0f,
-                          h_y / t.z, -(h_y * t.y) / (t.z * t.z), 0, 0, 0);
-
-  glm::mat3 W = glm::mat3(viewmatrix[0], viewmatrix[4], viewmatrix[8],
-                          viewmatrix[1], viewmatrix[5], viewmatrix[9],
-                          viewmatrix[2], viewmatrix[6], viewmatrix[10]);
-
-  glm::mat3 Vrk = glm::mat3(cov3D[0], cov3D[1], cov3D[2], cov3D[1], cov3D[3],
-                            cov3D[4], cov3D[2], cov3D[4], cov3D[5]);
-
-  glm::mat3 T = W * J;
-
-  glm::mat3 cov2D = glm::transpose(T) * glm::transpose(Vrk) * T;
-
-  // Use helper variables for 2D covariance entries. More compact.
-  float c_xx = cov2D[0][0];
-  float c_xy = cov2D[0][1];
-  float c_yy = cov2D[1][1];
-
-  constexpr float h_var = 0.3f;
-#ifdef DGR_FIX_AA
-  const float det_cov = c_xx * c_yy - c_xy * c_xy;
-  c_xx += h_var;
-  c_yy += h_var;
-  const float det_cov_plus_h_cov = c_xx * c_yy - c_xy * c_xy;
-  const float h_convolution_scaling = sqrt(max(
-      0.000025f, det_cov / det_cov_plus_h_cov));  // max for numerical stability
-  const float dL_dopacity_v = dL_dopacity[idx];
-  const float d_h_convolution_scaling = dL_dopacity_v * opacities[idx];
-  dL_dopacity[idx] = dL_dopacity_v * h_convolution_scaling;
-  const float d_inside_root =
-      (det_cov / det_cov_plus_h_cov) <= 0.000025f
-          ? 0.f
-          : d_h_convolution_scaling / (2 * h_convolution_scaling);
-#else
-  c_xx += h_var;
-  c_yy += h_var;
-#endif
-
-  float dL_dc_xx = 0;
-  float dL_dc_xy = 0;
-  float dL_dc_yy = 0;
-#ifdef DGR_FIX_AA
-  {
-    // https://www.wolframalpha.com/input?i=d+%28%28x*y+-+z%5E2%29%2F%28%28x%2Bw%29*%28y%2Bw%29+-+z%5E2%29%29+%2Fdx
-    // https://www.wolframalpha.com/input?i=d+%28%28x*y+-+z%5E2%29%2F%28%28x%2Bw%29*%28y%2Bw%29+-+z%5E2%29%29+%2Fdz
-    const float x = c_xx;
-    const float y = c_yy;
-    const float z = c_xy;
-    const float w = h_var;
-    const float denom_f =
-        d_inside_root / sq(w * w + w * (x + y) + x * y - z * z);
-    const float dL_dx = w * (w * y + y * y + z * z) * denom_f;
-    const float dL_dy = w * (w * x + x * x + z * z) * denom_f;
-    const float dL_dz = -2.f * w * z * (w + x + y) * denom_f;
-    dL_dc_xx = dL_dx;
-    dL_dc_yy = dL_dy;
-    dL_dc_xy = dL_dz;
-  }
-#endif
-
-  float denom = c_xx * c_yy - c_xy * c_xy;
-  float denom2inv = 1.0f / ((denom * denom) + 0.0000001f);
-
-  if (denom2inv != 0) {
-    // Gradients of loss w.r.t. entries of 2D covariance matrix,
-    // given gradients of loss w.r.t. conic matrix (inverse covariance matrix).
-    // e.g., dL / da = dL / d_conic_a * d_conic_a / d_a
-
-    dL_dc_xx += denom2inv *
-                (-c_yy * c_yy * dL_dconic.x + 2 * c_xy * c_yy * dL_dconic.y +
-                 (denom - c_xx * c_yy) * dL_dconic.z);
-    dL_dc_yy += denom2inv *
-                (-c_xx * c_xx * dL_dconic.z + 2 * c_xx * c_xy * dL_dconic.y +
-                 (denom - c_xx * c_yy) * dL_dconic.x);
-    dL_dc_xy +=
-        denom2inv * 2 *
-        (c_xy * c_yy * dL_dconic.x - (denom + 2 * c_xy * c_xy) * dL_dconic.y +
-         c_xx * c_xy * dL_dconic.z);
-
-    // Gradients of loss L w.r.t. each 3D covariance matrix (Vrk) entry,
-    // given gradients w.r.t. 2D covariance matrix (diagonal).
-    // cov2D = transpose(T) * transpose(Vrk) * T;
-    dL_dcov[6 * idx + 0] =
-        (T[0][0] * T[0][0] * dL_dc_xx + T[0][0] * T[1][0] * dL_dc_xy +
-         T[1][0] * T[1][0] * dL_dc_yy);
-    dL_dcov[6 * idx + 3] =
-        (T[0][1] * T[0][1] * dL_dc_xx + T[0][1] * T[1][1] * dL_dc_xy +
-         T[1][1] * T[1][1] * dL_dc_yy);
-    dL_dcov[6 * idx + 5] =
-        (T[0][2] * T[0][2] * dL_dc_xx + T[0][2] * T[1][2] * dL_dc_xy +
-         T[1][2] * T[1][2] * dL_dc_yy);
-
-    // Gradients of loss L w.r.t. each 3D covariance matrix (Vrk) entry,
-    // given gradients w.r.t. 2D covariance matrix (off-diagonal).
-    // Off-diagonal elements appear twice --> double the gradient.
-    // cov2D = transpose(T) * transpose(Vrk) * T;
-    dL_dcov[6 * idx + 1] = 2 * T[0][0] * T[0][1] * dL_dc_xx +
-                           (T[0][0] * T[1][1] + T[0][1] * T[1][0]) * dL_dc_xy +
-                           2 * T[1][0] * T[1][1] * dL_dc_yy;
-    dL_dcov[6 * idx + 2] = 2 * T[0][0] * T[0][2] * dL_dc_xx +
-                           (T[0][0] * T[1][2] + T[0][2] * T[1][0]) * dL_dc_xy +
-                           2 * T[1][0] * T[1][2] * dL_dc_yy;
-    dL_dcov[6 * idx + 4] = 2 * T[0][2] * T[0][1] * dL_dc_xx +
-                           (T[0][1] * T[1][2] + T[0][2] * T[1][1]) * dL_dc_xy +
-                           2 * T[1][1] * T[1][2] * dL_dc_yy;
-  } else {
-    for (int i = 0; i < 6; i++) dL_dcov[6 * idx + i] = 0;
-  }
-
-  // Gradients of loss w.r.t. upper 2x3 portion of intermediate matrix T
-  // cov2D = transpose(T) * transpose(Vrk) * T;
-  float dL_dT00 =
-      2 * (T[0][0] * Vrk[0][0] + T[0][1] * Vrk[0][1] + T[0][2] * Vrk[0][2]) *
-          dL_dc_xx +
-      (T[1][0] * Vrk[0][0] + T[1][1] * Vrk[0][1] + T[1][2] * Vrk[0][2]) *
-          dL_dc_xy;
-  float dL_dT01 =
-      2 * (T[0][0] * Vrk[1][0] + T[0][1] * Vrk[1][1] + T[0][2] * Vrk[1][2]) *
-          dL_dc_xx +
-      (T[1][0] * Vrk[1][0] + T[1][1] * Vrk[1][1] + T[1][2] * Vrk[1][2]) *
-          dL_dc_xy;
-  float dL_dT02 =
-      2 * (T[0][0] * Vrk[2][0] + T[0][1] * Vrk[2][1] + T[0][2] * Vrk[2][2]) *
-          dL_dc_xx +
-      (T[1][0] * Vrk[2][0] + T[1][1] * Vrk[2][1] + T[1][2] * Vrk[2][2]) *
-          dL_dc_xy;
-  float dL_dT10 =
-      2 * (T[1][0] * Vrk[0][0] + T[1][1] * Vrk[0][1] + T[1][2] * Vrk[0][2]) *
-          dL_dc_yy +
-      (T[0][0] * Vrk[0][0] + T[0][1] * Vrk[0][1] + T[0][2] * Vrk[0][2]) *
-          dL_dc_xy;
-  float dL_dT11 =
-      2 * (T[1][0] * Vrk[1][0] + T[1][1] * Vrk[1][1] + T[1][2] * Vrk[1][2]) *
-          dL_dc_yy +
-      (T[0][0] * Vrk[1][0] + T[0][1] * Vrk[1][1] + T[0][2] * Vrk[1][2]) *
-          dL_dc_xy;
-  float dL_dT12 =
-      2 * (T[1][0] * Vrk[2][0] + T[1][1] * Vrk[2][1] + T[1][2] * Vrk[2][2]) *
-          dL_dc_yy +
-      (T[0][0] * Vrk[2][0] + T[0][1] * Vrk[2][1] + T[0][2] * Vrk[2][2]) *
-          dL_dc_xy;
-
-  // Gradients of loss w.r.t. upper 3x2 non-zero entries of Jacobian matrix
-  // T = W * J
-  float dL_dJ00 = W[0][0] * dL_dT00 + W[0][1] * dL_dT01 + W[0][2] * dL_dT02;
-  float dL_dJ02 = W[2][0] * dL_dT00 + W[2][1] * dL_dT01 + W[2][2] * dL_dT02;
-  float dL_dJ11 = W[1][0] * dL_dT10 + W[1][1] * dL_dT11 + W[1][2] * dL_dT12;
-  float dL_dJ12 = W[2][0] * dL_dT10 + W[2][1] * dL_dT11 + W[2][2] * dL_dT12;
-
-  // // Gradients of loss w.r.t. W
-  // glm::mat3 dL_dW = glm::mat3(
-  // 	dL_dT00 * J[0][0] + dL_dT02 * J[0][2], dL_dT01 * J[1][1] + dL_dT02 *
-  // J[1][2], 0.0f, 	dL_dT10 * J[0][0] + dL_dT12 * J[0][2], dL_dT11 * J[1][1] +
-  // dL_dT12 * J[1][2], 0.0f, 	0.0f, 0.0f, 0.0f
-  // );
-  // glm::mat3 dL_dW = glm::mat3(
-  // 	dL_dT00 * J[0][0] + dL_dT01 * J[1][0], dL_dT00 * J[0][1] + dL_dT01 *
-  // J[1][1], 0.0f, 	dL_dT10 * J[0][0] + dL_dT11 * J[1][0], dL_dT10 * J[0][1] +
-  // dL_dT11 * J[1][1], 0.0f, 	0.0f, 0.0f, 0.0f
-  // );
-  // dL_dRs[idx] = dL_dW;
-
-  float tz = 1.f / t.z;
-  float tz2 = tz * tz;
-  float tz3 = tz2 * tz;
-
-  // Gradients of loss w.r.t. transformed Gaussian mean t
-  float dL_dtx = x_grad_mul * -h_x * tz2 * dL_dJ02;
-  float dL_dty = y_grad_mul * -h_y * tz2 * dL_dJ12;
-  float dL_dtz = -h_x * tz2 * dL_dJ00 - h_y * tz2 * dL_dJ11 +
-                 (2 * h_x * t.x) * tz3 * dL_dJ02 +
-                 (2 * h_y * t.y) * tz3 * dL_dJ12 - dL_dinvdepth[idx] * tz2;
-
-  // Account for transformation of mean to t
-  // t = transformPoint4x3(mean, viewmatrix);
-  float3 dL_dmean_loc = {
-      dL_dtx, dL_dty,
-      dL_dtz};  // transformVec4x3Transpose({ dL_dtx, dL_dty, dL_dtz },
-                // viewmatrix); // rot { dL_dtx, dL_dty, dL_dtz }; //
-
-  // Gradients of loss w.r.t. Gaussian means, but only the portion
-  // that is caused because the mean affects the covariance matrix.
-  // Additional mean gradient is accumulated in BACKWARD::preprocess.
-  dL_dmeans_loc[idx] = dL_dmean_loc;
-}
-
-// Backward pass for the conversion of scale and rotation to a
-// 3D covariance matrix for each Gaussian.
-__device__ void computeCov3D(int idx,
-                             const glm::vec3 scale,
-                             float mod,
-                             const glm::vec4 rot,
-                             const float* dL_dcov3Ds,
-                             glm::vec3* dL_dscales,
-                             glm::vec4* dL_drots)  // quats mat3 x2
-{
-  // **** // quats
-  // Recompute (intermediate) results for the 3D covariance computation.
-  glm::vec4 q = rot;  // / glm::length(rot);
-  float r = q.x;
-  float x = q.y;
-  float y = q.z;
-  float z = q.w;
-
-  glm::mat3 R = glm::mat3(1.f - 2.f * (y * y + z * z), 2.f * (x * y - r * z),
-                          2.f * (x * z + r * y), 2.f * (x * y + r * z),
-                          1.f - 2.f * (x * x + z * z), 2.f * (y * z - r * x),
-                          2.f * (x * z - r * y), 2.f * (y * z + r * x),
-                          1.f - 2.f * (x * x + y * y));
-  // **** // quats
-  // glm::mat3 R = rot;
-  // **** // quats
-
-  glm::mat3 S = glm::mat3(1.0f);
-
-  glm::vec3 s = mod * scale;
-  S[0][0] = s.x;
-  S[1][1] = s.y;
-  S[2][2] = s.z;
-
-  glm::mat3 M = S * R;
-
-  const float* dL_dcov3D = dL_dcov3Ds + 6 * idx;
-
-  glm::vec3 dunc(dL_dcov3D[0], dL_dcov3D[3], dL_dcov3D[5]);
-  glm::vec3 ounc = 0.5f * glm::vec3(dL_dcov3D[1], dL_dcov3D[2], dL_dcov3D[4]);
-
-  // Convert per-element covariance loss gradients to matrix form
-  glm::mat3 dL_dSigma =
-      glm::mat3(dL_dcov3D[0], 0.5f * dL_dcov3D[1], 0.5f * dL_dcov3D[2],
-                0.5f * dL_dcov3D[1], dL_dcov3D[3], 0.5f * dL_dcov3D[4],
-                0.5f * dL_dcov3D[2], 0.5f * dL_dcov3D[4], dL_dcov3D[5]);
-
-  // Compute loss gradient w.r.t. matrix M
-  // dSigma_dM = 2 * M
-  glm::mat3 dL_dM = 2.0f * M * dL_dSigma;
-
-  glm::mat3 Rt = glm::transpose(R);
-  glm::mat3 dL_dMt = glm::transpose(dL_dM);
-
-  // Gradients of loss w.r.t. scale
-  glm::vec3* dL_dscale = dL_dscales + idx;
-  dL_dscale->x = glm::dot(Rt[0], dL_dMt[0]);
-  dL_dscale->y = glm::dot(Rt[1], dL_dMt[1]);
-  dL_dscale->z = glm::dot(Rt[2], dL_dMt[2]);
-
-  dL_dMt[0] *= s.x;
-  dL_dMt[1] *= s.y;
-  dL_dMt[2] *= s.z;
-
-  // **** // quats
-  // Gradients of loss w.r.t. normalized quaternion
-  glm::vec4 dL_dq;
-  dL_dq.x = 2 * z * (dL_dMt[0][1] - dL_dMt[1][0]) +
-            2 * y * (dL_dMt[2][0] - dL_dMt[0][2]) +
-            2 * x * (dL_dMt[1][2] - dL_dMt[2][1]);
-  dL_dq.y = 2 * y * (dL_dMt[1][0] + dL_dMt[0][1]) +
-            2 * z * (dL_dMt[2][0] + dL_dMt[0][2]) +
-            2 * r * (dL_dMt[1][2] - dL_dMt[2][1]) -
-            4 * x * (dL_dMt[2][2] + dL_dMt[1][1]);
-  dL_dq.z = 2 * x * (dL_dMt[1][0] + dL_dMt[0][1]) +
-            2 * r * (dL_dMt[2][0] - dL_dMt[0][2]) +
-            2 * z * (dL_dMt[1][2] + dL_dMt[2][1]) -
-            4 * y * (dL_dMt[2][2] + dL_dMt[0][0]);
-  dL_dq.w = 2 * r * (dL_dMt[0][1] - dL_dMt[1][0]) +
-            2 * x * (dL_dMt[2][0] + dL_dMt[0][2]) +
-            2 * y * (dL_dMt[1][2] + dL_dMt[2][1]) -
-            4 * z * (dL_dMt[1][1] + dL_dMt[0][0]);
-
-  // Gradients of loss w.r.t. unnormalized quaternion
-  float4* dL_drot = (float4*)(dL_drots + idx);
-  *dL_drot = float4{dL_dq.x, dL_dq.y, dL_dq.z,
-                    dL_dq.w};  // dnormvdv(float4{ rot.x, rot.y, rot.z, rot.w },
-                               // float4{ dL_dq.x, dL_dq.y, dL_dq.z, dL_dq.w });
-  // **** // quats
-  // glm::mat3* dL_drot = (dL_drots + idx);
-  // *dL_drot = dL_dM;
-  // **** // quats
-}
-
+ #include "backward.h"
+ #include "auxiliary.h"
+ #include <cooperative_groups.h>
+ #include <cooperative_groups/reduce.h>
+ namespace cg = cooperative_groups;
+ 
+ 
+ 
+ // Backward pass for conversion of spherical harmonics to RGB for
+ // each Triangle.
+ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3 means, glm::vec3 campos, const float* shs, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dtriangle, glm::vec3* dL_dshs, const int cumsum_for_triangle, const int num_points_per_triangle)
+ {
+	 // Compute intermediate values, as it is done during forward
+	 glm::vec3 pos = means;
+	 glm::vec3 dir_orig = pos - campos;
+	 glm::vec3 dir = dir_orig / glm::length(dir_orig);
+ 
+	 glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
+ 
+	 // Use PyTorch rule for clamping: if clamping was applied,
+	 // gradient becomes 0.
+	 glm::vec3 dL_dRGB = dL_dcolor[idx];
+	 dL_dRGB.x *= clamped[3 * idx + 0] ? 0 : 1;
+	 dL_dRGB.y *= clamped[3 * idx + 1] ? 0 : 1;
+	 dL_dRGB.z *= clamped[3 * idx + 2] ? 0 : 1;
+ 
+	 glm::vec3 dRGBdx(0, 0, 0);
+	 glm::vec3 dRGBdy(0, 0, 0);
+	 glm::vec3 dRGBdz(0, 0, 0);
+	 float x = dir.x;
+	 float y = dir.y;
+	 float z = dir.z;
+ 
+	 // Target location for this Triangle to write SH gradients to
+	 glm::vec3* dL_dsh = dL_dshs + idx * max_coeffs;
+ 
+	 // No tricks here, just high school-level calculus.
+	 float dRGBdsh0 = SH_C0;
+	 dL_dsh[0] = dRGBdsh0 * dL_dRGB;
+	 if (deg > 0)
+	 {
+		 float dRGBdsh1 = -SH_C1 * y;
+		 float dRGBdsh2 = SH_C1 * z;
+		 float dRGBdsh3 = -SH_C1 * x;
+		 dL_dsh[1] = dRGBdsh1 * dL_dRGB;
+		 dL_dsh[2] = dRGBdsh2 * dL_dRGB;
+		 dL_dsh[3] = dRGBdsh3 * dL_dRGB;
+ 
+		 dRGBdx = -SH_C1 * sh[3];
+		 dRGBdy = -SH_C1 * sh[1];
+		 dRGBdz = SH_C1 * sh[2];
+ 
+		 if (deg > 1)
+		 {
+			 float xx = x * x, yy = y * y, zz = z * z;
+			 float xy = x * y, yz = y * z, xz = x * z;
+ 
+			 float dRGBdsh4 = SH_C2[0] * xy;
+			 float dRGBdsh5 = SH_C2[1] * yz;
+			 float dRGBdsh6 = SH_C2[2] * (2.f * zz - xx - yy);
+			 float dRGBdsh7 = SH_C2[3] * xz;
+			 float dRGBdsh8 = SH_C2[4] * (xx - yy);
+			 dL_dsh[4] = dRGBdsh4 * dL_dRGB;
+			 dL_dsh[5] = dRGBdsh5 * dL_dRGB;
+			 dL_dsh[6] = dRGBdsh6 * dL_dRGB;
+			 dL_dsh[7] = dRGBdsh7 * dL_dRGB;
+			 dL_dsh[8] = dRGBdsh8 * dL_dRGB;
+ 
+			 dRGBdx += SH_C2[0] * y * sh[4] + SH_C2[2] * 2.f * -x * sh[6] + SH_C2[3] * z * sh[7] + SH_C2[4] * 2.f * x * sh[8];
+			 dRGBdy += SH_C2[0] * x * sh[4] + SH_C2[1] * z * sh[5] + SH_C2[2] * 2.f * -y * sh[6] + SH_C2[4] * 2.f * -y * sh[8];
+			 dRGBdz += SH_C2[1] * y * sh[5] + SH_C2[2] * 2.f * 2.f * z * sh[6] + SH_C2[3] * x * sh[7];
+ 
+			 if (deg > 2)
+			 {
+				 float dRGBdsh9 = SH_C3[0] * y * (3.f * xx - yy);
+				 float dRGBdsh10 = SH_C3[1] * xy * z;
+				 float dRGBdsh11 = SH_C3[2] * y * (4.f * zz - xx - yy);
+				 float dRGBdsh12 = SH_C3[3] * z * (2.f * zz - 3.f * xx - 3.f * yy);
+				 float dRGBdsh13 = SH_C3[4] * x * (4.f * zz - xx - yy);
+				 float dRGBdsh14 = SH_C3[5] * z * (xx - yy);
+				 float dRGBdsh15 = SH_C3[6] * x * (xx - 3.f * yy);
+				 dL_dsh[9] = dRGBdsh9 * dL_dRGB;
+				 dL_dsh[10] = dRGBdsh10 * dL_dRGB;
+				 dL_dsh[11] = dRGBdsh11 * dL_dRGB;
+				 dL_dsh[12] = dRGBdsh12 * dL_dRGB;
+				 dL_dsh[13] = dRGBdsh13 * dL_dRGB;
+				 dL_dsh[14] = dRGBdsh14 * dL_dRGB;
+				 dL_dsh[15] = dRGBdsh15 * dL_dRGB;
+ 
+				 dRGBdx += (
+					 SH_C3[0] * sh[9] * 3.f * 2.f * xy +
+					 SH_C3[1] * sh[10] * yz +
+					 SH_C3[2] * sh[11] * -2.f * xy +
+					 SH_C3[3] * sh[12] * -3.f * 2.f * xz +
+					 SH_C3[4] * sh[13] * (-3.f * xx + 4.f * zz - yy) +
+					 SH_C3[5] * sh[14] * 2.f * xz +
+					 SH_C3[6] * sh[15] * 3.f * (xx - yy));
+ 
+				 dRGBdy += (
+					 SH_C3[0] * sh[9] * 3.f * (xx - yy) +
+					 SH_C3[1] * sh[10] * xz +
+					 SH_C3[2] * sh[11] * (-3.f * yy + 4.f * zz - xx) +
+					 SH_C3[3] * sh[12] * -3.f * 2.f * yz +
+					 SH_C3[4] * sh[13] * -2.f * xy +
+					 SH_C3[5] * sh[14] * -2.f * yz +
+					 SH_C3[6] * sh[15] * -3.f * 2.f * xy);
+ 
+				 dRGBdz += (
+					 SH_C3[1] * sh[10] * xy +
+					 SH_C3[2] * sh[11] * 4.f * 2.f * yz +
+					 SH_C3[3] * sh[12] * 3.f * (2.f * zz - xx - yy) +
+					 SH_C3[4] * sh[13] * 4.f * 2.f * xz +
+					 SH_C3[5] * sh[14] * (xx - yy));
+			 }
+		 }
+	 }
+ 
+	 // The view direction is an input to the computation. View direction
+	 // is influenced by the Triangle's mean, so SHs gradients
+	 // must propagate back into 3D position.
+	 glm::vec3 dL_ddir(glm::dot(dRGBdx, dL_dRGB), glm::dot(dRGBdy, dL_dRGB), glm::dot(dRGBdz, dL_dRGB));
+ 
+	 // Account for normalization of direction
+	 float3 dL_dmean = dnormvdv(float3{ dir_orig.x, dir_orig.y, dir_orig.z }, float3{ dL_ddir.x, dL_ddir.y, dL_ddir.z });
+ 
+	 glm::vec3 scaled_dL_dmean = glm::vec3(dL_dmean.x, dL_dmean.y, dL_dmean.z) / static_cast<float>(num_points_per_triangle);
+ 
+	 // Gradients of loss w.r.t. Triangle means, but only the portion 
+	 // that is caused because the mean affects the view-dependent color.
+	 // Additional mean gradient is accumulated in below methods.
+ 
+	 for (int i = 0; i < num_points_per_triangle; i++)
+	 {
+		 dL_dtriangle[cumsum_for_triangle + i] += scaled_dL_dmean;
+	 }
+ 
+ }
+ 
+ 
+ 
+ 
 // Backward pass of the preprocessing steps, except
-// for the covariance computation and inversion
-// (those are handled by a previous kernel call)
-template <int C>
-__global__ void preprocessCUDA(int P,
-                               int D,
-                               int M,
-                               const float3* means,
-                               const int* radii,
-                               const float* dc,
-                               const float* shs,
-                               const bool* clamped,
-                               const glm::vec3* scales,
-                               const glm::vec4* rotations,  // quats mat3
-                               const float scale_modifier,
-                               const float* proj,
-                               const float* viewmatrix,
-                               const glm::vec3* campos,
-                               const float3* dL_dmean2D,
-                               glm::vec3* dL_dmeans,
-                               glm::mat3* dL_dRs,
-                               glm::vec3* dL_dt,
-                               float* dL_dcolor,
-                               float* dL_dcov3D,
-                               float* dL_ddc,
-                               float* dL_dsh,
-                               glm::vec3* dL_dscale,
-                               glm::vec4* dL_drot,  // quats mat3
-                               float* dL_dopacity) {
-  auto idx = cg::this_grid().thread_rank();
-  if (idx >= P || !(radii[idx] > 0)) return;
+ // for the covariance computation and inversion
+ // (those are handled by a previous kernel call)
+ template<int C>
+ __global__ void preprocessCUDA(
+	 int P, int D, int M,
+	 const float* triangles_points,
+	 int W, int H,
+	 const int* radii,
+	 const float* shs,
+	 const bool* clamped,
+	 const float* proj,
+	 const float* viewmatrix,
+	 const int* num_points_per_triangle,
+	 const int* cumsum_of_points_per_triangle,
+	 float2* points_xy_image,
+	 float* p_w,
+	 float2* p_image,
+	 int* indices,
+	 const glm::vec3* campos,
+	 glm::vec3* dL_dtriangle,
+	 const float2* dL_dnormals,
+	 const float* dL_doffsets,
+	 glm::vec3* dL_dmeans,
+	 float3* dL_dmean2D,
+	 float* dL_dcov3D,
+	 float* dL_dnormal3D,
+	 float* dL_dcolor,
+	 float* dL_dsh,
+	float* dL_dsigma_factor)
+ {
+	 auto idx = cg::this_grid().thread_rank();
+	 if (idx >= P || !(radii[idx] > 0))
+		 return;
+ 
+	 const int cumsum_for_triangle = cumsum_of_points_per_triangle[idx];
+	 const int offset = 3 * cumsum_for_triangle;
+	 float3 center_triangle = {0.0f, 0.0f, 0.0f};
+	 float sum_x[MAX_NB_POINTS] = {0.0f};
+	 float sum_y[MAX_NB_POINTS] = {0.0f};
+	 float sum_z[MAX_NB_POINTS] = {0.0f};
+	 for (int i = 0; i < 3; i++) {
+		 center_triangle.x += triangles_points[offset + 3 * i];
+		 center_triangle.y += triangles_points[offset + 3 * i + 1];
+		 center_triangle.z += triangles_points[offset + 3 * i + 2];
+	 }
+ 
+	 float3 total_sum = {center_triangle.x, center_triangle.y, center_triangle.z};
+ 
+	 center_triangle.x /= 3;
+	 center_triangle.y /= 3;
+	 center_triangle.z /= 3;
 
-  float3 m_orig = means[idx];
+	 float3 p_view_triangle;
+	 if (!in_frustum_triangle(idx, center_triangle, viewmatrix, proj, false, p_view_triangle)){
+		 return;
+	 }
 
-  float3 m =
-      transformPoint4x3({m_orig.x, m_orig.y, m_orig.z}, viewmatrix);  // rot
+	 // Initialize loss accumulators for normals and offsets
+	 float loss_points_x[MAX_NB_POINTS] = {0.0f};
+	 float loss_points_y[MAX_NB_POINTS] = {0.0f};
+ 
+	 
+	 for (int i = 0; i < 3; i++) {
+		float dL_dnormal_x = dL_dnormals[cumsum_for_triangle + i].x;
+		float dL_dnormal_y = dL_dnormals[cumsum_for_triangle + i].y;
+		float dL_doffset = dL_doffsets[cumsum_for_triangle + i];
 
-  // Taking care of gradients from the screenspace points
-  float4 m_hom = transformPoint4x4(m, proj);
-  float m_w = 1.0f / (m_hom.w + 0.0000001f);
+		float2 p1_conv = p_image[cumsum_for_triangle + i];
+		float2 p2_conv = p_image[cumsum_for_triangle + (i + 1) % 3];
 
-  // Compute loss gradient w.r.t. 3D means due to gradients of 2D means
-  // from rendering procedure
-  glm::vec3 dL_dmean_loc;
-  float mul1 =
-      (proj[0] * m.x + proj[4] * m.y + proj[8] * m.z + proj[12]) * m_w * m_w;
-  float mul2 =
-      (proj[1] * m.x + proj[5] * m.y + proj[9] * m.z + proj[13]) * m_w * m_w;
-  dL_dmean_loc.x = (proj[0] * m_w - proj[3] * mul1) * dL_dmean2D[idx].x +
-                   (proj[1] * m_w - proj[3] * mul2) * dL_dmean2D[idx].y;
-  dL_dmean_loc.y = (proj[4] * m_w - proj[7] * mul1) * dL_dmean2D[idx].x +
-                   (proj[5] * m_w - proj[7] * mul2) * dL_dmean2D[idx].y;
-  dL_dmean_loc.z = (proj[8] * m_w - proj[11] * mul1) * dL_dmean2D[idx].x +
-                   (proj[9] * m_w - proj[11] * mul2) * dL_dmean2D[idx].y;
+		// Calculate unnormalized normal components
+		float nx = p2_conv.y - p1_conv.y;
+		float ny = -(p2_conv.x - p1_conv.x);
+		float norm = __fsqrt_rn(nx * nx + ny * ny);
+		float inv_norm = 1.0f / norm;
+	
+		// Calculate normalized normal and offset
+		float2 normal = {nx * inv_norm, ny * inv_norm};
+		float offset = -(normal.x * p1_conv.x + normal.y * p1_conv.y);
 
-  // That's the second part of the mean gradient. Previous computation
-  // of cov2D and following SH conversion also affects it.
-  dL_dt[idx] += dL_dmean_loc;
-  // dL_dmeans[idx] += dL_dmean;
+		if (normal.x * points_xy_image[idx].x + normal.y * points_xy_image[idx].y + offset > 0) {
+			dL_dnormal_x = -dL_dnormal_x;
+			dL_dnormal_y = -dL_dnormal_y;
+			dL_doffset = -dL_doffset;
+		}
 
-  dL_dmean_loc = dL_dt[idx];
-  float3 dL_dmeanf3 = transformVec4x3Transpose(
-      {dL_dmean_loc.x, dL_dmean_loc.y, dL_dmean_loc.z}, viewmatrix);
-  glm::vec3 dL_dmean = {dL_dmeanf3.x, dL_dmeanf3.y, dL_dmeanf3.z};
-  dL_dmeans[idx] = dL_dmean;
+		// Add gradients from offset to normal gradients
+		dL_dnormal_x += (-p1_conv.x) * dL_doffset;
+		dL_dnormal_y += (-p1_conv.y) * dL_doffset;
+	
+		// Backprop through normalization
+		float norm_sq = norm * norm;
+		float inv_norm_cubed = 1.0f / (norm * norm_sq);
+		float dL_dnx = (dL_dnormal_x * ny * ny - dL_dnormal_y * nx * ny) * inv_norm_cubed;
+		float dL_dny = (-dL_dnormal_x * nx * ny + dL_dnormal_y * nx * nx) * inv_norm_cubed;
+	
+		// Compute gradients from unnormalized normal to points
+		float2 dL_dp1_conv = {dL_dny, -dL_dnx}; // From ny: p1_conv.x, from nx: p1_conv.y
+		float2 dL_dp2_conv = {-dL_dny, dL_dnx}; // From ny: p2_conv.x, from nx: p2_conv.y
+	
+		// Add gradients from offset to p1_conv
+		dL_dp1_conv.x += (-normal.x) * dL_doffset;
+		dL_dp1_conv.y += (-normal.y) * dL_doffset;
 
-  glm::mat3 dL_dR(dL_dmean_loc.x * m_orig.x, dL_dmean_loc.y * m_orig.x,
-                  dL_dmean_loc.z * m_orig.x, dL_dmean_loc.x * m_orig.y,
-                  dL_dmean_loc.y * m_orig.y, dL_dmean_loc.z * m_orig.y,
-                  dL_dmean_loc.x * m_orig.z, dL_dmean_loc.y * m_orig.z,
-                  dL_dmean_loc.z * m_orig.z);
-  dL_dRs[idx] += dL_dR;
+		loss_points_x[indices[cumsum_for_triangle + i]] += dL_dp1_conv.x;
+    	loss_points_y[indices[cumsum_for_triangle + i]] += dL_dp1_conv.y;
 
-  // Compute gradient updates due to computing colors from SHs
-  if (shs)
-    computeColorFromSH(idx, D, M, (glm::vec3*)means, *campos, dc, shs, clamped,
-                       (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans,
-                       (glm::vec3*)dL_ddc, (glm::vec3*)dL_dsh);
+		loss_points_x[indices[cumsum_for_triangle + (i + 1) % 3]] += dL_dp2_conv.x;
+    	loss_points_y[indices[cumsum_for_triangle + (i + 1) % 3]] += dL_dp2_conv.y;
+	}
+ 
 
-  // loss gradient w.r.t. camera translation
-  // dL_dt[idx] = transformVec4x3(dL_dmeanf3, viewmatrix);
-  // dL_dt[idx] = dL_dmean_loc;
+	 float3 dL_ddepht = {0.0f, 0.0f, dL_dmean2D[idx].x};
+	 float3 transposed_dL_ddepth = transformPoint4x3Transpose(dL_ddepht, viewmatrix);
 
-  // loss gradient w.r.t. camera rotation matrix
-  // dL_dRs[idx] = dL_dM;
+ 
+	 for (int i = 0; i < 3; i++) {
+ 
+		 float mul1 = (proj[0] * triangles_points[offset + 3 * i] + proj[4] * triangles_points[offset + 3 * i + 1] + proj[8] * triangles_points[offset + 3 * i + 2] + proj[12]) * p_w[cumsum_for_triangle + i] * p_w[cumsum_for_triangle + i];
+		 float mul2 = (proj[1] * triangles_points[offset + 3 * i] + proj[5] * triangles_points[offset + 3 * i + 1] + proj[9] * triangles_points[offset + 3 * i + 2] + proj[13]) * p_w[cumsum_for_triangle + i] * p_w[cumsum_for_triangle + i];
+		 dL_dtriangle[cumsum_for_triangle + i].x = (proj[0] * p_w[cumsum_for_triangle + i] - proj[3] * mul1) * loss_points_x[i]  + (proj[1] * p_w[cumsum_for_triangle + i] - proj[3] * mul2) * loss_points_y[i] + transposed_dL_ddepth.x / 3;
+		 dL_dtriangle[cumsum_for_triangle + i].y = (proj[4] * p_w[cumsum_for_triangle + i] - proj[7] * mul1) * loss_points_x[i] + (proj[5] * p_w[cumsum_for_triangle + i] - proj[7] * mul2) * loss_points_y[i] + transposed_dL_ddepth.y / 3;
+		 dL_dtriangle[cumsum_for_triangle + i].z = (proj[8] * p_w[cumsum_for_triangle + i] - proj[11] * mul1) * loss_points_x[i] + (proj[9] * p_w[cumsum_for_triangle + i] - proj[11] * mul2) * loss_points_y[i] + transposed_dL_ddepth.z / 3;
+	 
+	 }
+ 
+	 // Compute gradient updates due to computing colors from SHs
+	 if (shs)
+		 computeColorFromSH(idx, D, M, (glm::vec3)(center_triangle.x, center_triangle.y, center_triangle.z), *campos, shs, clamped, (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dtriangle, (glm::vec3*)dL_dsh, cumsum_for_triangle, 3);
 
-  // Compute gradient updates due to computing covariance from scale/rotation
-  if (scales)
-    computeCov3D(idx, scales[idx], scale_modifier, rotations[idx], dL_dcov3D,
-                 dL_dscale, dL_drot);
-}
+	 
+	 // Calculate the normal of the Triangle
+	 float3 normal_cvx = {0.0f, 0.0f, 0.0f};
+	 float3 p0 = make_float3(
+		 triangles_points[offset + 0],
+		 triangles_points[offset + 1],
+		 triangles_points[offset + 2]
+	 );
+	 float3 p1 = make_float3(
+		 triangles_points[offset + 3],
+		 triangles_points[offset + 4],
+		 triangles_points[offset + 5]
+	 );
+	 float3 p2 = make_float3(
+		 triangles_points[offset + 6],
+		 triangles_points[offset + 7],
+		 triangles_points[offset + 8]
+	 );
+	 float3 v1 = make_float3(p1.x - p0.x, p1.y - p0.y, p1.z - p0.z);
+	 float3 v2 = make_float3(p2.x - p0.x, p2.y - p0.y, p2.z - p0.z);
+	 float3 v3 = make_float3(p2.x - p1.x, p2.y - p1.y, p2.z - p1.z);
+ 
+	 float3 unnorm_ross_prod = make_float3(
+		 v1.y * v2.z - v1.z * v2.y,
+		 v1.z * v2.x - v1.x * v2.z,
+		 v1.x * v2.y - v1.y * v2.x
+	 );
+	 float3 cross_prod = transformVec4x3(unnorm_ross_prod, viewmatrix);
+ 
+	 float length = sqrtf(cross_prod.x*cross_prod.x + cross_prod.y*cross_prod.y + cross_prod.z*cross_prod.z);
+	 if (length > 1e-8f) {
+		 cross_prod.x /= length;
+		 cross_prod.y /= length;
+		 cross_prod.z /= length;
+	 }
+	 normal_cvx = cross_prod;
 
-template <uint32_t C>
-__global__ void PerGaussianRenderCUDA(
-    const uint2* __restrict__ ranges,
-    const uint32_t* __restrict__ point_list,
-    int W,
-    int H,
-    int B,
-    const uint32_t* __restrict__ per_tile_bucket_offset,
-    const uint32_t* __restrict__ bucket_to_tile,
-    const float* __restrict__ sampled_T,
-    const float* __restrict__ sampled_ar,
-    const float* __restrict__ sampled_ard,
-    const float* __restrict__ bg_color,
-    const float2* __restrict__ points_xy_image,
-    const float4* __restrict__ conic_opacity,
-    const float* __restrict__ colors,
-    const float* __restrict__ depths,
-    const float* __restrict__ final_Ts,
-    const uint32_t* __restrict__ n_contrib,
-    const uint32_t* __restrict__ max_contrib,
-    const float* __restrict__ pixel_colors,
-    const float* __restrict__ pixel_invDepths,
-    const float* __restrict__ dL_dpixels,
-    const float* __restrict__ dL_invdepths,
-    float3* __restrict__ dL_dmean2D,
-    float4* __restrict__ dL_dconic2D,
-    float* __restrict__ dL_dopacity,
-    float* __restrict__ dL_dcolors,
-    float* __restrict__ dL_dinvdepths) {
-  // global_bucket_idx = warp_idx
-  auto block = cg::this_thread_block();
-  auto my_warp = cg::tiled_partition<32>(block);
-  uint32_t global_bucket_idx =
-      block.group_index().x * my_warp.meta_group_size() +
-      my_warp.meta_group_rank();
-  bool valid_bucket = global_bucket_idx < (uint32_t)B;
-  if (!valid_bucket) return;
+	 float3 p_view_triangle_ = transformPoint4x3(center_triangle, viewmatrix);
+	 // we normalize such that we have a unit vector and cos is between -1 and 1
+	 float length_viewpoint = sqrtf(p_view_triangle_.x*p_view_triangle_.x + p_view_triangle_.y*p_view_triangle_.y + p_view_triangle_.z*p_view_triangle_.z);
+	 length_viewpoint = max(length_viewpoint, 1e-4f);
+	 float3 normalized_camera_center;
+	 normalized_camera_center.x = p_view_triangle_.x / length_viewpoint;
+	 normalized_camera_center.y = p_view_triangle_.y / length_viewpoint;
+	 normalized_camera_center.z = p_view_triangle_.z / length_viewpoint;
+ 
+	 float3 dir = make_float3(
+		 normalized_camera_center.x * normal_cvx.x,
+		 normalized_camera_center.y * normal_cvx.y,
+		 normalized_camera_center.z * normal_cvx.z
+	 );
+	 
+	 float cos = -sumf3(dir);
+	 
+	 const float threshold = 0.001f;
+	 if (fabsf(cos) < threshold) {
+		return;
+	 }
+		
+	 float multiplier = cos > 0 ? 1 : -1;
+	 normal_cvx = {cross_prod.x * multiplier, cross_prod.y * multiplier, cross_prod.z * multiplier};
+ 
+	 // ## BACKWARD
+	 float3 dL_dtn = {dL_dnormal3D[idx * 3 + 0]*multiplier, dL_dnormal3D[idx * 3 + 1]*multiplier, dL_dnormal3D[idx * 3 + 2]*multiplier};
+ 
+	 float matrix_w0[9], matrix_w1[9], matrix_w2[9];
+ 
+	 matrix_w0[0] = 0.0f;   matrix_w0[1] = -v3.z; matrix_w0[2] = v3.y;
+	 matrix_w0[3] = v3.z;   matrix_w0[4] = 0.0f;  matrix_w0[5] = -v3.x;
+	 matrix_w0[6] = -v3.y;  matrix_w0[7] = v3.x;  matrix_w0[8] = 0.0f;
+ 
+	 matrix_w1[0] = 0.0f;   matrix_w1[1] = v2.z;  matrix_w1[2] = -v2.y;
+	 matrix_w1[3] = -v2.z;  matrix_w1[4] = 0.0f;  matrix_w1[5] = v2.x;
+	 matrix_w1[6] = v2.y;   matrix_w1[7] = -v2.x; matrix_w1[8] = 0.0f;
+ 
+	 matrix_w2[0] = 0.0f;   matrix_w2[1] = -v1.z; matrix_w2[2] = v1.y;
+	 matrix_w2[3] = v1.z;   matrix_w2[4] = 0.0f;  matrix_w2[5] = -v1.x;
+	 matrix_w2[6] = -v1.y;  matrix_w2[7] = v1.x;  matrix_w2[8] = 0.0f;
+ 
+	 float normal_transpose[9];
+	 normal_transpose[0] = normal_cvx.x*normal_cvx.x; 
+	 normal_transpose[1] = normal_transpose[3] = normal_cvx.x*normal_cvx.y;
+	 normal_transpose[2] = normal_transpose[6] = normal_cvx.x*normal_cvx.z;
+	 normal_transpose[4] = normal_cvx.y*normal_cvx.y;
+	 normal_transpose[5] = normal_transpose[7] = normal_cvx.y*normal_cvx.z;
+	 normal_transpose[8] = normal_cvx.z*normal_cvx.z;
+ 
+	 float length_inv = 1 / length;
+ 
+	 float projection_matrix[9];
+	 projection_matrix[0] = viewmatrix[0];
+	 projection_matrix[1] = viewmatrix[4];
+	 projection_matrix[2] = viewmatrix[8];
+	 projection_matrix[3] = viewmatrix[1];
+	 projection_matrix[4] = viewmatrix[5];
+	 projection_matrix[5] = viewmatrix[9];
+	 projection_matrix[6] = viewmatrix[2];
+	 projection_matrix[7] = viewmatrix[6];
+	 projection_matrix[8] = viewmatrix[10];
+ 
+	 float matrix_w0_transformed[9], matrix_w1_transformed[9], matrix_w2_transformed[9];
+	 transformMat3x3(projection_matrix, matrix_w0, matrix_w0_transformed);
+	 transformMat3x3(projection_matrix, matrix_w1, matrix_w1_transformed);
+	 transformMat3x3(projection_matrix, matrix_w2, matrix_w2_transformed);
+ 
+	 float norm_times_matrix0[9], norm_times_matrix1[9], norm_times_matrix2[9];
+	 transformMat3x3(normal_transpose, matrix_w0_transformed, norm_times_matrix0);
+	 transformMat3x3(normal_transpose, matrix_w1_transformed, norm_times_matrix1);
+	 transformMat3x3(normal_transpose, matrix_w2_transformed, norm_times_matrix2);
+ 
+	 float matrix_substraction0[9], matrix_substraction1[9], matrix_substraction2[9];
+	 substractionMat3x3(matrix_w0_transformed, norm_times_matrix0, matrix_substraction0);
+	 substractionMat3x3(matrix_w1_transformed, norm_times_matrix1, matrix_substraction1);
+	 substractionMat3x3(matrix_w2_transformed, norm_times_matrix2, matrix_substraction2);
+ 
+	 float dL_dp0x = length_inv * matrix_substraction0[0] * dL_dtn.x + length_inv * matrix_substraction0[3] * dL_dtn.y + length_inv * matrix_substraction0[6] * dL_dtn.z;
+	 float dL_dp0y = length_inv * matrix_substraction0[1] * dL_dtn.x + length_inv * matrix_substraction0[4] * dL_dtn.y + length_inv * matrix_substraction0[7] * dL_dtn.z;
+	 float dL_dp0z = length_inv * matrix_substraction0[2] * dL_dtn.x + length_inv * matrix_substraction0[5] * dL_dtn.y + length_inv * matrix_substraction0[8] * dL_dtn.z;
+ 
+	 float dL_dp1x = length_inv * matrix_substraction1[0] * dL_dtn.x + length_inv * matrix_substraction1[3] * dL_dtn.y + length_inv * matrix_substraction1[6] * dL_dtn.z;
+	 float dL_dp1y = length_inv * matrix_substraction1[1] * dL_dtn.x + length_inv * matrix_substraction1[4] * dL_dtn.y + length_inv * matrix_substraction1[7] * dL_dtn.z;
+	 float dL_dp1z = length_inv * matrix_substraction1[2] * dL_dtn.x + length_inv * matrix_substraction1[5] * dL_dtn.y + length_inv * matrix_substraction1[8] * dL_dtn.z;
+ 
+	 float dL_dp2x = length_inv * matrix_substraction2[0] * dL_dtn.x + length_inv * matrix_substraction2[3] * dL_dtn.y + length_inv * matrix_substraction2[6] * dL_dtn.z;
+	 float dL_dp2y = length_inv * matrix_substraction2[1] * dL_dtn.x + length_inv * matrix_substraction2[4] * dL_dtn.y + length_inv * matrix_substraction2[7] * dL_dtn.z;
+	 float dL_dp2z = length_inv * matrix_substraction2[2] * dL_dtn.x + length_inv * matrix_substraction2[5] * dL_dtn.y + length_inv * matrix_substraction2[8] * dL_dtn.z;
 
-  bool valid_splat = false;
 
-  uint32_t tile_id, bbm;
-  uint2 range;
-  int num_splats_in_tile, bucket_idx_in_tile;
-  int splat_idx_in_tile, splat_idx_global;
+	 dL_dtriangle[cumsum_for_triangle + 0].x += dL_dp0x;
+	 dL_dtriangle[cumsum_for_triangle + 0].y += dL_dp0y;
+	 dL_dtriangle[cumsum_for_triangle + 0].z += dL_dp0z;
+ 
+	 dL_dtriangle[cumsum_for_triangle + 1].x += dL_dp1x;
+	 dL_dtriangle[cumsum_for_triangle + 1].y += dL_dp1y;
+	 dL_dtriangle[cumsum_for_triangle + 1].z += dL_dp1z;
+ 
+	 dL_dtriangle[cumsum_for_triangle + 2].x += dL_dp2x;
+	 dL_dtriangle[cumsum_for_triangle + 2].y += dL_dp2y;
+	 dL_dtriangle[cumsum_for_triangle + 2].z += dL_dp2z; 
 
-  tile_id = bucket_to_tile[global_bucket_idx];
-  range = ranges[tile_id];
-  num_splats_in_tile = range.y - range.x;
-  // What is the number of buckets before me? what is my offset?
-  bbm = tile_id == 0 ? 0 : per_tile_bucket_offset[tile_id - 1];
-  bucket_idx_in_tile = global_bucket_idx - bbm;
-  splat_idx_in_tile = bucket_idx_in_tile * 32 + my_warp.thread_rank();
-  splat_idx_global = range.x + splat_idx_in_tile;
-  valid_splat = (splat_idx_in_tile < num_splats_in_tile);
 
-  // if first gaussian in bucket is useless, then others are also useless
-  if (bucket_idx_in_tile * 32 >= max_contrib[tile_id]) {
-    return;
-  }
 
-  // Load Gaussian properties into registers
-  int gaussian_idx = 0;
-  float2 xy = {0.0f, 0.0f};
-  float4 con_o = {0.0f, 0.0f, 0.0f, 0.0f};
-  float c[C] = {0.0f};
-  float invd = 0.f;
-  if (valid_splat) {
-    gaussian_idx = point_list[splat_idx_global];
-    xy = points_xy_image[gaussian_idx];
-    con_o = conic_opacity[gaussian_idx];
-    for (int ch = 0; ch < C; ++ch) c[ch] = colors[gaussian_idx * C + ch];
-    invd = 1.f / depths[gaussian_idx];
-  }
 
-  // Gradient accumulation variables
-  float Register_dL_dmean2D_x = 0.0f;
-  float Register_dL_dmean2D_y = 0.0f;
-  float Register_dL_dconic2D_x = 0.0f;
-  float Register_dL_dconic2D_y = 0.0f;
-  float Register_dL_dconic2D_w = 0.0f;
-  float Register_dL_dopacity = 0.0f;
-  float Register_dL_dcolors[C] = {0.0f};
-  float Register_dL_dinvdepths = 0.0f;
+ }
+ 
+ // Backward version of the rendering procedure.
+ template <uint32_t C>
+ __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
+ renderCUDA(
+	 const uint2* __restrict__ ranges,
+	 const uint32_t* __restrict__ point_list,
+	 int W, int H,
+	 const float* __restrict__ bg_color,
+	 const float* __restrict__ sigma,
+	 const int* __restrict__ num_points_per_triangle,
+	 const int* __restrict__ cumsum_of_points_per_triangle,
+	 const float2* __restrict__ normals,
+	 const float* __restrict__ offsets,
+	 const float4* __restrict__ conic_opacity,
+	 const float* __restrict__ depths,
+	 const float2* __restrict__ means2D,
+	 const float2* __restrict__ phi_center,
+	 const float* __restrict__ colors,
+	 const float* __restrict__ final_Ts,
+	 const uint32_t* __restrict__ n_contrib,
+	 const float* __restrict__ dL_dpixels,
+	 const float* __restrict__ dL_depths,
+	 float2* __restrict__ dL_dnormals,
+	 float* __restrict__ dL_doffsets,
+	 float* __restrict__ dL_dsigma,
+	 float3* __restrict__ dL_dmean2D,
+	 float4* __restrict__ dL_dconic2D,
+	 float* __restrict__ dL_dopacity,
+	 float* __restrict__ dL_dnormal3D,
+	 float* __restrict__ dL_dcolors,
+	 float* __restrict__ dL_dsigma_factor)
+ {
+	 // We rasterize again. Compute necessary block info.
+	 auto block = cg::this_thread_block();
+	 const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
+	 const uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
+	 const uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
+	 const uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
+	 const uint32_t pix_id = W * pix.y + pix.x;
+	 const float2 pixf = { (float)pix.x, (float)pix.y };
+ 
+	 const bool inside = pix.x < W&& pix.y < H;
+	 const uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
+ 
+	 const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
+ 
+	 bool done = !inside;
+	 int toDo = range.y - range.x;
+ 
+	 __shared__ int collected_id[BLOCK_SIZE];
+	 __shared__ float4 collected_conic_opacity[BLOCK_SIZE];
+	 __shared__ float collected_colors[C * BLOCK_SIZE];
+ 
+	 /*
+	 ADDED FOR Triangle PURPOSES ==========================================================================
+	 */
+	 __shared__ float2 collected_normals[BLOCK_SIZE * MAX_NB_POINTS];
+	 __shared__ float collected_offsets[BLOCK_SIZE * MAX_NB_POINTS];
+	 __shared__ int collected_cumsum_of_points_per_triangle[BLOCK_SIZE];
+	 __shared__ float collected_sigma[BLOCK_SIZE];
+	 __shared__ float collected_depths[BLOCK_SIZE];
+	 __shared__ float2 collected_xy[BLOCK_SIZE];
+	 __shared__ float2 collected_phi_center[BLOCK_SIZE];
+	 /*
+	 ===================================================================================================
+	 */
+ 
+	 // In the forward, we stored the final value for T, the
+	 // product of all (1 - alpha) factors. 
+	 const float T_final = inside ? final_Ts[pix_id] : 0;
+	 float T = T_final;
+ 
+	 // We start from the back. The ID of the last contributing
+	 // Triangle is known from each pixel from the forward.
+	 uint32_t contributor = toDo;
+	 const int last_contributor = inside ? n_contrib[pix_id] : 0;
+ 
+	 float accum_rec[C] = { 0 };
+	 float dL_dpixel[C];
+	 if (inside)
+		 for (int i = 0; i < C; i++)
+			 dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
 
-  // tile metadata
-  const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
-  const uint2 tile = {tile_id % horizontal_blocks, tile_id / horizontal_blocks};
-  const uint2 pix_min = {tile.x * BLOCK_X, tile.y * BLOCK_Y};
 
-  // values useful for gradient calculation
-  float T;
-  float T_final;
-  float last_contributor;
-  float ar[C];
-  float ard;
-  float dL_dpixel[C];
-  float dL_invdepth;
-  const float ddelx_dx = 0.5 * W;
-  const float ddely_dy = 0.5 * H;
+	float dL_dreg;
+	float dL_ddepth;
+	float dL_daccum;
+	float dL_dnormal2D[3];
+	const int median_contributor = inside ? n_contrib[pix_id + H * W] : 0;
+	float dL_dmedian_depth;
+	float dL_dmax_dweight;
 
-  // iterate over all pixels in the tile
-  for (int i = 0; i < BLOCK_SIZE + 31; ++i) {
-    // SHUFFLING
+	if (inside) {
+		dL_ddepth = dL_depths[DEPTH_OFFSET * H * W + pix_id];
+		dL_daccum = dL_depths[ALPHA_OFFSET * H * W + pix_id];
+		dL_dreg = dL_depths[DISTORTION_OFFSET * H * W + pix_id];
+		for (int i = 0; i < 3; i++) 
+			dL_dnormal2D[i] = dL_depths[(NORMAL_OFFSET + i) * H * W + pix_id];
 
-    // At this point, T already has my (1 - alpha) multiplied.
-    // So pass this ready-made T value to next thread.
-    T = my_warp.shfl_up(T, 1);
-    last_contributor = my_warp.shfl_up(last_contributor, 1);
-    T_final = my_warp.shfl_up(T_final, 1);
-    for (int ch = 0; ch < C; ++ch) {
-      ar[ch] = my_warp.shfl_up(ar[ch], 1);
-      dL_dpixel[ch] = my_warp.shfl_up(dL_dpixel[ch], 1);
-    }
-    ard = my_warp.shfl_up(ard, 1);
-    dL_invdepth = my_warp.shfl_up(dL_invdepth, 1);
+		dL_dmedian_depth = dL_depths[MIDDEPTH_OFFSET * H * W + pix_id];
+	}
 
-    // which pixel index should this thread deal with?
-    int idx = i - my_warp.thread_rank();
-    const uint2 pix = {pix_min.x + idx % BLOCK_X, pix_min.y + idx / BLOCK_X};
-    const uint32_t pix_id = W * pix.y + pix.x;
-    const float2 pixf = {(float)pix.x, (float)pix.y};
-    bool valid_pixel = pix.x < W && pix.y < H;
+	// for compute gradient with respect to depth and normal
+	float last_depth = 0;
+	float last_normal[3] = { 0 };
+	float accum_depth_rec = 0;
+	float accum_alpha_rec = 0;
+	float accum_normal_rec[3] = {0};
+	// for compute gradient with respect to the distortion map
+	const float final_D = inside ? final_Ts[pix_id + H * W] : 0;
+	const float final_D2 = inside ? final_Ts[pix_id + 2 * H * W] : 0;
+	const float final_A = 1 - T_final;
+	float last_dL_dT = 0;
+ 
+	 float last_alpha = 0;
+	 float last_color[C] = { 0 };
 
-    // every 32nd thread should read the stored state from memory
-    // TODO: perhaps store these things in shared memory?
-    if (valid_splat && valid_pixel && my_warp.thread_rank() == 0 &&
-        idx < BLOCK_SIZE) {
-      T = sampled_T[global_bucket_idx * BLOCK_SIZE + idx];
-      for (int ch = 0; ch < C; ++ch)
-        ar[ch] = -pixel_colors[ch * H * W + pix_id] +
-                 sampled_ar[global_bucket_idx * BLOCK_SIZE * C +
-                            ch * BLOCK_SIZE + idx];
-      ard = -pixel_invDepths[pix_id] +
-            sampled_ard[global_bucket_idx * BLOCK_SIZE + idx];
-      T_final = final_Ts[pix_id];
-      last_contributor = n_contrib[pix_id];
-      for (int ch = 0; ch < C; ++ch) {
-        dL_dpixel[ch] = dL_dpixels[ch * H * W + pix_id];
-      }
-      dL_invdepth = dL_invdepths[pix_id];
-    }
+ 
+	 // Traverse all triangles
+	 for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
+	 {
+		 // Load auxiliary data into shared memory, start in the BACK
+		 // and load them in revers order.
+		 block.sync();
+		 const int progress = i * BLOCK_SIZE + block.thread_rank();
+		 if (range.x + progress < range.y)
+		 {
+			 const int coll_id = point_list[range.y - progress - 1];
+			 collected_id[block.thread_rank()] = coll_id;
+			 collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+			 for (int i = 0; i < C; i++)
+				 collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
+			 collected_cumsum_of_points_per_triangle[block.thread_rank()] = cumsum_of_points_per_triangle[coll_id];
+			 collected_sigma[block.thread_rank()] = sigma[coll_id];
+			 collected_depths[block.thread_rank()] = depths[coll_id];
+			 collected_xy[block.thread_rank()] = means2D[coll_id];
+			 for (int k = 0; k < 3; k++) {
+				collected_normals[MAX_NB_POINTS * block.thread_rank() + k] = normals[cumsum_of_points_per_triangle[coll_id] + k];
+				collected_offsets[MAX_NB_POINTS * block.thread_rank() + k] = offsets[cumsum_of_points_per_triangle[coll_id] + k];
+			}
+			collected_phi_center[block.thread_rank()] = phi_center[coll_id];
+		 }
+		 block.sync();
+ 
+		 // Iterate over triangles
+		 for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
+		 {
+ 
+			 contributor--;
+			 if (contributor >= last_contributor)
+				 continue;
+ 
+			 float4 con_o = collected_conic_opacity[j];
+			 float normal[3] = {con_o.x, con_o.y, con_o.z};
+			 float2 phi_center_min = collected_phi_center[j];
+			 float distances[MAX_NB_POINTS];
+			 float sigma_pre = collected_sigma[j];
+			 float depth = collected_depths[j];
+			 float sum_exp = 0.0f;
+			 float max_val = -INFINITY;
+			 int base = j * MAX_NB_POINTS;
+			 bool outside = false;
+			 float c_d = collected_depths[j];
+ 
+			 for (int k = 0; k < 3; k++) {
+				 // Compute the current distance
+				 float dist = (collected_normals[base + k].x * pixf.x
+						  + collected_normals[base + k].y * pixf.y
+						  + collected_offsets[base + k]);
+				
+				 if (dist > 0) {
+					outside = true;
+					break;
+				 }
+ 
+				 distances[k] = dist;
+				 max_val = fmaxf(max_val, dist);
+			 }
 
-    // do work
-    if (valid_splat && valid_pixel && 0 <= idx && idx < BLOCK_SIZE) {
-      if (W <= pix.x || H <= pix.y) continue;
+			 if (outside)
+				 continue;
+ 
+			 float phi_x = max_val;
+			 float phi_final = phi_x * phi_center_min.x;
+			 float Cx = fmaxf(0.0f,  __powf(phi_final, sigma_pre));
+ 
+			 const float alpha = min(0.99f, con_o.w * Cx);
+ 
+			 if (alpha < 1.0f / 255.0f)
+				 continue;
+ 
+			 T = T / (1.f - alpha);
+			 const float dchannel_dcolor = alpha * T;
+ 
+			 // Propagate gradients to per-Triangle colors and keep
+			 // gradients w.r.t. alpha (blending factor for a Triangle/pixel
+			 // pair).
+			 float dL_dalpha = 0.0f;
+			 const int global_id = collected_id[j];
+			 for (int ch = 0; ch < C; ch++)
+			 {
+				 const float c = collected_colors[ch * BLOCK_SIZE + j];
+				 // Update last color (to be used in the next iteration)
+				 accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
+				 last_color[ch] = c;
+ 
+				 const float dL_dchannel = dL_dpixel[ch];
+				 dL_dalpha += (c - accum_rec[ch]) * dL_dchannel;
+				 // Update the gradients w.r.t. color of the Triangle. 
+				 // Atomic, since this pixel is just one of potentially
+				 // many that were affected by this Triangle.
+				 atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
+			 }
 
-      if (splat_idx_in_tile >= last_contributor) continue;
+			 float dL_dz = 0.0f;
+			 float dL_dweight = 0;
+ 
+			 const float m_d = far_n / (far_n - near_n) * (1 - near_n / collected_depths[j]);
+			  const float dmd_dd = (far_n * near_n) / ((far_n - near_n) * collected_depths[j] * collected_depths[j]);
+			  if (contributor == median_contributor-1) {
+				  dL_dz += dL_dmedian_depth;
+			  }
+ 
+			 dL_dweight += (final_D2 + m_d * m_d * final_A - 2 * m_d * final_D) * dL_dreg;
+			 dL_dalpha += dL_dweight - last_dL_dT;
+			 // propagate the current weight W_{i} to next weight W_{i-1}
+			 last_dL_dT = dL_dweight * alpha + (1 - alpha) * last_dL_dT;
+			 const float dL_dmd = 2.0f * (T * alpha) * (m_d * final_A - final_D) * dL_dreg;
+			 dL_dz += dL_dmd * dmd_dd;
+ 
+			 // Propagate gradients w.r.t ray-splat depths
+			 accum_depth_rec = last_alpha * last_depth + (1.f - last_alpha) * accum_depth_rec;
+			 last_depth = collected_depths[j];
+			 dL_dalpha += (collected_depths[j] - accum_depth_rec) * dL_ddepth;
+			 // Propagate gradients w.r.t. color ray-splat alphas
+			 accum_alpha_rec = last_alpha * 1.0 + (1.f - last_alpha) * accum_alpha_rec;
+			 dL_dalpha += (1 - accum_alpha_rec) * dL_daccum;
+  
+			 for (int ch = 0; ch < 3; ch++) {
+				 accum_normal_rec[ch] = last_alpha * last_normal[ch] + (1.f - last_alpha) * accum_normal_rec[ch];
+				 last_normal[ch] = normal[ch];
+				 dL_dalpha += (normal[ch] - accum_normal_rec[ch]) * dL_dnormal2D[ch];
+				 atomicAdd((&dL_dnormal3D[global_id * 3 + ch]), alpha * T * dL_dnormal2D[ch]);
+			 }
+ 
+			 dL_dalpha *= T;
+			 // Update last alpha (to be used in the next iteration)
+			 last_alpha = alpha;
+ 
+			 // Account for fact that alpha also influences how much of
+			 // the background color is added if nothing left to blend
+			 float bg_dot_dpixel = 0;
+			 for (int i = 0; i < C; i++)
+				 bg_dot_dpixel += bg_color[i] * dL_dpixel[i];
+			 dL_dalpha += (-T_final / (1.f - alpha)) * bg_dot_dpixel;
 
-      // compute blending values
-      const float2 d = {xy.x - pixf.x, xy.y - pixf.y};
-      const float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) -
-                          con_o.y * d.x * d.y;
-      if (power > 0.0f) continue;
-      const float G = exp(power);
-      const float alpha = min(0.99f, con_o.w * G);
-      if (alpha < 1.0f / 255.0f) continue;
-      const float weight = alpha * T;
+			 dL_dz += alpha * T * dL_ddepth; 
+			 atomicAdd(&(dL_dmean2D[global_id].x), dL_dz);
+ 
+			 // Helpful reusable temporary variables
+			 const float dL_dC = con_o.w * dL_dalpha;
 
-      // add the gradient contribution of this pixel's colour to the gaussian
-      float bg_dot_dpixel = 0.0f;
-      float dL_dalpha = 0.0f;
-      for (int ch = 0; ch < C; ++ch) {
-        ar[ch] += weight * c[ch];  // TODO: check
-        const float& dL_dchannel = dL_dpixel[ch];
-        Register_dL_dcolors[ch] += weight * dL_dchannel;
-        dL_dalpha +=
-            ((c[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dL_dchannel;
-
-        bg_dot_dpixel += bg_color[ch] * dL_dpixel[ch];
-      }
-
-      // // add the gradient contribution of this pixel's depth to the gaussian
-      ard += weight * invd;
-      Register_dL_dinvdepths += weight * dL_invdepth;
-      dL_dalpha +=
-          ((invd * T) - (1.0f / (1.0f - alpha)) * (-ard)) * dL_invdepth;
-
-      // Account for last sample for colour
-      dL_dalpha += (-T_final / (1.0f - alpha)) * bg_dot_dpixel;
-      T *= (1.0f - alpha);
-
-      // Helpful reusable temporary variables
-      const float dL_dG = con_o.w * dL_dalpha;
-      const float gdx = G * d.x;
-      const float gdy = G * d.y;
-      const float dG_ddelx = -gdx * con_o.x - gdy * con_o.y;
-      const float dG_ddely = -gdy * con_o.z - gdx * con_o.y;
-
-      // accumulate the gradients
-      const float tmp_x = dL_dG * dG_ddelx * ddelx_dx;
-      Register_dL_dmean2D_x += tmp_x;
-      const float tmp_y = dL_dG * dG_ddely * ddely_dy;
-      Register_dL_dmean2D_y += tmp_y;
-
-      Register_dL_dconic2D_x += -0.5f * gdx * d.x * dL_dG;
-      Register_dL_dconic2D_y += -0.5f * gdx * d.y * dL_dG;
-      Register_dL_dconic2D_w += -0.5f * gdy * d.y * dL_dG;
-      Register_dL_dopacity += G * dL_dalpha;
-    }
-  }
-
-  // finally add the gradients using atomics
-  if (valid_splat) {
-    atomicAdd(&dL_dmean2D[gaussian_idx].x, Register_dL_dmean2D_x);
-    atomicAdd(&dL_dmean2D[gaussian_idx].y, Register_dL_dmean2D_y);
-    atomicAdd(&dL_dconic2D[gaussian_idx].x, Register_dL_dconic2D_x);
-    atomicAdd(&dL_dconic2D[gaussian_idx].y, Register_dL_dconic2D_y);
-    atomicAdd(&dL_dconic2D[gaussian_idx].w, Register_dL_dconic2D_w);
-    atomicAdd(&dL_dopacity[gaussian_idx], Register_dL_dopacity);
-    for (int ch = 0; ch < C; ++ch) {
-      atomicAdd(&dL_dcolors[gaussian_idx * C + ch], Register_dL_dcolors[ch]);
-    }
-    atomicAdd(&dL_dinvdepths[gaussian_idx], Register_dL_dinvdepths);
-  }
-}
-
-void BACKWARD::preprocess(int P,
-                          int D,
-                          int M,
-                          const float3* means3D,
-                          const int* radii,
-                          const float* dc,
-                          const float* shs,
-                          const bool* clamped,
-                          const float* opacities,
-                          const glm::vec3* scales,
-                          const glm::vec4* rotations,
-                          const float scale_modifier,
-                          const float* cov3Ds,
-                          const float* viewmatrix,
-                          const float* projmatrix,
-                          const float focal_x,
-                          float focal_y,
-                          const float tan_fovx,
-                          float tan_fovy,
-                          const glm::vec3* campos,
-                          const float3* dL_dmean2D,
-                          const float* dL_dconic,
-                          const float* dL_dinvdepth,
-                          float* dL_dopacity,
-                          glm::vec3* dL_dmean3D,
-                          float* dL_dcolor,
-                          float* dL_dcov3D,
-                          float* dL_ddc,
-                          float* dL_dsh,
-                          glm::vec3* dL_dscale,
-                          glm::vec4* dL_drot,
-                          glm::mat3* dL_dRs,
-                          glm::vec3* dL_dt) {
-  // Propagate gradients for the path of 2D conic matrix computation.
-  // Somewhat long, thus it is its own kernel rather than being part of
-  // "preprocess". When done, loss gradient w.r.t. 3D means has been
-  // modified and gradient w.r.t. 3D covariance matrix has been computed.
-  computeCov2DCUDA<<<(P + 255) / 256, 256>>>(
-      P, means3D, radii, cov3Ds, focal_x, focal_y, tan_fovx, tan_fovy,
-      viewmatrix, opacities, dL_dconic, dL_dopacity, dL_dinvdepth,
-      (float3*)dL_dt, dL_dcov3D, dL_dRs);
-
-  // Propagate gradients for remaining steps: finish 3D mean gradients,
-  // propagate color gradients to SH (if desireD), propagate 3D covariance
-  // matrix gradients to scale and rotation.
-  preprocessCUDA<NUM_CHANNELS_3DGS><<<(P + 255) / 256, 256>>>(
-      P, D, M, (float3*)means3D, radii, dc, shs, clamped, (glm::vec3*)scales,
-      (glm::vec4*)rotations,  // quats mat3
-      scale_modifier, projmatrix, viewmatrix, campos, (float3*)dL_dmean2D,
-      (glm::vec3*)dL_dmean3D, (glm::mat3*)dL_dRs, (glm::vec3*)dL_dt, dL_dcolor,
-      dL_dcov3D, dL_ddc, dL_dsh, dL_dscale, dL_drot, dL_dopacity);
-}
-
-void BACKWARD::render(const dim3 grid,
-                      dim3 block,
-                      const uint2* ranges,
-                      const uint32_t* point_list,
-                      int W,
-                      int H,
-                      int R,
-                      int B,
-                      const uint32_t* per_bucket_tile_offset,
-                      const uint32_t* bucket_to_tile,
-                      const float* sampled_T,
-                      const float* sampled_ar,
-                      const float* sampled_ard,
-                      const float* bg_color,
-                      const float2* means2D,
-                      const float4* conic_opacity,
-                      const float* colors,
-                      const float* depths,
-                      const float* final_Ts,
-                      const uint32_t* n_contrib,
-                      const uint32_t* max_contrib,
-                      const float* pixel_colors,
-                      const float* pixel_invDepths,
-                      const float* dL_dpixels,
-                      const float* dL_invdepths,
-                      float3* dL_dmean2D,
-                      float4* dL_dconic2D,
-                      float* dL_dopacity,
-                      float* dL_dcolors,
-                      float* dL_dinvdepths) {
-  const int THREADS = 32;
-  PerGaussianRenderCUDA<NUM_CHANNELS_3DGS>
-      <<<((B * 32) + THREADS - 1) / THREADS, THREADS>>>(
-          ranges, point_list, W, H, B, per_bucket_tile_offset, bucket_to_tile,
-          sampled_T, sampled_ar, sampled_ard, bg_color, means2D, conic_opacity,
-          colors, depths, final_Ts, n_contrib, max_contrib, pixel_colors,
-          pixel_invDepths, dL_dpixels, dL_invdepths, dL_dmean2D, dL_dconic2D,
-          dL_dopacity, dL_dcolors, dL_dinvdepths);
-}
+			 if (phi_final > 0.0f) {
+				// derivative with respect to sigma
+				float dL_dsigma_value = dL_dC * Cx * __logf(phi_final);
+				atomicAdd(&dL_dsigma[global_id], dL_dsigma_value);
+			}
+			
+			// Calculate gradient w.r.t phi_x 
+			float dL_dphi_x = dL_dC * (sigma_pre / phi_x) * Cx;
+ 
+			 #pragma unroll
+			 for (int k = 0; k < 3; k++) {
+				if (fabsf(distances[k] - max_val) < 1e-6f) {
+					float dL_dnormal_x = dL_dphi_x * pixf.x;
+					float dL_dnormal_y = dL_dphi_x * pixf.y;
+					atomicAdd(&(dL_dnormals[collected_cumsum_of_points_per_triangle[j] + k].x), dL_dnormal_x);
+					atomicAdd(&(dL_dnormals[collected_cumsum_of_points_per_triangle[j] + k].y), dL_dnormal_y);
+					atomicAdd(&(dL_doffsets[collected_cumsum_of_points_per_triangle[j] + k]), dL_dphi_x);
+				}
+			 }
+ 
+			 // Update gradients w.r.t. opacity of the Triangle
+			 atomicAdd(&(dL_dopacity[global_id]), dL_dalpha * Cx);
+ 
+		 }
+	 }
+ }
+ 
+ void BACKWARD::preprocess(
+	 int P, int D, int M,
+	 const float* triangles_points,
+	 int W, int H,
+	 const int* radii,
+	 const float* shs,
+	 const bool* clamped,
+	 const float* viewmatrix,
+	 const float* projmatrix,
+	 const int* num_points_per_triangle,
+	 const int* cumsum_of_points_per_triangle,
+	 float2* points_xy_image,
+	 float* p_w,
+	 float2* p_image,
+	 int* indices,
+	 const float* cov3Ds,
+	 const float focal_x, float focal_y,
+	 const float tan_fovx, float tan_fovy,
+	 const glm::vec3* campos,
+	 glm::vec3* dL_dtriangle,
+	 const float2* dL_dnormals,
+	 const float* dL_doffsets,
+	 glm::vec3* dL_dmean3D,
+	 float3* dL_dmean2D,
+	 const float* dL_dconic,
+	 float* dL_dcov3D,
+	 float* dL_dnormal3D,
+	 float* dL_dcolor,
+	 float* dL_dsh,
+	 float* dL_dsigma_factor
+	 )
+ {
+	 
+	 // Propagate gradients for remaining steps: finish 3D mean gradients,
+	 // propagate color gradients to SH (if desireD), propagate 3D covariance
+	 // matrix gradients to scale and rotation.
+	 preprocessCUDA<NUM_CHANNELS> << < (P + 255) / 256, 256 >> > (
+		 P, D, M,
+		 triangles_points,
+		 W, H,
+		 radii,
+		 shs,
+		 clamped,
+		 projmatrix,
+		 viewmatrix,
+		 num_points_per_triangle,
+		 cumsum_of_points_per_triangle,
+		 points_xy_image,
+		 p_w,
+		 p_image,
+		 indices,
+		 campos,
+		 (glm::vec3*)dL_dtriangle,
+		 (float2*) dL_dnormals,
+		 dL_doffsets,
+		 (glm::vec3*)dL_dmean3D,
+		 (float3*)dL_dmean2D,
+		 dL_dcov3D,
+		 dL_dnormal3D,
+		 dL_dcolor,
+		 dL_dsh,
+		 dL_dsigma_factor);
+ }
+ 
+ void BACKWARD::render(
+	 const dim3 grid, const dim3 block,
+	 const uint2* ranges,
+	 const uint32_t* point_list,
+	 int W, int H,
+	 const float* bg_color,
+	 const float* sigma,
+	 const int* num_points_per_triangle,
+	 const int* cumsum_of_points_per_triangle,
+	 const float2* normals,
+	 const float* offsets,
+	 const float4* conic_opacity,
+	 const float* depths,
+	 const float2* means2D,
+	 const float2* phi_center,
+	 const float* colors,
+	 const float* final_Ts,
+	 const uint32_t* n_contrib,
+	 const float* dL_dpixels,
+	 const float* dL_depths,
+	 float2* dL_dnormals,
+	 float* dL_doffsets,
+	 float* dL_dsigma,
+	 float3* dL_dmean2D,
+	 float4* dL_dconic2D,
+	 float* dL_dopacity,
+	 float* dL_dnormal3D,
+	 float* dL_dcolors,
+	 float* dL_dsigma_factor)
+ {
+	 renderCUDA<NUM_CHANNELS> << <grid, block >> >(
+		 ranges,
+		 point_list,
+		 W, H,
+		 bg_color,
+		 sigma,
+		 num_points_per_triangle,
+		 cumsum_of_points_per_triangle,
+		 normals,
+		 offsets,
+		 conic_opacity,
+		 depths,
+		 means2D,
+		 phi_center,
+		 colors,
+		 final_Ts,
+		 n_contrib,
+		 dL_dpixels,
+		 dL_depths,
+		 dL_dnormals,
+		 dL_doffsets,
+		 dL_dsigma,
+		 dL_dmean2D,
+		 dL_dconic2D,
+		 dL_dopacity,
+		 dL_dnormal3D,
+		 dL_dcolors,
+		 dL_dsigma_factor
+		 );
+ }
