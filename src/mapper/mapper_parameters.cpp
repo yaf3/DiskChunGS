@@ -41,14 +41,9 @@ float TriangleMapper::opacityLearningRate() {
   return opt_params_.opacity_lr_;
 }
 
-float TriangleMapper::scalingLearningRate() {
+float TriangleMapper::sigmaLearningRate() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
-  return opt_params_.scaling_lr_;
-}
-
-float TriangleMapper::rotationLearningRate() {
-  std::unique_lock<std::mutex> lock(mutex_settings_);
-  return opt_params_.rotation_lr_;
+  return opt_params_.sigma_lr_;
 }
 
 float TriangleMapper::lambdaDssim() {

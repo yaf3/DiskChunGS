@@ -130,8 +130,7 @@ void ImGuiViewer::readConfigFromFile(std::filesystem::path cfg_path) {
   position_lr_init_ = pTriMapper_->positionLearningRateInit();
   feature_lr_ = pTriMapper_->featureLearningRate();
   opacity_lr_ = pTriMapper_->opacityLearningRate();
-  scaling_lr_ = pTriMapper_->scalingLearningRate();
-  rotation_lr_ = pTriMapper_->rotationLearningRate();
+  sigma_lr_ = pTriMapper_->sigmaLearningRate();
   lambda_dssim_ = pTriMapper_->lambdaDssim();
   new_kf_times_of_use_ = pTriMapper_->newKeyframeTimesOfUse();
   stable_num_iter_existence_ = pTriMapper_->stableNumIterExistence();
@@ -586,7 +585,7 @@ void ImGuiViewer::run() {
         if (pTriMapper_->triangles_ &&
             pTriMapper_->triangles_->is_initialized_) {
           ImGui::Text("Triangles in VRAM: %d",
-                      static_cast<int>(pTriMapper_->triangles_->xyz_.size(0)));
+                      static_cast<int>(pTriMapper_->triangles_->triangles_points_.size(0)));
           ImGui::Text(
               "Chunks loaded: %d",
               static_cast<int>(

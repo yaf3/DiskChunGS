@@ -50,7 +50,9 @@ TriangleRenderer::render(std::shared_ptr<TriangleModel> model,
       // Extract visible features first
       torch::Tensor visible_features =
           model->getFeatures().index({visible_indices});
-      torch::Tensor visible_xyz = model->getXYZ().index({visible_indices});
+      // Use centroids for SH direction computation
+      torch::Tensor visible_xyz =
+          model->getXYZ().index({visible_indices});
 
       torch::Tensor shs_view = visible_features.transpose(1, 2).view(
           {-1, 3, max_sh_degree * max_sh_degree});
@@ -76,13 +78,19 @@ TriangleRenderer::render(std::shared_ptr<TriangleModel> model,
     }
   }
 
-  auto means3D = model->getXYZ().index({visible_indices}).contiguous();
+  // Extract triangle vertices [V,3,3] and sigma [V,1] for visible triangles
+  auto tri_pts =
+      model->getTrianglesPoints().index({visible_indices}).contiguous();
+  auto sigma =
+      model->getSigmaActivation().index({visible_indices}).contiguous();
 
+  // Centroid for screen-space tracking (means2D gradient used in densification)
+  auto centroids = tri_pts.mean(/*dim=*/1);  // [V,3]
   auto screenspace_points =
-      torch::zeros_like(means3D, torch::TensorOptions()
-                                     .dtype(means3D.dtype())
-                                     .requires_grad(true)
-                                     .device(torch::kCUDA))
+      torch::zeros_like(centroids, torch::TensorOptions()
+                                       .dtype(centroids.dtype())
+                                       .requires_grad(true)
+                                       .device(torch::kCUDA))
           .contiguous();
   try {
     screenspace_points.retain_grad();
@@ -93,18 +101,8 @@ TriangleRenderer::render(std::shared_ptr<TriangleModel> model,
   auto opacity =
       model->getOpacityActivation().index({visible_indices}).contiguous();
 
-  // Prepare Triangle shape: either precompute 3D covariance or use
-  // scale/rotation.
-  torch::Tensor scales, rotations, cov3D_precomp;
-  if (pipe.compute_cov3D_) {
-    cov3D_precomp =
-        model->getCovarianceActivation().index({visible_indices}).contiguous();
-  } else {
-    scales =
-        model->getScalingActivation().index({visible_indices}).contiguous();
-    rotations =
-        model->getRotationActivation().index({visible_indices}).contiguous();
-  }
+  // No cov3D or rotation/scale extraction needed — triangle API uses tri_pts+sigma
+  torch::Tensor rotations, cov3D_precomp;
 
   // Setup and run rasterization
   float tanfovx = std::tan(FoVx * 0.5f);
@@ -116,8 +114,9 @@ TriangleRenderer::render(std::shared_ptr<TriangleModel> model,
 
   TriangleRasterizer rasterizer(raster_settings);
 
+  // Pass tri_pts [V,3,3] as means3D (first arg), sigma [V,1] as scales
   auto rasterizer_result = rasterizer.forward(
-      means3D, means2D, opacity, dc, shs, colors_precomp, scales, rotations,
+      tri_pts, means2D, opacity, dc, shs, colors_precomp, sigma, rotations,
       cov3D_precomp, world_view_transform);
 
   auto rendered_image = std::get<0>(rasterizer_result);

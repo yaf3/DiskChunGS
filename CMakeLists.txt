@@ -180,6 +180,8 @@ add_library(
     cuda_rasterizer/adam.h
     cuda_rasterizer/ssim.cu
     cuda_rasterizer/ssim.h
+    cuda_rasterizer/utils.cu
+    cuda_rasterizer/utils.h
 )
 
 if(IS_ARM)

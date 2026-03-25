@@ -149,10 +149,8 @@ void TriangleMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       readConfig<float>(settings_file, "Optimization.feature_lr");
   opt_params_.opacity_lr_ =
       readConfig<float>(settings_file, "Optimization.opacity_lr");
-  opt_params_.scaling_lr_ =
-      readConfig<float>(settings_file, "Optimization.scaling_lr");
-  opt_params_.rotation_lr_ =
-      readConfig<float>(settings_file, "Optimization.rotation_lr");
+  opt_params_.sigma_lr_ =
+      readConfig<float>(settings_file, "Optimization.sigma_lr");
   opt_params_.pose_lr_ =
       readConfig<float>(settings_file, "Optimization.pose_lr");
   opt_params_.exposure_lr_ =

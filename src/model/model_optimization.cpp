@@ -27,11 +27,12 @@ void TriangleModel::trainingSetup(
   adam_options.set_lr(0.0);
   adam_options.eps() = 1e-15;
 
-  optimizer_.reset(new SparseTriangleAdam(Tensor_vec_xyz_, adam_options));
+  optimizer_.reset(
+      new SparseTriangleAdam(Tensor_vec_triangles_points_, adam_options));
   optimizer_->param_groups()[0].options().set_lr(0.0f);
 
   // Per-Triangle position learning rates
-  int num_triangles = getXYZ().size(0);
+  int num_triangles = triangles_points_.size(0);
   position_lrs_ = torch::full(
       {num_triangles}, position_lr_init_,
       torch::TensorOptions().dtype(torch::kFloat32).device(device_type_));
@@ -47,11 +48,8 @@ void TriangleModel::trainingSetup(
   optimizer_->add_param_group(Tensor_vec_opacity_);
   optimizer_->param_groups()[3].options().set_lr(training_args.opacity_lr_);
 
-  optimizer_->add_param_group(Tensor_vec_scaling_);
-  optimizer_->param_groups()[4].options().set_lr(training_args.scaling_lr_);
-
-  optimizer_->add_param_group(Tensor_vec_rotation_);
-  optimizer_->param_groups()[5].options().set_lr(training_args.rotation_lr_);
+  optimizer_->add_param_group(Tensor_vec_sigma_);
+  optimizer_->param_groups()[4].options().set_lr(training_args.sigma_lr_);
 }
 
 void TriangleModel::updateLearningRates(const torch::Tensor& visibility) {
@@ -91,9 +89,11 @@ void TriangleModel::optimizerStep(torch::Tensor& visibility,
     auto& param_state = static_cast<torch::optim::AdamParamState&>(*state[key]);
     auto options = static_cast<torch::optim::AdamOptions&>(group.options());
 
-    // Group 0 uses per-Triangle position LRs; others use a scalar LR
+    // Group 0 uses per-Triangle position LRs (expanded for [N,3,3]); others scalar
     torch::Tensor lr_tensor;
     if (group_idx == 0) {
+      // position_lrs_ is [N]; param is [N,3,3] with M=9 elements per triangle.
+      // adamUpdate expects lr_tensor of size N (one LR per triangle row).
       lr_tensor = position_lrs_;
     } else {
       lr_tensor = torch::tensor(

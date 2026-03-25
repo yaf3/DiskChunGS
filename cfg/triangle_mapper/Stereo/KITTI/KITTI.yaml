@@ -44,8 +44,7 @@ Optimization.position_lr_init: 0.001
 Optimization.position_lr_decay: 0.998
 Optimization.feature_lr: 0.005
 Optimization.opacity_lr: 0.1
-Optimization.scaling_lr: 0.01
-Optimization.rotation_lr: 0.002
+Optimization.sigma_lr: 0.005
 Optimization.pose_lr: 0.00
 Optimization.exposure_lr: 0.000
 Optimization.depth_scale_bias_lr: 0.0001

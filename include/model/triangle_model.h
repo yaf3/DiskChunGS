@@ -66,31 +66,29 @@ class SparseTriangleAdam;
  * Used to update the std::vector wrappers that the optimizer requires
  * after any operation that modifies the underlying tensors.
  */
-#define TRIANGLE_MODEL_TENSORS_TO_VEC                      \
-  this->Tensor_vec_xyz_ = {this->xyz_};                    \
-  this->Tensor_vec_feature_dc_ = {this->features_dc_};     \
-  this->Tensor_vec_feature_rest_ = {this->features_rest_}; \
-  this->Tensor_vec_opacity_ = {this->opacity_};            \
-  this->Tensor_vec_scaling_ = {this->scaling_};            \
-  this->Tensor_vec_rotation_ = {this->rotation_};
+#define TRIANGLE_MODEL_TENSORS_TO_VEC                                      \
+  this->Tensor_vec_triangles_points_ = {this->triangles_points_};          \
+  this->Tensor_vec_feature_dc_ = {this->features_dc_};                     \
+  this->Tensor_vec_feature_rest_ = {this->features_rest_};                 \
+  this->Tensor_vec_opacity_ = {this->opacity_};                            \
+  this->Tensor_vec_sigma_ = {this->sigma_};
 
 /**
  * @brief Macro to initialize all Triangle tensors as empty on the specified
  * device.
  * @param device_type The torch device (kCUDA or kCPU) for tensor allocation.
  */
-#define TRIANGLE_MODEL_INIT_TENSORS(device_type)                            \
-  this->xyz_ = torch::empty(0, torch::TensorOptions().device(device_type)); \
-  this->features_dc_ =                                                      \
-      torch::empty(0, torch::TensorOptions().device(device_type));          \
-  this->features_rest_ =                                                    \
-      torch::empty(0, torch::TensorOptions().device(device_type));          \
-  this->scaling_ =                                                          \
-      torch::empty(0, torch::TensorOptions().device(device_type));          \
-  this->rotation_ =                                                         \
-      torch::empty(0, torch::TensorOptions().device(device_type));          \
-  this->opacity_ =                                                          \
-      torch::empty(0, torch::TensorOptions().device(device_type));          \
+#define TRIANGLE_MODEL_INIT_TENSORS(device_type)                                     \
+  this->triangles_points_ =                                                          \
+      torch::empty(0, torch::TensorOptions().device(device_type));                   \
+  this->features_dc_ =                                                               \
+      torch::empty(0, torch::TensorOptions().device(device_type));                   \
+  this->features_rest_ =                                                             \
+      torch::empty(0, torch::TensorOptions().device(device_type));                   \
+  this->sigma_ =                                                                     \
+      torch::empty(0, torch::TensorOptions().device(device_type));                   \
+  this->opacity_ =                                                                   \
+      torch::empty(0, torch::TensorOptions().device(device_type));                   \
   TRIANGLE_MODEL_TENSORS_TO_VEC
 
 /**
@@ -113,9 +111,9 @@ class SparseTriangleAdam;
  */
 class TriangleModel {
  public:
-  /// Number of optimizer parameter groups: xyz, features_dc, features_rest,
-  /// opacity, scaling, rotation.
-  static constexpr int kNumParamGroups = 6;
+  /// Number of optimizer parameter groups: triangles_points, features_dc,
+  /// features_rest, opacity, sigma.
+  static constexpr int kNumParamGroups = 5;
 
   //============================================================================
   // Nested Types
@@ -128,15 +126,15 @@ class TriangleModel {
    */
   struct ChunkData {
     // Triangle parameters
-    torch::Tensor xyz, features_dc, features_rest;
-    torch::Tensor scaling, rotation, opacity;
+    torch::Tensor triangles_points, features_dc, features_rest;
+    torch::Tensor sigma, opacity;
     torch::Tensor exist_since, position_lrs, triangle_ids;
 
     // Adam optimizer states (one per parameter group)
-    std::vector<torch::Tensor> exp_avg_states;  ///< First moment estimates [6].
+    std::vector<torch::Tensor> exp_avg_states;  ///< First moment estimates [5].
     std::vector<torch::Tensor>
-        exp_avg_sq_states;             ///< Second moment estimates [6].
-    std::vector<int64_t> step_counts;  ///< Adam step counts [6].
+        exp_avg_sq_states;             ///< Second moment estimates [5].
+    std::vector<int64_t> step_counts;  ///< Adam step counts [5].
 
     int num_points;    ///< Number of Triangles in this chunk.
     int64_t chunk_id;  ///< Encoded spatial coordinate ID.
@@ -174,20 +172,20 @@ class TriangleModel {
   //============================================================================
 
   /**
-   * @brief Returns scaling with exponential activation applied.
-   * @return Tensor of shape [N, 3] with positive scale values.
+   * @brief Returns the 3 vertices per triangle.
+   * @return Tensor of shape [N, 3, 3] (N triangles, 3 vertices, 3D coords).
    */
-  torch::Tensor getScalingActivation();
+  torch::Tensor getTrianglesPoints();
 
   /**
-   * @brief Returns normalized rotation quaternions.
-   * @return Tensor of shape [N, 4] with unit quaternions.
+   * @brief Returns sigma with activation applied: 0.01 + exp(sigma_).
+   * @return Tensor of shape [N, 1].
    */
-  torch::Tensor getRotationActivation();
+  torch::Tensor getSigmaActivation();
 
   /**
-   * @brief Returns raw Triangle positions.
-   * @return Tensor of shape [N, 3] with XYZ coordinates.
+   * @brief Returns Triangle centroids (mean of 3 vertices).
+   * @return Tensor of shape [N, 3] with XYZ centroid coordinates.
    */
   torch::Tensor getXYZ();
 
@@ -203,12 +201,6 @@ class TriangleModel {
    */
   torch::Tensor getOpacityActivation();
 
-  /**
-   * @brief Computes 3x3 covariance matrices from scale and rotation.
-   * @param scaling_modifier Multiplier applied to scaling values.
-   * @return Tensor of shape [N, 3, 3] covariance matrices.
-   */
-  torch::Tensor getCovarianceActivation(int scaling_modifier = 1);
 
   //============================================================================
   // Geometric Transformations
@@ -229,13 +221,13 @@ class TriangleModel {
 
   /**
    * @brief Updates optimizer state after transformation.
-   * @param new_xyz Transformed positions tensor.
-   * @param new_scaling Transformed scaling tensor.
+   * @param new_triangles_points Transformed triangle vertices tensor [N,3,3].
+   * @param new_sigma Transformed sigma tensor [N,1].
    *
    * Replaces the optimizer's tracked tensors and resets their Adam states.
    */
-  void scaledTransformationPostfix(torch::Tensor& new_xyz,
-                                   torch::Tensor& new_scaling);
+  void scaledTransformationPostfix(torch::Tensor& new_triangles_points,
+                                   torch::Tensor& new_sigma);
 
   /**
    * @brief Transforms Triangles visible to a keyframe after pose update.
@@ -269,10 +261,9 @@ class TriangleModel {
    * @brief Initializes the optimizer with per-parameter learning rates.
    * @param training_args Learning rate configuration for each parameter group.
    *
-   * Sets up a SparseTriangleAdam optimizer with 6 parameter groups:
-   * xyz (0), features_dc (1), features_rest (2), opacity (3), scaling (4),
-   * rotation (5). Position learning rates are per-Triangle; others use scalar
-   * LRs.
+   * Sets up a SparseTriangleAdam optimizer with 5 parameter groups:
+   * triangles_points (0), features_dc (1), features_rest (2), opacity (3),
+   * sigma (4). Position learning rates are per-Triangle; others use scalar LRs.
    */
   void trainingSetup(const TriangleOptimizationParams& training_args);
 
@@ -361,12 +352,11 @@ class TriangleModel {
    * Used both for densification and loading chunks from disk.
    */
   void densificationPostfix(
-      torch::Tensor& new_xyz,
+      torch::Tensor& new_triangles_points,
       torch::Tensor& new_features_dc,
       torch::Tensor& new_features_rest,
       torch::Tensor& new_opacities,
-      torch::Tensor& new_scaling,
-      torch::Tensor& new_rotation,
+      torch::Tensor& new_sigma,
       torch::Tensor& new_exist_since_iter,
       torch::Tensor& new_chunk_ids,
       torch::Tensor& new_position_lrs,
@@ -668,19 +658,18 @@ class TriangleModel {
   int sh_degree_;                  ///< Spherical harmonics degree (0-3).
 
   // Core Triangle parameters
-  torch::Tensor xyz_;               ///< Triangle positions [N, 3].
+  torch::Tensor triangles_points_;  ///< Triangle vertices [N, 3, 3].
   torch::Tensor features_dc_;       ///< DC SH coefficients [N, 1, 3].
   torch::Tensor features_rest_;     ///< Higher-order SH coefficients [N, K, 3].
-  torch::Tensor scaling_;           ///< Log-space scaling [N, 3].
-  torch::Tensor rotation_;          ///< Rotation quaternions [N, 4].
+  torch::Tensor sigma_;             ///< Log-space isotropic scale [N, 1].
   torch::Tensor opacity_;           ///< Logit-space opacity [N, 1].
   torch::Tensor exist_since_iter_;  ///< Creation iteration per Triangle [N].
   torch::Tensor triangle_chunk_ids_;  ///< Spatial chunk ID per Triangle [N].
 
   // Optimizer interface (vector wrappers required by optimizer API)
-  std::vector<torch::Tensor> Tensor_vec_xyz_, Tensor_vec_feature_dc_,
-      Tensor_vec_feature_rest_, Tensor_vec_opacity_, Tensor_vec_scaling_,
-      Tensor_vec_rotation_;
+  std::vector<torch::Tensor> Tensor_vec_triangles_points_,
+      Tensor_vec_feature_dc_, Tensor_vec_feature_rest_, Tensor_vec_opacity_,
+      Tensor_vec_sigma_;
 
   std::shared_ptr<SparseTriangleAdam> optimizer_;  ///< Sparse Adam optimizer.
   float spatial_lr_scale_;  ///< Scale factor for position learning rate.
@@ -718,9 +707,9 @@ class TriangleModel {
   /**
    * @brief Assigns optimized tensors back to member variables after
    * pruning/densification.
-   * @param tensors Vector of 6 tensors corresponding to the parameter groups.
+   * @param tensors Vector of 5 tensors corresponding to the parameter groups.
    *
-   * Updates xyz_, features_dc_, features_rest_, opacity_, scaling_, rotation_
+   * Updates triangles_points_, features_dc_, features_rest_, opacity_, sigma_
    * and their optimizer vector wrappers.
    */
   void assignOptimizedTensors(const std::vector<torch::Tensor>& tensors);

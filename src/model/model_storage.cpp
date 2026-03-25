@@ -87,7 +87,7 @@ void TriangleModel::saveSingleChunkToDisk(int64_t chunk_id,
 
   try {
     uint32_t magic = 0x43484E4B;  // "CHNK"
-    uint32_t version = 1;
+    uint32_t version = 2;         // version 2: triangles_points+sigma (no xyz/scaling/rotation)
     file.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
     file.write(reinterpret_cast<const char*>(&version), sizeof(version));
 
@@ -96,11 +96,10 @@ void TriangleModel::saveSingleChunkToDisk(int64_t chunk_id,
     file.write(reinterpret_cast<const char*>(&num_points), sizeof(num_points));
 
     // Triangle parameters (order must match loadSingleChunkFromDisk)
-    saveTensorBinary(chunk_data.xyz, file);
+    saveTensorBinary(chunk_data.triangles_points, file);
     saveTensorBinary(chunk_data.features_dc, file);
     saveTensorBinary(chunk_data.features_rest, file);
-    saveTensorBinary(chunk_data.scaling, file);
-    saveTensorBinary(chunk_data.rotation, file);
+    saveTensorBinary(chunk_data.sigma, file);
     saveTensorBinary(chunk_data.opacity, file);
     saveTensorBinary(chunk_data.exist_since, file);
     saveTensorBinary(chunk_data.position_lrs, file);
@@ -151,6 +150,11 @@ std::optional<TriangleModel::ChunkData> TriangleModel::loadSingleChunkFromDisk(
   if (magic != 0x43484E4B) {
     throw std::runtime_error("Invalid chunk file format: " + chunk_filename);
   }
+  if (version != 2) {
+    throw std::runtime_error(
+        "Incompatible chunk file version " + std::to_string(version) +
+        " (expected 2): " + chunk_filename);
+  }
 
   int64_t stored_chunk_id;
   uint32_t stored_num_points;
@@ -164,11 +168,10 @@ std::optional<TriangleModel::ChunkData> TriangleModel::loadSingleChunkFromDisk(
   ChunkData data;
   try {
     // Triangle parameters (order must match saveSingleChunkToDisk)
-    data.xyz = loadTensorBinary(file);
+    data.triangles_points = loadTensorBinary(file);
     data.features_dc = loadTensorBinary(file);
     data.features_rest = loadTensorBinary(file);
-    data.scaling = loadTensorBinary(file);
-    data.rotation = loadTensorBinary(file);
+    data.sigma = loadTensorBinary(file);
     data.opacity = loadTensorBinary(file);
     data.exist_since = loadTensorBinary(file);
     data.position_lrs = loadTensorBinary(file);
@@ -185,7 +188,7 @@ std::optional<TriangleModel::ChunkData> TriangleModel::loadSingleChunkFromDisk(
       data.exp_avg_sq_states[group_idx] = loadTensorBinary(file);
     }
 
-    data.num_points = data.xyz.size(0);
+    data.num_points = data.triangles_points.size(0);
     data.chunk_id = chunk_id;
     file.close();
 
@@ -211,16 +214,16 @@ TriangleModel::ChunkData TriangleModel::extractChunkData(
     int64_t chunk_id) {
   ChunkData data;
 
-  data.xyz = xyz_.index({chunk_mask}).detach().clone();
+  data.triangles_points =
+      triangles_points_.index({chunk_mask}).detach().clone();
   data.features_dc = features_dc_.index({chunk_mask}).detach().clone();
   data.features_rest = features_rest_.index({chunk_mask}).detach().clone();
-  data.scaling = scaling_.index({chunk_mask}).detach().clone();
-  data.rotation = rotation_.index({chunk_mask}).detach().clone();
+  data.sigma = sigma_.index({chunk_mask}).detach().clone();
   data.opacity = opacity_.index({chunk_mask}).detach().clone();
   data.exist_since = exist_since_iter_.index({chunk_mask}).detach().clone();
   data.position_lrs = position_lrs_.index({chunk_mask}).detach().clone();
   data.triangle_ids = triangle_ids_.index({chunk_mask}).detach().clone();
-  data.num_points = data.xyz.size(0);
+  data.num_points = data.triangles_points.size(0);
   data.chunk_id = chunk_id;
 
   // Extract optimizer states
@@ -259,8 +262,9 @@ void TriangleModel::appendLoadedChunks(
   if (chunks_data.empty()) return;
 
   // Collect per-chunk tensors for batch concatenation
-  std::vector<torch::Tensor> all_xyz, all_features_dc, all_features_rest;
-  std::vector<torch::Tensor> all_scaling, all_rotation, all_opacity;
+  std::vector<torch::Tensor> all_triangles_points, all_features_dc,
+      all_features_rest;
+  std::vector<torch::Tensor> all_sigma, all_opacity;
   std::vector<torch::Tensor> all_exist_since, all_chunk_ids, all_position_lrs,
       all_triangle_ids;
 
@@ -269,11 +273,10 @@ void TriangleModel::appendLoadedChunks(
   std::vector<int64_t> max_step_counts(kNumParamGroups, 0);
 
   for (const auto& chunk : chunks_data) {
-    all_xyz.push_back(chunk.xyz);
+    all_triangles_points.push_back(chunk.triangles_points);
     all_features_dc.push_back(chunk.features_dc);
     all_features_rest.push_back(chunk.features_rest);
-    all_scaling.push_back(chunk.scaling);
-    all_rotation.push_back(chunk.rotation);
+    all_sigma.push_back(chunk.sigma);
     all_opacity.push_back(chunk.opacity);
     all_exist_since.push_back(chunk.exist_since);
     all_position_lrs.push_back(chunk.position_lrs);
@@ -294,11 +297,10 @@ void TriangleModel::appendLoadedChunks(
   }
 
   // Batch concatenation
-  torch::Tensor batch_xyz = torch::cat(all_xyz, 0);
+  torch::Tensor batch_triangles_points = torch::cat(all_triangles_points, 0);
   torch::Tensor batch_features_dc = torch::cat(all_features_dc, 0);
   torch::Tensor batch_features_rest = torch::cat(all_features_rest, 0);
-  torch::Tensor batch_scaling = torch::cat(all_scaling, 0);
-  torch::Tensor batch_rotation = torch::cat(all_rotation, 0);
+  torch::Tensor batch_sigma = torch::cat(all_sigma, 0);
   torch::Tensor batch_opacity = torch::cat(all_opacity, 0);
   torch::Tensor batch_exist_since = torch::cat(all_exist_since, 0);
   torch::Tensor batch_position_lrs = torch::cat(all_position_lrs, 0);
@@ -314,8 +316,8 @@ void TriangleModel::appendLoadedChunks(
     }
   }
 
-  densificationPostfix(batch_xyz, batch_features_dc, batch_features_rest,
-                       batch_opacity, batch_scaling, batch_rotation,
+  densificationPostfix(batch_triangles_points, batch_features_dc,
+                       batch_features_rest, batch_opacity, batch_sigma,
                        batch_exist_since, batch_chunk_ids, batch_position_lrs,
                        batch_triangle_ids, concat_exp_avg, concat_exp_avg_sq,
                        max_step_counts);
@@ -392,7 +394,7 @@ void TriangleModel::loadChunks(const torch::Tensor& chunk_id_requests) {
 
   // All requested chunks are already loaded -- just check memory pressure
   if (chunks_ids_needing_load.size(0) == 0) {
-    int64_t current_triangles = xyz_.size(0);
+    int64_t current_triangles = triangles_points_.size(0);
     if (current_triangles > max_triangles_in_memory_) {
       int64_t excess = current_triangles - max_triangles_in_memory_;
       std::cout << "[Load] Over limit by " << excess << " triangles (have "
@@ -400,14 +402,14 @@ void TriangleModel::loadChunks(const torch::Tensor& chunk_id_requests) {
                 << ")" << std::endl;
       evictExcessChunks(chunk_id_requests, excess);
       std::cout << "[Load] Evicted non-visible chunks, new count: "
-                << xyz_.size(0) << std::endl;
+                << triangles_points_.size(0) << std::endl;
     }
     return;
   }
 
   // Pre-emptive eviction: ensure enough room for incoming Triangles
   int64_t incoming = countTrianglesToLoad(chunks_ids_needing_load);
-  int64_t projected_total = xyz_.size(0) + incoming;
+  int64_t projected_total = triangles_points_.size(0) + incoming;
   if (projected_total > max_triangles_in_memory_) {
     int64_t excess = projected_total - max_triangles_in_memory_;
     evictExcessChunks(chunks_ids_needing_load, excess);
@@ -572,7 +574,7 @@ void TriangleModel::saveAllChunks() {
 // =============================================================================
 
 int64_t TriangleModel::countAllTriangles() {
-  int64_t in_memory = xyz_.size(0);
+  int64_t in_memory = triangles_points_.size(0);
 
   // Add only unloaded disk chunks (loaded ones are already counted)
   torch::Tensor unloaded_mask =
@@ -645,9 +647,9 @@ void TriangleModel::handleBatchChunkRedistribution(
   std::cout << "[Batch Redistribution] Found " << processed_indices.size(0)
             << " triangles across all processed chunks" << std::endl;
 
-  // Recompute actual chunk IDs from current positions
+  // Recompute actual chunk IDs from current positions (centroids)
   torch::Tensor actual_chunk_ids =
-      computeChunkIds(xyz_.index({processed_indices}), chunk_size_);
+      computeChunkIds(getXYZ().index({processed_indices}), chunk_size_);
   torch::Tensor old_chunk_ids = triangle_chunk_ids_.index({processed_indices});
   torch::Tensor moved_mask = (actual_chunk_ids != old_chunk_ids);
 
@@ -683,7 +685,7 @@ void TriangleModel::handleBatchChunkRedistribution(
   }
 
   torch::Tensor updated_actual =
-      computeChunkIds(xyz_.index({updated_indices}), chunk_size_);
+      computeChunkIds(getXYZ().index({updated_indices}), chunk_size_);
   torch::Tensor updated_old = triangle_chunk_ids_.index({updated_indices});
   torch::Tensor updated_moved_mask = (updated_actual != updated_old);
 

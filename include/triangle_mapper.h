@@ -258,11 +258,8 @@ class TriangleMapper {
   /** @brief Get learning rate for Triangle opacity */
   float opacityLearningRate();
 
-  /** @brief Get learning rate for Triangle scaling */
-  float scalingLearningRate();
-
-  /** @brief Get learning rate for Triangle rotation */
-  float rotationLearningRate();
+  /** @brief Get learning rate for Triangle sigma (isotropic scale) */
+  float sigmaLearningRate();
 
   /** @brief Get SSIM loss weight (lambda_dssim) */
   float lambdaDssim();

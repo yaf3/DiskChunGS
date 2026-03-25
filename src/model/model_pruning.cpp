@@ -19,12 +19,11 @@
 
 void TriangleModel::assignOptimizedTensors(
     const std::vector<torch::Tensor>& tensors) {
-  xyz_ = tensors[0];
+  triangles_points_ = tensors[0];
   features_dc_ = tensors[1];
   features_rest_ = tensors[2];
   opacity_ = tensors[3];
-  scaling_ = tensors[4];
-  rotation_ = tensors[5];
+  sigma_ = tensors[4];
   TRIANGLE_MODEL_TENSORS_TO_VEC
 }
 
@@ -100,10 +99,11 @@ void TriangleModel::resetPositionLRAndOptimizerState(
   torch::Tensor exp_avg = param_state.exp_avg();
   torch::Tensor exp_avg_sq = param_state.exp_avg_sq();
 
-  // Expand mask to match xyz dimensions [N, 3]
-  torch::Tensor xyz_mask = triangle_mask.unsqueeze(1).expand({-1, 3});
-  exp_avg.index_put_({xyz_mask}, 0.0f);
-  exp_avg_sq.index_put_({xyz_mask}, 0.0f);
+  // Expand mask to match triangles_points_ dimensions [N, 3, 3]
+  torch::Tensor tri_mask =
+      triangle_mask.unsqueeze(1).unsqueeze(2).expand({-1, 3, 3});
+  exp_avg.index_put_({tri_mask}, 0.0f);
+  exp_avg_sq.index_put_({tri_mask}, 0.0f);
 
   std::cout << "[Optimizer Reset] Position LRs reset - max="
             << position_lrs_.max().item<float>()
@@ -195,12 +195,11 @@ void TriangleModel::prunePoints(torch::Tensor& mask) {
 }
 
 void TriangleModel::densificationPostfix(
-    torch::Tensor& new_xyz,
+    torch::Tensor& new_triangles_points,
     torch::Tensor& new_features_dc,
     torch::Tensor& new_features_rest,
     torch::Tensor& new_opacities,
-    torch::Tensor& new_scaling,
-    torch::Tensor& new_rotation,
+    torch::Tensor& new_sigma,
     torch::Tensor& new_exist_since_iter,
     torch::Tensor& new_chunk_ids,
     torch::Tensor& new_position_lrs,
@@ -212,8 +211,8 @@ void TriangleModel::densificationPostfix(
 
   std::vector<torch::Tensor> optimizable_tensors(kNumParamGroups);
   std::vector<torch::Tensor> extension_tensors = {
-      new_xyz,       new_features_dc, new_features_rest,
-      new_opacities, new_scaling,     new_rotation};
+      new_triangles_points, new_features_dc, new_features_rest,
+      new_opacities,        new_sigma};
 
   auto& param_groups = optimizer_->param_groups();
   auto& state = optimizer_->state();
@@ -302,7 +301,7 @@ void TriangleModel::pruneLowOpacityTriangles(
   // Triangle parameters for visible subset
   torch::Tensor positions = getXYZ().index({visible_indices});
   torch::Tensor opacities = getOpacityActivation().index({visible_indices});
-  torch::Tensor scalings = getScalingActivation().index({visible_indices});
+  torch::Tensor sigmas = getSigmaActivation().index({visible_indices});  // [V,1]
 
   int n_triangles = positions.size(0);
   torch::Tensor valid_mask = torch::ones(
@@ -312,17 +311,17 @@ void TriangleModel::pruneLowOpacityTriangles(
   // Remove Triangles with low opacity
   valid_mask &= opacities.squeeze(1) > 0.05f;
 
-  // Remove Triangles that appear too large on screen
+  // Remove Triangles that appear too large on screen (use sigma as scale proxy)
   torch::Tensor distances =
       torch::norm(positions - keyframe_center.unsqueeze(0), 2, /*dim=*/1);
-  torch::Tensor max_scaling = std::get<0>(torch::max(scalings, /*dim=*/1));
-  torch::Tensor screen_size = focal_length * max_scaling / distances;
+  torch::Tensor screen_size =
+      focal_length * sigmas.squeeze(1) / distances.clamp_min(1e-6f);
   float max_screen_size = 0.5f * static_cast<float>(image_width);
   valid_mask &= screen_size < max_screen_size;
 
   // Build full-model prune mask from the visible subset
   torch::Tensor full_model_prune_mask = torch::zeros(
-      {getXYZ().size(0)},
+      {triangles_points_.size(0)},
       torch::TensorOptions().dtype(torch::kBool).device(torch::kCUDA));
   full_model_prune_mask.index_put_({visible_indices}, ~valid_mask);
 
@@ -332,7 +331,7 @@ void TriangleModel::pruneLowOpacityTriangles(
 void TriangleModel::deleteSparseChunks(int min_triangles_per_chunk) {
   torch::NoGradGuard no_grad;
 
-  if (!is_initialized_ || xyz_.size(0) == 0) {
+  if (!is_initialized_ || triangles_points_.size(0) == 0) {
     return;
   }
 

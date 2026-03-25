@@ -70,8 +70,7 @@ class TriangleOptimizationParams {
                              float position_lr_decay = 0.99998f,
                              float feature_lr = 0.0025f,
                              float opacity_lr = 0.05f,
-                             float scaling_lr = 0.005f,
-                             float rotation_lr = 0.001f,
+                             float sigma_lr = 0.005f,
                              float pose_lr = 0.0001f,
                              float exposure_lr = 0.05f,
                              float depth_scale_bias_lr = 0.0001f,
@@ -90,8 +89,7 @@ class TriangleOptimizationParams {
   float position_lr_decay_;     ///< Per-iteration decay factor for position LR.
   float feature_lr_;            ///< Learning rate for SH features.
   float opacity_lr_;            ///< Learning rate for opacity.
-  float scaling_lr_;            ///< Learning rate for scale.
-  float rotation_lr_;           ///< Learning rate for rotation quaternion.
+  float sigma_lr_;              ///< Learning rate for triangle sigma (isotropic scale).
   float pose_lr_;               ///< Learning rate for camera pose refinement.
   float exposure_lr_;           ///< Learning rate for exposure compensation.
   float depth_scale_bias_lr_;   ///< Learning rate for depth scale/bias.
