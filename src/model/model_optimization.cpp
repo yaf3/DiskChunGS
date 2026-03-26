@@ -21,7 +21,7 @@ void TriangleModel::trainingSetup(
     const TriangleOptimizationParams& training_args) {
   position_lr_init_ = training_args.position_lr_init_ * spatial_lr_scale_;
   position_lr_decay_ = training_args.position_lr_decay_;
-  position_lr_min_ = position_lr_init_ * 0.1f * spatial_lr_scale_;
+  position_lr_min_ = position_lr_init_ * 0.1f;  // position_lr_init_ already includes spatial_lr_scale_
 
   torch::optim::AdamOptions adam_options;
   adam_options.set_lr(0.0);

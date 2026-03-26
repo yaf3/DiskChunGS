@@ -166,7 +166,7 @@ std::tuple<cv::Mat, cv::Mat> TriangleMapper::renderFromPose(
   auto render_pkg = TriangleRenderer::render(
       triangles_, visible_triangle_mask, pkf, height, width, pipe_params_,
       background_, override_color_, 1.0f, false, pkf->FoVx_, pkf->FoVy_,
-      view_matrix, pkf->projection_matrix_);
+      view_matrix, pkf->full_proj_transform_);
 
   // Return rendered image and depth
   cv::Mat rendered_rgb =
@@ -215,7 +215,7 @@ void TriangleMapper::renderAndRecordKeyframe(
   auto render_pkg = TriangleRenderer::render(
       triangles_, visible_triangle_mask, pkf, pkf->image_height_,
       pkf->image_width_, pipe_params_, background_, override_color_, 1.0f,
-      false, pkf->FoVx_, pkf->FoVy_, view_matrix, pkf->projection_matrix_);
+      false, pkf->FoVx_, pkf->FoVy_, view_matrix, pkf->full_proj_transform_);
 
   auto rendered_image = std::get<1>(render_pkg);
   // torch::cuda::synchronize();

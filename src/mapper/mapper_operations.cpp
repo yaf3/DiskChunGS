@@ -812,13 +812,29 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
     auto render_pkg = TriangleRenderer::render(
         triangles_, visible_triangle_mask, pkf, pkf->image_height_,
         pkf->image_width_, pipe_params_, background_, override_color_, 1.0f,
-        false, pkf->FoVx_, pkf->FoVy_, view_matrix, pkf->projection_matrix_);
+        false, pkf->FoVx_, pkf->FoVy_, view_matrix, pkf->full_proj_transform_);
 
     torch::Tensor rendered_image = std::get<1>(render_pkg);
     rendered_depth = 1 / std::get<0>(render_pkg).clamp_min(1e-8);
     has_rendered_depth = true;
     main_triangle_ids = std::get<3>(render_pkg)[0];
-    penalty = computeLoGProbability(rendered_image);
+    // Triangle renders have hard edges at every triangle boundary, inflating
+    // the LoG penalty at gap boundaries and suppressing sampling exactly where
+    // gaps need to be filled. Use rendered coverage (invdepth > 0) as penalty:
+    // 1 where covered by triangles, 0 in gaps — unaffected by geometry edges.
+    {
+      torch::Tensor rendered_invdepth_raw =
+          std::get<0>(render_pkg);  // [1, H, W], invdepth > 0 where covered
+      torch::Tensor coverage =
+          (rendered_invdepth_raw > 0.01f).to(torch::kFloat32);  // [1, H, W]
+      // Dilate covered region by 2 px to avoid sampling right at triangle edges
+      penalty = torch::nn::functional::max_pool2d(
+                    coverage,
+                    torch::nn::functional::MaxPool2dFuncOptions(5)
+                        .padding(2)
+                        .stride(1))
+                    .squeeze(0);  // [H, W]
+    }
   }
 
   // Apply scaling factor and compute sampling probability
@@ -939,7 +955,7 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
               triangles_, visible_triangle_mask, pkf, pkf->image_height_,
               pkf->image_width_, pipe_params_, background_, override_color_,
               1.0f, false, pkf->FoVx_, pkf->FoVy_, view_matrix,
-              pkf->projection_matrix_);
+              pkf->full_proj_transform_);
 
           rendered_depth = 1 / std::get<0>(updated_render_pkg).clamp_min(1e-8);
         }
@@ -1113,9 +1129,10 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
 
   int num_sampled = sampled_points3D.size(0);
 
-  constexpr float kAccurateOpacity = 0.07f;
-  constexpr float kInaccurateOpacity = 0.02f;
-  constexpr float kMatchedOpacity = 0.2f;
+  // Initial opacities match original triangle-splatting set_opacity = 0.28
+  constexpr float kAccurateOpacity = 0.28f;
+  constexpr float kInaccurateOpacity = 0.14f;
+  constexpr float kMatchedOpacity = 0.28f;
 
   if (num_sampled > 0) {
     torch::Tensor sampled_accurate_opacity =
@@ -1141,7 +1158,6 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
         matched_opacities;
   }
 
-  // Prune low opacity triangles
   if (initial_mapped_) {
     triangles_->pruneLowOpacityTriangles(pkf, visible_triangle_mask);
   }
@@ -1150,7 +1166,8 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
   torch::Tensor final_opacities = general_utils::inverse_sigmoid(all_opacities);
 
   triangles_->addPoints(all_points3D, all_colors, all_scales, final_opacities,
-                        getIteration(), scene_->cameras_extent_);
+                        getIteration(), scene_->cameras_extent_,
+                        pkf->getCenter());
 
   // Save keyframes that were loaded during this operation
   for (const auto &kf : newly_loaded_keyframes) {

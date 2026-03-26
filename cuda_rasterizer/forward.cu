@@ -293,7 +293,7 @@
 		float nx = p2_conv.y - p1_conv.y;
 		float ny = -(p2_conv.x - p1_conv.x);
 		float norm = __fsqrt_rn(nx * nx + ny * ny);
-		float inv_norm = 1.0f / norm;
+		float inv_norm = 1.0f / fmaxf(norm, 1e-7f);  // guard: prevent NaN from degenerate 2D edges
 	
 		// Calculate normalized normal and offset
 		float2 normal = {nx * inv_norm, ny * inv_norm};

@@ -394,7 +394,8 @@ class TriangleModel {
                  const torch::Tensor& new_scales,
                  const torch::Tensor& new_opacities,
                  int iteration,
-                 float spatial_lr_scale);
+                 float spatial_lr_scale,
+                 const torch::Tensor& cam_center = {});
 
   /**
    * @brief Initializes the model with the first set of points.
@@ -411,7 +412,8 @@ class TriangleModel {
                             const torch::Tensor& initial_colors,
                             const torch::Tensor& initial_scales,
                             const torch::Tensor& initial_opacities,
-                            int iteration);
+                            int iteration,
+                            const torch::Tensor& cam_center = {});
 
   /**
    * @brief Appends additional points to an initialized model.
@@ -425,7 +427,8 @@ class TriangleModel {
                     const torch::Tensor& new_colors,
                     const torch::Tensor& new_scales,
                     const torch::Tensor& new_opacities,
-                    int iteration);
+                    int iteration,
+                    const torch::Tensor& cam_center = {});
 
   /**
    * @brief Initializes an empty model for subsequent chunk loading.

@@ -265,7 +265,7 @@ void TriangleMapper::trainForOneIteration() {
                                image_height, image_width, pipe_params_,
                                background_, override_color_, 1.0f, false,
                                viewpoint_cam->FoVx_, viewpoint_cam->FoVy_,
-                               view_matrix, viewpoint_cam->projection_matrix_);
+                               view_matrix, viewpoint_cam->full_proj_transform_);
 
   torch::Tensor rendered_image = std::get<1>(render_pkg);
   torch::Tensor radii = std::get<2>(render_pkg);

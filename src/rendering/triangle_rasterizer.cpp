@@ -124,9 +124,10 @@ torch::autograd::tensor_list TriangleRasterizerFunction::forward(
        binningBuffer,                 // [13]
        imgBuffer});                   // [14]
 
-  // out_others is [7, H, W]: channels 0-2 normals, 3-5 offsets, 6 depth.
-  // Expose channel 6 as the depth output; return zeros for per-pixel ID.
-  auto invdepth = out_others.slice(/*dim=*/0, /*start=*/6, /*end=*/7);
+  // out_others is [7, H, W]: channel 0=depth, 1=alpha, 2-4=normals, 5=middepth, 6=distortion
+  // (matches DEPTH_OFFSET=0 / ALPHA_OFFSET=1 / NORMAL_OFFSET=2 / MIDDEPTH_OFFSET=5 /
+  //  DISTORTION_OFFSET=6 in auxiliary.h)
+  auto invdepth = out_others.slice(/*dim=*/0, /*start=*/0, /*end=*/1);  // channel 0 = DEPTH_OFFSET
   // mainTriangleID must be an integer type: it propagates through the mapper
   // as indices into the visible triangle list (e.g. visible_indices.index({...}))
   auto mainTriangleID = torch::full(
@@ -179,7 +180,7 @@ torch::autograd::tensor_list TriangleRasterizerFunction::backward(
       torch::zeros({7, grad_out_color.size(1), grad_out_color.size(2)},
                    grad_out_color.options());
   if (grad_outputs[1].defined() && grad_outputs[1].numel() > 0) {
-    dL_dout_others.slice(/*dim=*/0, /*start=*/6, /*end=*/7) = grad_outputs[1];
+    dL_dout_others.slice(/*dim=*/0, /*start=*/0, /*end=*/1) = grad_outputs[1];  // channel 0 = DEPTH_OFFSET
   }
 
   // Flatten triangles_points [P,3,3] → [P*3,3] for the CUDA backward

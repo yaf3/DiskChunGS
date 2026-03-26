@@ -188,7 +188,8 @@ void TriangleModel::addPoints(const torch::Tensor& new_xyz,
                               const torch::Tensor& new_scales,
                               const torch::Tensor& new_opacities,
                               int iteration,
-                              float spatial_lr_scale) {
+                              float spatial_lr_scale,
+                              const torch::Tensor& cam_center) {
   torch::NoGradGuard no_grad;
 
   auto [filtered_xyz, filtered_colors, filtered_scales, filtered_opacities] =
@@ -219,75 +220,120 @@ void TriangleModel::addPoints(const torch::Tensor& new_xyz,
   if (!is_initialized_) {
     // First call - initialize the model
     initializeFromPoints(filtered_xyz, filtered_colors, filtered_scales,
-                         filtered_opacities, iteration);
+                         filtered_opacities, iteration, cam_center);
   } else {
     // Subsequent calls - append to existing model
     appendPoints(filtered_xyz, filtered_colors, filtered_scales,
-                 filtered_opacities, iteration);
+                 filtered_opacities, iteration, cam_center);
   }
 }
 
-// Generate 3 triangle vertices per input point using Fibonacci sphere directions
-// and per-point random rotations.
-// xyz [N,3], radii [N] → triangles_points [N,3,3]
+// Generate 3 triangle vertices per input point.
+//
+// When cam_center [3] is provided (camera-facing mode):
+//   3 vertices at 120° intervals in the tangent plane perpendicular to the
+//   camera-to-point ray. This ensures all 3 vertices project at maximum,
+//   equal screen-space separation — no degenerate 2D edges, no NaN normals.
+//
+// When cam_center is empty (fallback):
+//   Original Fibonacci sphere + random rotation. WARNING: the Fibonacci
+//   base directions include (0,0,±1) which often project to coincident screen
+//   pixels, creating zero-length 2D edges → division by zero in forward.cu.
+//
+// xyz [N,3], radii [N], cam_center [3] or empty → triangles_points [N,3,3]
 static torch::Tensor generateTriangleVertices(const torch::Tensor& xyz,
-                                              const torch::Tensor& radii) {
+                                              const torch::Tensor& radii,
+                                              const torch::Tensor& cam_center) {
   const int64_t N = xyz.size(0);
   auto opts = xyz.options().device(torch::kCPU).dtype(torch::kFloat32);
 
   auto xyz_cpu = xyz.cpu().to(torch::kFloat32);
   auto radii_cpu = radii.cpu().to(torch::kFloat32);
-
-  // 3 Fibonacci sphere base directions
-  // i={0,1,2}: z=1-2*i/2={1,0,-1}, theta=PI*(3-sqrt(5))*i
-  const float golden_angle = static_cast<float>(M_PI) * (3.0f - std::sqrt(5.0f));
-  float base_dirs[3][3];
-  for (int i = 0; i < 3; ++i) {
-    float z = 1.0f - 2.0f * i / 2.0f;
-    float theta = golden_angle * i;
-    float r_xy = std::sqrt(std::max(0.0f, 1.0f - z * z));
-    base_dirs[i][0] = r_xy * std::cos(theta);
-    base_dirs[i][1] = r_xy * std::sin(theta);
-    base_dirs[i][2] = z;
-  }
-
   auto tri_pts = torch::zeros({N, 3, 3}, opts);
   auto xyz_acc = xyz_cpu.accessor<float, 2>();
   auto radii_acc = radii_cpu.accessor<float, 1>();
   auto tri_acc = tri_pts.accessor<float, 3>();
 
-  std::mt19937 rng(42);
-  std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+  const bool use_cam_facing = cam_center.defined() && cam_center.numel() == 3;
 
-  for (int64_t i = 0; i < N; ++i) {
-    float radius = std::max(1e-4f, radii_acc[i]);  // ensure positive
+  if (use_cam_facing) {
+    // Camera-facing initialization: triangle in the tangent plane perpendicular
+    // to the camera ray. Vertices at 120° intervals guarantee near-equilateral
+    // triangles in screen space — no degenerate edges.
+    auto cam_cpu = cam_center.cpu().to(torch::kFloat32).contiguous();
+    auto cam_acc = cam_cpu.accessor<float, 1>();
+    const float cx = cam_acc[0], cy = cam_acc[1], cz = cam_acc[2];
+    const float two_pi_over_3 = 2.0f * static_cast<float>(M_PI) / 3.0f;
 
-    // Random rotation matrix via Rodrigues formula
-    float ax = dist(rng) * 2.0f - 1.0f;
-    float ay = dist(rng) * 2.0f - 1.0f;
-    float az = dist(rng) * 2.0f - 1.0f;
-    float len = std::sqrt(ax*ax + ay*ay + az*az);
-    if (len < 1e-6f) { ax = 1.0f; ay = 0.0f; az = 0.0f; len = 1.0f; }
-    ax /= len; ay /= len; az /= len;
-    float angle = dist(rng) * static_cast<float>(2.0 * M_PI);
-    float c = std::cos(angle), s = std::sin(angle), t = 1.0f - c;
-    // R = [[t*ax*ax+c, t*ax*ay-s*az, t*ax*az+s*ay],
-    //      [t*ax*ay+s*az, t*ay*ay+c, t*ay*az-s*ax],
-    //      [t*ax*az-s*ay, t*ay*az+s*ax, t*az*az+c]]
-    float R[3][3] = {
-      {t*ax*ax+c,    t*ax*ay-s*az, t*ax*az+s*ay},
-      {t*ax*ay+s*az, t*ay*ay+c,    t*ay*az-s*ax},
-      {t*ax*az-s*ay, t*ay*az+s*ax, t*az*az+c   }
-    };
+    for (int64_t i = 0; i < N; ++i) {
+      float radius = std::max(1e-4f, radii_acc[i]);
+      const float px = xyz_acc[i][0], py = xyz_acc[i][1], pz = xyz_acc[i][2];
 
-    for (int k = 0; k < 3; ++k) {
-      // rotated_dir = R @ base_dirs[k]
-      float dx = R[0][0]*base_dirs[k][0] + R[0][1]*base_dirs[k][1] + R[0][2]*base_dirs[k][2];
-      float dy = R[1][0]*base_dirs[k][0] + R[1][1]*base_dirs[k][1] + R[1][2]*base_dirs[k][2];
-      float dz = R[2][0]*base_dirs[k][0] + R[2][1]*base_dirs[k][1] + R[2][2]*base_dirs[k][2];
-      tri_acc[i][k][0] = xyz_acc[i][0] + radius * dx;
-      tri_acc[i][k][1] = xyz_acc[i][1] + radius * dy;
-      tri_acc[i][k][2] = xyz_acc[i][2] + radius * dz;
+      // Direction from point to camera (point-to-cam, so triangle faces camera)
+      float dx = cx - px, dy = cy - py, dz = cz - pz;
+      float len = std::sqrt(dx*dx + dy*dy + dz*dz);
+      if (len < 1e-6f) len = 1.0f;
+      dx /= len; dy /= len; dz /= len;
+
+      // Build orthonormal basis (u, v) in the tangent plane perpendicular to d.
+      // Choose a reference vector not parallel to d.
+      float rx = 0.0f, ry = 0.0f, rz = 1.0f;
+      if (std::fabs(dz) > 0.9f) { rx = 1.0f; ry = 0.0f; rz = 0.0f; }
+      // u = normalize(d × ref)
+      float ux = dy*rz - dz*ry, uy = dz*rx - dx*rz, uz = dx*ry - dy*rx;
+      float u_len = std::sqrt(ux*ux + uy*uy + uz*uz);
+      if (u_len < 1e-6f) u_len = 1.0f;
+      ux /= u_len; uy /= u_len; uz /= u_len;
+      // v = d × u  (already unit length since d and u are orthonormal)
+      float vx = dy*uz - dz*uy, vy = dz*ux - dx*uz, vz = dx*uy - dy*ux;
+
+      for (int k = 0; k < 3; ++k) {
+        float angle = k * two_pi_over_3;
+        float c = std::cos(angle), s = std::sin(angle);
+        tri_acc[i][k][0] = px + radius * (c * ux + s * vx);
+        tri_acc[i][k][1] = py + radius * (c * uy + s * vy);
+        tri_acc[i][k][2] = pz + radius * (c * uz + s * vz);
+      }
+    }
+  } else {
+    // Fallback: Fibonacci sphere + per-point random rotation.
+    const float golden_angle = static_cast<float>(M_PI) * (3.0f - std::sqrt(5.0f));
+    float base_dirs[3][3];
+    for (int i = 0; i < 3; ++i) {
+      float z = 1.0f - 2.0f * i / 2.0f;
+      float theta = golden_angle * i;
+      float r_xy = std::sqrt(std::max(0.0f, 1.0f - z * z));
+      base_dirs[i][0] = r_xy * std::cos(theta);
+      base_dirs[i][1] = r_xy * std::sin(theta);
+      base_dirs[i][2] = z;
+    }
+
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+
+    for (int64_t i = 0; i < N; ++i) {
+      float radius = std::max(1e-4f, radii_acc[i]);
+      float ax = dist(rng) * 2.0f - 1.0f;
+      float ay = dist(rng) * 2.0f - 1.0f;
+      float az = dist(rng) * 2.0f - 1.0f;
+      float len = std::sqrt(ax*ax + ay*ay + az*az);
+      if (len < 1e-6f) { ax = 1.0f; ay = 0.0f; az = 0.0f; len = 1.0f; }
+      ax /= len; ay /= len; az /= len;
+      float angle = dist(rng) * static_cast<float>(2.0 * M_PI);
+      float c = std::cos(angle), s = std::sin(angle), t = 1.0f - c;
+      float R[3][3] = {
+        {t*ax*ax+c,    t*ax*ay-s*az, t*ax*az+s*ay},
+        {t*ax*ay+s*az, t*ay*ay+c,    t*ay*az-s*ax},
+        {t*ax*az-s*ay, t*ay*az+s*ax, t*az*az+c   }
+      };
+      for (int k = 0; k < 3; ++k) {
+        float dx = R[0][0]*base_dirs[k][0] + R[0][1]*base_dirs[k][1] + R[0][2]*base_dirs[k][2];
+        float dy = R[1][0]*base_dirs[k][0] + R[1][1]*base_dirs[k][1] + R[1][2]*base_dirs[k][2];
+        float dz = R[2][0]*base_dirs[k][0] + R[2][1]*base_dirs[k][1] + R[2][2]*base_dirs[k][2];
+        tri_acc[i][k][0] = xyz_acc[i][0] + radius * dx;
+        tri_acc[i][k][1] = xyz_acc[i][1] + radius * dy;
+        tri_acc[i][k][2] = xyz_acc[i][2] + radius * dz;
+      }
     }
   }
 
@@ -298,7 +344,8 @@ void TriangleModel::initializeFromPoints(const torch::Tensor& initial_xyz,
                                          const torch::Tensor& initial_colors,
                                          const torch::Tensor& initial_scales,
                                          const torch::Tensor& initial_opacities,
-                                         int iteration) {
+                                         int iteration,
+                                         const torch::Tensor& cam_center) {
   torch::NoGradGuard no_grad;
   std::cout << "[Triangle Model] Initializing from points: "
             << initial_xyz.sizes() << std::endl;
@@ -320,16 +367,22 @@ void TriangleModel::initializeFromPoints(const torch::Tensor& initial_xyz,
       {initial_xyz.size(0)}, iteration,
       torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
 
-  // Compute per-point radius from initial scales (mean across dims)
-  // initial_scales is in log-space; exp() gives actual metric scale
-  torch::Tensor radii = torch::exp(initial_scales).mean(1).clamp_min(1e-4f);  // [N]
+  // Triangle vertex radius: proportional to kNN distance (no sqrt).
+  // initial_scales is log-space kNN distance; exp() recovers meters.
+  // triangle_size=1.5: smaller triangles are less visually prominent as individual shapes.
+  const float triangle_size = 1.5f;
+  torch::Tensor knn_dist = torch::exp(initial_scales).mean(1).clamp_min(1e-6f);
+  torch::Tensor radii = (triangle_size * knn_dist).clamp_min(0.01f);  // [N]
 
-  // Generate 3 triangle vertices per input point
-  torch::Tensor tri_pts = generateTriangleVertices(initial_xyz, radii);
+  // Generate 3 triangle vertices, camera-facing if cam_center is provided
+  torch::Tensor tri_pts = generateTriangleVertices(initial_xyz, radii, cam_center);
 
-  // Sigma init (inverse of 0.01 + exp activation): log(radius - 0.01)
-  torch::Tensor sigma_init =
-      torch::log((radii - 0.01f).clamp_min(1e-5f)).unsqueeze(1);  // [N, 1]
+  // Sigma init: constant matching original set_sigma=1.16.
+  // sigma_activation = 0.01 + exp(sigma_) → sigma_ = log(sigma - 0.01) = log(1.15) ≈ 0.14
+  const float sigma_init_val = std::log(1.16f - 0.01f);
+  torch::Tensor sigma_init = torch::full(
+      {initial_xyz.size(0), 1}, sigma_init_val,
+      torch::TensorOptions().dtype(torch::kFloat).device(device_type_));
 
   this->triangles_points_ =
       tri_pts.to(device_type_).contiguous().requires_grad_();
@@ -366,7 +419,8 @@ void TriangleModel::appendPoints(const torch::Tensor& new_xyzs,
                                  const torch::Tensor& new_colors,
                                  const torch::Tensor& new_scales,
                                  const torch::Tensor& new_opacities,
-                                 int iteration) {
+                                 int iteration,
+                                 const torch::Tensor& cam_center) {
   torch::NoGradGuard no_grad;
   auto num_new_points = new_xyzs.size(0);
   if (num_new_points == 0) return;
@@ -400,13 +454,18 @@ void TriangleModel::appendPoints(const torch::Tensor& new_xyzs,
           .contiguous();
   auto new_opacities_tensor = new_opacities;
 
-  // Compute per-point radius and generate triangle vertices
-  // new_scales is in log-space; exp() gives actual metric scale
-  torch::Tensor radii = torch::exp(new_scales).mean(1).clamp_min(1e-4f);  // [M]
+  // Triangle vertex radius: proportional to kNN distance (no sqrt).
+  // triangle_size=1.5: smaller triangles are less visually prominent as individual shapes.
+  const float triangle_size = 1.5f;
+  torch::Tensor knn_dist = torch::exp(new_scales).mean(1).clamp_min(1e-6f);
+  torch::Tensor radii = (triangle_size * knn_dist).clamp_min(0.01f);  // [M]
   torch::Tensor new_tri_pts =
-      generateTriangleVertices(new_xyzs, radii).to(device_type_).contiguous();
-  torch::Tensor new_sigma =
-      torch::log((radii - 0.01f).clamp_min(1e-5f)).unsqueeze(1).to(device_type_);
+      generateTriangleVertices(new_xyzs, radii, cam_center).to(device_type_).contiguous();
+  // Sigma init: constant matching original set_sigma=1.16 → sigma_ = log(1.15) ≈ 0.14
+  const float sigma_init_val = std::log(1.16f - 0.01f);
+  torch::Tensor new_sigma = torch::full(
+      {new_xyzs.size(0), 1}, sigma_init_val,
+      torch::TensorOptions().dtype(torch::kFloat).device(device_type_));
 
   torch::Tensor new_position_lrs =
       torch::full({new_xyzs.size(0)}, position_lr_init_,

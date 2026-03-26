@@ -3,7 +3,7 @@
 Model.white_background: 0  # 0:false, 1 or other integer:true
 Model.sh_degree: 3
 Model.max_triangles_in_memory: 1500000
-Model.init_proba_scaler: 2.0
+Model.init_proba_scaler: 1.0
 Model.downsample_for_sampling: 1
 
 Camera.z_near: 0.1
@@ -42,9 +42,9 @@ Optimization.max_num_iterations: -1
 Optimization.smooth_l1: 0  # 0:false, 1:true
 Optimization.position_lr_init: 0.001
 Optimization.position_lr_decay: 0.998
-Optimization.feature_lr: 0.005
-Optimization.opacity_lr: 0.1
-Optimization.sigma_lr: 0.005
+Optimization.feature_lr: 0.0025
+Optimization.opacity_lr: 0.03
+Optimization.sigma_lr: 0.0008
 Optimization.pose_lr: 0.00
 Optimization.exposure_lr: 0.000
 Optimization.depth_scale_bias_lr: 0.0001
