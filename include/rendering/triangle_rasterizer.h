@@ -145,9 +145,10 @@ class TriangleRasterizer : public torch::nn::Module {
 
   /**
    * @brief Renders 3D Triangles to produce color, depth, and auxiliary outputs.
-   * @return Tuple of [color, invdepth, mainGaussID, radii]
+   * @return Tuple of [color, invdepth, mainGaussID, radii, scaling, rend_normal]
    */
-  std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+  std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
+             torch::Tensor, torch::Tensor>
   forward(torch::Tensor means3D,
           torch::Tensor means2D,
           torch::Tensor opacities,

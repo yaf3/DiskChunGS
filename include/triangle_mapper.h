@@ -267,6 +267,12 @@ class TriangleMapper {
   /** @brief Get depth loss weight */
   float lambdaDepth();
 
+  /** @brief Get normal loss weight */
+  float lambdaNormal();
+
+  /** @brief Get normal loss mode (0=off, 1=self-consistency, 2=GT-anchored) */
+  int normalLossMode();
+
   /** @brief Get times of use threshold for new keyframes */
   int newKeyframeTimesOfUse();
 

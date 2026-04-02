@@ -164,6 +164,10 @@ void TriangleMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       readConfig<float>(settings_file, "Optimization.lambda_dssim");
   opt_params_.lambda_depth_ =
       readConfig<float>(settings_file, "Optimization.lambda_depth");
+  opt_params_.lambda_normal_ =
+      readConfig<float>(settings_file, "Optimization.lambda_normal");
+  opt_params_.normal_loss_mode_ =
+      readConfig<int>(settings_file, "Optimization.normal_loss_mode");
   opt_params_.auto_distribute_ =
       readConfig<int>(settings_file, "Optimization.auto_distribute");
   exposure_optimization_ =

@@ -57,9 +57,13 @@ class TriangleRenderer {
    * @param FoVy Vertical field of view in radians.
    * @param world_view_transform 4x4 world-to-camera transformation matrix.
    * @param projection_matrix 4x4 camera projection matrix.
-   * @return Tuple of (depth, rendered_image, radii, main_triangle_ids).
+   * @return Tuple of (depth, rendered_image, radii, main_triangle_ids, scaling,
+   *         rend_normal, surf_normal).
+   *         rend_normal [3,H,W]: alpha-weighted triangle plane normals.
+   *         surf_normal [3,H,W]: normals from rendered depth finite differences.
    */
-  static std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+  static std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
+                    torch::Tensor, torch::Tensor, torch::Tensor>
   render(std::shared_ptr<TriangleModel> model,
          const torch::Tensor& visible_triangle_mask,
          std::shared_ptr<TriangleKeyframe> viewpoint_camera,

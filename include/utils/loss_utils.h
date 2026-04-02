@@ -317,6 +317,55 @@ inline torch::Tensor fused_ssim(const torch::Tensor &img1,
   return ssim_map.mean();
 }
 
+// Compute per-pixel surface normals from an inverse-depth map via finite
+// differences of back-projected 3D points (4DTAM / triangle-splatting method).
+// inv_depth: [1, H, W] or [H, W] on CUDA.
+// Returns [3, H, W] unit normals in camera space; border pixels are zeroed.
+inline torch::Tensor computeNormalsFromDepth(const torch::Tensor& inv_depth,
+                                             float fx, float fy,
+                                             float cx, float cy) {
+  torch::Tensor depth = (1.0f / inv_depth.squeeze().clamp_min(1e-8f));  // [H,W]
+  const int64_t H = depth.size(0), W = depth.size(1);
+
+  // Neighbor depths via roll (boundary pixels are zeroed at the end)
+  auto d_xp = torch::roll(depth, -1, 1);  // u+1
+  auto d_xm = torch::roll(depth,  1, 1);  // u-1
+  auto d_yp = torch::roll(depth, -1, 0);  // v+1
+  auto d_ym = torch::roll(depth,  1, 0);  // v-1
+
+  // Dense UV coordinate grids [H, W]
+  auto u = torch::arange(W, depth.options()).unsqueeze(0).expand({H, W});
+  auto v = torch::arange(H, depth.options()).unsqueeze(1).expand({H, W});
+
+  // Finite-difference tangent vectors in camera space
+  // dx = p(u+1,v) - p(u-1,v),  dy = p(u,v+1) - p(u,v-1)
+  auto dx_x = (u + 1.0f - cx) / fx * d_xp - (u - 1.0f - cx) / fx * d_xm;
+  auto dx_y = (v        - cy) / fy * (d_xp - d_xm);
+  auto dx_z = d_xp - d_xm;
+
+  auto dy_x = (u        - cx) / fx * (d_yp - d_ym);
+  auto dy_y = (v + 1.0f - cy) / fy * d_yp - (v - 1.0f - cy) / fy * d_ym;
+  auto dy_z = d_yp - d_ym;
+
+  // n = dx × dy  [3, H, W]
+  auto nx = dx_y * dy_z - dx_z * dy_y;
+  auto ny = dx_z * dy_x - dx_x * dy_z;
+  auto nz = dx_x * dy_y - dx_y * dy_x;
+  auto normals = torch::stack({nx, ny, nz}, 0);
+
+  // Normalize; degenerate pixels become zero and don't contribute to mean loss
+  auto length = torch::norm(normals, 2, 0, true).clamp_min(1e-6f);
+  normals = normals / length;
+
+  // Zero 1-pixel border (roll wraps incorrectly there)
+  normals.slice(1, 0, 1).zero_();
+  normals.slice(1, H - 1, H).zero_();
+  normals.slice(2, 0, 1).zero_();
+  normals.slice(2, W - 1, W).zero_();
+
+  return normals;  // [3, H, W]
+}
+
 // Keep the old fast_ssim function for backward compatibility
 inline torch::Tensor fast_ssim(const torch::Tensor &img1,
                                const torch::Tensor &img2,

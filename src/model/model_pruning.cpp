@@ -288,36 +288,24 @@ void TriangleModel::densificationPostfix(
 
 void TriangleModel::pruneLowOpacityTriangles(
     std::shared_ptr<TriangleKeyframe> pkf,
-    const torch::Tensor& visible_triangle_mask) {
+    const torch::Tensor& visible_triangle_mask,
+    const torch::Tensor& full_model_scaling) {
   torch::NoGradGuard no_grad;
 
   torch::Tensor visible_indices = torch::where(visible_triangle_mask)[0];
 
-  // Keyframe camera parameters
-  torch::Tensor keyframe_center = pkf->getCenter();
-  float focal_length = pkf->intr_[0];  // fx
-  int image_width = pkf->image_width_;
-
-  // Triangle parameters for visible subset
-  torch::Tensor positions = getXYZ().index({visible_indices});
   torch::Tensor opacities = getOpacityActivation().index({visible_indices});
-  torch::Tensor sigmas = getSigmaActivation().index({visible_indices});  // [V,1]
+  torch::Tensor screen_size = full_model_scaling.index({visible_indices});
 
-  int n_triangles = positions.size(0);
-  torch::Tensor valid_mask = torch::ones(
-      n_triangles,
-      torch::TensorOptions().dtype(torch::kBool).device(positions.device()));
+  // Prune triangles whose projected circumradius exceeds 50% of the image width.
+  // Upstream uses a hardcoded 1400px (tuned for 1920×1080); scaling with the
+  // actual render resolution keeps the threshold meaningful across datasets.
+  // 0.5 × image_width is aggressive enough to remove visually prominent large
+  // triangles while leaving triangles that cover a reasonable surface patch.
+  const float kMaxScreenSize = 0.5f * static_cast<float>(pkf->image_width_);
 
-  // Remove Triangles with low opacity
-  valid_mask &= opacities.squeeze(1) > 0.05f;
-
-  // Remove Triangles that appear too large on screen (use sigma as scale proxy)
-  torch::Tensor distances =
-      torch::norm(positions - keyframe_center.unsqueeze(0), 2, /*dim=*/1);
-  torch::Tensor screen_size =
-      focal_length * sigmas.squeeze(1) / distances.clamp_min(1e-6f);
-  float max_screen_size = 0.5f * static_cast<float>(image_width);
-  valid_mask &= screen_size < max_screen_size;
+  torch::Tensor valid_mask = (opacities.squeeze(1) > 0.05f) & // Remove Triangles with low opacity
+                             (screen_size < kMaxScreenSize); // Remove Triangles that appear too large on screen
 
   // Build full-model prune mask from the visible subset
   torch::Tensor full_model_prune_mask = torch::zeros(

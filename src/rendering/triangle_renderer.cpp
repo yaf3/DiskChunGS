@@ -16,9 +16,11 @@
 
 #include "rendering/triangle_renderer.h"
 
+#include "utils/loss_utils.h"
 #include "utils/profiling.h"
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
+           torch::Tensor, torch::Tensor, torch::Tensor>
 TriangleRenderer::render(std::shared_ptr<TriangleModel> model,
                          const torch::Tensor& visible_triangle_mask,
                          std::shared_ptr<TriangleKeyframe> viewpoint_camera,
@@ -123,12 +125,31 @@ TriangleRenderer::render(std::shared_ptr<TriangleModel> model,
   auto rendered_depth = std::get<1>(rasterizer_result);
   auto mainGaussID = std::get<2>(rasterizer_result);
   auto radii = std::get<3>(rasterizer_result);
+  auto scaling_visible = std::get<4>(rasterizer_result);  // [V] kernel-computed screen extent
+  auto rend_normal = std::get<5>(rasterizer_result);  // [3, H, W]
+
+  // Scatter scaling from visible-triangle space [V] to full-model space [N]
+  int64_t N = model->getTrianglesPoints().size(0);
+  auto scaling = torch::zeros(
+      {N}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
+  scaling.index_put_({visible_indices}, scaling_visible.squeeze(1));
 
   rendered_image = viewpoint_camera->applyExposureTransform(rendered_image);
 
-  return std::make_tuple(rendered_depth,  // depth
-                         rendered_image,  // render
-                         radii,           // radii
-                         mainGaussID      // mainGaussID
+  // surf_normal: normals derived from rendered depth via finite differences.
+  // Used for the self-consistency normal loss (mode 1).
+  float fx = viewpoint_camera->intr_[0];
+  float fy = viewpoint_camera->intr_[1];
+  float cx = viewpoint_camera->intr_[2];
+  float cy = viewpoint_camera->intr_[3];
+  auto surf_normal = loss_utils::computeNormalsFromDepth(rendered_depth, fx, fy, cx, cy);
+
+  return std::make_tuple(rendered_depth,  // [0] depth
+                         rendered_image,  // [1] render
+                         radii,           // [2] radii
+                         mainGaussID,     // [3] mainGaussID
+                         scaling,         // [4] full-model screen extent [N]
+                         rend_normal,     // [5] alpha-weighted triangle plane normals [3,H,W]
+                         surf_normal      // [6] normals from rendered depth [3,H,W]
   );
 }

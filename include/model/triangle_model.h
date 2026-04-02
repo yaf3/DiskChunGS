@@ -367,11 +367,14 @@ class TriangleModel {
 
   /**
    * @brief Prunes Triangles with low opacity or excessive screen size.
-   * @param pkf Keyframe used for screen-size calculation.
+   * @param pkf Keyframe used for context (image dimensions).
    * @param visible_triangle_mask Mask of Triangles to consider.
+   * @param full_model_scaling Kernel-computed screen extent per triangle [N],
+   *        0 for triangles not in the current frustum.
    */
   void pruneLowOpacityTriangles(std::shared_ptr<TriangleKeyframe> pkf,
-                                const torch::Tensor& visible_triangle_mask);
+                                const torch::Tensor& visible_triangle_mask,
+                                const torch::Tensor& full_model_scaling);
 
   //============================================================================
   // Point Management
@@ -395,7 +398,8 @@ class TriangleModel {
                  const torch::Tensor& new_opacities,
                  int iteration,
                  float spatial_lr_scale,
-                 const torch::Tensor& cam_center = {});
+                 const torch::Tensor& cam_center = {},
+                 const torch::Tensor& normals = {});
 
   /**
    * @brief Initializes the model with the first set of points.
@@ -413,7 +417,8 @@ class TriangleModel {
                             const torch::Tensor& initial_scales,
                             const torch::Tensor& initial_opacities,
                             int iteration,
-                            const torch::Tensor& cam_center = {});
+                            const torch::Tensor& cam_center = {},
+                            const torch::Tensor& normals = {});
 
   /**
    * @brief Appends additional points to an initialized model.
@@ -428,7 +433,8 @@ class TriangleModel {
                     const torch::Tensor& new_scales,
                     const torch::Tensor& new_opacities,
                     int iteration,
-                    const torch::Tensor& cam_center = {});
+                    const torch::Tensor& cam_center = {},
+                    const torch::Tensor& normals = {});
 
   /**
    * @brief Initializes an empty model for subsequent chunk loading.
@@ -630,12 +636,14 @@ class TriangleModel {
    * @param min_triangles_per_chunk Minimum points required per chunk.
    * @return Tuple of filtered tensors.
    */
-  std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+  std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
+             torch::Tensor>
   filterPointsByChunkDensity(const torch::Tensor& xyz,
                              const torch::Tensor& colors,
                              const torch::Tensor& scales,
                              const torch::Tensor& opacities,
-                             int min_triangles_per_chunk);
+                             int min_triangles_per_chunk,
+                             const torch::Tensor& normals = {});
 
   /**
    * @brief Deletes chunks with too few Triangles.

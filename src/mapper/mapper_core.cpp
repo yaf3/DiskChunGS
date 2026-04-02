@@ -260,7 +260,7 @@ void TriangleMapper::trainForOneIteration() {
   torch::Tensor view_matrix = viewpoint_cam->getRT().transpose(0, 1);
 
   // Rasterize triangles for selected keyframe
-  std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> render_pkg =
+  auto render_pkg =
       TriangleRenderer::render(triangles_, visible_triangle_mask, viewpoint_cam,
                                image_height, image_width, pipe_params_,
                                background_, override_color_, 1.0f, false,
@@ -269,6 +269,8 @@ void TriangleMapper::trainForOneIteration() {
 
   torch::Tensor rendered_image = std::get<1>(render_pkg);
   torch::Tensor radii = std::get<2>(render_pkg);
+  torch::Tensor full_model_scaling = std::get<4>(render_pkg);
+  torch::Tensor rend_normal = std::get<5>(render_pkg);  // [3, H, W]
 
   // Loss calculation
   auto l1_loss =
@@ -284,6 +286,30 @@ void TriangleMapper::trainForOneIteration() {
     torch::Tensor rendered_inv_depth = std::get<0>(render_pkg);
     torch::Tensor depth_loss = (rendered_inv_depth - gt_inv_depth).abs().mean();
     loss += lambda_depth * depth_loss;
+  }
+
+  // Normal loss: penalise triangle plane normals diverging from surface normals.
+  // Mode 1 (self-consistency): rend_normal vs surf_normal from rendered depth.
+  // Mode 2 (GT-anchored):      rend_normal vs normals from GT sensor depth.
+  int normal_mode = normalLossMode();
+  float lambda_normal = lambdaNormal();
+  if (normal_mode > 0 && lambda_normal > 0.0f) {
+    float fx = viewpoint_cam->intr_[0], fy = viewpoint_cam->intr_[1];
+    float cx = viewpoint_cam->intr_[2], cy = viewpoint_cam->intr_[3];
+    torch::Tensor ref_normal;
+    if (normal_mode == 1) {
+      ref_normal = std::get<6>(render_pkg);  // surf_normal from rendered depth
+    } else {
+      // Mode 2: GT sensor depth (only available for RGBD)
+      if (gt_inv_depth.defined()) {
+        ref_normal = loss_utils::computeNormalsFromDepth(gt_inv_depth, fx, fy, cx, cy);
+      }
+    }
+    if (ref_normal.defined()) {
+      torch::Tensor normal_loss =
+          lambda_normal * (1.0f - (rend_normal * ref_normal).sum(0)).mean();
+      loss += normal_loss;
+    }
   }
 
   // Backwards pass
@@ -321,7 +347,7 @@ void TriangleMapper::trainForOneIteration() {
 
   // Occasionally, prune low opacity triangles
   if (getIteration() % 10 == 0) {
-    triangles_->pruneLowOpacityTriangles(viewpoint_cam, visible_triangle_mask);
+    triangles_->pruneLowOpacityTriangles(viewpoint_cam, visible_triangle_mask, full_model_scaling);
   }
 
   // Training statistics

@@ -60,7 +60,9 @@ TriangleOptimizationParams::TriangleOptimizationParams(
     float lambda_dssim,
     float lambda_depth,
     int auto_distribute,
-    bool smooth_l1)
+    bool smooth_l1,
+    float lambda_normal,
+    int normal_loss_mode)
     : iterations_(iterations),
       auto_distribute_(auto_distribute),
       smooth_l1_(smooth_l1),
@@ -73,4 +75,6 @@ TriangleOptimizationParams::TriangleOptimizationParams(
       exposure_lr_(exposure_lr),
       depth_scale_bias_lr_(depth_scale_bias_lr),
       lambda_dssim_(lambda_dssim),
-      lambda_depth_(lambda_depth) {}
+      lambda_depth_(lambda_depth),
+      lambda_normal_(lambda_normal),
+      normal_loss_mode_(normal_loss_mode) {}

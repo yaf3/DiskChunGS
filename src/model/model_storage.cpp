@@ -585,14 +585,16 @@ int64_t TriangleModel::countAllTriangles() {
   return in_memory + on_disk;
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
+           torch::Tensor>
 TriangleModel::filterPointsByChunkDensity(const torch::Tensor& xyz,
                                           const torch::Tensor& colors,
                                           const torch::Tensor& scales,
                                           const torch::Tensor& opacities,
-                                          int min_triangles_per_chunk) {
+                                          int min_triangles_per_chunk,
+                                          const torch::Tensor& normals) {
   if (min_triangles_per_chunk <= 1) {
-    return std::make_tuple(xyz, colors, scales, opacities);
+    return std::make_tuple(xyz, colors, scales, opacities, normals);
   }
 
   torch::Tensor chunk_ids = computeChunkIds(xyz, chunk_size_);
@@ -610,7 +612,10 @@ TriangleModel::filterPointsByChunkDensity(const torch::Tensor& xyz,
                            scales.defined()
                                ? torch::empty({0, 3}, scales.options())
                                : torch::Tensor(),
-                           torch::empty({0, 1}, opacities.options()));
+                           torch::empty({0, 1}, opacities.options()),
+                           normals.defined()
+                               ? torch::empty({0, 3}, normals.options())
+                               : torch::Tensor());
   }
 
   torch::Tensor point_mask = torch::isin(chunk_ids, valid_chunk_ids);
@@ -618,7 +623,8 @@ TriangleModel::filterPointsByChunkDensity(const torch::Tensor& xyz,
   return std::make_tuple(
       xyz.index({point_mask}), colors.index({point_mask}),
       scales.defined() ? scales.index({point_mask}) : torch::Tensor(),
-      opacities.index({point_mask}));
+      opacities.index({point_mask}),
+      normals.defined() ? normals.index({point_mask}) : torch::Tensor());
 }
 
 // =============================================================================

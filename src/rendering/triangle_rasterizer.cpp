@@ -127,7 +127,9 @@ torch::autograd::tensor_list TriangleRasterizerFunction::forward(
   // out_others is [7, H, W]: channel 0=depth, 1=alpha, 2-4=normals, 5=middepth, 6=distortion
   // (matches DEPTH_OFFSET=0 / ALPHA_OFFSET=1 / NORMAL_OFFSET=2 / MIDDEPTH_OFFSET=5 /
   //  DISTORTION_OFFSET=6 in auxiliary.h)
-  auto invdepth = out_others.slice(/*dim=*/0, /*start=*/0, /*end=*/1);  // channel 0 = DEPTH_OFFSET
+  auto invdepth = out_others.slice(/*dim=*/0, /*start=*/0, /*end=*/1);  // [1, H, W]
+  auto rend_normal = out_others.slice(/*dim=*/0, /*start=*/2, /*end=*/5);  // [3, H, W]
+
   // mainTriangleID must be an integer type: it propagates through the mapper
   // as indices into the visible triangle list (e.g. visible_indices.index({...}))
   auto mainTriangleID = torch::full(
@@ -135,7 +137,7 @@ torch::autograd::tensor_list TriangleRasterizerFunction::forward(
       -1,
       means3D.options().dtype(torch::kLong));
 
-  return {out_color, invdepth, mainTriangleID, radii};
+  return {out_color, invdepth, mainTriangleID, radii, scaling_ret, rend_normal};
 }
 
 torch::autograd::tensor_list TriangleRasterizerFunction::backward(
@@ -181,6 +183,9 @@ torch::autograd::tensor_list TriangleRasterizerFunction::backward(
                    grad_out_color.options());
   if (grad_outputs[1].defined() && grad_outputs[1].numel() > 0) {
     dL_dout_others.slice(/*dim=*/0, /*start=*/0, /*end=*/1) = grad_outputs[1];  // channel 0 = DEPTH_OFFSET
+  }
+  if (grad_outputs[5].defined() && grad_outputs[5].numel() > 0) {
+    dL_dout_others.slice(/*dim=*/0, /*start=*/2, /*end=*/5) = grad_outputs[5];  // channels 2-4 = NORMAL_OFFSET
   }
 
   // Flatten triangles_points [P,3,3] → [P*3,3] for the CUDA backward
@@ -257,11 +262,12 @@ torch::autograd::tensor_list TriangleRasterizerFunction::backward(
       torch::Tensor(), // [7] grad for rotations (not used in triangle API)
       torch::Tensor(), // [8] grad for cov3Ds_precomp (not used)
       torch::Tensor(), // [9] grad for viewmatrix
-      torch::Tensor()  // [10] grad for raster_settings (not a tensor)
+      torch::Tensor(), // [10] grad for raster_settings (not a tensor)
+      torch::Tensor()  // [11] grad for scaling_ret (buffer, not differentiable)
   };
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 TriangleRasterizer::forward(torch::Tensor means3D,
                             torch::Tensor means2D,
                             torch::Tensor opacities,
@@ -291,5 +297,6 @@ TriangleRasterizer::forward(torch::Tensor means3D,
                                    viewmatrix, raster_settings);
 
   return std::make_tuple(result[0] /*color*/, result[1] /*invdepth*/,
-                         result[2] /*mainTriangleID*/, result[3] /*radii*/);
+                         result[2] /*mainTriangleID*/, result[3] /*radii*/,
+                         result[4] /*scaling*/, result[5] /*rend_normal*/);
 }

@@ -56,6 +56,16 @@ float TriangleMapper::lambdaDepth() {
   return opt_params_.lambda_depth_;
 }
 
+float TriangleMapper::lambdaNormal() {
+  std::unique_lock<std::mutex> lock(mutex_settings_);
+  return opt_params_.lambda_normal_;
+}
+
+int TriangleMapper::normalLossMode() {
+  std::unique_lock<std::mutex> lock(mutex_settings_);
+  return opt_params_.normal_loss_mode_;
+}
+
 int TriangleMapper::newKeyframeTimesOfUse() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return new_keyframe_times_of_use_;

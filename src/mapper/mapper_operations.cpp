@@ -16,6 +16,7 @@
 
 #include "triangle_mapper.h"
 #include "rendering/triangle_renderer.h"
+#include "utils/loss_utils.h"
 #include "utils/profiling.h"
 
 // ============================================================================
@@ -805,6 +806,8 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
   torch::Tensor visible_triangle_mask;
   bool has_rendered_depth = false;
 
+  torch::Tensor full_model_scaling;
+
   if (initial_mapped_) {
     visible_triangle_mask = triangles_->cullVisibleTriangles(pkf);
 
@@ -818,23 +821,8 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
     rendered_depth = 1 / std::get<0>(render_pkg).clamp_min(1e-8);
     has_rendered_depth = true;
     main_triangle_ids = std::get<3>(render_pkg)[0];
-    // Triangle renders have hard edges at every triangle boundary, inflating
-    // the LoG penalty at gap boundaries and suppressing sampling exactly where
-    // gaps need to be filled. Use rendered coverage (invdepth > 0) as penalty:
-    // 1 where covered by triangles, 0 in gaps — unaffected by geometry edges.
-    {
-      torch::Tensor rendered_invdepth_raw =
-          std::get<0>(render_pkg);  // [1, H, W], invdepth > 0 where covered
-      torch::Tensor coverage =
-          (rendered_invdepth_raw > 0.01f).to(torch::kFloat32);  // [1, H, W]
-      // Dilate covered region by 2 px to avoid sampling right at triangle edges
-      penalty = torch::nn::functional::max_pool2d(
-                    coverage,
-                    torch::nn::functional::MaxPool2dFuncOptions(5)
-                        .padding(2)
-                        .stride(1))
-                    .squeeze(0);  // [H, W]
-    }
+    full_model_scaling = std::get<4>(render_pkg);
+    penalty = computeLoGProbability(rendered_image);
   }
 
   // Apply scaling factor and compute sampling probability
@@ -958,6 +946,7 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
               pkf->full_proj_transform_);
 
           rendered_depth = 1 / std::get<0>(updated_render_pkg).clamp_min(1e-8);
+          full_model_scaling = std::get<4>(updated_render_pkg);
         }
       }
     }
@@ -1089,19 +1078,63 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
   sampled_points3D.select(1, 1) = (v_coords - cy) * depth / fy;
   sampled_points3D.select(1, 2) = depth;
 
+  // Compute surface normals from depth map finite differences (4DTAM method).
+  // n = normalize((p(u+1,v) - p(u-1,v)) × (p(u,v+1) - p(u,v-1)))
+  // where p(u,v) is the back-projected 3D point in camera space.
+  // Compute surface normals from depth map (4DTAM method) and sample at the
+  // selected UV positions. Degenerate normals (zero) fall back to camera-facing
+  // in generateTriangleVertices. Normals are rotated to world space.
+  torch::Tensor sampled_normals_world;
+  {
+    // Dense normal map [3, H, W] in camera space
+    torch::Tensor normal_map = loss_utils::computeNormalsFromDepth(
+        pkf->gaus_pyramid_inv_depth_image_[0], fx, fy, cx, cy);
+
+    // Sample at the filtered UV positions → [N, 3]
+    torch::Tensor u_l = sampled_uv.select(1, 0).to(torch::kLong);
+    torch::Tensor v_l = sampled_uv.select(1, 1).to(torch::kLong);
+    torch::Tensor normals_cam =
+        normal_map.permute({1, 2, 0}).index({v_l, u_l});  // [N, 3]
+
+    // Ensure normals point toward camera (nz < 0 in camera space)
+    torch::Tensor nz = normals_cam.select(1, 2);
+    torch::Tensor flip = (nz > 0.0f).unsqueeze(1).to(torch::kFloat32);
+    normals_cam = normals_cam * (1.0f - 2.0f * flip);
+
+    // Zero out border/degenerate pixels (already zeroed by computeNormalsFromDepth,
+    // but re-apply after flip to keep zeros as zeros)
+    torch::Tensor lengths = torch::norm(normals_cam, 2, 1, true);
+    torch::Tensor valid = (lengths.squeeze(1) > 1e-6f).unsqueeze(1).to(torch::kFloat32);
+    normals_cam = normals_cam * valid;
+
+    // Rotate to world space: n_world = Rwc @ n_cam
+    Eigen::MatrixXf Rwc = Twc.rotationMatrix();
+    torch::Tensor Rwc_t =
+        tensor_utils::EigenMatrix2TorchTensor(Rwc, device_type_);
+    sampled_normals_world = torch::mm(normals_cam, Rwc_t.transpose(0, 1));
+  }
+
   // Combine sampled and matched points
   torch::Tensor all_points3D;
   torch::Tensor all_colors;
   torch::Tensor all_init_proba;
+  torch::Tensor all_normals;
 
   if (num_matched_points > 0) {
     all_points3D = torch::cat({sampled_points3D, match_pts_3d}, 0);
     all_colors = torch::cat({sampled_colors, match_colors}, 0);
     all_init_proba = torch::cat({sampled_init_proba, match_init_proba}, 0);
+    // Matched keypoints have no depth neighborhood: zero normals cause
+    // generateTriangleVertices to fall back to camera-facing for those points.
+    torch::Tensor matched_normals = torch::zeros(
+        {num_matched_points, 3},
+        torch::TensorOptions().device(device_type_));
+    all_normals = torch::cat({sampled_normals_world, matched_normals}, 0);
   } else {
     all_points3D = sampled_points3D;
     all_colors = sampled_colors;
     all_init_proba = sampled_init_proba;
+    all_normals = sampled_normals_world;
   }
 
   // Transform points to world coordinates
@@ -1159,7 +1192,7 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
   }
 
   if (initial_mapped_) {
-    triangles_->pruneLowOpacityTriangles(pkf, visible_triangle_mask);
+    triangles_->pruneLowOpacityTriangles(pkf, visible_triangle_mask, full_model_scaling);
   }
 
   // Add all points to scene
@@ -1167,7 +1200,7 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
 
   triangles_->addPoints(all_points3D, all_colors, all_scales, final_opacities,
                         getIteration(), scene_->cameras_extent_,
-                        pkf->getCenter());
+                        pkf->getCenter(), all_normals);
 
   // Save keyframes that were loaded during this operation
   for (const auto &kf : newly_loaded_keyframes) {
