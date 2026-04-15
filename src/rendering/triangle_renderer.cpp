@@ -122,11 +122,15 @@ TriangleRenderer::render(std::shared_ptr<TriangleModel> model,
       cov3D_precomp, world_view_transform);
 
   auto rendered_image = std::get<0>(rasterizer_result);
-  auto rendered_depth = std::get<1>(rasterizer_result);
+  auto rendered_depth = std::get<1>(rasterizer_result);  // camera-space Z from CUDA kernel
   auto mainGaussID = std::get<2>(rasterizer_result);
   auto radii = std::get<3>(rasterizer_result);
   auto scaling_visible = std::get<4>(rasterizer_result);  // [V] kernel-computed screen extent
   auto rend_normal = std::get<5>(rasterizer_result);  // [3, H, W]
+
+  // Invert Z → 1/Z here (outside the custom autograd function) so that
+  // PyTorch handles the chain rule correctly during backward.
+  auto rendered_inv_depth = 1.0f / rendered_depth.clamp_min(1e-8f);
 
   // Scatter scaling from visible-triangle space [V] to full-model space [N]
   int64_t N = model->getTrianglesPoints().size(0);
@@ -138,13 +142,14 @@ TriangleRenderer::render(std::shared_ptr<TriangleModel> model,
 
   // surf_normal: normals derived from rendered depth via finite differences.
   // Used for the self-consistency normal loss (mode 1).
+  // computeNormalsFromDepth expects inverse depth (1/Z) as input.
   float fx = viewpoint_camera->intr_[0];
   float fy = viewpoint_camera->intr_[1];
   float cx = viewpoint_camera->intr_[2];
   float cy = viewpoint_camera->intr_[3];
-  auto surf_normal = loss_utils::computeNormalsFromDepth(rendered_depth, fx, fy, cx, cy);
+  auto surf_normal = loss_utils::computeNormalsFromDepth(rendered_inv_depth, fx, fy, cx, cy);
 
-  return std::make_tuple(rendered_depth,  // [0] depth
+  return std::make_tuple(rendered_inv_depth,  // [0] inverse depth (1/Z)
                          rendered_image,  // [1] render
                          radii,           // [2] radii
                          mainGaussID,     // [3] mainGaussID
