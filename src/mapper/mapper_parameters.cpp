@@ -66,6 +66,11 @@ int TriangleMapper::normalLossMode() {
   return opt_params_.normal_loss_mode_;
 }
 
+float TriangleMapper::lambdaEquilateral() {
+  std::unique_lock<std::mutex> lock(mutex_settings_);
+  return opt_params_.lambda_equilateral_;
+}
+
 int TriangleMapper::newKeyframeTimesOfUse() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return new_keyframe_times_of_use_;

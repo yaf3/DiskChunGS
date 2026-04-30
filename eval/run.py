@@ -180,9 +180,9 @@ if __name__ == "__main__":
     )
     render_time = render_time[:, 1].astype(np.float32)
 
-    # Load number of gaussians
+    # Load number of triangles
     num_gaussians = np.loadtxt(
-        os.path.join(shutdown_path, "gaussianCount.txt"),
+        os.path.join(shutdown_path, "triangleCount.txt"),
         delimiter=" ",
         dtype=np.str_,
     )

@@ -5,6 +5,7 @@ Model.sh_degree: 3
 Model.max_triangles_in_memory: 1500000
 Model.init_proba_scaler: 1.0
 Model.downsample_for_sampling: 1
+Model.init_strategy: 0  # 0:normal-based, 1:camera-facing, 2:fibonacci
 
 Camera.z_near: 0.1
 Camera.z_far: 100.0
@@ -32,7 +33,8 @@ Record.record_rendered_image: 1 # 0:false, 1 or other integer:true
 Record.record_ground_truth_image: 1 # 0:false, 1 or other integer:true
 Record.record_loss_image: 0 # 0:false, 1 or other integer:true
 Record.training_report_interval: 0 # 0:never, 1:always, others:periodically
-Record.record_loop_ply: 0 # 0:false, 1 or other integer:trues
+Record.record_loop_ply: 0 # 0:false, 1 or other integer:true
+Record.record_save_off: 0 # 0:false, 1:export mesh.off on save
 
 Chunking.chunk_size: 10.0
 Chunking.keyframe_selection_chunk_size: 200.0
@@ -50,6 +52,9 @@ Optimization.exposure_lr: 0.000
 Optimization.depth_scale_bias_lr: 0.0001
 Optimization.lambda_dssim: 0.2
 Optimization.lambda_depth: 1.0
+Optimization.lambda_normal: 0.0000
+Optimization.normal_loss_mode: 0  # 0:off, 1:self-consistency, 2:GT-anchored (RGBD only)
+Optimization.lambda_equilateral: 0.0  # 0:off, >0:area regularizer weight
 Optimization.exposure_optimization: 0 # 0:false, 1 or other integer:true
 
 TriangleViewer.glfw_window_width: 1862

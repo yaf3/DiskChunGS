@@ -79,7 +79,8 @@ class TriangleOptimizationParams {
                              int auto_distribute = 0,
                              bool smooth_l1 = false,
                              float lambda_normal = 0.0f,
-                             int normal_loss_mode = 0);
+                             int normal_loss_mode = 0,
+                             float lambda_equilateral = 0.0f);
 
   // Training settings
   int iterations_;       ///< Total number of optimization iterations.
@@ -97,8 +98,9 @@ class TriangleOptimizationParams {
   float depth_scale_bias_lr_;   ///< Learning rate for depth scale/bias.
 
   // Loss weights
-  float lambda_dssim_;   ///< Weight for D-SSIM loss term.
-  float lambda_depth_;   ///< Weight for depth loss term.
-  float lambda_normal_;  ///< Weight for normal loss term (0 = disabled).
-  int normal_loss_mode_; ///< 0=off, 1=self-consistency, 2=GT-anchored (RGBD only).
+  float lambda_dssim_;        ///< Weight for D-SSIM loss term.
+  float lambda_depth_;        ///< Weight for depth loss term.
+  float lambda_normal_;       ///< Weight for normal loss term (0 = disabled).
+  int normal_loss_mode_;      ///< 0=off, 1=self-consistency, 2=GT-anchored (RGBD only).
+  float lambda_equilateral_;  ///< Weight for equilateral (area) regularizer (0 = disabled).
 };

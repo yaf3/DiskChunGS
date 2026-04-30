@@ -62,7 +62,8 @@ TriangleOptimizationParams::TriangleOptimizationParams(
     int auto_distribute,
     bool smooth_l1,
     float lambda_normal,
-    int normal_loss_mode)
+    int normal_loss_mode,
+    float lambda_equilateral)
     : iterations_(iterations),
       auto_distribute_(auto_distribute),
       smooth_l1_(smooth_l1),
@@ -77,4 +78,5 @@ TriangleOptimizationParams::TriangleOptimizationParams(
       lambda_dssim_(lambda_dssim),
       lambda_depth_(lambda_depth),
       lambda_normal_(lambda_normal),
-      normal_loss_mode_(normal_loss_mode) {}
+      normal_loss_mode_(normal_loss_mode),
+      lambda_equilateral_(lambda_equilateral) {}

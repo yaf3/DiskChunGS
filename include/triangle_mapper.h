@@ -273,6 +273,9 @@ class TriangleMapper {
   /** @brief Get normal loss mode (0=off, 1=self-consistency, 2=GT-anchored) */
   int normalLossMode();
 
+  /** @brief Get equilateral (area) regularizer weight */
+  float lambdaEquilateral();
+
   /** @brief Get times of use threshold for new keyframes */
   int newKeyframeTimesOfUse();
 
@@ -348,6 +351,9 @@ class TriangleMapper {
    * @return True if save successful, false otherwise
    */
   bool saveScene(std::filesystem::path scene_dir);
+
+  /** @brief Export all triangles to a COFF mesh file (mesh.off) in scene_dir. */
+  void exportToOFF(std::filesystem::path scene_dir);
 
   /**
    * @brief Load complete scene from disk
@@ -544,6 +550,7 @@ class TriangleMapper {
 
   int training_report_interval_;
   bool record_loop_ply_;
+  bool record_save_off_;
 
   // Training metrics
   int metrics_collection_interval_ = 1000;
@@ -564,6 +571,7 @@ class TriangleMapper {
   int exposure_optimization_ = 0;
   float init_proba_scaler_ = 2.0;
   bool downsample_for_sampling_ = false;
+  int init_strategy_ = 0;  ///< 0=normal-based, 1=camera-facing, 2=fibonacci
 
   // Utilities
   std::random_device rd_;

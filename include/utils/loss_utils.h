@@ -375,4 +375,17 @@ inline torch::Tensor fast_ssim(const torch::Tensor &img1,
   return fused_ssim(img1, img2, "same", train);
 }
 
+// Equilateral (area) regularizer from Triangle Splatting.
+// Penalizes triangles with small area to prevent degenerate/collapsed shapes.
+// Loss = 1 / mean(area), where area = 0.5 * ||cross(v1-v0, v2-v0)||.
+// triangles_points: [N, 3, 3] (N triangles, 3 vertices, xyz)
+inline torch::Tensor equilateral_loss(const torch::Tensor& triangles_points) {
+  auto v0 = triangles_points.select(1, 0);  // [N, 3]
+  auto v1 = triangles_points.select(1, 1);  // [N, 3]
+  auto v2 = triangles_points.select(1, 2);  // [N, 3]
+  auto cross = torch::linalg_cross(v1 - v0, v2 - v0, /*dim=*/1);  // [N, 3]
+  auto area = 0.5f * torch::norm(cross, 2, /*dim=*/1);             // [N]
+  return 1.0f / area.mean().clamp_min(1e-8f);
+}
+
 }  // namespace loss_utils

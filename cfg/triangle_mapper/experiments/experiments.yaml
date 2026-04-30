@@ -1,0 +1,56 @@
+# Ablation experiment definitions.
+# Edit this file to add/change variants, then regenerate configs:
+#   python3 scripts/generate_ablation_configs.py
+#
+# Each experiment overrides specific keys on top of the base dataset config.
+# Base config defaults (both datasets):
+#   lambda_depth=0.001, lambda_normal=1e-4, normal_loss_mode=1, lambda_equilateral=1e-8
+
+# Applied to every generated config regardless of experiment
+always:
+  Record.record_save_off: 1
+
+groups:
+
+  - name: init
+    experiments:
+      - name: init0
+        description: "Init strategy 0: normal-based (baseline)"
+        overrides:
+          Model.init_strategy: 0
+
+      - name: init1
+        description: "Init strategy 1: camera-facing"
+        overrides:
+          Model.init_strategy: 1
+
+      - name: init2
+        description: "Init strategy 2: fibonacci sphere"
+        overrides:
+          Model.init_strategy: 2
+
+  - name: normal
+    experiments:
+      - name: normal_off
+        description: "Normal loss disabled"
+        overrides:
+          Optimization.lambda_normal: 0.0
+          Optimization.normal_loss_mode: 0
+
+      - name: normal_mode2
+        description: "Normal loss GT-anchored (mode=2), lambda=1e-4"
+        overrides:
+          Optimization.lambda_normal: 1.0e-4
+          Optimization.normal_loss_mode: 2
+
+  - name: equil
+    experiments:
+      - name: equil_off
+        description: "Equilateral loss disabled"
+        overrides:
+          Optimization.lambda_equilateral: 0.0
+
+      - name: equil_strong
+        description: "Equilateral loss lambda=1e-7"
+        overrides:
+          Optimization.lambda_equilateral: 1.0e-7

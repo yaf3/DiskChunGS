@@ -1,4 +1,7 @@
 #!/bin/bash
+# TUM RGBD ablation subset: fr1_desk, fr3_long_office
+# (drops fr2_xyz which is 6x slower and skews averages less)
+# Usage: same as tum_rgbd.sh — exp, num_trials, mapper_cfg, data_root
 exp=$1
 num_trials=$2
 mapper_cfg=${3:-cfg/triangle_mapper/RGB-D/TUM/tum_rgbd.yaml}
@@ -13,18 +16,6 @@ bin/tum_rgbd \
     $data_root/TUM/rgbd_dataset_freiburg1_desk \
     cfg/ORB_SLAM3/RGB-D/TUM/associations/tum_freiburg1_desk.txt \
     results/$exp/tum_rgbd_$i/rgbd_dataset_freiburg1_desk \
-    no_viewer
-done
-
-for ((i=0; i<num_trials; i++))
-do
-bin/tum_rgbd \
-    slam_deps/ORB-SLAM3/Vocabulary/ORBvoc.txt \
-    cfg/ORB_SLAM3/RGB-D/TUM/tum_freiburg2_xyz.yaml \
-    "$mapper_cfg" \
-    $data_root/TUM/rgbd_dataset_freiburg2_xyz \
-    cfg/ORB_SLAM3/RGB-D/TUM/associations/tum_freiburg2_xyz.txt \
-    results/$exp/tum_rgbd_$i/rgbd_dataset_freiburg2_xyz \
     no_viewer
 done
 

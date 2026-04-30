@@ -74,6 +74,7 @@ void TriangleMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       readConfig<float>(settings_file, "Model.init_proba_scaler");
   downsample_for_sampling_ =
       readConfigBool(settings_file, "Model.downsample_for_sampling");
+  init_strategy_ = readConfig<int>(settings_file, "Model.init_strategy");
 
   // ========== Camera Parameters ==========
   z_near_ = readConfig<float>(settings_file, "Camera.z_near");
@@ -137,6 +138,7 @@ void TriangleMapper::readConfigFromFile(std::filesystem::path cfg_path) {
   training_report_interval_ =
       readConfig<int>(settings_file, "Record.training_report_interval");
   record_loop_ply_ = readConfigBool(settings_file, "Record.record_loop_ply");
+  record_save_off_ = readConfigBool(settings_file, "Record.record_save_off");
 
   // ========== Optimization Parameters ==========
   opt_params_.iterations_ =
@@ -168,6 +170,8 @@ void TriangleMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       readConfig<float>(settings_file, "Optimization.lambda_normal");
   opt_params_.normal_loss_mode_ =
       readConfig<int>(settings_file, "Optimization.normal_loss_mode");
+  opt_params_.lambda_equilateral_ =
+      readConfig<float>(settings_file, "Optimization.lambda_equilateral");
   opt_params_.auto_distribute_ =
       readConfig<int>(settings_file, "Optimization.auto_distribute");
   exposure_optimization_ =

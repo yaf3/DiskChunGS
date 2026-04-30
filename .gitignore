@@ -44,6 +44,9 @@
 # results
 results/
 debug/
+data/
+generated/
+**/experiments/**/manifest.json
 
 # ImGui .ini
 *imgui.ini

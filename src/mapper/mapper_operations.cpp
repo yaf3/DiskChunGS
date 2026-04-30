@@ -1198,9 +1198,16 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
   // Add all points to scene
   torch::Tensor final_opacities = general_utils::inverse_sigmoid(all_opacities);
 
+  // init_strategy_: 0=normal-based, 1=camera-facing, 2=fibonacci.
+  // generateTriangleVertices selects the mode based on which tensors are defined,
+  // so we control the strategy by passing or withholding normals/cam_center.
+  torch::Tensor eff_normals    = (init_strategy_ != 2) ? all_normals      : torch::Tensor{};
+  torch::Tensor eff_cam_center = (init_strategy_ != 2) ? pkf->getCenter() : torch::Tensor{};
+  if (init_strategy_ == 1) eff_normals = torch::Tensor{};  // camera-facing: drop normals
+
   triangles_->addPoints(all_points3D, all_colors, all_scales, final_opacities,
                         getIteration(), scene_->cameras_extent_,
-                        pkf->getCenter(), all_normals);
+                        eff_cam_center, eff_normals);
 
   // Save keyframes that were loaded during this operation
   for (const auto &kf : newly_loaded_keyframes) {

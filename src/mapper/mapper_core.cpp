@@ -312,6 +312,13 @@ void TriangleMapper::trainForOneIteration() {
     }
   }
 
+  // Equilateral (area) regularizer: penalizes collapsed/degenerate triangles.
+  float lambda_equilateral = lambdaEquilateral();
+  if (lambda_equilateral > 0.0f) {
+    auto visible_tri_pts = triangles_->getTrianglesPoints().index({visible_triangle_mask});
+    loss += lambda_equilateral * loss_utils::equilateral_loss(visible_tri_pts);
+  }
+
   // Backwards pass
   loss.backward();
 

@@ -18,6 +18,9 @@
 #include "rendering/triangle_renderer.h"
 #include "utils/loss_utils.h"
 #include "utils/profiling.h"
+#include "utils/sh_utils.h"
+
+#include <fstream>
 
 namespace {
 // Helper function to convert tensor to image and save
@@ -405,6 +408,59 @@ void TriangleMapper::writeTrainingMetricsCSV(std::filesystem::path result_dir) {
             << result_dir / "training_metrics.csv" << std::endl;
 }
 
+void TriangleMapper::exportToOFF(std::filesystem::path scene_dir) {
+  torch::NoGradGuard no_grad;
+
+  // Gather all triangles: [N,3,3] vertices, [N,1,3] dc features, [N,K,3] rest SH
+  auto tri_pts = triangles_->getTrianglesPoints().cpu().contiguous();  // [N,3,3]
+  int64_t N = tri_pts.size(0);
+  if (N == 0) return;
+
+  // Bake SH → RGB at centroid view direction (toward origin, matches create_off.py)
+  auto centroids = tri_pts.mean(/*dim=*/1);  // [N,3]
+  auto features = triangles_->getFeatures().cpu().contiguous();  // [N, 1+K, 3]
+  int max_sh_degree = triangles_->sh_degree_;
+
+  torch::Tensor colors_rgb;
+  {
+    // shs_view: [N, 3, (deg+1)^2]
+    int total_coeffs = (max_sh_degree + 1) * (max_sh_degree + 1);
+    auto shs_view = features.transpose(1, 2).view({N, 3, total_coeffs});
+
+    // Direction: centroid toward origin (matches original create_off.py)
+    auto dirs = -centroids;  // [N,3]
+    auto dirs_norm = dirs / torch::norm(dirs, 2, /*dim=*/1, /*keepdim=*/true).clamp_min(1e-8f);
+
+    auto sh2rgb = sh_utils::eval_sh(max_sh_degree, shs_view, dirs_norm);
+    colors_rgb = (sh2rgb + 0.5f).clamp(0.0f, 1.0f);  // [N,3] in [0,1]
+  }
+
+  // Write COFF: unique vertices = all 3*N corners (no deduplication for simplicity)
+  std::ofstream ofs(scene_dir / "mesh.off");
+  ofs << "COFF\n";
+  ofs << (N * 3) << " " << N << " 0\n";
+  ofs << std::fixed;
+
+  auto pts_acc  = tri_pts.accessor<float, 3>();
+  auto col_acc  = colors_rgb.accessor<float, 2>();
+
+  for (int64_t i = 0; i < N; ++i) {
+    for (int k = 0; k < 3; ++k) {
+      ofs << pts_acc[i][k][0] << " " << pts_acc[i][k][1] << " " << pts_acc[i][k][2] << "\n";
+    }
+  }
+  for (int64_t i = 0; i < N; ++i) {
+    int r = static_cast<int>(col_acc[i][0] * 255.0f);
+    int g = static_cast<int>(col_acc[i][1] * 255.0f);
+    int b = static_cast<int>(col_acc[i][2] * 255.0f);
+    ofs << "3 " << (i*3) << " " << (i*3+1) << " " << (i*3+2)
+        << " " << r << " " << g << " " << b << " 255\n";
+  }
+
+  std::cout << "[TriangleMapper] Exported " << N << " triangles to "
+            << (scene_dir / "mesh.off") << std::endl;
+}
+
 bool TriangleMapper::saveScene(std::filesystem::path scene_dir) {
   std::cout << "saveScene called" << std::endl;
   // Create directory if it doesn't exist
@@ -443,6 +499,11 @@ bool TriangleMapper::saveScene(std::filesystem::path scene_dir) {
   std::cout << "Done copying chunk data to save dir" << std::endl;
 
   std::cout << "Scene saved to " << scene_dir << std::endl;
+
+  if (record_save_off_) {
+    exportToOFF(scene_dir);
+  }
+
   return true;
 }
 
