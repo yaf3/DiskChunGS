@@ -25,13 +25,18 @@ target_compile_definitions(tetgen_vendored PUBLIC TETLIBRARY)
 target_compile_options(tetgen_vendored PRIVATE -w -fPIC)
 
 # --- restricted_delaunay ------------------------------------------------------
-# NOTE: Phase 1.1 scaffold only carries effrdel.{h,cpp}; the lbvh/delaunay/
-# tetgrid/intersect/orient translation units land in Phase 1.2.
 add_library(
     restricted_delaunay
     SHARED
     effrdel.h
     effrdel.cpp
+    lbvh.h
+    delaunay.h
+    delaunay.cpp
+    intersect.h
+    intersect.cpp
+    orient.h
+    orient.cpp
     $<TARGET_OBJECTS:tetgen_vendored>
 )
 
@@ -42,6 +47,11 @@ target_include_directories(restricted_delaunay PUBLIC
 
 target_link_libraries(restricted_delaunay
     Eigen3::Eigen
+    OpenMP::OpenMP_CXX
 )
 
 target_compile_definitions(restricted_delaunay PRIVATE TETLIBRARY)
+
+# --- Smoke test ---------------------------------------------------------------
+add_executable(test_effrdel test_effrdel.cpp)
+target_link_libraries(test_effrdel restricted_delaunay Eigen3::Eigen)
