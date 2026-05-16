@@ -53,3 +53,5 @@ generated/
 
 models/depth_anything_v2_vitl.onnx
 *.engine
+
+__pycache__/

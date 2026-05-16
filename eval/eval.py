@@ -11,6 +11,7 @@ import os
 import glob
 import csv
 import argparse
+import chamfer_l2
 
 
 parser = argparse.ArgumentParser(description="evaluation script")
@@ -173,7 +174,19 @@ for gt_dataset_name in gt_dataset:
                     render_time = render_time[:, 1].astype(np.float32)
                     Rendering_fps = 1000 / np.mean(render_time)
 
-                result_str = "{} {} {} {} {} {} {} {} {} {}\n".format(
+                Chamfer = None
+                if gt_dataset_name == "replica":
+                    pred_mesh_matches = glob.glob(os.path.join(result, scene, "*_shutdown", "data", "mesh.off"))
+                    gt_mesh   = os.path.join(gt_dataset[gt_dataset_name]["path"], f"{scene}_mesh.ply")
+                    pred_mesh = pred_mesh_matches[0] if pred_mesh_matches else None
+                    if pred_mesh and os.path.exists(pred_mesh) and os.path.exists(gt_mesh):
+                        try:
+                            Chamfer = chamfer_l2.compute(pred_mesh, gt_mesh)
+                            print(f"  Ch-L2 {scene}: {Chamfer:.6f}")
+                        except Exception as e:
+                            print(f"Chamfer failed for {scene}: {e}")
+
+                result_str = "{} {} {} {} {} {} {} {} {} {} {}\n".format(
                     scene,
                     T,
                     R,
@@ -184,6 +197,7 @@ for gt_dataset_name in gt_dataset:
                     Rendering_fps,
                     Num_Gaussians,
                     vram_usage,
+                    Chamfer,
                 )
                 print(result_str)
                 logs.append(result_str)
@@ -206,7 +220,8 @@ with open(os.path.join(result_main_folder, "log.csv"), "w") as out_file:
             "Time",
             "Rendering FPS",
             "Num Gaussians",
-            "VRAM Usage"
+            "VRAM Usage",
+            "Chamfer-L2",
         )
     )
     for log in logs:

@@ -30,12 +30,13 @@ with open(manifest_path) as f:
         for e in g["experiments"]
     ]
 
-# log.csv columns: scene T R PSNR SSIM LPIPS Time RenderFPS NumTriangles VRAM
-COL_SCENE = 0
-COL_T     = 1
-COL_PSNR  = 3
-COL_SSIM  = 4
-COL_LPIPS = 5
+# log.csv columns: scene T R PSNR SSIM LPIPS Time RenderFPS NumTriangles VRAM Chamfer-L2
+COL_SCENE   = 0
+COL_T       = 1
+COL_PSNR    = 3
+COL_SSIM    = 4
+COL_LPIPS   = 5
+COL_CHAMFER = 10
 
 # (key, header, width, higher_is_better)
 METRICS = [
@@ -43,7 +44,8 @@ METRICS = [
     ("ssim",  "SSIM↑",  6, True),
     ("lpips", "LPIPS↓", 6, False),
     ("ate",   "ATE↓",   7, False),
-    ("fps",   "FPS↑",   6, True),
+    ("fps",     "FPS↑",     6, True),
+    ("chamfer", "Ch-L2↓",  9, False),
 ]
 
 BOLD      = "\033[1m"
@@ -99,11 +101,12 @@ def compute_stats(rows, scene_dirs):
     fps_vals = [tracking_fps(scene_dirs[r[COL_SCENE]])
                 for r in rows if r[COL_SCENE] in scene_dirs]
     return {
-        "psnr":  mean_of([r[COL_PSNR]  for r in rows]),
-        "ssim":  mean_of([r[COL_SSIM]  for r in rows]),
-        "lpips": mean_of([r[COL_LPIPS] for r in rows]),
-        "ate":   mean_of([r[COL_T]     for r in rows]),
-        "fps":   float(np.nanmean(fps_vals)) if fps_vals else float("nan"),
+        "psnr":    mean_of([r[COL_PSNR]    for r in rows]),
+        "ssim":    mean_of([r[COL_SSIM]    for r in rows]),
+        "lpips":   mean_of([r[COL_LPIPS]   for r in rows]),
+        "ate":     mean_of([r[COL_T]       for r in rows]),
+        "fps":     float(np.nanmean(fps_vals)) if fps_vals else float("nan"),
+        "chamfer": mean_of([r[COL_CHAMFER] for r in rows if len(r) > COL_CHAMFER]),
     }
 
 
@@ -143,6 +146,7 @@ def print_row(label, s, ranks, missing=False):
         fmt_str = "{:6.2f}" if key == "psnr" else \
                   "{:6.3f}" if key in ("ssim", "lpips") else \
                   "{:7.4f}" if key == "ate" else \
+                  "{:9.6f}" if key == "chamfer" else \
                   "{:6.1f}"
         cells.append(fmt_val(s[key], width, fmt_str, best, second))
     print(f"  {label:<{LABEL_WIDTH}}  " + "  ".join(cells))
