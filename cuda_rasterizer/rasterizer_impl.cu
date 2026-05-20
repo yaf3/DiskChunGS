@@ -84,7 +84,6 @@
 	 const float* depths,
 	 const uint32_t* offsets,
 	 const float2* p_image,
-	 const int* cumsum_of_points_per_triangle,
 	 uint2* rect_min,
 	 uint2* rect_max,
 	 uint64_t* Triangle_keys_unsorted,
@@ -163,17 +162,16 @@
 		 present);
  }
  
- CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& chunk, size_t P, size_t total_nb_points)
+ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& chunk, size_t P, size_t total_nb_points, size_t V)
  {
 	 GeometryState geom;
 	 obtain(chunk, geom.depths, P, 128);
-	 obtain(chunk, geom.clamped, P * 3, 128);
+	 obtain(chunk, geom.clamped, V * 3, 128);
 	 obtain(chunk, geom.internal_radii, P, 128);
 	 obtain(chunk, geom.means2D, P, 128);
 	 obtain(chunk, geom.conic_opacity, P, 128);
 	 obtain(chunk, geom.phi_center, P, 128);
-	 obtain(chunk, geom.rgb, P * 3, 128);
-	 obtain(chunk, geom.cov3D, P * 6, 128);
+	 obtain(chunk, geom.rgb, V * 3, 128);
 	 obtain(chunk, geom.tiles_touched, P, 128);
 	 cub::DeviceScan::InclusiveSum(nullptr, geom.scan_size, geom.tiles_touched, geom.tiles_touched, P);
 	 obtain(chunk, geom.scanning_space, geom.scan_size, 128);
@@ -185,6 +183,7 @@
 	 obtain(chunk, geom.p_w, total_nb_points, 128);
      obtain(chunk, geom.rect_min, P, 128);
      obtain(chunk, geom.rect_max, P, 128);
+	 obtain(chunk, geom.vertex_depth, V, 128);
  
 	 return geom;
  }
@@ -219,19 +218,17 @@
 	 std::function<char* (size_t)> geometryBuffer,
 	 std::function<char* (size_t)> binningBuffer,
 	 std::function<char* (size_t)> imageBuffer,
-	 const int P, int D, int M,
+	 const int P, const int V, int D, int M,
 	 const float* background,
 	 const int width, int height,
-	 const float* triangles_points,
-	 const float* sigma,
-	 const int* num_points_per_triangle,
-	 const int* cumsum_of_points_per_triangle,
+	 const float* vertices,
+	 const int* triangles_indices,
+	 const float* vertex_weights,
+	 const float sigma,
 	 const int total_nb_points,
 	 const float* shs,
 	 const float* colors_precomp,
-	 const float* opacities,
 	 float* scaling,
-	 float* density_factor,
 	 const float* viewmatrix,
 	 const float* projmatrix,
 	 const float* cam_pos,
@@ -241,15 +238,15 @@
 	 float* out_others,
 	 float* max_blending,
 	 int* radii,
+	 int* was_rendered,
 	 bool debug)
  {
 	 const float focal_y = height / (2.0f * tan_fovy);
 	 const float focal_x = width / (2.0f * tan_fovx);
  
-	 size_t chunk_size = required<GeometryState>(P, total_nb_points);
+	 size_t chunk_size = required<GeometryState>(P, total_nb_points, V);
 	 char* chunkptr = geometryBuffer(chunk_size);
-	 GeometryState geomState = GeometryState::fromChunk(chunkptr, P, total_nb_points);
- 
+	 GeometryState geomState = GeometryState::fromChunk(chunkptr, P, total_nb_points, V); 
 	 
 	 if (radii == nullptr)
 	 {
@@ -272,13 +269,11 @@
 	 // Run preprocessing per-Triangle (transformation, bounding, conversion of SHs to RGB)
 	 CHECK_CUDA(FORWARD::preprocess(
 		 P, D, M,
-		 triangles_points,
+		 vertices,
+		 triangles_indices,
+		 vertex_weights,
 		 sigma,
-		 num_points_per_triangle,
-		 cumsum_of_points_per_triangle,
-		 opacities,
 		 scaling,
-		 density_factor,
 		 shs,
 		 geomState.clamped,
 		 colors_precomp,
@@ -295,9 +290,7 @@
 		 geomState.indices,
 		 geomState.means2D,
 		 geomState.depths,
-		 geomState.rgb,
 		 geomState.conic_opacity,
-		 geomState.cov3D,
 		 geomState.phi_center,
 		 geomState.rect_min,
 		 geomState.rect_max,
@@ -305,6 +298,22 @@
 		 geomState.tiles_touched,
 		 prefiltered
 	 ), debug)
+
+
+	 if (colors_precomp == nullptr)
+	{
+		// Compute vertex colors in parallel
+		FORWARD::computeVertexColors(
+			V, D, M,
+			vertices,
+			shs,
+			geomState.clamped,
+			geomState.rgb,
+			geomState.vertex_depth,
+			viewmatrix,
+			(glm::vec3*)cam_pos
+		);
+	}
  
 	 // Compute prefix sum over full list of touched tile counts by triangles
 	 // E.g., [2, 3, 0, 2, 1] -> [2, 5, 5, 7, 8]
@@ -326,7 +335,6 @@
 		 geomState.depths,
 		 geomState.point_offsets,
 		 geomState.p_image,
-		 cumsum_of_points_per_triangle,
 		 geomState.rect_min,
 		 geomState.rect_max,
 		 binningState.point_list_keys_unsorted,
@@ -365,19 +373,21 @@
 		 geomState.normals,
 		 geomState.offsets,
 		 geomState.means2D,
+		 geomState.vertex_depth,
+		 triangles_indices,
 		 sigma,
-		 num_points_per_triangle,
-		 cumsum_of_points_per_triangle,
 		 feature_ptr,
 		 geomState.conic_opacity,
 		 geomState.depths,
 		 geomState.phi_center,
+		 geomState.p_image,
 		 imgState.accum_alpha,
 		 imgState.n_contrib,
 		 background,
 		 out_color,
 		 out_others,
-		 max_blending), debug)
+		 max_blending,
+		 was_rendered), debug)
  
 	 return num_rendered;
  }
@@ -385,13 +395,13 @@
  // Produce necessary gradients for optimization, corresponding
  // to forward render pass
  void CudaRasterizer::Rasterizer::backward(
-	 const int P, int D, int M, int R,
+	 const int P, const int V, int D, int M, int R,
 	 const float* background,
 	 const int width, int height,
-	 const float* triangles_points,
-	 const float* sigma,
-	 const int* num_points_per_triangle,
-	 const int* cumsum_of_points_per_triangle,
+	 const float* vertices,
+	 const int* triangles_indices,
+	 const float* vertex_weights,
+	 const float sigma,
 	 const int total_nb_points,
 	 const float* shs,
 	 const float* colors_precomp,
@@ -405,22 +415,20 @@
 	 char* img_buffer,
 	 const float* dL_dpix,
 	 const float* dL_depths,
-	 float* dL_dmeans3D,
 	 float* dL_dmeans2D,
-	 float* dL_dcov3D,
 	 float* dL_dnormal3D,
-	 float* dL_dtriangle,
-	 float* dL_dsigma,
+	 float* dL_dvertices3D,
+	 float* dL_dvertice_weights,
 	 float* dL_dnormals,
 	 float* dL_doffsets,
-	 float* dL_dconic,
 	 float* dL_dopacity,
 	 float* dL_dcolor,
 	 float* dL_dsh,
-	 float* dL_dsigma_factor,
+	 float* dL_dpoints2D,
+	 float* dL_dvertice_depth,
 	 bool debug)
  {
-	 GeometryState geomState = GeometryState::fromChunk(geom_buffer, P, total_nb_points);
+	 GeometryState geomState = GeometryState::fromChunk(geom_buffer, P, total_nb_points, V);
 	 BinningState binningState = BinningState::fromChunk(binning_buffer, R);
 	 ImageState imgState = ImageState::fromChunk(img_buffer, width * height);
  
@@ -447,14 +455,15 @@
 		 width, height,
 		 background,
 		 sigma,
-		 num_points_per_triangle,
-		 cumsum_of_points_per_triangle,
+		 triangles_indices,
 		 geomState.normals,
 		 geomState.offsets,
 		 geomState.conic_opacity,
 		 geomState.depths,
 		 geomState.means2D,
 		 geomState.phi_center,
+		 geomState.p_image,
+		 geomState.vertex_depth,
 		 color_ptr,
 		 imgState.accum_alpha,
 		 imgState.n_contrib,
@@ -462,44 +471,63 @@
 		 dL_depths,
 		 (float2*)dL_dnormals,
 		 dL_doffsets,
-		 dL_dsigma,
 		 (float3*)dL_dmeans2D,
-		 (float4*)dL_dconic,
 		 dL_dopacity,
 		 dL_dnormal3D,
 		 dL_dcolor,
-		 dL_dsigma_factor), debug)
+		 dL_dpoints2D,
+		 dL_dvertice_depth), debug)
  
+
+	if (colors_precomp == nullptr) {
+		// Compute vertex color gradients in parallel
+		CHECK_CUDA(BACKWARD::computeVertexColorGradients(
+			V, D, M,
+			width, height,
+			viewmatrix,
+		 	projmatrix,
+			geomState.p_w,
+			vertices,
+			shs,
+			geomState.clamped,
+			(glm::vec3*)campos,
+			dL_dcolor,  // From render output
+			dL_dpoints2D,
+			(glm::vec3*)dL_dvertices3D,
+			dL_dsh,
+			dL_dvertice_depth
+		), debug)
+	}
+
+
 	 // Take care of the rest of preprocessing. Was the precomputed covariance
 	 // given to us or a scales/rot pair? If precomputed, pass that. If not,
 	 // use the one we computed ourselves.
 	 CHECK_CUDA(BACKWARD::preprocess(P, D, M,
-		 triangles_points,
+		 vertices,
+		 triangles_indices,
+		 vertex_weights,
 		 width, height,
 		 radii,
 		 shs,
 		 geomState.clamped,
 		 viewmatrix,
 		 projmatrix,
-		 num_points_per_triangle,
-		 cumsum_of_points_per_triangle,
 		 geomState.means2D,
 		 geomState.p_w,
 		 geomState.p_image,
 		 geomState.indices,
-		 geomState.cov3D,
 		 focal_x, focal_y,
 		 tan_fovx, tan_fovy,
 		 (glm::vec3*)campos,
-		 (glm::vec3*)dL_dtriangle,
+		 (glm::vec3*)dL_dvertices3D,
+		 (float*)dL_dvertice_weights,
 		 (float2*)dL_dnormals,
 		 dL_doffsets,
-		 (glm::vec3*)dL_dmeans3D,
 		 (float3*)dL_dmeans2D,
-		 dL_dconic,
-		 dL_dcov3D,
+		 dL_dopacity,
 		 dL_dnormal3D,
 		 dL_dcolor,
-		 dL_dsh,
-		 dL_dsigma_factor), debug)
+		 dL_dsh
+		), debug)
  }

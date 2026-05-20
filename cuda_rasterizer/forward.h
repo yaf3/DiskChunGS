@@ -33,13 +33,11 @@
  {
 	 // Perform initial steps for each Triangle prior to rasterization.
 	 void preprocess(int P, int D, int M,
-		 const float* triangles_points,
-		 const float* sigma,
-		 const int* num_points_per_triangle,
-		 const int* cumsum_of_points_per_triangle,
-		 const float* opacities,
+		 const float* vertices,
+		 const int* triangles_indices,
+		 const float* vertex_weights,
+		 const float sigma,
 		 float* scaling,
-		 float* density_factor,
 		 const float* shs,
 		 bool* clamped,
 		 const float* colors_precomp,
@@ -57,15 +55,23 @@
 		 int* indices,
 		 float2* points_xy_image,
 		 float* depths,
-		 float* colors,
 		 float4* conic_opacity,
-		 float* cov3Ds,
 		 float2* phi_center,
 		 uint2* rect_min,
 		 uint2* rect_max,
 		 const dim3 grid,
 		 uint32_t* tiles_touched,
 		 bool prefiltered);
+
+	void computeVertexColors(
+		int V, int D, int M,
+		const float* vertices,
+		const float* shs,
+		bool* clamped,
+		float* rgb,
+		float* vertex_depth, 
+		const float* viewmatrix,
+		const glm::vec3* cam_pos);
  
 	 // Main rasterization method.
 	 void render(
@@ -76,19 +82,21 @@
 		 const float2* normals,
 		 const float* offsets,
 		 const float2* points_xy_image,
-		 const float* sigma,
-		 const int* num_points_per_triangle,
-		 const int* cumsum_of_points_per_triangle,
+		 const float* vertex_depth, 
+		 const int* triangles_indices,
+		 const float sigma,
 		 const float* features,
 		 const float4* conic_opacity,
 		 const float* depths,
 		 const float2* phi_center,
+		 const float2* p_image,
 		 float* final_T,
 		 uint32_t* n_contrib,
 		 const float* bg_color,
 		 float* out_color,
 		 float* out_others, 
-		 float* max_blending);
+		 float* max_blending,
+		 int* was_rendered);
  }
  
  

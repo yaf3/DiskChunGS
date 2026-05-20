@@ -21,25 +21,22 @@
  */
 
  #pragma once
- #include <torch/torch.h>
+ #include <torch/extension.h>
  #include <cstdio>
  #include <tuple>
  #include <string>
 	
 std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
-RasterizeTrianglesCUDA(
+RasterizetrianglesCUDA(
 	const torch::Tensor& background,
-	const torch::Tensor& triangles_points,
-	const torch::Tensor& sigma,
-	const torch::Tensor& num_points_per_triangle,
-	const torch::Tensor& cumsum_of_points_per_triangle,
+	const torch::Tensor& vertices,
+	const torch::Tensor& triangles_indices,
+	const torch::Tensor& vertex_weights,
+	const float sigma,
     const torch::Tensor& colors,
-    const torch::Tensor& opacity,
 	torch::Tensor& scaling,
-	torch::Tensor& density_factor,
 	const torch::Tensor& viewmatrix,
 	const torch::Tensor& projmatrix,
-	const int number_of_points,
 	const float tan_fovx, 
 	const float tan_fovy,
     const int image_height,
@@ -50,18 +47,17 @@ RasterizeTrianglesCUDA(
 	const bool prefiltered,
 	const bool debug);
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
- RasterizeTrianglesBackwardCUDA(
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+ RasterizetrianglesBackwardCUDA(
  	const torch::Tensor& background,
-	const torch::Tensor& triangles_points,
-	const torch::Tensor& sigma,
-	const torch::Tensor& num_points_per_triangle,
-	const torch::Tensor& cumsum_of_points_per_triangle,
+	const torch::Tensor& vertices,
+	const torch::Tensor& triangles_indices,
+	const torch::Tensor& vertex_weights,
+	const float sigma,
 	const torch::Tensor& radii,
     const torch::Tensor& colors,
 	const torch::Tensor& viewmatrix,
     const torch::Tensor& projmatrix,
-	const int number_of_points,
 	const float tan_fovx, 
 	const float tan_fovy,
     const torch::Tensor& dL_dout_color,
@@ -87,23 +83,17 @@ std::tuple<torch::Tensor, torch::Tensor> ComputeRelocationCUDA(
 	torch::Tensor& binoms,
 	const int n_max);
 
-void adamUpdate(torch::Tensor& param,
-                const torch::Tensor& param_grad,
-                torch::Tensor& exp_avg,
-                torch::Tensor& exp_avg_sq,
-                torch::Tensor& visible,
-                torch::Tensor& lr,
-                const float b1,
-                const float b2,
-                const float eps,
-                const uint32_t N,
-                const uint32_t M);
 
-void adamUpdateBasic(torch::Tensor& param,
-                     const torch::Tensor& param_grad,
-                     torch::Tensor& exp_avg,
-                     torch::Tensor& exp_avg_sq,
-                     const float lr,
-                     const float b1,
-                     const float b2,
-                     const float eps);
+void adamUpdate(
+	torch::Tensor &param,
+	torch::Tensor &param_grad,
+	torch::Tensor &exp_avg,
+	torch::Tensor &exp_avg_sq,
+	torch::Tensor &visible,
+	const float lr,
+	const float b1,
+	const float b2,
+	const float eps,
+	const uint32_t N,
+	const uint32_t M
+);

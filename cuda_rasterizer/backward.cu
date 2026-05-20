@@ -26,11 +26,83 @@
  #include <cooperative_groups/reduce.h>
  namespace cg = cooperative_groups;
  
- 
+ __device__ void circumcenter_backward(float3 A, float3 B, float3 C, float3 dU, float3* dA, float3* dB, float3* dC) {
+    // Forward recomputation
+    float3 AB = make_float3(B.x-A.x, B.y-A.y, B.z-A.z);
+    float3 AC = make_float3(C.x-A.x, C.y-A.y, C.z-A.z);
+    
+    float3 N = make_float3(
+        AB.y*AC.z - AB.z*AC.y,
+        AB.z*AC.x - AB.x*AC.z,
+        AB.x*AC.y - AB.y*AC.x
+    );
+    
+    float AB2 = dot_float3(AB, AB);
+    float AC2 = dot_float3(AC, AC);
+    float denom = 2.0f * dot_float3(N, N);
+    float inv_denom = 1.0f / denom;
+    
+    // Backward pass
+    float3 term_sum = make_float3(
+        (N.y*AB.z - N.z*AB.y)*AC2 + (AC.y*N.z - AC.z*N.y)*AB2,
+        (N.z*AB.x - N.x*AB.z)*AC2 + (AC.z*N.x - AC.x*N.z)*AB2,
+        (N.x*AB.y - N.y*AB.x)*AC2 + (AC.x*N.y - AC.y*N.x)*AB2
+    );
+    
+    // Gradient through U = term_sum / denom
+    float3 dterm_sum = scale_float3(dU, inv_denom);
+    float ddenom = -dot_float3(term_sum, dU) / (denom*denom);
+    
+    // Intermediate gradients
+    float dAB2 = 0.0f, dAC2 = 0.0f;
+    float3 dN = make_float3(0,0,0);
+    float3 dAB = make_float3(0,0,0);
+    float3 dAC = make_float3(0,0,0);
+    
+    // Backprop through term_sum components
+    for (int i = 0; i < 2; i++) {
+        float3 cross_vec = (i == 0) ? 
+            make_float3(N.y*AB.z - N.z*AB.y, N.z*AB.x - N.x*AB.z, N.x*AB.y - N.y*AB.x) :
+            make_float3(AC.y*N.z - AC.z*N.y, AC.z*N.x - AC.x*N.z, AC.x*N.y - AC.y*N.x);
+            
+        float scalar = (i == 0) ? AC2 : AB2;
+        float3 dcross_vec = scale_float3(dterm_sum, scalar);
+        float dscalar = dot_float3(dterm_sum, cross_vec);
+        
+        if (i == 0) dAC2 += dscalar;
+        else dAB2 += dscalar;
+        
+        // Cross product gradients
+        if (i == 0) {
+            dN = add_float3(dN, cross_float3(AB, dcross_vec));
+            dAB = add_float3(dAB, cross_float3(dcross_vec, N));
+        } else {
+            dAC = add_float3(dAC, cross_float3(N, dcross_vec));
+            dN = add_float3(dN, cross_float3(dcross_vec, AC));
+        }
+    }
+    
+    // Gradient through |N|^2
+    dN = add_float3(dN, scale_float3(N, 2.0f * ddenom * 2.0f));
+    
+    // Gradient through N = cross(AB, AC)
+    dAB = add_float3(dAB, cross_float3(AC, dN));
+    dAC = add_float3(dAC, cross_float3(dN, AB));
+    
+    // Gradients through squared lengths
+    dAB = add_float3(dAB, scale_float3(AB, 2.0f * dAB2));
+    dAC = add_float3(dAC, scale_float3(AC, 2.0f * dAC2));
+    
+    // Final vertex gradients
+    *dA = add_float3(scale_float3(dAB, -1.0f), scale_float3(dAC, -1.0f));
+    *dB = dAB;
+    *dC = dAC;
+	*dA = add_float3(*dA, dU);
+}
  
  // Backward pass for conversion of spherical harmonics to RGB for
  // each Triangle.
- __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3 means, glm::vec3 campos, const float* shs, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dtriangle, glm::vec3* dL_dshs, const int cumsum_for_triangle, const int num_points_per_triangle)
+ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3 means, glm::vec3 campos, const float* shs, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dvertices3D, glm::vec3* dL_dshs)
  {
 	 // Compute intermediate values, as it is done during forward
 	 glm::vec3 pos = means;
@@ -42,9 +114,11 @@
 	 // Use PyTorch rule for clamping: if clamping was applied,
 	 // gradient becomes 0.
 	 glm::vec3 dL_dRGB = dL_dcolor[idx];
+	 //printf("Compute color for vertex %d with gradient: %.10f, %.10f, %.10f \n", idx, dL_dRGB.x, dL_dRGB.y, dL_dRGB.z);
 	 dL_dRGB.x *= clamped[3 * idx + 0] ? 0 : 1;
 	 dL_dRGB.y *= clamped[3 * idx + 1] ? 0 : 1;
 	 dL_dRGB.z *= clamped[3 * idx + 2] ? 0 : 1;
+
  
 	 glm::vec3 dRGBdx(0, 0, 0);
 	 glm::vec3 dRGBdy(0, 0, 0);
@@ -136,30 +210,55 @@
 			 }
 		 }
 	 }
- 
-	 // The view direction is an input to the computation. View direction
-	 // is influenced by the Triangle's mean, so SHs gradients
-	 // must propagate back into 3D position.
-	 glm::vec3 dL_ddir(glm::dot(dRGBdx, dL_dRGB), glm::dot(dRGBdy, dL_dRGB), glm::dot(dRGBdz, dL_dRGB));
- 
-	 // Account for normalization of direction
-	 float3 dL_dmean = dnormvdv(float3{ dir_orig.x, dir_orig.y, dir_orig.z }, float3{ dL_ddir.x, dL_ddir.y, dL_ddir.z });
- 
-	 glm::vec3 scaled_dL_dmean = glm::vec3(dL_dmean.x, dL_dmean.y, dL_dmean.z) / static_cast<float>(num_points_per_triangle);
- 
-	 // Gradients of loss w.r.t. Triangle means, but only the portion 
-	 // that is caused because the mean affects the view-dependent color.
-	 // Additional mean gradient is accumulated in below methods.
- 
-	 for (int i = 0; i < num_points_per_triangle; i++)
-	 {
-		 dL_dtriangle[cumsum_for_triangle + i] += scaled_dL_dmean;
-	 }
- 
+
  }
  
- 
- 
+
+ __global__ void computeVertexColorsCUDA(
+    int V, int D, int M,
+	int W, int H,
+	const float* viewmatrix,
+	const float* proj,
+	const float* vertices,
+	const float* shs,
+	const bool* clamped,
+	const glm::vec3* campos,
+	const float* dL_dcolor,
+	const float* dL_dpoints2D,
+	glm::vec3* dL_dvertices3D,
+	float* dL_dsh,
+	const float* dL_dvertice_depth)
+{	
+	
+    auto idx = cg::this_grid().thread_rank();
+    if (idx >= V)
+        return;
+
+
+	glm::vec3 vertex {
+		vertices[3 * idx + 0],
+		vertices[3 * idx + 1],
+		vertices[3 * idx + 2]
+	};
+
+	// back‑prop its own color→SH and color→position
+	computeColorFromSH(idx, D, M, vertex, *campos,
+		shs,
+		clamped,
+		(glm::vec3*)dL_dcolor,   
+		(glm::vec3*)dL_dvertices3D, 
+		(glm::vec3*)dL_dsh
+	);
+
+	float3 dL_ddepht = {0.0f, 0.0f, dL_dvertice_depth[idx]};
+	float3 transposed_dL_ddepth = transformPoint4x3Transpose(dL_ddepht, viewmatrix);
+
+	dL_dvertices3D[idx].x = transposed_dL_ddepth.x;
+	dL_dvertices3D[idx].y = transposed_dL_ddepth.y;
+	dL_dvertices3D[idx].z = transposed_dL_ddepth.z;
+
+}
+
  
 // Backward pass of the preprocessing steps, except
  // for the covariance computation and inversion
@@ -167,45 +266,58 @@
  template<int C>
  __global__ void preprocessCUDA(
 	 int P, int D, int M,
-	 const float* triangles_points,
+	 const float* vertices,
+	 const int* triangles_indices,
+	 const float* vertex_weights,
 	 int W, int H,
 	 const int* radii,
 	 const float* shs,
 	 const bool* clamped,
 	 const float* proj,
 	 const float* viewmatrix,
-	 const int* num_points_per_triangle,
-	 const int* cumsum_of_points_per_triangle,
 	 float2* points_xy_image,
 	 float* p_w,
 	 float2* p_image,
 	 int* indices,
 	 const glm::vec3* campos,
-	 glm::vec3* dL_dtriangle,
+	 glm::vec3* dL_dvertices3D,
+	 float* dL_dvertice_weights,
 	 const float2* dL_dnormals,
 	 const float* dL_doffsets,
-	 glm::vec3* dL_dmeans,
 	 float3* dL_dmean2D,
-	 float* dL_dcov3D,
+	 float* dL_dopacity,
 	 float* dL_dnormal3D,
 	 float* dL_dcolor,
-	 float* dL_dsh,
-	float* dL_dsigma_factor)
+	 float* dL_dsh)
  {
 	 auto idx = cg::this_grid().thread_rank();
+
 	 if (idx >= P || !(radii[idx] > 0))
 		 return;
- 
-	 const int cumsum_for_triangle = cumsum_of_points_per_triangle[idx];
+
+
+	 const int cumsum_for_triangle = 3 * idx;;
 	 const int offset = 3 * cumsum_for_triangle;
 	 float3 center_triangle = {0.0f, 0.0f, 0.0f};
 	 float sum_x[MAX_NB_POINTS] = {0.0f};
 	 float sum_y[MAX_NB_POINTS] = {0.0f};
 	 float sum_z[MAX_NB_POINTS] = {0.0f};
+
+	 float min_weight = INFINITY;
+	 int id_lowest_weight = -1;
 	 for (int i = 0; i < 3; i++) {
-		 center_triangle.x += triangles_points[offset + 3 * i];
-		 center_triangle.y += triangles_points[offset + 3 * i + 1];
-		 center_triangle.z += triangles_points[offset + 3 * i + 2];
+		int vertex_index = triangles_indices[cumsum_for_triangle + i];
+
+		center_triangle.x += vertices[3 * vertex_index];
+		center_triangle.y += vertices[3 * vertex_index + 1];
+		center_triangle.z += vertices[3 * vertex_index + 2];
+
+		float weight = vertex_weights[vertex_index];
+
+		if (weight < min_weight) {
+			id_lowest_weight = vertex_index;
+			min_weight = weight;
+		}
 	 }
  
 	 float3 total_sum = {center_triangle.x, center_triangle.y, center_triangle.z};
@@ -223,7 +335,7 @@
 	 float loss_points_x[MAX_NB_POINTS] = {0.0f};
 	 float loss_points_y[MAX_NB_POINTS] = {0.0f};
  
-	 
+
 	 for (int i = 0; i < 3; i++) {
 		float dL_dnormal_x = dL_dnormals[cumsum_for_triangle + i].x;
 		float dL_dnormal_y = dL_dnormals[cumsum_for_triangle + i].y;
@@ -273,166 +385,159 @@
     	loss_points_y[indices[cumsum_for_triangle + (i + 1) % 3]] += dL_dp2_conv.y;
 	}
  
-
 	 float3 dL_ddepht = {0.0f, 0.0f, dL_dmean2D[idx].x};
 	 float3 transposed_dL_ddepth = transformPoint4x3Transpose(dL_ddepht, viewmatrix);
 
- 
 	 for (int i = 0; i < 3; i++) {
  
-		 float mul1 = (proj[0] * triangles_points[offset + 3 * i] + proj[4] * triangles_points[offset + 3 * i + 1] + proj[8] * triangles_points[offset + 3 * i + 2] + proj[12]) * p_w[cumsum_for_triangle + i] * p_w[cumsum_for_triangle + i];
-		 float mul2 = (proj[1] * triangles_points[offset + 3 * i] + proj[5] * triangles_points[offset + 3 * i + 1] + proj[9] * triangles_points[offset + 3 * i + 2] + proj[13]) * p_w[cumsum_for_triangle + i] * p_w[cumsum_for_triangle + i];
-		 dL_dtriangle[cumsum_for_triangle + i].x = (proj[0] * p_w[cumsum_for_triangle + i] - proj[3] * mul1) * loss_points_x[i]  + (proj[1] * p_w[cumsum_for_triangle + i] - proj[3] * mul2) * loss_points_y[i] + transposed_dL_ddepth.x / 3;
-		 dL_dtriangle[cumsum_for_triangle + i].y = (proj[4] * p_w[cumsum_for_triangle + i] - proj[7] * mul1) * loss_points_x[i] + (proj[5] * p_w[cumsum_for_triangle + i] - proj[7] * mul2) * loss_points_y[i] + transposed_dL_ddepth.y / 3;
-		 dL_dtriangle[cumsum_for_triangle + i].z = (proj[8] * p_w[cumsum_for_triangle + i] - proj[11] * mul1) * loss_points_x[i] + (proj[9] * p_w[cumsum_for_triangle + i] - proj[11] * mul2) * loss_points_y[i] + transposed_dL_ddepth.z / 3;
-	 
+		int vertex_index = triangles_indices[cumsum_for_triangle + i];
+
+		float mul1 = (proj[0] * vertices[3 * vertex_index] + proj[4] * vertices[3 * vertex_index + 1] + proj[8] * vertices[3 * vertex_index + 2] + proj[12]) * p_w[cumsum_for_triangle + i] * p_w[cumsum_for_triangle + i];
+		float mul2 = (proj[1] * vertices[3 * vertex_index] + proj[5] * vertices[3 * vertex_index + 1] + proj[9] * vertices[3 * vertex_index + 2] + proj[13]) * p_w[cumsum_for_triangle + i] * p_w[cumsum_for_triangle + i];
+				
+		dL_dvertices3D[vertex_index].x += (proj[0] * p_w[cumsum_for_triangle + i] - proj[3] * mul1) * loss_points_x[i]  + (proj[1] * p_w[cumsum_for_triangle + i] - proj[3] * mul2) * loss_points_y[i] + transposed_dL_ddepth.x / 3;
+		dL_dvertices3D[vertex_index].y += (proj[4] * p_w[cumsum_for_triangle + i] - proj[7] * mul1) * loss_points_x[i] + (proj[5] * p_w[cumsum_for_triangle + i] - proj[7] * mul2) * loss_points_y[i] + transposed_dL_ddepth.y / 3;
+		dL_dvertices3D[vertex_index].z += (proj[8] * p_w[cumsum_for_triangle + i] - proj[11] * mul1) * loss_points_x[i] + (proj[9] * p_w[cumsum_for_triangle + i] - proj[11] * mul2) * loss_points_y[i] + transposed_dL_ddepth.z / 3;
+		
 	 }
  
-	 // Compute gradient updates due to computing colors from SHs
-	 if (shs)
-		 computeColorFromSH(idx, D, M, (glm::vec3)(center_triangle.x, center_triangle.y, center_triangle.z), *campos, shs, clamped, (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dtriangle, (glm::vec3*)dL_dsh, cumsum_for_triangle, 3);
-
-	 
-	 // Calculate the normal of the Triangle
-	 float3 normal_cvx = {0.0f, 0.0f, 0.0f};
-	 float3 p0 = make_float3(
-		 triangles_points[offset + 0],
-		 triangles_points[offset + 1],
-		 triangles_points[offset + 2]
-	 );
-	 float3 p1 = make_float3(
-		 triangles_points[offset + 3],
-		 triangles_points[offset + 4],
-		 triangles_points[offset + 5]
-	 );
-	 float3 p2 = make_float3(
-		 triangles_points[offset + 6],
-		 triangles_points[offset + 7],
-		 triangles_points[offset + 8]
-	 );
-	 float3 v1 = make_float3(p1.x - p0.x, p1.y - p0.y, p1.z - p0.z);
-	 float3 v2 = make_float3(p2.x - p0.x, p2.y - p0.y, p2.z - p0.z);
-	 float3 v3 = make_float3(p2.x - p1.x, p2.y - p1.y, p2.z - p1.z);
+	
+	// Calculate the normal of the Triangle
+	float3 normal_cvx = {0.0f, 0.0f, 0.0f};
+	int vertex_index = triangles_indices[cumsum_for_triangle];
+	float3 p0 = make_float3(
+		vertices[3 * vertex_index + 0],
+		vertices[3 * vertex_index + 1],
+		vertices[3 * vertex_index + 2]
+	);
+	vertex_index = triangles_indices[cumsum_for_triangle + 1];
+	float3 p1 = make_float3(
+		vertices[3 * vertex_index + 0],
+		vertices[3 * vertex_index + 1],
+		vertices[3 * vertex_index + 2]
+	);
+	vertex_index = triangles_indices[cumsum_for_triangle + 2];
+	float3 p2 = make_float3(
+		vertices[3 * vertex_index + 0],
+		vertices[3 * vertex_index + 1],
+		vertices[3 * vertex_index + 2]
+	);
+	float3 v1 = make_float3(p1.x - p0.x, p1.y - p0.y, p1.z - p0.z);
+	float3 v2 = make_float3(p2.x - p0.x, p2.y - p0.y, p2.z - p0.z);
+	float3 v3 = make_float3(p2.x - p1.x, p2.y - p1.y, p2.z - p1.z);
  
-	 float3 unnorm_ross_prod = make_float3(
+	float3 unnorm_ross_prod = make_float3(
 		 v1.y * v2.z - v1.z * v2.y,
 		 v1.z * v2.x - v1.x * v2.z,
 		 v1.x * v2.y - v1.y * v2.x
-	 );
-	 float3 cross_prod = transformVec4x3(unnorm_ross_prod, viewmatrix);
+	);
+	float3 cross_prod = transformVec4x3(unnorm_ross_prod, viewmatrix);
  
-	 float length = sqrtf(cross_prod.x*cross_prod.x + cross_prod.y*cross_prod.y + cross_prod.z*cross_prod.z);
-	 if (length > 1e-8f) {
+	float length = sqrtf(cross_prod.x*cross_prod.x + cross_prod.y*cross_prod.y + cross_prod.z*cross_prod.z);
+	if (length > 1e-8f) {
 		 cross_prod.x /= length;
 		 cross_prod.y /= length;
 		 cross_prod.z /= length;
-	 }
-	 normal_cvx = cross_prod;
+	}
+	normal_cvx = cross_prod;
 
-	 float3 p_view_triangle_ = transformPoint4x3(center_triangle, viewmatrix);
-	 // we normalize such that we have a unit vector and cos is between -1 and 1
-	 float length_viewpoint = sqrtf(p_view_triangle_.x*p_view_triangle_.x + p_view_triangle_.y*p_view_triangle_.y + p_view_triangle_.z*p_view_triangle_.z);
-	 length_viewpoint = max(length_viewpoint, 1e-4f);
-	 float3 normalized_camera_center;
-	 normalized_camera_center.x = p_view_triangle_.x / length_viewpoint;
-	 normalized_camera_center.y = p_view_triangle_.y / length_viewpoint;
-	 normalized_camera_center.z = p_view_triangle_.z / length_viewpoint;
+	float3 p_view_triangle_ = transformPoint4x3(center_triangle, viewmatrix);
+	// we normalize such that we have a unit vector and cos is between -1 and 1
+	float length_viewpoint = sqrtf(p_view_triangle_.x*p_view_triangle_.x + p_view_triangle_.y*p_view_triangle_.y + p_view_triangle_.z*p_view_triangle_.z);
+	length_viewpoint = max(length_viewpoint, 1e-4f);
+	float3 normalized_camera_center;
+	normalized_camera_center.x = p_view_triangle_.x / length_viewpoint;
+	normalized_camera_center.y = p_view_triangle_.y / length_viewpoint;
+	normalized_camera_center.z = p_view_triangle_.z / length_viewpoint;
  
-	 float3 dir = make_float3(
+	float3 dir = make_float3(
 		 normalized_camera_center.x * normal_cvx.x,
 		 normalized_camera_center.y * normal_cvx.y,
 		 normalized_camera_center.z * normal_cvx.z
-	 );
+	);
 	 
-	 float cos = -sumf3(dir);
+	float cos = -sumf3(dir);
 	 
-	 const float threshold = 0.001f;
-	 if (fabsf(cos) < threshold) {
+	const float threshold = 0.001f;
+	if (fabsf(cos) < threshold) {
 		return;
-	 }
+	}
 		
-	 float multiplier = cos > 0 ? 1 : -1;
-	 normal_cvx = {cross_prod.x * multiplier, cross_prod.y * multiplier, cross_prod.z * multiplier};
+	float multiplier = cos > 0 ? 1 : -1;
+	normal_cvx = {cross_prod.x * multiplier, cross_prod.y * multiplier, cross_prod.z * multiplier};
  
-	 // ## BACKWARD
-	 float3 dL_dtn = {dL_dnormal3D[idx * 3 + 0]*multiplier, dL_dnormal3D[idx * 3 + 1]*multiplier, dL_dnormal3D[idx * 3 + 2]*multiplier};
+	// ## BACKWARD
+	float3 dL_dtn = {dL_dnormal3D[idx * 3 + 0]*multiplier, dL_dnormal3D[idx * 3 + 1]*multiplier, dL_dnormal3D[idx * 3 + 2]*multiplier};
  
-	 float matrix_w0[9], matrix_w1[9], matrix_w2[9];
+	float matrix_w0[9], matrix_w1[9], matrix_w2[9];
  
-	 matrix_w0[0] = 0.0f;   matrix_w0[1] = -v3.z; matrix_w0[2] = v3.y;
-	 matrix_w0[3] = v3.z;   matrix_w0[4] = 0.0f;  matrix_w0[5] = -v3.x;
-	 matrix_w0[6] = -v3.y;  matrix_w0[7] = v3.x;  matrix_w0[8] = 0.0f;
+	matrix_w0[0] = 0.0f;   matrix_w0[1] = -v3.z; matrix_w0[2] = v3.y;
+	matrix_w0[3] = v3.z;   matrix_w0[4] = 0.0f;  matrix_w0[5] = -v3.x;
+	matrix_w0[6] = -v3.y;  matrix_w0[7] = v3.x;  matrix_w0[8] = 0.0f;
  
-	 matrix_w1[0] = 0.0f;   matrix_w1[1] = v2.z;  matrix_w1[2] = -v2.y;
-	 matrix_w1[3] = -v2.z;  matrix_w1[4] = 0.0f;  matrix_w1[5] = v2.x;
-	 matrix_w1[6] = v2.y;   matrix_w1[7] = -v2.x; matrix_w1[8] = 0.0f;
+	matrix_w1[0] = 0.0f;   matrix_w1[1] = v2.z;  matrix_w1[2] = -v2.y;
+	matrix_w1[3] = -v2.z;  matrix_w1[4] = 0.0f;  matrix_w1[5] = v2.x;
+	matrix_w1[6] = v2.y;   matrix_w1[7] = -v2.x; matrix_w1[8] = 0.0f;
  
-	 matrix_w2[0] = 0.0f;   matrix_w2[1] = -v1.z; matrix_w2[2] = v1.y;
-	 matrix_w2[3] = v1.z;   matrix_w2[4] = 0.0f;  matrix_w2[5] = -v1.x;
-	 matrix_w2[6] = -v1.y;  matrix_w2[7] = v1.x;  matrix_w2[8] = 0.0f;
+	matrix_w2[0] = 0.0f;   matrix_w2[1] = -v1.z; matrix_w2[2] = v1.y;
+	matrix_w2[3] = v1.z;   matrix_w2[4] = 0.0f;  matrix_w2[5] = -v1.x;
+	matrix_w2[6] = -v1.y;  matrix_w2[7] = v1.x;  matrix_w2[8] = 0.0f;
  
-	 float normal_transpose[9];
-	 normal_transpose[0] = normal_cvx.x*normal_cvx.x; 
-	 normal_transpose[1] = normal_transpose[3] = normal_cvx.x*normal_cvx.y;
-	 normal_transpose[2] = normal_transpose[6] = normal_cvx.x*normal_cvx.z;
-	 normal_transpose[4] = normal_cvx.y*normal_cvx.y;
-	 normal_transpose[5] = normal_transpose[7] = normal_cvx.y*normal_cvx.z;
-	 normal_transpose[8] = normal_cvx.z*normal_cvx.z;
+	float normal_transpose[9];
+	normal_transpose[0] = normal_cvx.x*normal_cvx.x; 
+	normal_transpose[1] = normal_transpose[3] = normal_cvx.x*normal_cvx.y;
+	normal_transpose[2] = normal_transpose[6] = normal_cvx.x*normal_cvx.z;
+	normal_transpose[4] = normal_cvx.y*normal_cvx.y;
+	normal_transpose[5] = normal_transpose[7] = normal_cvx.y*normal_cvx.z;
+	normal_transpose[8] = normal_cvx.z*normal_cvx.z;
  
-	 float length_inv = 1 / length;
+	float length_inv = 1 / length;
  
-	 float projection_matrix[9];
-	 projection_matrix[0] = viewmatrix[0];
-	 projection_matrix[1] = viewmatrix[4];
-	 projection_matrix[2] = viewmatrix[8];
-	 projection_matrix[3] = viewmatrix[1];
-	 projection_matrix[4] = viewmatrix[5];
-	 projection_matrix[5] = viewmatrix[9];
-	 projection_matrix[6] = viewmatrix[2];
-	 projection_matrix[7] = viewmatrix[6];
-	 projection_matrix[8] = viewmatrix[10];
+	float projection_matrix[9];
+	projection_matrix[0] = viewmatrix[0];
+	projection_matrix[1] = viewmatrix[4];
+	projection_matrix[2] = viewmatrix[8];
+	projection_matrix[3] = viewmatrix[1];
+	projection_matrix[4] = viewmatrix[5];
+	projection_matrix[5] = viewmatrix[9];
+	projection_matrix[6] = viewmatrix[2];
+	projection_matrix[7] = viewmatrix[6];
+	projection_matrix[8] = viewmatrix[10];
  
-	 float matrix_w0_transformed[9], matrix_w1_transformed[9], matrix_w2_transformed[9];
-	 transformMat3x3(projection_matrix, matrix_w0, matrix_w0_transformed);
-	 transformMat3x3(projection_matrix, matrix_w1, matrix_w1_transformed);
-	 transformMat3x3(projection_matrix, matrix_w2, matrix_w2_transformed);
+	float matrix_w0_transformed[9], matrix_w1_transformed[9], matrix_w2_transformed[9];
+	transformMat3x3(projection_matrix, matrix_w0, matrix_w0_transformed);
+	transformMat3x3(projection_matrix, matrix_w1, matrix_w1_transformed);
+	transformMat3x3(projection_matrix, matrix_w2, matrix_w2_transformed);
  
-	 float norm_times_matrix0[9], norm_times_matrix1[9], norm_times_matrix2[9];
-	 transformMat3x3(normal_transpose, matrix_w0_transformed, norm_times_matrix0);
-	 transformMat3x3(normal_transpose, matrix_w1_transformed, norm_times_matrix1);
-	 transformMat3x3(normal_transpose, matrix_w2_transformed, norm_times_matrix2);
+	float norm_times_matrix0[9], norm_times_matrix1[9], norm_times_matrix2[9];
+	transformMat3x3(normal_transpose, matrix_w0_transformed, norm_times_matrix0);
+	transformMat3x3(normal_transpose, matrix_w1_transformed, norm_times_matrix1);
+	transformMat3x3(normal_transpose, matrix_w2_transformed, norm_times_matrix2);
  
-	 float matrix_substraction0[9], matrix_substraction1[9], matrix_substraction2[9];
-	 substractionMat3x3(matrix_w0_transformed, norm_times_matrix0, matrix_substraction0);
-	 substractionMat3x3(matrix_w1_transformed, norm_times_matrix1, matrix_substraction1);
-	 substractionMat3x3(matrix_w2_transformed, norm_times_matrix2, matrix_substraction2);
+	float matrix_substraction0[9], matrix_substraction1[9], matrix_substraction2[9];
+	substractionMat3x3(matrix_w0_transformed, norm_times_matrix0, matrix_substraction0);
+	substractionMat3x3(matrix_w1_transformed, norm_times_matrix1, matrix_substraction1);
+	substractionMat3x3(matrix_w2_transformed, norm_times_matrix2, matrix_substraction2);
  
-	 float dL_dp0x = length_inv * matrix_substraction0[0] * dL_dtn.x + length_inv * matrix_substraction0[3] * dL_dtn.y + length_inv * matrix_substraction0[6] * dL_dtn.z;
-	 float dL_dp0y = length_inv * matrix_substraction0[1] * dL_dtn.x + length_inv * matrix_substraction0[4] * dL_dtn.y + length_inv * matrix_substraction0[7] * dL_dtn.z;
-	 float dL_dp0z = length_inv * matrix_substraction0[2] * dL_dtn.x + length_inv * matrix_substraction0[5] * dL_dtn.y + length_inv * matrix_substraction0[8] * dL_dtn.z;
+	float dL_dp0x = length_inv * matrix_substraction0[0] * dL_dtn.x + length_inv * matrix_substraction0[3] * dL_dtn.y + length_inv * matrix_substraction0[6] * dL_dtn.z;
+	float dL_dp0y = length_inv * matrix_substraction0[1] * dL_dtn.x + length_inv * matrix_substraction0[4] * dL_dtn.y + length_inv * matrix_substraction0[7] * dL_dtn.z;
+	float dL_dp0z = length_inv * matrix_substraction0[2] * dL_dtn.x + length_inv * matrix_substraction0[5] * dL_dtn.y + length_inv * matrix_substraction0[8] * dL_dtn.z;
  
-	 float dL_dp1x = length_inv * matrix_substraction1[0] * dL_dtn.x + length_inv * matrix_substraction1[3] * dL_dtn.y + length_inv * matrix_substraction1[6] * dL_dtn.z;
-	 float dL_dp1y = length_inv * matrix_substraction1[1] * dL_dtn.x + length_inv * matrix_substraction1[4] * dL_dtn.y + length_inv * matrix_substraction1[7] * dL_dtn.z;
-	 float dL_dp1z = length_inv * matrix_substraction1[2] * dL_dtn.x + length_inv * matrix_substraction1[5] * dL_dtn.y + length_inv * matrix_substraction1[8] * dL_dtn.z;
+	float dL_dp1x = length_inv * matrix_substraction1[0] * dL_dtn.x + length_inv * matrix_substraction1[3] * dL_dtn.y + length_inv * matrix_substraction1[6] * dL_dtn.z;
+	float dL_dp1y = length_inv * matrix_substraction1[1] * dL_dtn.x + length_inv * matrix_substraction1[4] * dL_dtn.y + length_inv * matrix_substraction1[7] * dL_dtn.z;
+	float dL_dp1z = length_inv * matrix_substraction1[2] * dL_dtn.x + length_inv * matrix_substraction1[5] * dL_dtn.y + length_inv * matrix_substraction1[8] * dL_dtn.z;
  
-	 float dL_dp2x = length_inv * matrix_substraction2[0] * dL_dtn.x + length_inv * matrix_substraction2[3] * dL_dtn.y + length_inv * matrix_substraction2[6] * dL_dtn.z;
-	 float dL_dp2y = length_inv * matrix_substraction2[1] * dL_dtn.x + length_inv * matrix_substraction2[4] * dL_dtn.y + length_inv * matrix_substraction2[7] * dL_dtn.z;
-	 float dL_dp2z = length_inv * matrix_substraction2[2] * dL_dtn.x + length_inv * matrix_substraction2[5] * dL_dtn.y + length_inv * matrix_substraction2[8] * dL_dtn.z;
+	float dL_dp2x = length_inv * matrix_substraction2[0] * dL_dtn.x + length_inv * matrix_substraction2[3] * dL_dtn.y + length_inv * matrix_substraction2[6] * dL_dtn.z;
+	float dL_dp2y = length_inv * matrix_substraction2[1] * dL_dtn.x + length_inv * matrix_substraction2[4] * dL_dtn.y + length_inv * matrix_substraction2[7] * dL_dtn.z;
+	float dL_dp2z = length_inv * matrix_substraction2[2] * dL_dtn.x + length_inv * matrix_substraction2[5] * dL_dtn.y + length_inv * matrix_substraction2[8] * dL_dtn.z;
 
+	
+	// Backpropagate gradients to vertices (Normal&Depth)
+	vertex_index = triangles_indices[cumsum_for_triangle];
+	vertex_index = triangles_indices[cumsum_for_triangle + 1];
+	vertex_index = triangles_indices[cumsum_for_triangle + 2];
 
-	 dL_dtriangle[cumsum_for_triangle + 0].x += dL_dp0x;
-	 dL_dtriangle[cumsum_for_triangle + 0].y += dL_dp0y;
-	 dL_dtriangle[cumsum_for_triangle + 0].z += dL_dp0z;
- 
-	 dL_dtriangle[cumsum_for_triangle + 1].x += dL_dp1x;
-	 dL_dtriangle[cumsum_for_triangle + 1].y += dL_dp1y;
-	 dL_dtriangle[cumsum_for_triangle + 1].z += dL_dp1z;
- 
-	 dL_dtriangle[cumsum_for_triangle + 2].x += dL_dp2x;
-	 dL_dtriangle[cumsum_for_triangle + 2].y += dL_dp2y;
-	 dL_dtriangle[cumsum_for_triangle + 2].z += dL_dp2z; 
-
-
+	atomicAdd(&dL_dvertice_weights[id_lowest_weight], dL_dopacity[idx]);
 
 
  }
@@ -445,15 +550,16 @@
 	 const uint32_t* __restrict__ point_list,
 	 int W, int H,
 	 const float* __restrict__ bg_color,
-	 const float* __restrict__ sigma,
-	 const int* __restrict__ num_points_per_triangle,
-	 const int* __restrict__ cumsum_of_points_per_triangle,
+	 const float sigma,
+	 const int* __restrict__ triangles_indices,
 	 const float2* __restrict__ normals,
 	 const float* __restrict__ offsets,
 	 const float4* __restrict__ conic_opacity,
 	 const float* __restrict__ depths,
 	 const float2* __restrict__ means2D,
 	 const float2* __restrict__ phi_center,
+	 const float2* __restrict__ p_image,
+	 const float* __restrict__ vertex_depth,
 	 const float* __restrict__ colors,
 	 const float* __restrict__ final_Ts,
 	 const uint32_t* __restrict__ n_contrib,
@@ -461,13 +567,12 @@
 	 const float* __restrict__ dL_depths,
 	 float2* __restrict__ dL_dnormals,
 	 float* __restrict__ dL_doffsets,
-	 float* __restrict__ dL_dsigma,
 	 float3* __restrict__ dL_dmean2D,
-	 float4* __restrict__ dL_dconic2D,
 	 float* __restrict__ dL_dopacity,
 	 float* __restrict__ dL_dnormal3D,
 	 float* __restrict__ dL_dcolors,
-	 float* __restrict__ dL_dsigma_factor)
+	 float* __restrict__ dL_dpoints2D,
+	 float* __restrict__ dL_dvertice_depth)
  {
 	 // We rasterize again. Compute necessary block info.
 	 auto block = cg::this_thread_block();
@@ -493,10 +598,9 @@
 	 /*
 	 ADDED FOR Triangle PURPOSES ==========================================================================
 	 */
+	 __shared__ float2 collected_p_images[BLOCK_SIZE * MAX_NB_POINTS];
 	 __shared__ float2 collected_normals[BLOCK_SIZE * MAX_NB_POINTS];
 	 __shared__ float collected_offsets[BLOCK_SIZE * MAX_NB_POINTS];
-	 __shared__ int collected_cumsum_of_points_per_triangle[BLOCK_SIZE];
-	 __shared__ float collected_sigma[BLOCK_SIZE];
 	 __shared__ float collected_depths[BLOCK_SIZE];
 	 __shared__ float2 collected_xy[BLOCK_SIZE];
 	 __shared__ float2 collected_phi_center[BLOCK_SIZE];
@@ -521,21 +625,17 @@
 			 dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
 
 
-	float dL_dreg;
 	float dL_ddepth;
 	float dL_daccum;
 	float dL_dnormal2D[3];
 	const int median_contributor = inside ? n_contrib[pix_id + H * W] : 0;
 	float dL_dmedian_depth;
-	float dL_dmax_dweight;
 
 	if (inside) {
 		dL_ddepth = dL_depths[DEPTH_OFFSET * H * W + pix_id];
 		dL_daccum = dL_depths[ALPHA_OFFSET * H * W + pix_id];
-		dL_dreg = dL_depths[DISTORTION_OFFSET * H * W + pix_id];
 		for (int i = 0; i < 3; i++) 
 			dL_dnormal2D[i] = dL_depths[(NORMAL_OFFSET + i) * H * W + pix_id];
-
 		dL_dmedian_depth = dL_depths[MIDDEPTH_OFFSET * H * W + pix_id];
 	}
 
@@ -545,11 +645,6 @@
 	float accum_depth_rec = 0;
 	float accum_alpha_rec = 0;
 	float accum_normal_rec[3] = {0};
-	// for compute gradient with respect to the distortion map
-	const float final_D = inside ? final_Ts[pix_id + H * W] : 0;
-	const float final_D2 = inside ? final_Ts[pix_id + 2 * H * W] : 0;
-	const float final_A = 1 - T_final;
-	float last_dL_dT = 0;
  
 	 float last_alpha = 0;
 	 float last_color[C] = { 0 };
@@ -569,13 +664,12 @@
 			 collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
 			 for (int i = 0; i < C; i++)
 				 collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
-			 collected_cumsum_of_points_per_triangle[block.thread_rank()] = cumsum_of_points_per_triangle[coll_id];
-			 collected_sigma[block.thread_rank()] = sigma[coll_id];
 			 collected_depths[block.thread_rank()] = depths[coll_id];
 			 collected_xy[block.thread_rank()] = means2D[coll_id];
 			 for (int k = 0; k < 3; k++) {
-				collected_normals[MAX_NB_POINTS * block.thread_rank() + k] = normals[cumsum_of_points_per_triangle[coll_id] + k];
-				collected_offsets[MAX_NB_POINTS * block.thread_rank() + k] = offsets[cumsum_of_points_per_triangle[coll_id] + k];
+				collected_normals[MAX_NB_POINTS * block.thread_rank() + k] = normals[3 * coll_id + k];
+				collected_offsets[MAX_NB_POINTS * block.thread_rank() + k] = offsets[3 * coll_id + k];;
+				collected_p_images[MAX_NB_POINTS * block.thread_rank() + k] = p_image[3 * coll_id + k];
 			}
 			collected_phi_center[block.thread_rank()] = phi_center[coll_id];
 		 }
@@ -588,18 +682,15 @@
 			 contributor--;
 			 if (contributor >= last_contributor)
 				 continue;
- 
+
+			 int j_id = collected_id[j];
 			 float4 con_o = collected_conic_opacity[j];
 			 float normal[3] = {con_o.x, con_o.y, con_o.z};
 			 float2 phi_center_min = collected_phi_center[j];
 			 float distances[MAX_NB_POINTS];
-			 float sigma_pre = collected_sigma[j];
-			 float depth = collected_depths[j];
-			 float sum_exp = 0.0f;
 			 float max_val = -INFINITY;
 			 int base = j * MAX_NB_POINTS;
 			 bool outside = false;
-			 float c_d = collected_depths[j];
  
 			 for (int k = 0; k < 3; k++) {
 				 // Compute the current distance
@@ -621,7 +712,7 @@
  
 			 float phi_x = max_val;
 			 float phi_final = phi_x * phi_center_min.x;
-			 float Cx = fmaxf(0.0f,  __powf(phi_final, sigma_pre));
+			 float Cx = fmaxf(0.0f,  __powf(phi_final, sigma));
  
 			 const float alpha = min(0.99f, con_o.w * Cx);
  
@@ -630,47 +721,176 @@
  
 			 T = T / (1.f - alpha);
 			 const float dchannel_dcolor = alpha * T;
- 
-			 // Propagate gradients to per-Triangle colors and keep
-			 // gradients w.r.t. alpha (blending factor for a Triangle/pixel
-			 // pair).
-			 float dL_dalpha = 0.0f;
-			 const int global_id = collected_id[j];
-			 for (int ch = 0; ch < C; ch++)
-			 {
-				 const float c = collected_colors[ch * BLOCK_SIZE + j];
-				 // Update last color (to be used in the next iteration)
-				 accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
-				 last_color[ch] = c;
- 
-				 const float dL_dchannel = dL_dpixel[ch];
-				 dL_dalpha += (c - accum_rec[ch]) * dL_dchannel;
-				 // Update the gradients w.r.t. color of the Triangle. 
-				 // Atomic, since this pixel is just one of potentially
-				 // many that were affected by this Triangle.
-				 atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
+
+			 float2 uv0 = collected_p_images[j * 3 + 0];
+			 float2 uv1 = collected_p_images[j * 3 + 1];
+			 float2 uv2 = collected_p_images[j * 3 + 2];
+
+			 // vectors along the edges from uv0
+			 float2 v0 = { uv1.x - uv0.x, uv1.y - uv0.y };
+			 float2 v1 = { uv2.x - uv0.x, uv2.y - uv0.y };
+			 // vector from uv0 to pixel
+			 float2 v2 = { pixf.x  - uv0.x, pixf.y  - uv0.y };
+
+			 // invert the 2×2 [v0 v1] matrix
+			 float denom  = v0.x * v1.y - v1.x * v0.y;
+			 float invDen = 1.0f / denom;    // assume non-degenerate
+
+			 // barycentrics relative to uv0,uv1,uv2
+			 float b0 = ( v2.x * v1.y - v1.x * v2.y) * invDen;
+			 float b1 = (-v2.x * v0.y + v0.x * v2.y) * invDen;
+			 float b2 = 1.0f - b0 - b1;
+
+			 int aux = 3 * j_id;
+			 int vertex_idx0 = triangles_indices[aux];
+			 int vertex_idx1 = triangles_indices[aux + 1];
+			 int vertex_idx2 = triangles_indices[aux + 2];
+
+			 float depth_vertex_0 = vertex_depth[vertex_idx0];
+			 float depth_vertex_1 = vertex_depth[vertex_idx1];
+			 float depth_vertex_2 = vertex_depth[vertex_idx2];
+
+			 float wA = b2;    // vertex0
+			 float wB = b0;    // vertex1
+			 float wC = b1;    // vertex2
+
+			 // now blend them
+			 float interp_color[C];
+			 float sum0 = 0, sum1 = 0, sum2 = 0;
+			 for (int ch = 0; ch < C; ++ch) {
+				float dL_dcolor_ch = dchannel_dcolor * dL_dpixel[ch];
+				float c0 = colors[vertex_idx0 * C + ch];
+				float c1 = colors[vertex_idx1 * C + ch];
+				float c2 = colors[vertex_idx2 * C + ch];
+
+				interp_color[ch] = wA * c0 + wB * c1 + wC * c2;
+
+				sum0 += dL_dcolor_ch * c0; // for db2
+				sum1 += dL_dcolor_ch * c1; // for db0
+				sum2 += dL_dcolor_ch * c2; // for db1
 			 }
 
-			 float dL_dz = 0.0f;
-			 float dL_dweight = 0;
- 
-			 const float m_d = far_n / (far_n - near_n) * (1 - near_n / collected_depths[j]);
-			  const float dmd_dd = (far_n * near_n) / ((far_n - near_n) * collected_depths[j] * collected_depths[j]);
-			  if (contributor == median_contributor-1) {
-				  dL_dz += dL_dmedian_depth;
+			 float dL_dalpha = 0.0f;
+			 const int global_id = collected_id[j];
+			 
+			 for (int ch = 0; ch < C; ++ch) {
+				accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
+				last_color[ch] = interp_color[ch];
+
+				const float dL_dchannel = dL_dpixel[ch];
+				dL_dalpha += (interp_color[ch] - accum_rec[ch]) * dL_dchannel;
+
+				int v0 = vertex_idx0;
+				int v1 = vertex_idx1;
+				int v2 = vertex_idx2;
+
+				// backward (global‐vertex)
+				float grad0 = dchannel_dcolor * dL_dchannel * b2;  // matches forward's c0 * b2
+				float grad1 = dchannel_dcolor * dL_dchannel * b0;  // matches forward's c1 * b0
+				float grad2 = dchannel_dcolor * dL_dchannel * b1;  // matches forward's c2 * b1
+
+				atomicAdd(&dL_dcolors[v0*C + ch], grad0);
+				atomicAdd(&dL_dcolors[v1*C + ch], grad1);
+				atomicAdd(&dL_dcolors[v2*C + ch], grad2);
+
+			 } 
+
+			 float depth_interp = wA * depth_vertex_0 + wB * depth_vertex_1 + wC * depth_vertex_2;
+			 float weight_here = alpha * T;
+			 atomicAdd(&dL_dvertice_depth[vertex_idx0], dL_ddepth * weight_here * wA);
+			 atomicAdd(&dL_dvertice_depth[vertex_idx1], dL_ddepth * weight_here * wB);
+			 atomicAdd(&dL_dvertice_depth[vertex_idx2], dL_ddepth * weight_here * wC);
+
+			 
+			 // Backpropagation to the vertices
+			 float dL_db0 = sum1;
+		 	 float dL_db1 = sum2;
+			 float dL_db2 = sum0;
+
+			 if (contributor == median_contributor-1) {
+				  //dL_dz += dL_dmedian_depth;
+				  dL_db0 += dL_dmedian_depth * depth_vertex_1;
+				  dL_db1 += dL_dmedian_depth * depth_vertex_2;
+				  dL_db2 += dL_dmedian_depth * depth_vertex_0;
+
+				  // Accumulate gradients to vertex depths
+				  atomicAdd(&dL_dvertice_depth[vertex_idx0], dL_dmedian_depth * wA);
+				  atomicAdd(&dL_dvertice_depth[vertex_idx1], dL_dmedian_depth * wB);
+				  atomicAdd(&dL_dvertice_depth[vertex_idx2], dL_dmedian_depth * wC);
 			  }
- 
-			 dL_dweight += (final_D2 + m_d * m_d * final_A - 2 * m_d * final_D) * dL_dreg;
-			 dL_dalpha += dL_dweight - last_dL_dT;
-			 // propagate the current weight W_{i} to next weight W_{i-1}
-			 last_dL_dT = dL_dweight * alpha + (1 - alpha) * last_dL_dT;
-			 const float dL_dmd = 2.0f * (T * alpha) * (m_d * final_A - final_D) * dL_dreg;
-			 dL_dz += dL_dmd * dmd_dd;
+
+			 // Recompute necessary terms for derivatives
+			 float denom_val = v0.x * v1.y - v1.x * v0.y;
+			 float N0 = v2.x * v1.y - v1.x * v2.y;
+			 float N1 = v0.x * v2.y - v2.x * v0.y;
+			 float factor = invDen * invDen;
+
+			 // Derivatives for vertex0 (uv0)
+			 float dN0_dx0 = -v1.y + v2.y;
+			 float dN0_dy0 = -v2.x + v1.x;
+			 float dN1_dx0 = -v2.y + v0.y;
+			 float dN1_dy0 = v2.x - v0.x;
+			 float dD_dx0 = -v1.y + v0.y;
+			 float dD_dy0 = -v0.x + v1.x;
+
+			 float db0_dx0 = (dN0_dx0 * denom_val - N0 * dD_dx0) * factor;
+			 float db0_dy0 = (dN0_dy0 * denom_val - N0 * dD_dy0) * factor;
+			 float db1_dx0 = (dN1_dx0 * denom_val - N1 * dD_dx0) * factor;
+			 float db1_dy0 = (dN1_dy0 * denom_val - N1 * dD_dy0) * factor;
+			 float db2_dx0 = -db0_dx0 - db1_dx0;
+			 float db2_dy0 = -db0_dy0 - db1_dy0;
+
+			 float dL_dx0 = dL_db0 * db0_dx0 + dL_db1 * db1_dx0 + dL_db2 * db2_dx0;
+			 float dL_dy0 = dL_db0 * db0_dy0 + dL_db1 * db1_dy0 + dL_db2 * db2_dy0;
+
+			 // Derivatives for vertex1 (uv1)
+			 float dN0_dx1 = 0;
+			 float dN0_dy1 = 0;
+			 float dN1_dx1 = v2.y;
+			 float dN1_dy1 = -v2.x;
+			 float dD_dx1 = v1.y;
+			 float dD_dy1 = -v1.x;
+
+			 float db0_dx1 = (dN0_dx1 * denom_val - N0 * dD_dx1) * factor;
+			 float db0_dy1 = (dN0_dy1 * denom_val - N0 * dD_dy1) * factor;
+			 float db1_dx1 = (dN1_dx1 * denom_val - N1 * dD_dx1) * factor;
+			 float db1_dy1 = (dN1_dy1 * denom_val - N1 * dD_dy1) * factor;
+			 float db2_dx1 = -db0_dx1 - db1_dx1;
+			 float db2_dy1 = -db0_dy1 - db1_dy1;
+
+			 float dL_dx1 = dL_db0 * db0_dx1 + dL_db1 * db1_dx1 + dL_db2 * db2_dx1;
+			 float dL_dy1 = dL_db0 * db0_dy1 + dL_db1 * db1_dy1 + dL_db2 * db2_dy1;
+
+			 // Derivatives for vertex2 (uv2)
+			 float dN0_dx2 = -v2.y;
+			 float dN0_dy2 = v2.x;
+			 float dN1_dx2 = 0;
+			 float dN1_dy2 = 0;
+			 float dD_dx2 = -v0.y;
+			 float dD_dy2 = v0.x;
+
+			 float db0_dx2 = (dN0_dx2 * denom_val - N0 * dD_dx2) * factor;
+			 float db0_dy2 = (dN0_dy2 * denom_val - N0 * dD_dy2) * factor;
+			 float db1_dx2 = (dN1_dx2 * denom_val - N1 * dD_dx2) * factor;
+			 float db1_dy2 = (dN1_dy2 * denom_val - N1 * dD_dy2) * factor;
+			 float db2_dx2 = -db0_dx2 - db1_dx2;
+			 float db2_dy2 = -db0_dy2 - db1_dy2;
+
+			 float dL_dx2 = dL_db0 * db0_dx2 + dL_db1 * db1_dx2 + dL_db2 * db2_dx2;
+			 float dL_dy2 = dL_db0 * db0_dy2 + dL_db1 * db1_dy2 + dL_db2 * db2_dy2;
+
+			 // Update gradients for vertex positions
+			 atomicAdd(&dL_dpoints2D[vertex_idx0 * 2], dL_dx0);
+			 atomicAdd(&dL_dpoints2D[vertex_idx0 * 2 + 1], dL_dy0);
+			 atomicAdd(&dL_dpoints2D[vertex_idx1 * 2], dL_dx1);
+			 atomicAdd(&dL_dpoints2D[vertex_idx1 * 2 + 1], dL_dy1);
+			 atomicAdd(&dL_dpoints2D[vertex_idx2 * 2], dL_dx2);
+			 atomicAdd(&dL_dpoints2D[vertex_idx2 * 2 + 1], dL_dy2); 
  
 			 // Propagate gradients w.r.t ray-splat depths
 			 accum_depth_rec = last_alpha * last_depth + (1.f - last_alpha) * accum_depth_rec;
-			 last_depth = collected_depths[j];
-			 dL_dalpha += (collected_depths[j] - accum_depth_rec) * dL_ddepth;
+			 last_depth = depth_interp; // not collected_depths[j]
+			 dL_dalpha += (depth_interp - accum_depth_rec) * dL_ddepth;
 			 // Propagate gradients w.r.t. color ray-splat alphas
 			 accum_alpha_rec = last_alpha * 1.0 + (1.f - last_alpha) * accum_alpha_rec;
 			 dL_dalpha += (1 - accum_alpha_rec) * dL_daccum;
@@ -692,30 +912,21 @@
 			 for (int i = 0; i < C; i++)
 				 bg_dot_dpixel += bg_color[i] * dL_dpixel[i];
 			 dL_dalpha += (-T_final / (1.f - alpha)) * bg_dot_dpixel;
-
-			 dL_dz += alpha * T * dL_ddepth; 
-			 atomicAdd(&(dL_dmean2D[global_id].x), dL_dz);
  
 			 // Helpful reusable temporary variables
 			 const float dL_dC = con_o.w * dL_dalpha;
-
-			 if (phi_final > 0.0f) {
-				// derivative with respect to sigma
-				float dL_dsigma_value = dL_dC * Cx * __logf(phi_final);
-				atomicAdd(&dL_dsigma[global_id], dL_dsigma_value);
-			}
 			
 			// Calculate gradient w.r.t phi_x 
-			float dL_dphi_x = dL_dC * (sigma_pre / phi_x) * Cx;
+			float dL_dphi_x = dL_dC * (sigma / phi_x) * Cx;
  
 			 #pragma unroll
 			 for (int k = 0; k < 3; k++) {
 				if (fabsf(distances[k] - max_val) < 1e-6f) {
 					float dL_dnormal_x = dL_dphi_x * pixf.x;
 					float dL_dnormal_y = dL_dphi_x * pixf.y;
-					atomicAdd(&(dL_dnormals[collected_cumsum_of_points_per_triangle[j] + k].x), dL_dnormal_x);
-					atomicAdd(&(dL_dnormals[collected_cumsum_of_points_per_triangle[j] + k].y), dL_dnormal_y);
-					atomicAdd(&(dL_doffsets[collected_cumsum_of_points_per_triangle[j] + k]), dL_dphi_x);
+					atomicAdd(&(dL_dnormals[aux + k].x), dL_dnormal_x);
+					atomicAdd(&(dL_dnormals[aux + k].y), dL_dnormal_y);
+					atomicAdd(&(dL_doffsets[aux + k]), dL_dphi_x);
 				}
 			 }
  
@@ -728,34 +939,31 @@
  
  void BACKWARD::preprocess(
 	 int P, int D, int M,
-	 const float* triangles_points,
+	 const float* vertices,
+	 const int* triangles_indices,
+	 const float* vertex_weights,
 	 int W, int H,
 	 const int* radii,
 	 const float* shs,
 	 const bool* clamped,
 	 const float* viewmatrix,
 	 const float* projmatrix,
-	 const int* num_points_per_triangle,
-	 const int* cumsum_of_points_per_triangle,
 	 float2* points_xy_image,
 	 float* p_w,
 	 float2* p_image,
 	 int* indices,
-	 const float* cov3Ds,
 	 const float focal_x, float focal_y,
 	 const float tan_fovx, float tan_fovy,
 	 const glm::vec3* campos,
-	 glm::vec3* dL_dtriangle,
+	 glm::vec3* dL_dvertices3D, 
+	 float* dL_dvertice_weights,
 	 const float2* dL_dnormals,
 	 const float* dL_doffsets,
-	 glm::vec3* dL_dmean3D,
 	 float3* dL_dmean2D,
-	 const float* dL_dconic,
-	 float* dL_dcov3D,
+	 float* dL_dopacity,
 	 float* dL_dnormal3D,
 	 float* dL_dcolor,
-	 float* dL_dsh,
-	 float* dL_dsigma_factor
+	 float* dL_dsh
 	 )
  {
 	 
@@ -764,30 +972,52 @@
 	 // matrix gradients to scale and rotation.
 	 preprocessCUDA<NUM_CHANNELS> << < (P + 255) / 256, 256 >> > (
 		 P, D, M,
-		 triangles_points,
+		 vertices,
+		 triangles_indices,
+		 vertex_weights,
 		 W, H,
 		 radii,
 		 shs,
 		 clamped,
 		 projmatrix,
 		 viewmatrix,
-		 num_points_per_triangle,
-		 cumsum_of_points_per_triangle,
 		 points_xy_image,
 		 p_w,
 		 p_image,
 		 indices,
 		 campos,
-		 (glm::vec3*)dL_dtriangle,
+		 (glm::vec3*)dL_dvertices3D,
+		 (float*) dL_dvertice_weights,
 		 (float2*) dL_dnormals,
 		 dL_doffsets,
-		 (glm::vec3*)dL_dmean3D,
 		 (float3*)dL_dmean2D,
-		 dL_dcov3D,
+		 dL_dopacity,
 		 dL_dnormal3D,
 		 dL_dcolor,
-		 dL_dsh,
-		 dL_dsigma_factor);
+		 dL_dsh
+		 );
+ }
+
+ // Add this to the FORWARD namespace implementation
+ void BACKWARD::computeVertexColorGradients(
+    int V, int D, int M,
+	int W, int H,
+	const float* viewmatrix,
+	const float* projmatrix,
+	float* p_w,
+	const float* vertices,
+	const float* shs,
+	const bool* clamped,
+	const glm::vec3* campos,
+	const float* dL_dcolor,
+	const float* dL_dpoints2D,
+	glm::vec3* dL_dvertices3D,
+	float* dL_dsh,
+	const float* dL_dvertice_depth)
+ {
+    computeVertexColorsCUDA<<<(V + 255) / 256, 256>>>(
+        V, D, M, W, H, viewmatrix, projmatrix, vertices, shs, clamped, campos, dL_dcolor, dL_dpoints2D, (glm::vec3*)dL_dvertices3D, dL_dsh, dL_dvertice_depth
+    );
  }
  
  void BACKWARD::render(
@@ -796,15 +1026,16 @@
 	 const uint32_t* point_list,
 	 int W, int H,
 	 const float* bg_color,
-	 const float* sigma,
-	 const int* num_points_per_triangle,
-	 const int* cumsum_of_points_per_triangle,
+	 const float sigma,
+	 const int* triangles_indices,
 	 const float2* normals,
 	 const float* offsets,
 	 const float4* conic_opacity,
 	 const float* depths,
 	 const float2* means2D,
 	 const float2* phi_center,
+	 const float2* p_image,
+	 const float* vertex_depth,
 	 const float* colors,
 	 const float* final_Ts,
 	 const uint32_t* n_contrib,
@@ -812,13 +1043,13 @@
 	 const float* dL_depths,
 	 float2* dL_dnormals,
 	 float* dL_doffsets,
-	 float* dL_dsigma,
 	 float3* dL_dmean2D,
-	 float4* dL_dconic2D,
 	 float* dL_dopacity,
 	 float* dL_dnormal3D,
 	 float* dL_dcolors,
-	 float* dL_dsigma_factor)
+	 float* dL_dpoints2D,
+	 float* dL_dvertice_depth
+	)
  {
 	 renderCUDA<NUM_CHANNELS> << <grid, block >> >(
 		 ranges,
@@ -826,14 +1057,15 @@
 		 W, H,
 		 bg_color,
 		 sigma,
-		 num_points_per_triangle,
-		 cumsum_of_points_per_triangle,
+		 triangles_indices,
 		 normals,
 		 offsets,
 		 conic_opacity,
 		 depths,
 		 means2D,
 		 phi_center,
+		 p_image,
+		 vertex_depth,
 		 colors,
 		 final_Ts,
 		 n_contrib,
@@ -841,12 +1073,11 @@
 		 dL_depths,
 		 dL_dnormals,
 		 dL_doffsets,
-		 dL_dsigma,
 		 dL_dmean2D,
-		 dL_dconic2D,
 		 dL_dopacity,
 		 dL_dnormal3D,
 		 dL_dcolors,
-		 dL_dsigma_factor
+		 dL_dpoints2D,
+		 dL_dvertice_depth
 		 );
  }

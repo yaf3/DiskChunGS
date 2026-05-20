@@ -68,6 +68,82 @@ __forceinline__ __device__ float ndc2Pix(float v, int S)
 	return ((v + 1.0) * S - 1.0) * 0.5;
 }
 
+__forceinline__ __device__ float distance_point(float3 p1, float3 p2) {
+    float dx = p1.x - p2.x;
+    float dy = p1.y - p2.y;
+    float dz = p1.z - p2.z;
+    return sqrtf(dx*dx + dy*dy + dz*dz);
+}
+
+__forceinline__ __device__ float3 triangle_circumcenter_3d(float3 A, float3 B, float3 C)
+{
+    // Edge vectors
+    float3 AB = make_float3(B.x - A.x,
+                            B.y - A.y,
+                            B.z - A.z);
+    float3 AC = make_float3(C.x - A.x,
+                            C.y - A.y,
+                            C.z - A.z);
+
+    // Normal to the triangle’s plane
+    float3 N = make_float3(AB.y * AC.z - AB.z * AC.y,
+                           AB.z * AC.x - AB.x * AC.z,
+                           AB.x * AC.y - AB.y * AC.x);
+
+    // Squared lengths
+    float AB2 = AB.x*AB.x + AB.y*AB.y + AB.z*AB.z;
+    float AC2 = AC.x*AC.x + AC.y*AC.y + AC.z*AC.z;
+    float denom = 2.0f * (N.x*N.x + N.y*N.y + N.z*N.z);
+
+    // Terms of the formula
+    // term1 = cross(N, AB) * |AC|^2
+    float3 term1 = make_float3(
+        N.y * AB.z - N.z * AB.y,
+        N.z * AB.x - N.x * AB.z,
+        N.x * AB.y - N.y * AB.x
+    );
+    term1.x *= AC2; term1.y *= AC2; term1.z *= AC2;
+
+    // term2 = cross(AC, N) * |AB|^2
+    float3 term2 = make_float3(
+        AC.y * N.z - AC.z * N.y,
+        AC.z * N.x - AC.x * N.z,
+        AC.x * N.y - AC.y * N.x
+    );
+    term2.x *= AB2; term2.y *= AB2; term2.z *= AB2;
+
+    // Offset from A to circumcenter
+    float3 U;
+    U.x = (term1.x + term2.x) / denom;
+    U.y = (term1.y + term2.y) / denom;
+    U.z = (term1.z + term2.z) / denom;
+
+    // Return absolute position
+    return make_float3(A.x + U.x,
+                       A.y + U.y,
+                       A.z + U.z);
+}
+
+__forceinline__ __device__ float3 scale_float3(float3 v, float s) {
+    return make_float3(v.x*s, v.y*s, v.z*s);
+}
+
+__forceinline__ __device__ float3 add_float3(float3 a, float3 b) {
+    return make_float3(a.x+b.x, a.y+b.y, a.z+b.z);
+}
+
+__forceinline__ __device__ float dot_float3(float3 a, float3 b) {
+    return a.x*b.x + a.y*b.y + a.z*b.z;
+}
+
+__forceinline__ __device__ float3 cross_float3(float3 a, float3 b) {
+    return make_float3(
+        a.y*b.z - a.z*b.y,
+        a.z*b.x - a.x*b.z,
+        a.x*b.y - a.y*b.x
+    );
+}
+
 __forceinline__ __device__ float3 transformPoint4x3Transpose(const float3& p, const float* matrix)
 {
     float3 transformed = {

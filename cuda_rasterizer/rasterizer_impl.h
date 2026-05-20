@@ -19,7 +19,8 @@
  *
  * For inquiries contact jan.held@uliege.be
  */
- 
+ #include <cstdint>
+ #include <cstddef>
  #pragma once
 
  #include <iostream>
@@ -50,7 +51,6 @@
 		 uint32_t* point_offsets;
 		 uint32_t* tiles_touched;
  
-		 float* cov3D;
   
 		 float* p_w;
 		 float2* p_image;
@@ -64,7 +64,9 @@
 		 uint2* rect_min;
 		 uint2* rect_max;
 
-		 static GeometryState fromChunk(char*& chunk, size_t P, size_t total_nb_points);
+		 float* vertex_depth;
+
+		 static GeometryState fromChunk(char*& chunk, size_t P, size_t total_nb_points, size_t V);
 	 };
  
 	 struct ImageState
@@ -89,11 +91,11 @@
 	 };
  
 	 template <typename T>
-	 size_t required(size_t P, size_t total_nb_points = 0);
+	 size_t required(size_t P, size_t total_nb_points = 0, size_t V = 0);
  
 	 // General case for states that don't need `total_nb_points`
 	 template<typename T> 
-	 size_t required(size_t P, size_t total_nb_points)
+	 size_t required(size_t P, size_t total_nb_points, size_t V)
 	 {
 		 char* size = nullptr;
 		 T::fromChunk(size, P);
@@ -102,10 +104,10 @@
  
 	 // Specialization for GeometryState
 	 template<> 
-	 size_t required<GeometryState>(size_t P, size_t total_nb_points)
+	 size_t required<GeometryState>(size_t P, size_t total_nb_points, size_t V)
 	 {
 		 char* size = nullptr;
-		 GeometryState::fromChunk(size, P, total_nb_points);
+		 GeometryState::fromChunk(size, P, total_nb_points, V);
 		 return ((size_t)size) + 128;
 	 }
  };

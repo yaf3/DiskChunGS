@@ -74,7 +74,7 @@
 		 }
 	 }
 	 result += 0.5f;
- 
+
 	 // RGB colors are clamped to positive values. If values are
 	 // clamped, we need to keep track of this for the backward pass.
 	 clamped[3 * idx + 0] = (result.x < 0);
@@ -83,18 +83,54 @@
 	 return glm::max(result, 0.0f);
  }
  
- 
+ __global__ void computeVertexColorsCUDA(
+    int V, int D, int M,
+    const float* vertices,
+    const float* shs,
+    bool* clamped,
+    float* rgb,
+	float* vertex_depth, 
+	const float* viewmatrix,
+    const glm::vec3* cam_pos)
+{
+    auto idx = cg::this_grid().thread_rank();
+    if (idx >= V)
+        return;
+
+    float3 vertex = make_float3(
+        vertices[3 * idx],
+        vertices[3 * idx + 1],
+        vertices[3 * idx + 2]
+    );
+
+    glm::vec3 result = computeColorFromSH(
+        idx, D, M,
+        glm::vec3(vertex.x, vertex.y, vertex.z),
+        *cam_pos,
+        shs,
+        clamped
+    );
+
+    rgb[3 * idx + 0] = result.x;
+    rgb[3 * idx + 1] = result.y;
+    rgb[3 * idx + 2] = result.z;
+
+	float3 p_view = transformPoint4x3(vertex, viewmatrix);
+	// instead of the z coordinate as depth, lets take the distance to the camera
+	//vertex_depth[idx] = __fsqrt_rn(p_view.x * p_view.x + p_view.y * p_view.y + p_view.z * p_view.z);
+	vertex_depth[idx] = p_view.z;
+}
+
+
  
  // Perform initial steps for each Triangle prior to rasterization.
  template<int C>
  __global__ void preprocessCUDA(int P, int D, int M,
-	 const float* triangles_points,
-	 const float* sigma,
-	 const int* num_points_per_triangle,
-	 const int* cumsum_of_points_per_triangle,
-	 const float* opacities,
+	 const float* vertices,
+	 const int* triangles_indices,
+	 const float* vertex_weights,
+	 const float sigma,
 	 float* scaling,
-	 float* density_factor,
 	 const float* shs,
 	 bool* clamped,
 	 const float* colors_precomp,
@@ -112,9 +148,7 @@
 	 int* indices,
 	 float2* points_xy_image,
 	 float* depths,
-	 float* rgb,
 	 float4* conic_opacity,
-	 float* cov3Ds,
 	 float2* phi_center,
 	 uint2* rect_min,
 	 uint2* rect_max,
@@ -126,36 +160,61 @@
 	 auto idx = cg::this_grid().thread_rank();
 	 if (idx >= P)
 		 return;
- 
+	
+
 	 // Initialize radius and touched tiles to 0. If this isn't changed,
 	 // this Triangle will not be processed further.
- 
-	 const int cumsum_for_triangle = cumsum_of_points_per_triangle[idx];
-	 const int offset = 3 * cumsum_for_triangle;
- 
+
+	 const int cumsum_for_triangle = 3 * idx;
+	
 	 radii[idx] = 0;
 	 tiles_touched[idx] = 0;
 	 scaling[idx] = 0.0f;
-	 density_factor[idx] = 0.0f;
 
 	 float stopping_influence = 0.01f;
-
- 
-	 // if the opacity is too low, we can skip the Triangle
-	 if (opacities[idx] < stopping_influence)
-		 return;
  
 	 float3 center_triangle = {0.0f, 0.0f, 0.0f};
-	 for (int i = 0; i < num_points_per_triangle[idx]; i++) {
-		 indices[cumsum_for_triangle + i] = i;
-		 center_triangle.x += triangles_points[offset + 3 * i];
-		 center_triangle.y += triangles_points[offset + 3 * i + 1];
-		 center_triangle.z += triangles_points[offset + 3 * i + 2];
+	 float min_weight = INFINITY;
+	 for (int i = 0; i < 3; i++) {
+		indices[cumsum_for_triangle + i] = i;
+
+		int vertex_index = triangles_indices[cumsum_for_triangle + i];
+
+		center_triangle.x += vertices[3 * vertex_index];
+		center_triangle.y += vertices[3 * vertex_index + 1];
+		center_triangle.z += vertices[3 * vertex_index + 2];
+
+		float weight = vertex_weights[vertex_index];
+
+		if (weight < min_weight) {
+			min_weight = weight;
+		}
 	 }
  
-	 center_triangle.x /= num_points_per_triangle[idx];
-	 center_triangle.y /= num_points_per_triangle[idx];
-	 center_triangle.z /= num_points_per_triangle[idx];
+	 center_triangle.x /= 3;
+	 center_triangle.y /= 3;
+	 center_triangle.z /= 3;
+
+
+	 int vertex_index = triangles_indices[cumsum_for_triangle];
+	 float3 p0 = make_float3(
+		vertices[3 * vertex_index + 0],
+		vertices[3 * vertex_index + 1],
+		vertices[3 * vertex_index + 2]
+	 );
+	 vertex_index = triangles_indices[cumsum_for_triangle + 1];
+	 float3 p1 = make_float3(
+		vertices[3 * vertex_index + 0],
+		vertices[3 * vertex_index + 1],
+		vertices[3 * vertex_index + 2]
+	 );
+	 vertex_index = triangles_indices[cumsum_for_triangle + 2];
+	 float3 p2 = make_float3(
+		vertices[3 * vertex_index + 0],
+		vertices[3 * vertex_index + 1],
+		vertices[3 * vertex_index + 2]
+	 );
+
  
 	 // Perform near culling, quit if outside.
 	 float3 p_view_triangle;
@@ -165,22 +224,6 @@
 
 	 // Calculate the normal of the Triangle
 	 float3 normal_cvx = {0.0f, 0.0f, 0.0f};
-	 float3 p0 = make_float3(
-		triangles_points[offset + 0],
-		triangles_points[offset + 1],
-		triangles_points[offset + 2]
-	 );
-	 float3 p1 = make_float3(
-		triangles_points[offset + 3],
-		triangles_points[offset + 4],
-		triangles_points[offset + 5]
-	 );
-	 float3 p2 = make_float3(
-		triangles_points[offset + 6],
-		triangles_points[offset + 7],
-		triangles_points[offset + 8]
-	 );
-
 	 float3 v1 = make_float3(p1.x - p0.x, p1.y - p0.y, p1.z - p0.z);
 	 float3 v2 = make_float3(p2.x - p0.x, p2.y - p0.y, p2.z - p0.z);
 
@@ -221,40 +264,46 @@
 		normal_cvx.z = -normal_cvx.z;
 		cos_theta = -cos_theta; 
 	}
-
+	
 	const float threshold = 0.001f;
 	if (fabsf(cos_theta) < threshold) {
 		return;
 	}
 
-	 float4 p_hom_center = transformPoint4x4(center_triangle, projmatrix);
-	 float p_w_center = 1.0f / (p_hom_center.w + 0.0000001f);
-	 float3 center_triangle_camera_view = { p_hom_center.x * p_w_center, p_hom_center.y * p_w_center, p_hom_center.z * p_w_center };
-	 float2 center_triangle_2D = { ndc2Pix(center_triangle_camera_view.x, W), ndc2Pix(center_triangle_camera_view.y, H) };
- 
+	if (min_weight < stopping_influence){
+		return;
+	}
 
-	 float distance = 0.0f;
-	 float distance_points = 0.0f;
+	float4 p_hom_center = transformPoint4x4(center_triangle, projmatrix);
+	float p_w_center = 1.0f / (p_hom_center.w + 0.0000001f);
+	float3 center_triangle_camera_view = { p_hom_center.x * p_w_center, p_hom_center.y * p_w_center, p_hom_center.z * p_w_center };
+	float2 center_triangle_2D = { ndc2Pix(center_triangle_camera_view.x, W), ndc2Pix(center_triangle_camera_view.y, H) };
 
-	for (int i = 0; i < num_points_per_triangle[idx]; i++) {
-		 float3 triangle_point = {triangles_points[offset + 3 * i], triangles_points[offset + 3 * i + 1], triangles_points[offset + 3 * i + 2]};
-		 float4 p_hom = transformPoint4x4(triangle_point, projmatrix);
-		 p_w[cumsum_for_triangle + i] = 1.0f / (p_hom.w + 0.0000001f);
-		 float3 p_proj = { p_hom.x * p_w[cumsum_for_triangle + i], p_hom.y * p_w[cumsum_for_triangle + i], p_hom.z * p_w[cumsum_for_triangle + i] };
-		 p_image[cumsum_for_triangle + i] = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
+	float distance = 0.0f;
+	float distance_points = 0.0f;
 
-		 // calculate distance from p_image to center_triangle_2D
-		 distance = __fsqrt_rn((p_image[cumsum_for_triangle + i].x - center_triangle_2D.x) * (p_image[cumsum_for_triangle + i].x - center_triangle_2D.x) + (p_image[cumsum_for_triangle + i].y - center_triangle_2D.y) * (p_image[cumsum_for_triangle + i].y - center_triangle_2D.y));
+	for (int i = 0; i < 3; i++) {
+		int index_new = triangles_indices[cumsum_for_triangle + i];
+		float3 triangle_point = {vertices[3 * index_new], vertices[3 * index_new + 1], vertices[3 * index_new + 2]}; 
+		
+		float4 p_hom = transformPoint4x4(triangle_point, projmatrix);
+		p_w[cumsum_for_triangle + i] = 1.0f / (p_hom.w + 0.0000001f);
+		float3 p_proj = { p_hom.x * p_w[cumsum_for_triangle + i], p_hom.y * p_w[cumsum_for_triangle + i], p_hom.z * p_w[cumsum_for_triangle + i] };
+		p_image[cumsum_for_triangle + i] = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 
-		 if (distance > distance_points) {
-			 distance_points = distance;
-		 }
-	 }
+		// calculate distance from p_image to center_triangle_2D
+		distance = __fsqrt_rn((p_image[cumsum_for_triangle + i].x - center_triangle_2D.x) * (p_image[cumsum_for_triangle + i].x - center_triangle_2D.x) + (p_image[cumsum_for_triangle + i].y - center_triangle_2D.y) * (p_image[cumsum_for_triangle + i].y - center_triangle_2D.y));
 
-	 // Get the three projected 2D points
+		if (distance > distance_points) {
+			distance_points = distance;
+		}
+	}
+
+	// Get the three projected 2D points
 	float2 A1 = p_image[cumsum_for_triangle + 0];
 	float2 B1 = p_image[cumsum_for_triangle + 1];
 	float2 C1 = p_image[cumsum_for_triangle + 2];
+	
 
 	// Compute side lengths (opposite each vertex)
 	float a = __fsqrt_rn((B1.x - C1.x) * (B1.x - C1.x) + (B1.y - C1.y) * (B1.y - C1.y)); // Opposite A
@@ -268,22 +317,11 @@
 	incenter.x = (a * A1.x + b * B1.x + c * C1.x) / sum;
 	incenter.y = (a * A1.y + b * B1.y + c * C1.y) / sum;
  
-	 float max_distance_off = 0.0f;
 	 int counter = 0;
-	 float max_distance_x = 0.0f;
 	 float dist = 0.0f;
 
 	 float size = 0.0f;
  
-
-	 float ratio = stopping_influence / opacities[idx];
-
-	 float exponent = 1.0f / sigma[idx];
-
-	 uint2 rect_min_triangle_test = { grid.x, grid.y };
-	 uint2 rect_max_triangle_test = { 0,       0       };
-	 
-	 float previous_offsets[MAX_NB_POINTS];
  
 	 for (int i = 0; i < 3; i++) {
 		// Points forming the segment
@@ -293,7 +331,7 @@
 		float nx = p2_conv.y - p1_conv.y;
 		float ny = -(p2_conv.x - p1_conv.x);
 		float norm = __fsqrt_rn(nx * nx + ny * ny);
-		float inv_norm = 1.0f / fmaxf(norm, 1e-7f);  // guard: prevent NaN from degenerate 2D edges
+		float inv_norm = 1.0f / norm;
 	
 		// Calculate normalized normal and offset
 		float2 normal = {nx * inv_norm, ny * inv_norm};
@@ -309,81 +347,45 @@
 			dist = -dist;
 		}	
 
-		if (size == 0){
-			size = dist * powf(ratio, exponent);
-		}
 
 		normals[cumsum_for_triangle + i] = normal;
 		offsets[cumsum_for_triangle + i] = offset; 
-
-	
-		offset = offset / __fsqrt_rn(normal.x * normal.x + normal.y * normal.y);
-		offset -= size;
-		previous_offsets[i] = offset;
-
-		if (i != 0){
-			float2 previous_normal;
-			previous_normal.x = normals[cumsum_for_triangle + (i-1)].x;
-			previous_normal.y = normals[cumsum_for_triangle + (i-1)].y;
-
-			// Compute determinant
-			float det = normal.x * previous_normal.y - normal.y * previous_normal.x;
-
-			float intersect_x, intersect_y;
-			if (fabsf(det) < 1e-3) {
-				continue;
-			} else {
-				// Calculate intersection point
-				intersect_x = -1*(offset * previous_normal.y - previous_offsets[i-1] * normal.y) / det;
-				intersect_y = -1*(previous_offsets[i-1] * normal.x - offset * previous_normal.x) / det;
-
-				uint bx0 = min(grid.x, max(0, (uint)(intersect_x / BLOCK_X)));
-				uint by0 = min(grid.y, max(0, (uint)(intersect_y / BLOCK_Y)));
-				uint bx1 = min(grid.x, max(0, (uint)((intersect_x + BLOCK_X - 1) / BLOCK_X)));
-				uint by1 = min(grid.y, max(0, (uint)((intersect_y + BLOCK_Y - 1) / BLOCK_Y)));
-
-				rect_min_triangle_test.x = min(rect_min_triangle_test.x, bx0);
-				rect_min_triangle_test.y = min(rect_min_triangle_test.y, by0);
-				rect_max_triangle_test.x = max(rect_max_triangle_test.x, bx1);
-				rect_max_triangle_test.y = max(rect_max_triangle_test.y, by1);
-			}
-		}
-
-	 }
- 
-	   
-	 if (distance_points > 1600 or distance_points < 1 or dist > -1) {
-		 radii[idx] = 0;
-		 tiles_touched[idx] = 0;
-		 scaling[idx] = 0.0f;
-		 return;
 	 }
 
-	/*####################################################################################################
-	#### Calculations of the final distance 														     #
-	#####################################################################################################*/
-	float2 normal = normals[cumsum_for_triangle];
-	float offset_ = previous_offsets[0];
-  
-	float2 previous_normal = normals[cumsum_for_triangle+2];
-	float previous_offset = previous_offsets[2];
- 	float det = normal.x * previous_normal.y - normal.y * previous_normal.x;
-  
-	float intersect_x, intersect_y;
-	if (fabsf(det) > 1e-3) {
-		// Calculate intersection point
-		intersect_x = -1*(offset_ * previous_normal.y - previous_offset * normal.y) / det;
-		intersect_y = -1*(previous_offset * normal.x - offset_ * previous_normal.x) / det;
-		uint bx0 = min(grid.x, max(0, (uint)(intersect_x / BLOCK_X)));
-		uint by0 = min(grid.y, max(0, (uint)(intersect_y / BLOCK_Y)));
-		uint bx1 = min(grid.x, max(0, (uint)((intersect_x + BLOCK_X - 1) / BLOCK_X)));
-		uint by1 = min(grid.y, max(0, (uint)((intersect_y + BLOCK_Y - 1) / BLOCK_Y)));
+	 // or distance_points < 1 or dist > -1
+	if (distance_points > 1600 or distance_points < 1 or dist > -1) {
+			radii[idx] = 0;
+			tiles_touched[idx] = 0;
+			scaling[idx] = 0.0f;
+			return;
+	 }
 
-		rect_min_triangle_test.x = min(rect_min_triangle_test.x, bx0);
-		rect_min_triangle_test.y = min(rect_min_triangle_test.y, by0);
-		rect_max_triangle_test.x = max(rect_max_triangle_test.x, bx1);
-		rect_max_triangle_test.y = max(rect_max_triangle_test.y, by1);
+	// Simple and robust bounding box calculation
+	uint2 rect_min_triangle_test = { grid.x, grid.y };
+	uint2 rect_max_triangle_test = { 0, 0 };
+
+	// Include all three vertices in the bounding box
+	for (int i = 0; i < 3; i++) {
+		float2 vertex_pos = p_image[cumsum_for_triangle + i];
+		
+		// Convert to tile coordinates with conservative expansion
+		uint bx_min = (uint)floorf((vertex_pos.x - 5.0f) / BLOCK_X); // Expand by 2 pixels
+		uint by_min = (uint)floorf((vertex_pos.y - 5.0f) / BLOCK_Y);
+		uint bx_max = (uint)ceilf((vertex_pos.x + 5.0f) / BLOCK_X);
+		uint by_max = (uint)ceilf((vertex_pos.y + 5.0f) / BLOCK_Y);
+		
+		// Clamp to grid boundaries
+		bx_min = min(grid.x, max(0, bx_min));
+		by_min = min(grid.y, max(0, by_min));
+		bx_max = min(grid.x, max(0, bx_max));
+		by_max = min(grid.y, max(0, by_max));
+		
+		rect_min_triangle_test.x = min(rect_min_triangle_test.x, bx_min);
+		rect_min_triangle_test.y = min(rect_min_triangle_test.y, by_min);
+		rect_max_triangle_test.x = max(rect_max_triangle_test.x, bx_max);
+		rect_max_triangle_test.y = max(rect_max_triangle_test.y, by_max);
 	}
+	
 
 	rect_max[idx] = rect_max_triangle_test;
 	rect_min[idx] = rect_min_triangle_test;
@@ -401,25 +403,14 @@
 
 	 // We save the 2D Size in Image Space
 	 scaling[idx] = max_distance;
-	 density_factor[idx] = -dist;
-	  
-	 // If colors have been precomputed, use them, otherwise convert
-	 // spherical harmonics coefficients to RGB color.
-	 if (colors_precomp == nullptr)
-	 {
-		 glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3)(center_triangle.x, center_triangle.y, center_triangle.z), *cam_pos, shs, clamped);
-		 rgb[idx * C + 0] = result.x;
-		 rgb[idx * C + 1] = result.y;
-		 rgb[idx * C + 2] = result.z;
-	 }
-
 
 	 phi_center[idx] = {1.0f / phi_center_min, size};
 	 depths[idx] = p_view_triangle.z; 
 	 radii[idx] = max_distance;
 	 points_xy_image[idx] = center_triangle_2D;
-	 conic_opacity[idx] = {normal_cvx.x, normal_cvx.y, normal_cvx.z, opacities[idx]};
+	 conic_opacity[idx] = {normal_cvx.x, normal_cvx.y, normal_cvx.z, min_weight};
 	 tiles_touched[idx] = (rect_max_triangle_test.y - rect_min_triangle_test.y) * (rect_max_triangle_test.x - rect_min_triangle_test.x);
+
  }
  
  // Main rasterization method. Collaboratively works on one tile per
@@ -434,19 +425,21 @@
 	 const float2* __restrict__ normals,
 	 const float* __restrict__ offsets,
 	 const float2* __restrict__ points_xy_image,
-	 const float* __restrict__ sigma,
-	 const int* __restrict__ num_points_per_triangle,
-	 const int* __restrict__ cumsum_of_points_per_triangle,
+	 const float* __restrict__ vertex_depth, 
+	 const int* __restrict__ triangles_indices,
+	 const float sigma,
 	 const float* __restrict__ features,
 	 const float4* __restrict__ conic_opacity,
 	 const float* __restrict__ depths,
 	 const float2* __restrict__ phi_center,
+	 const float2* __restrict__ p_image,
 	 float* __restrict__ final_T,
 	 uint32_t* __restrict__ n_contrib,
 	 const float* __restrict__ bg_color,
 	 float* __restrict__ out_color,
 	 float* __restrict__ out_others,
-	 float* __restrict__ max_blending)
+	 float* __restrict__ max_blending,
+	 int* __restrict__ was_rendered)
  {
 	 // Identify current tile and associated min/max pixel range.
 	 auto block = cg::this_thread_block();
@@ -476,10 +469,10 @@
 	 */
 	 __shared__ float2 collected_normals[BLOCK_SIZE * MAX_NB_POINTS];
 	 __shared__ float collected_offsets[BLOCK_SIZE * MAX_NB_POINTS];
-	 __shared__ float collected_sigma[BLOCK_SIZE];
 	 __shared__ float collected_depths[BLOCK_SIZE];
 	 __shared__ float2 collected_xy[BLOCK_SIZE];
 	 __shared__ float2 collected_phi_center[BLOCK_SIZE];
+	 __shared__ float2 collected_p_images[BLOCK_SIZE * MAX_NB_POINTS];
 	 /*
 	 ===================================================================================================
 	 */
@@ -498,6 +491,8 @@
 	 float distortion = {0};
 	 float median_depth = {0};
 	 float median_contributor = {-1};
+
+	 int pixel_influence;
  
 	 // Iterate over batches until all done or range is complete
 	 for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
@@ -514,12 +509,12 @@
 			 int coll_id = point_list[range.x + progress];
 			 collected_id[block.thread_rank()] = coll_id;
 			 collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
-			 collected_sigma[block.thread_rank()] = sigma[coll_id];
 			 collected_depths[block.thread_rank()] = depths[coll_id];
 			 collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			 for (int k = 0; k < 3; k++) {
-				collected_normals[MAX_NB_POINTS * block.thread_rank() + k] = normals[cumsum_of_points_per_triangle[coll_id] + k];
-				collected_offsets[MAX_NB_POINTS * block.thread_rank() + k] = offsets[cumsum_of_points_per_triangle[coll_id] + k];
+				collected_normals[MAX_NB_POINTS * block.thread_rank() + k] = normals[3 * coll_id + k];
+				collected_offsets[MAX_NB_POINTS * block.thread_rank() + k] = offsets[3 * coll_id + k];;
+				collected_p_images[MAX_NB_POINTS * block.thread_rank() + k] = p_image[3 * coll_id + k];
 			}
 			collected_phi_center[block.thread_rank()] = phi_center[coll_id];
 		 }
@@ -535,7 +530,6 @@
 			 float4 con_o = collected_conic_opacity[j];
 			 float normal[3] = {con_o.x, con_o.y, con_o.z};
 			 float2 phi_center_min = collected_phi_center[j];
-			 float sigma_pre = collected_sigma[j];
 			 float max_val = -INFINITY;
 			 int base = j * MAX_NB_POINTS;
 			 bool outside = false;
@@ -559,46 +553,85 @@
  
 			 float phi_x = max_val;
 			 float phi_final = phi_x * phi_center_min.x;
-			 float Cx = fmaxf(0.0f,  __powf(phi_final, sigma_pre));
-
+			 float Cx = fmaxf(0.0f,  __powf(phi_final, sigma));
  
-			 float alpha = min(0.99f, con_o.w * Cx); 
+			 float alpha = min(0.999f, con_o.w * Cx); 
 			 if (alpha < 1.0f / 255.0f)
 				 continue;
+			
+			 atomicAdd(was_rendered + j_id, 1);
+
 			 float test_T = T * (1 - alpha);
 			 if (test_T < 0.0001f)
 			 {
 				 done = true;
 				 continue;
 			 }
-
-
 			 
 			 float blending_weight = alpha * T;
 			 // Update the maximum blending weight in a thread-safe way
 			 atomicMax(((int*)max_blending) + j_id, *((int*)(&blending_weight)));
 
-			 float A = 1-T;
-			 float m = far_n / (far_n - near_n) * (1 - near_n / collected_depths[j]);
-			 distortion += (m * m * A + M2 - 2 * m * M1) * blending_weight;
-			 D  += collected_depths[j] * blending_weight;
-			 M1 += m * blending_weight;
-			 M2 += m * m * blending_weight;
+			 // COLOR INTERPOLATION
+
+			 // Interpolate the colors
+			 float2 uv0 = collected_p_images[j * 3 + 0];
+			 float2 uv1 = collected_p_images[j * 3 + 1];
+			 float2 uv2 = collected_p_images[j * 3 + 2];
+
+			 // vectors along the edges from uv0
+			 float2 v0 = { uv1.x - uv0.x, uv1.y - uv0.y };
+			 float2 v1 = { uv2.x - uv0.x, uv2.y - uv0.y };
+			 // vector from uv0 to pixel
+			 float2 v2 = { pixf.x  - uv0.x, pixf.y  - uv0.y };
+
+			 // invert the 2×2 [v0 v1] matrix
+			 float denom  = v0.x * v1.y - v1.x * v0.y;
+			 float invDen = 1.0f / denom;    // assume non-degenerate
+
+			 // barycentrics relative to uv0,uv1,uv2
+			 float b0 = ( v2.x * v1.y - v1.x * v2.y) * invDen;
+			 float b1 = (-v2.x * v0.y + v0.x * v2.y) * invDen;
+			 float b2 = 1.0f - b0 - b1;
+			
+			 int aux = 3 * j_id;
+			 int vertex_idx0 = triangles_indices[aux];
+			 int vertex_idx1 = triangles_indices[aux + 1];
+			 int vertex_idx2 = triangles_indices[aux + 2];
+
+			 float depth_vertex_0 =  vertex_depth[vertex_idx0];
+			 float depth_vertex_1 =  vertex_depth[vertex_idx1];
+			 float depth_vertex_2 =  vertex_depth[vertex_idx2];
+
+			 float wA = b2;    // vertex0
+			 float wB = b0;    // vertex1
+			 float wC = b1;    // vertex2
+
+			 // now blend them
+			 for (int ch = 0; ch < CHANNELS; ++ch) {
+				// Access colors per vertex (not per triangle)
+				float c0 = features[vertex_idx0 * CHANNELS + ch];
+				float c1 = features[vertex_idx1 * CHANNELS + ch];
+				float c2 = features[vertex_idx2 * CHANNELS + ch];
+
+				float interp = wA * c0 + wB * c1 + wC * c2;
+				C[ch] += interp * alpha * T;
+			 } 
+
+			 float depth_interp = wA * depth_vertex_0 + wB * depth_vertex_1 + wC * depth_vertex_2;
+
+			 D  += depth_interp * blending_weight;
  
 			 if (T > 0.5) {
-				 median_depth = collected_depths[j];
+				 median_depth = depth_interp;
 				 median_contributor = contributor;
+				 pixel_influence = j_id;
 			 }
 			 // Render normal map
 			 for (int ch=0; ch<3; ch++) N[ch] += normal[ch] * blending_weight;
-
-			 for (int ch = 0; ch < CHANNELS; ch++)
-				 C[ch] += features[j_id * CHANNELS + ch] * alpha * T;
  
 			 T = test_T;
  
-			 // Keep track of last range entry to update this
-			 // pixel.
 			 last_contributor = contributor;
 		 }
 	 }
@@ -614,13 +647,11 @@
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 
 		n_contrib[pix_id + H * W] = median_contributor;
-		final_T[pix_id + H * W] = M1;
-		final_T[pix_id + 2 * H * W] = M2;
 		out_others[pix_id + DEPTH_OFFSET * H * W] = D;
 		out_others[pix_id + ALPHA_OFFSET * H * W] = 1 - T;
 		for (int ch=0; ch<3; ch++) out_others[pix_id + (NORMAL_OFFSET+ch) * H * W] = N[ch];
 		out_others[pix_id + MIDDEPTH_OFFSET * H * W] = median_depth;
-		out_others[pix_id + DISTORTION_OFFSET * H * W] = distortion;
+		out_others[pix_id + DISTORTION_OFFSET * H * W] = pixel_influence;
 	 }
  }
  
@@ -632,19 +663,21 @@
 	 const float2* normals,
 	 const float* offsets,
 	 const float2* points_xy_image,
-	 const float* sigma,
-	 const int* num_points_per_triangle,
-	 const int* cumsum_of_points_per_triangle,
+	 const float* vertex_depth, 
+	 const int* triangles_indices,
+	 const float sigma,
 	 const float* colors,
 	 const float4* conic_opacity,
 	 const float* depths,
 	 const float2* phi_center,
+	 const float2* p_image,
 	 float* final_T,
 	 uint32_t* n_contrib,
 	 const float* bg_color,
 	 float* out_color,
 	 float* out_others,
-	float* max_blending)
+	float* max_blending,
+	int* was_rendered)
  {
 	 renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		 ranges,
@@ -653,30 +686,47 @@
 		 normals,
 		 offsets,
 		 points_xy_image,
+		 vertex_depth,
+		 triangles_indices,
 		 sigma,
-		 num_points_per_triangle,
-		 cumsum_of_points_per_triangle,
 		 colors,
 		 conic_opacity,
 		 depths,
 		 phi_center,
+		 p_image,
 		 final_T,
 		 n_contrib,
 		 bg_color,
 		 out_color,
 		 out_others,
-		 max_blending
+		 max_blending,
+		 was_rendered
 		 );
+ }
+
+
+ // Add this to the FORWARD namespace implementation
+ void FORWARD::computeVertexColors(
+    int V, int D, int M,
+    const float* vertices,
+    const float* shs,
+    bool* clamped,
+    float* rgb,
+	float* vertex_depth, 
+	const float* viewmatrix,
+    const glm::vec3* cam_pos)
+ {
+    computeVertexColorsCUDA<<<(V + 255) / 256, 256>>>(
+        V, D, M, vertices, shs, clamped, rgb, vertex_depth, viewmatrix, cam_pos
+    );
  }
  
  void FORWARD::preprocess(int P, int D, int M,
-	 const float* triangles_points,
-	 const float* sigma,
-	 const int* num_points_per_triangle,
-	 const int* cumsum_of_points_per_triangle,
-	 const float* opacities,
+	 const float* vertices,
+	 const int* triangles_indices,
+	 const float* vertex_weights,
+	 const float sigma,
 	 float* scaling,
-	 float* density_factor,
 	 const float* shs,
 	 bool* clamped,
 	 const float* colors_precomp,
@@ -694,9 +744,7 @@
 	 int* indices,
 	 float2* means2D,
 	 float* depths,
-	 float* rgb,
 	 float4* conic_opacity,
-	 float* cov3Ds,
 	 float2* phi_center,
 	 uint2* rect_min,
 	 uint2* rect_max,
@@ -706,13 +754,11 @@
  {
 	 preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
 		 P, D, M,
-		 triangles_points,
+		 vertices,
+		 triangles_indices,
+		 vertex_weights,
 		 sigma,
-		 num_points_per_triangle,
-		 cumsum_of_points_per_triangle,
-		 opacities,
 		 scaling,
-		 density_factor,
 		 shs,
 		 clamped,
 		 colors_precomp,
@@ -730,9 +776,7 @@
 		 indices,
 		 means2D,
 		 depths,
-		 rgb,
 		 conic_opacity,
-		 cov3Ds,
 		 phi_center,
 		 rect_min,
 		 rect_max,
