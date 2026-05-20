@@ -734,6 +734,20 @@ class TriangleModel {
    */
   void assignOptimizedTensors(const std::vector<torch::Tensor>& tensors);
 
+  /**
+   * @brief Removes unreferenced vertices after triangle pruning.
+   *
+   * Finds vertices not referenced by any triangle in triangle_indices_,
+   * remaps indices to be contiguous, and prunes vertex-level data.
+   */
+  void gcUnreferencedVertices();
+
+  /**
+   * @brief Prunes vertex-level optimizer state and parameters.
+   * @param vertex_keep_mask Boolean mask [V] — true for vertices to keep.
+   */
+  void pruneVertexData(const torch::Tensor& vertex_keep_mask);
+
  protected:
   //============================================================================
   // Protected Members

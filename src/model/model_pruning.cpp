@@ -38,9 +38,17 @@ void TriangleModel::resetVertexWeight() {
 void TriangleModel::resetVertexWeightForMask(const torch::Tensor& triangle_mask) {
   torch::NoGradGuard no_grad;
 
-  int num_reset = torch::sum(triangle_mask).item<int>();
+  // Map triangle mask to vertex mask
+  const int64_t V = vertices_.size(0);
+  torch::Tensor vertex_mask = torch::zeros(
+      {V}, torch::TensorOptions().dtype(torch::kBool).device(device_type_));
+  vertex_mask.index_put_(
+      {triangle_indices_.index({triangle_mask}).flatten().to(torch::kLong)},
+      true);
+
+  int num_reset = torch::sum(vertex_mask).item<int>();
   std::cout << "[Vertex Weight Reset] Resetting vertex weight for " << num_reset
-            << " triangles" << std::endl;
+            << " vertices" << std::endl;
 
   torch::Tensor current_weight_activated = getVertexWeightActivation();
 
@@ -50,8 +58,8 @@ void TriangleModel::resetVertexWeightForMask(const torch::Tensor& triangle_mask)
   torch::Tensor new_weight_values =
       general_utils::inverse_sigmoid(target_weight);
 
-  vertex_weight_.index_put_({triangle_mask},
-                      new_weight_values.index({triangle_mask}));
+  vertex_weight_.index_put_({vertex_mask},
+                      new_weight_values.index({vertex_mask}));
 
   std::cout << "[Vertex Weight Reset] Reset complete - max="
             << torch::sigmoid(vertex_weight_).max().item<float>()
@@ -70,14 +78,20 @@ void TriangleModel::resetPositionLRAndOptimizerState(
     return;
   }
 
-  int num_reset = torch::sum(triangle_mask).item<int>();
+  // Map triangle mask to vertex mask
+  const int64_t V = vertices_.size(0);
+  torch::Tensor vertex_mask = torch::zeros(
+      {V}, torch::TensorOptions().dtype(torch::kBool).device(device_type_));
+  vertex_mask.index_put_(
+      {triangle_indices_.index({triangle_mask}).flatten().to(torch::kLong)},
+      true);
+
+  int num_reset = torch::sum(vertex_mask).item<int>();
   std::cout << "[Optimizer Reset] Resetting position LR and Adam states for "
-            << num_reset << " triangles" << std::endl;
+            << num_reset << " vertices" << std::endl;
 
-  // Reset position learning rates back to initial value
-  position_lrs_.index_put_({triangle_mask}, position_lr_init_);
+  position_lrs_.index_put_({vertex_mask}, position_lr_init_);
 
-  // Reset Adam optimizer states for positions (group 0 = xyz)
   auto& param_group = optimizer_->param_groups()[0];
   if (param_group.params().empty()) {
     std::cerr << "ERROR: No parameters in position group!" << std::endl;
@@ -97,11 +111,10 @@ void TriangleModel::resetPositionLRAndOptimizerState(
   torch::Tensor exp_avg = param_state.exp_avg();
   torch::Tensor exp_avg_sq = param_state.exp_avg_sq();
 
-  // Expand mask to match vertices_ dimensions [V, 3]
-  torch::Tensor vert_mask =
-      triangle_mask.unsqueeze(1).expand({-1, 3});
-  exp_avg.index_put_({vert_mask}, 0.0f);
-  exp_avg_sq.index_put_({vert_mask}, 0.0f);
+  // Expand vertex mask to match [V, 3]
+  torch::Tensor vert_mask_3d = vertex_mask.unsqueeze(1).expand({-1, 3});
+  exp_avg.index_put_({vert_mask_3d}, 0.0f);
+  exp_avg_sq.index_put_({vert_mask_3d}, 0.0f);
 
   std::cout << "[Optimizer Reset] Position LRs reset - max="
             << position_lrs_.max().item<float>()
@@ -153,19 +166,71 @@ torch::Tensor TriangleModel::replaceTensorToOptimizer(torch::Tensor& tensor,
 
 void TriangleModel::prunePoints(torch::Tensor& mask) {
   torch::NoGradGuard no_grad;
-  auto valid_points_mask = ~mask;
+  auto valid_triangles_mask = ~mask;
 
-  triangle_indices_ = triangle_indices_.index({valid_points_mask});
+  triangle_indices_ = triangle_indices_.index({valid_triangles_mask});
+  exist_since_iter_ = exist_since_iter_.index({valid_triangles_mask});
+  triangle_chunk_ids_ = triangle_chunk_ids_.index({valid_triangles_mask});
+  triangle_ids_ = triangle_ids_.index({valid_triangles_mask});
 
-  // TODO: vertex garbage collection
-  // vertices_, features_dc_, features_rest_, vertex_weight_ are per-vertex
-  // and should not be pruned by a per-triangle mask. Optimizer param groups
-  // (vertex-level) are left unchanged here.
+  gcUnreferencedVertices();
+}
 
-  exist_since_iter_ = exist_since_iter_.index({valid_points_mask});
-  position_lrs_ = position_lrs_.index({valid_points_mask});
-  triangle_chunk_ids_ = triangle_chunk_ids_.index({valid_points_mask});
-  triangle_ids_ = triangle_ids_.index({valid_points_mask});
+void TriangleModel::gcUnreferencedVertices() {
+  const int64_t V = vertices_.size(0);
+  if (V == 0 || triangle_indices_.size(0) == 0) return;
+
+  torch::Tensor referenced = torch::zeros(
+      {V}, torch::TensorOptions().dtype(torch::kBool).device(device_type_));
+  referenced.index_put_(
+      {triangle_indices_.flatten().to(torch::kLong)}, true);
+
+  if (referenced.all().item<bool>()) return;
+
+  // Build old→new vertex ID mapping
+  torch::Tensor new_ids = torch::full(
+      {V}, -1, torch::TensorOptions().dtype(torch::kLong).device(device_type_));
+  torch::Tensor kept = torch::nonzero(referenced).squeeze(1);
+  new_ids.index_put_({kept}, torch::arange(kept.size(0),
+      torch::TensorOptions().dtype(torch::kLong).device(device_type_)));
+
+  triangle_indices_ =
+      new_ids.index({triangle_indices_.to(torch::kLong)}).to(torch::kInt32);
+
+  pruneVertexData(referenced);
+}
+
+void TriangleModel::pruneVertexData(const torch::Tensor& vertex_keep_mask) {
+  auto& param_groups = optimizer_->param_groups();
+  auto& state = optimizer_->state();
+  std::vector<torch::Tensor> optimized_tensors(kNumParamGroups);
+
+  for (int i = 0; i < kNumParamGroups; ++i) {
+    auto& group = param_groups[i];
+    auto& param = group.params()[0];
+    auto key = param.unsafeGetTensorImpl();
+
+    if (state.find(key) != state.end()) {
+      auto& stored_state =
+          static_cast<torch::optim::AdamParamState&>(*state[key]);
+      auto new_state = std::make_unique<torch::optim::AdamParamState>();
+      new_state->step(stored_state.step());
+      new_state->exp_avg(stored_state.exp_avg().index({vertex_keep_mask}));
+      new_state->exp_avg_sq(
+          stored_state.exp_avg_sq().index({vertex_keep_mask}));
+
+      state.erase(key);
+      param = param.index({vertex_keep_mask}).requires_grad_();
+      key = param.unsafeGetTensorImpl();
+      state[key] = std::move(new_state);
+    } else {
+      param = param.index({vertex_keep_mask}).requires_grad_();
+    }
+    optimized_tensors[i] = param;
+  }
+
+  assignOptimizedTensors(optimized_tensors);
+  position_lrs_ = position_lrs_.index({vertex_keep_mask});
 }
 
 void TriangleModel::densificationPostfix(
@@ -267,12 +332,21 @@ void TriangleModel::pruneLowWeightTriangles(
 
   torch::Tensor visible_indices = torch::where(visible_triangle_mask)[0];
 
-  torch::Tensor weights = getVertexWeightActivation().index({visible_indices});
+  // Per-vertex weights [V, 1] → gather per-triangle min weight
+  torch::Tensor vert_weights = getVertexWeightActivation();  // [V, 1]
+  torch::Tensor vis_tri_idx =
+      triangle_indices_.index({visible_indices}).to(torch::kLong);  // [T_vis, 3]
+  // [T_vis, 3] — weight of each corner vertex
+  torch::Tensor tri_vert_weights =
+      vert_weights.squeeze(1).index({vis_tri_idx});
+  // Min weight across the 3 vertices → [T_vis]
+  torch::Tensor min_weights = std::get<0>(tri_vert_weights.min(/*dim=*/1));
+
   torch::Tensor screen_size = full_model_scaling.index({visible_indices});
 
   const float kMaxScreenSize = 0.5f * static_cast<float>(pkf->image_width_);
 
-  torch::Tensor valid_mask = (weights.squeeze(1) > 0.05f) &
+  torch::Tensor valid_mask = (min_weights > 0.05f) &
                              (screen_size < kMaxScreenSize);
 
   torch::Tensor full_model_prune_mask = torch::zeros(
