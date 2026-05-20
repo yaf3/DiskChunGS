@@ -84,15 +84,13 @@ class TriangleRasterizerFunction
    */
   static torch::autograd::tensor_list forward(
       torch::autograd::AutogradContext* ctx,
-      torch::Tensor means3D,
-      torch::Tensor means2D,
+      torch::Tensor vertices,
+      torch::Tensor triangle_indices,
+      torch::Tensor vertex_weights,
+      float sigma,
       torch::Tensor dc,
       torch::Tensor sh,
       torch::Tensor colors_precomp,
-      torch::Tensor opacities,
-      torch::Tensor scales,
-      torch::Tensor rotations,
-      torch::Tensor cov3Ds_precomp,
       torch::Tensor viewmatrix,
       TriangleRasterizationSettings raster_settings);
 
@@ -108,20 +106,18 @@ class TriangleRasterizerFunction
  * @brief Convenience wrapper to invoke TriangleRasterizerFunction::apply().
  */
 inline torch::autograd::tensor_list rasterizeTriangles(
-    torch::Tensor& means3D,
-    torch::Tensor& means2D,
+    torch::Tensor& vertices,
+    torch::Tensor& triangle_indices,
+    torch::Tensor& vertex_weights,
+    float sigma,
     torch::Tensor& dc,
     torch::Tensor& sh,
     torch::Tensor& colors_precomp,
-    torch::Tensor& opacities,
-    torch::Tensor& scales,
-    torch::Tensor& rotations,
-    torch::Tensor& cov3Ds_precomp,
     torch::Tensor& viewmatrix,
     TriangleRasterizationSettings& raster_settings) {
   return TriangleRasterizerFunction::apply(
-      means3D, means2D, dc, sh, colors_precomp, opacities, scales, rotations,
-      cov3Ds_precomp, viewmatrix, raster_settings);
+      vertices, triangle_indices, vertex_weights, sigma, dc, sh,
+      colors_precomp, viewmatrix, raster_settings);
 }
 
 /**
@@ -149,15 +145,13 @@ class TriangleRasterizer : public torch::nn::Module {
    */
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
              torch::Tensor, torch::Tensor>
-  forward(torch::Tensor means3D,
-          torch::Tensor means2D,
-          torch::Tensor opacities,
+  forward(torch::Tensor vertices,
+          torch::Tensor triangle_indices,
+          torch::Tensor vertex_weights,
+          float sigma,
           torch::Tensor dc,
           torch::Tensor shs,
           torch::Tensor colors_precomp,
-          torch::Tensor scales,
-          torch::Tensor rotations,
-          torch::Tensor cov3D_precomp,
           torch::Tensor viewmatrix);
 
   TriangleRasterizationSettings raster_settings_;

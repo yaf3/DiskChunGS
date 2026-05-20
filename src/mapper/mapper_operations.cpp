@@ -279,7 +279,7 @@ void TriangleMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation &opr) {
     // Note: No else case needed since we evicted all spatial chunks above
   }
 
-  int64_t current_triangles = triangles_->triangles_points_.size(0);
+  int64_t current_triangles = triangles_->triangle_indices_.size(0);
   int64_t projected_total = total_triangles_needed + current_triangles;
 
   // =========================================================================
@@ -394,7 +394,7 @@ int TriangleMapper::processBatchedLoopClosure(
 
   // Global transform mask to track which triangles have been transformed
   torch::Tensor global_transform_mask = torch::zeros(
-      {triangles_->triangles_points_.size(0)}, torch::TensorOptions()
+      {triangles_->triangle_indices_.size(0)}, torch::TensorOptions()
                                       .dtype(torch::kBool)
                                       .device(triangles_->device_type_));
 
@@ -1192,7 +1192,7 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
   }
 
   if (initial_mapped_) {
-    triangles_->pruneLowOpacityTriangles(pkf, visible_triangle_mask, full_model_scaling);
+    triangles_->pruneLowWeightTriangles(pkf, visible_triangle_mask, full_model_scaling);
   }
 
   // Add all points to scene

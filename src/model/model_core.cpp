@@ -56,16 +56,25 @@ TriangleModel::TriangleModel(const TriangleModelParams& model_params,
 }
 
 torch::Tensor TriangleModel::getTrianglesPoints() {
-  return this->triangles_points_;
+  return this->vertices_.index_select(0, this->triangle_indices_.flatten().to(torch::kLong))
+      .reshape({this->triangle_indices_.size(0), 3, 3});
 }
 
-torch::Tensor TriangleModel::getSigmaActivation() {
-  return 0.01f + torch::exp(this->sigma_);
+torch::Tensor TriangleModel::getVertices() {
+  return this->vertices_;
 }
 
-// Returns centroid of 3 vertices: triangles_points_ [N,3,3] → [N,3]
+torch::Tensor TriangleModel::getTriangleIndices() {
+  return this->triangle_indices_;
+}
+
+float TriangleModel::getSigmaActivation() {
+  return this->sigma_value_;
+}
+
 torch::Tensor TriangleModel::getXYZ() {
-  return this->triangles_points_.mean(/*dim=*/1);
+  auto tri_pts = this->getTrianglesPoints();  // [T,3,3]
+  return tri_pts.mean(/*dim=*/1);  // [T,3]
 }
 
 torch::Tensor TriangleModel::getFeatures() {
@@ -73,8 +82,8 @@ torch::Tensor TriangleModel::getFeatures() {
                     /*dim=*/1);
 }
 
-torch::Tensor TriangleModel::getOpacityActivation() {
-  return torch::sigmoid(this->opacity_);
+torch::Tensor TriangleModel::getVertexWeightActivation() {
+  return torch::sigmoid(this->vertex_weight_);
 }
 
 
@@ -86,37 +95,18 @@ void TriangleModel::applyScaledTransformation(const float s,
       tensor_utils::EigenMatrix2TorchTensor(T.matrix(), device_type_)
           .transpose(0, 1);
 
-  // Transform all 3 vertices: triangles_points_ [N,3,3]
-  // Process each vertex column: reshape to [N*3, 3], transform, reshape back
-  auto N = this->triangles_points_.size(0);
-  auto pts_flat = this->triangles_points_.reshape({N * 3, 3});
-  pts_flat *= s;
-  transformPoints(pts_flat, T_tensor);
-  this->triangles_points_ = pts_flat.reshape({N, 3, 3});
+  this->vertices_.mul_(s);
+  transformPoints(this->vertices_, T_tensor);
 
-  // sigma in log-space: sigma_activated = 0.01 + exp(sigma_)
-  // Scaling by s: new_activated = s * old_activated ≈ exp(log(s) + sigma_)
-  // So sigma_ += log(s) (approximate, ignoring the 0.01 offset)
-  this->sigma_ = this->sigma_ + std::log(s);
-
-  scaledTransformationPostfix(this->triangles_points_, this->sigma_);
+  scaledTransformationPostfix(this->vertices_);
 }
 
 void TriangleModel::scaledTransformationPostfix(
-    torch::Tensor& new_triangles_points,
-    torch::Tensor& new_sigma) {
-  // param_groups[0] = triangles_points_
-  torch::Tensor optimizable_tri_pts =
-      this->replaceTensorToOptimizer(new_triangles_points, 0);
-  // param_groups[4] = sigma_
-  torch::Tensor optimizable_sigma =
-      this->replaceTensorToOptimizer(new_sigma, 4);
-
-  this->triangles_points_ = optimizable_tri_pts;
-  this->sigma_ = optimizable_sigma;
-
-  this->Tensor_vec_triangles_points_ = {this->triangles_points_};
-  this->Tensor_vec_sigma_ = {this->sigma_};
+    torch::Tensor& new_vertices) {
+  torch::Tensor optimizable_verts =
+      this->replaceTensorToOptimizer(new_vertices, 0);
+  this->vertices_ = optimizable_verts;
+  this->Tensor_vec_vertices_ = {this->vertices_};
 }
 
 void TriangleModel::scaledTransformVisiblePointsOfKeyframe(
@@ -130,56 +120,38 @@ void TriangleModel::scaledTransformVisiblePointsOfKeyframe(
     const float scale) {
   torch::NoGradGuard no_grad;
 
-  // Use centroids for visibility detection; dummy rots (not used anymore)
-  torch::Tensor centroids = this->getXYZ();  // [N, 3]
+  torch::Tensor centroids = this->getXYZ();  // [T, 3]
   torch::Tensor dummy_rots = torch::zeros(
       {centroids.size(0), 4},
       torch::TensorOptions().dtype(torch::kFloat).device(device_type_));
-  dummy_rots.index({torch::indexing::Slice(), 0}) = 1.0f;  // identity quaternion
+  dummy_rots.index({torch::indexing::Slice(), 0}) = 1.0f;
 
   torch::Tensor point_unstable_flags =
       torch::where(torch::abs(this->exist_since_iter_ - kf_creation_iter) <
                        stable_num_iter_existence,
                    true, false);
 
-  // scaleAndTransformThenMarkVisiblePoints transforms centroids in-place
-  // and marks which points are visible+unstable.
   scaleAndTransformThenMarkVisiblePoints(
       centroids, dummy_rots, point_transformed_flags, point_unstable_flags,
       diff_pose, kf_world_view_transform, kf_full_proj_transform,
       num_transformed, scale);
 
   if (num_transformed > 0) {
-    // Apply the same diff_pose transform to all 3 vertices of each triangle.
-    // The transform applied by scaleAndTransformThenMarkVisiblePoints is:
-    //   new_pt = scale * diff_pose * pt
-    // We replicate this for all vertices of transformed triangles.
     torch::Tensor transformed_mask = point_transformed_flags.to(torch::kBool);
-    auto N_total = this->triangles_points_.size(0);
-    auto pts_flat = this->triangles_points_.reshape({N_total * 3, 3});
+    auto tri_idx = this->triangle_indices_.index({transformed_mask}).to(torch::kLong);  // [K,3]
+    auto vert_indices = std::get<0>(torch::_unique(tri_idx.flatten()));
 
-    // Build index: for each transformed triangle, transform all 3 vertices
-    torch::Tensor tri_indices = torch::where(transformed_mask)[0];  // [K]
-    torch::Tensor vert_indices = (tri_indices.unsqueeze(1) * 3 +
-        torch::arange(3, tri_indices.options()).unsqueeze(0))
-        .reshape({-1});  // [K*3]
-
-    auto selected = pts_flat.index({vert_indices});  // [K*3, 3]
+    auto selected = this->vertices_.index({vert_indices}).clone();  // [U,3]
     selected *= scale;
-    // diff_pose is a [4,4] world-view transform; apply it as a linear transform
     auto pts_h = torch::cat({selected,
         torch::ones({selected.size(0), 1}, selected.options())}, /*dim=*/1);
     auto transformed = pts_h.matmul(diff_pose);
-    pts_flat.index_put_({vert_indices}, transformed.slice(1, 0, 3));
+    this->vertices_.index_put_({vert_indices}, transformed.slice(1, 0, 3));
 
-    this->triangles_points_ = pts_flat.reshape({N_total, 3, 3});
-
-    // Postfix: replace in optimizer
-    // param_groups[0] = triangles_points_
-    torch::Tensor optimizable_tri_pts =
-        this->replaceTensorToOptimizer(this->triangles_points_, 0);
-    this->triangles_points_ = optimizable_tri_pts;
-    this->Tensor_vec_triangles_points_ = {this->triangles_points_};
+    torch::Tensor optimizable_verts =
+        this->replaceTensorToOptimizer(this->vertices_, 0);
+    this->vertices_ = optimizable_verts;
+    this->Tensor_vec_vertices_ = {this->vertices_};
   }
 }
 
@@ -404,46 +376,37 @@ void TriangleModel::initializeFromPoints(const torch::Tensor& initial_xyz,
                                          const torch::Tensor& cam_center,
                                          const torch::Tensor& normals) {
   torch::NoGradGuard no_grad;
+  const int64_t N = initial_xyz.size(0);
   std::cout << "[Triangle Model] Initializing from points: "
             << initial_xyz.sizes() << std::endl;
 
-  torch::Tensor fused_color = sh_utils::RGB2SH(initial_colors);
-  auto temp = this->sh_degree_ + 1;
-  torch::Tensor features = torch::zeros(
-      {fused_color.size(0), 3, temp * temp},
-      torch::TensorOptions().dtype(torch::kFloat).device(device_type_));
-  features.index({torch::indexing::Slice(), torch::indexing::Slice(0, 3), 0}) =
-      fused_color;
-  features.index({torch::indexing::Slice(),
-                  torch::indexing::Slice(3, features.size(1)),
-                  torch::indexing::Slice(1, features.size(2))}) = 0.0f;
-
-  torch::Tensor opacities = initial_opacities;
-
-  this->exist_since_iter_ = torch::full(
-      {initial_xyz.size(0)}, iteration,
-      torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
-
-  // Triangle vertex radius: proportional to kNN distance (no sqrt).
-  // initial_scales is log-space kNN distance; exp() recovers meters.
-  // triangle_size=1.5: smaller triangles are less visually prominent as individual shapes.
   const float triangle_size = 1.5f;
   torch::Tensor knn_dist = torch::exp(initial_scales).mean(1).clamp_min(1e-6f);
-  torch::Tensor radii = (triangle_size * knn_dist).clamp_min(0.01f);  // [N]
+  torch::Tensor radii = (triangle_size * knn_dist).clamp_min(0.01f);
 
-  // Generate 3 triangle vertices: surface-normal-aligned if normals provided,
-  // otherwise camera-facing (cam_center), otherwise Fibonacci fallback.
   torch::Tensor tri_pts = generateTriangleVertices(initial_xyz, radii, cam_center, normals);
+  torch::Tensor flat_verts = tri_pts.reshape({N * 3, 3}).to(device_type_).contiguous();
 
-  // Sigma init: constant matching original set_sigma=1.16.
-  // sigma_activation = 0.01 + exp(sigma_) → sigma_ = log(sigma - 0.01) = log(1.15) ≈ 0.14
-  const float sigma_init_val = std::log(1.16f - 0.01f);
-  torch::Tensor sigma_init = torch::full(
-      {initial_xyz.size(0), 1}, sigma_init_val,
+  torch::Tensor tri_indices = torch::arange(N * 3, torch::TensorOptions().dtype(torch::kInt32).device(device_type_))
+      .reshape({N, 3});
+
+  torch::Tensor fused_color = sh_utils::RGB2SH(initial_colors);
+  torch::Tensor per_vert_color = fused_color.repeat_interleave(3, /*dim=*/0);  // [3N,3]
+  auto temp = this->sh_degree_ + 1;
+  torch::Tensor features = torch::zeros(
+      {per_vert_color.size(0), 3, temp * temp},
       torch::TensorOptions().dtype(torch::kFloat).device(device_type_));
+  features.index({torch::indexing::Slice(), torch::indexing::Slice(0, 3), 0}) =
+      per_vert_color;
 
-  this->triangles_points_ =
-      tri_pts.to(device_type_).contiguous().requires_grad_();
+  torch::Tensor vert_opacities = initial_opacities.repeat_interleave(3, /*dim=*/0);  // [3N,1]
+
+  this->exist_since_iter_ = torch::full(
+      {N}, iteration,
+      torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
+
+  this->vertices_ = flat_verts.requires_grad_();
+  this->triangle_indices_ = tri_indices;
   this->features_dc_ =
       features
           .index({torch::indexing::Slice(), torch::indexing::Slice(),
@@ -458,15 +421,14 @@ void TriangleModel::initializeFromPoints(const torch::Tensor& initial_xyz,
           .transpose(1, 2)
           .contiguous()
           .requires_grad_();
-  this->sigma_ = sigma_init.to(device_type_).requires_grad_();
-  this->opacity_ = opacities.requires_grad_();
+  this->vertex_weight_ = vert_opacities.requires_grad_();
 
   triangle_chunk_ids_ = computeChunkIds(initial_xyz, chunk_size_);
 
   triangle_ids_ = torch::arange(
-      next_triangle_id_, next_triangle_id_ + initial_xyz.size(0),
+      next_triangle_id_, next_triangle_id_ + N,
       torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
-  next_triangle_id_ += initial_xyz.size(0);
+  next_triangle_id_ += N;
 
   TRIANGLE_MODEL_TENSORS_TO_VEC
 
@@ -483,20 +445,30 @@ void TriangleModel::appendPoints(const torch::Tensor& new_xyzs,
   torch::NoGradGuard no_grad;
   auto num_new_points = new_xyzs.size(0);
   if (num_new_points == 0) return;
+  const int64_t N = num_new_points;
+
+  const float triangle_size = 1.5f;
+  torch::Tensor knn_dist = torch::exp(new_scales).mean(1).clamp_min(1e-6f);
+  torch::Tensor radii = (triangle_size * knn_dist).clamp_min(0.01f);
+  torch::Tensor new_tri_pts =
+      generateTriangleVertices(new_xyzs, radii, cam_center, normals);
+  torch::Tensor new_flat_verts = new_tri_pts.reshape({N * 3, 3}).to(device_type_).contiguous();
+
+  int64_t vert_offset = this->vertices_.size(0);
+  torch::Tensor new_tri_indices = (torch::arange(N * 3, torch::TensorOptions().dtype(torch::kInt32).device(device_type_))
+      + static_cast<int>(vert_offset)).reshape({N, 3});
 
   torch::Tensor new_fused_colors = sh_utils::RGB2SH(new_colors);
+  torch::Tensor per_vert_color = new_fused_colors.repeat_interleave(3, /*dim=*/0);
   auto temp = this->sh_degree_ + 1;
   torch::Tensor features = torch::zeros(
-      {new_fused_colors.size(0), 3, temp * temp},
+      {per_vert_color.size(0), 3, temp * temp},
       torch::TensorOptions().dtype(torch::kFloat).device(device_type_));
   features.index({torch::indexing::Slice(), torch::indexing::Slice(0, 3), 0}) =
-      new_fused_colors;
-  features.index({torch::indexing::Slice(),
-                  torch::indexing::Slice(3, features.size(1)),
-                  torch::indexing::Slice(1, features.size(2))}) = 0.0f;
+      per_vert_color;
 
   torch::Tensor new_exist_since_iter = torch::full(
-      {new_xyzs.size(0)}, iteration,
+      {N}, iteration,
       torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
 
   auto new_features_dc =
@@ -511,34 +483,22 @@ void TriangleModel::appendPoints(const torch::Tensor& new_xyzs,
                   torch::indexing::Slice(1, features.size(2))})
           .transpose(1, 2)
           .contiguous();
-  auto new_opacities_tensor = new_opacities;
 
-  // Triangle vertex radius: proportional to kNN distance (no sqrt).
-  // triangle_size=1.5: smaller triangles are less visually prominent as individual shapes.
-  const float triangle_size = 1.5f;
-  torch::Tensor knn_dist = torch::exp(new_scales).mean(1).clamp_min(1e-6f);
-  torch::Tensor radii = (triangle_size * knn_dist).clamp_min(0.01f);  // [M]
-  torch::Tensor new_tri_pts =
-      generateTriangleVertices(new_xyzs, radii, cam_center, normals).to(device_type_).contiguous();
-  // Sigma init: constant matching original set_sigma=1.16 → sigma_ = log(1.15) ≈ 0.14
-  const float sigma_init_val = std::log(1.16f - 0.01f);
-  torch::Tensor new_sigma = torch::full(
-      {new_xyzs.size(0), 1}, sigma_init_val,
-      torch::TensorOptions().dtype(torch::kFloat).device(device_type_));
+  torch::Tensor new_vert_weights = new_opacities.repeat_interleave(3, /*dim=*/0);
 
   torch::Tensor new_position_lrs =
-      torch::full({new_xyzs.size(0)}, position_lr_init_,
+      torch::full({N * 3}, position_lr_init_,
                   torch::TensorOptions().device(device_type_));
 
   torch::Tensor new_triangle_ids = torch::arange(
-      next_triangle_id_, next_triangle_id_ + new_xyzs.size(0),
+      next_triangle_id_, next_triangle_id_ + N,
       torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
-  next_triangle_id_ += new_xyzs.size(0);
+  next_triangle_id_ += N;
 
   torch::Tensor new_chunk_ids = computeChunkIds(new_xyzs, chunk_size_);
 
-  densificationPostfix(new_tri_pts, new_features_dc, new_features_rest,
-                       new_opacities_tensor, new_sigma, new_exist_since_iter,
+  densificationPostfix(new_flat_verts, new_tri_indices, new_features_dc, new_features_rest,
+                       new_vert_weights, new_exist_since_iter,
                        new_chunk_ids, new_position_lrs, new_triangle_ids);
 }
 
@@ -563,7 +523,7 @@ torch::Tensor TriangleModel::cullVisibleTriangles(
   if (visible_chunks.empty()) {
     // Return all-false mask
     return torch::zeros(
-        {triangles_points_.size(0)},
+        {triangle_indices_.size(0)},
         torch::TensorOptions().dtype(torch::kBool).device(device_type_));
   }
 
@@ -602,12 +562,15 @@ void TriangleModel::initializeEmpty(float spatial_lr_scale) {
 
   this->spatial_lr_scale_ = spatial_lr_scale;
 
-  // Initialize with empty tensors but correct shapes
-  this->triangles_points_ =
+  this->vertices_ =
       torch::empty(
-          {0, 3, 3},
+          {0, 3},
           torch::TensorOptions().dtype(torch::kFloat).device(device_type_))
           .requires_grad_();
+  this->triangle_indices_ =
+      torch::empty(
+          {0, 3},
+          torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
   this->features_dc_ =
       torch::empty(
           {0, 1, 3},
@@ -618,27 +581,19 @@ void TriangleModel::initializeEmpty(float spatial_lr_scale) {
           {0, (sh_degree_ + 1) * (sh_degree_ + 1) - 1, 3},
           torch::TensorOptions().dtype(torch::kFloat).device(device_type_))
           .requires_grad_();
-  this->sigma_ =
-      torch::empty(
-          {0, 1},
-          torch::TensorOptions().dtype(torch::kFloat).device(device_type_))
-          .requires_grad_();
-  this->opacity_ =
+  this->vertex_weight_ =
       torch::empty(
           {0, 1},
           torch::TensorOptions().dtype(torch::kFloat).device(device_type_))
           .requires_grad_();
 
-  // Initialize auxiliary tensors
   this->exist_since_iter_ = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
   this->triangle_chunk_ids_ = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
 
-  // Initialize tensor vectors for optimizer
   TRIANGLE_MODEL_TENSORS_TO_VEC
 
-  // Mark as initialized
   is_initialized_ = true;
 
   std::cout << "[Triangle Model] Empty model initialized" << std::endl;

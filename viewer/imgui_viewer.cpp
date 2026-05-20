@@ -585,7 +585,7 @@ void ImGuiViewer::run() {
         if (pTriMapper_->triangles_ &&
             pTriMapper_->triangles_->is_initialized_) {
           ImGui::Text("Triangles in VRAM: %d",
-                      static_cast<int>(pTriMapper_->triangles_->triangles_points_.size(0)));
+                      static_cast<int>(pTriMapper_->triangles_->triangle_indices_.size(0)));
           ImGui::Text(
               "Chunks loaded: %d",
               static_cast<int>(

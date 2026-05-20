@@ -40,26 +40,36 @@ TriangleRenderer::render(std::shared_ptr<TriangleModel> model,
   torch::Tensor camera_center = viewpoint_camera->getCenter();
   torch::Tensor visible_indices = torch::where(visible_triangle_mask)[0];
 
-  // Prepare color data: either use override colors, convert SH to RGB on CPU,
-  // or pass SH coefficients to the rasterizer for GPU conversion.
+  auto vertices = model->getVertices();
+  auto triangle_indices = model->getTriangleIndices();
+  int64_t V_full = vertices.size(0);
+
+  auto vis_tri_idx = triangle_indices.index({visible_indices});
+  auto vis_vert_set = std::get<0>(torch::_unique(vis_tri_idx.flatten().to(torch::kLong)));
+
+  auto vert_remap = torch::full({V_full}, -1, torch::TensorOptions().dtype(torch::kLong).device(vertices.device()));
+  vert_remap.index_put_({vis_vert_set}, torch::arange(vis_vert_set.size(0), torch::TensorOptions().dtype(torch::kLong).device(vertices.device())));
+
+  auto vis_vertices = vertices.index({vis_vert_set});
+  auto vis_local_tri = vert_remap.index({vis_tri_idx.flatten().to(torch::kLong)}).reshape(vis_tri_idx.sizes()).to(torch::kInt32);
+
+  auto vis_vertex_weights = model->getVertexWeightActivation().index({vis_vert_set});
+  float sigma = model->getSigmaActivation();
+
   torch::Tensor dc, shs, colors_precomp;
   if (use_override_color) {
-    colors_precomp = override_color.index({visible_indices}).contiguous();
+    colors_precomp = override_color.index({vis_vert_set}).contiguous();
   } else {
     if (pipe.convert_SHs_) {
       int max_sh_degree = model->sh_degree_ + 1;
 
-      // Extract visible features first
       torch::Tensor visible_features =
-          model->getFeatures().index({visible_indices});
-      // Use centroids for SH direction computation
-      torch::Tensor visible_xyz =
-          model->getXYZ().index({visible_indices});
+          model->getFeatures().index({vis_vert_set});
+      torch::Tensor visible_xyz = vis_vertices;
 
       torch::Tensor shs_view = visible_features.transpose(1, 2).view(
           {-1, 3, max_sh_degree * max_sh_degree});
 
-      // Use visible triangles count, not full model count
       torch::Tensor dir_pp =
           (visible_xyz -
            viewpoint_camera->camera_center_.repeat({visible_xyz.size(0), 1}));
@@ -71,42 +81,15 @@ TriangleRenderer::render(std::shared_ptr<TriangleModel> model,
       colors_precomp = torch::clamp_min(sh2rgb + 0.5, 0.0).contiguous();
     } else {
       if (pipe.separate_sh_) {
-        dc = model->features_dc_.index({visible_indices}).clone().contiguous();
+        dc = model->features_dc_.index({vis_vert_set}).clone().contiguous();
         shs =
-            model->features_rest_.index({visible_indices}).clone().contiguous();
+            model->features_rest_.index({vis_vert_set}).clone().contiguous();
       } else {
-        shs = model->getFeatures().index({visible_indices}).contiguous();
+        shs = model->getFeatures().index({vis_vert_set}).contiguous();
       }
     }
   }
 
-  // Extract triangle vertices [V,3,3] and sigma [V,1] for visible triangles
-  auto tri_pts =
-      model->getTrianglesPoints().index({visible_indices}).contiguous();
-  auto sigma =
-      model->getSigmaActivation().index({visible_indices}).contiguous();
-
-  // Centroid for screen-space tracking (means2D gradient used in densification)
-  auto centroids = tri_pts.mean(/*dim=*/1);  // [V,3]
-  auto screenspace_points =
-      torch::zeros_like(centroids, torch::TensorOptions()
-                                       .dtype(centroids.dtype())
-                                       .requires_grad(true)
-                                       .device(torch::kCUDA))
-          .contiguous();
-  try {
-    screenspace_points.retain_grad();
-  } catch (const std::exception& e) {
-    // pass
-  }
-  auto means2D = screenspace_points;
-  auto opacity =
-      model->getOpacityActivation().index({visible_indices}).contiguous();
-
-  // No cov3D or rotation/scale extraction needed — triangle API uses tri_pts+sigma
-  torch::Tensor rotations, cov3D_precomp;
-
-  // Setup and run rasterization
   float tanfovx = std::tan(FoVx * 0.5f);
   float tanfovy = std::tan(FoVy * 0.5f);
 
@@ -116,45 +99,38 @@ TriangleRenderer::render(std::shared_ptr<TriangleModel> model,
 
   TriangleRasterizer rasterizer(raster_settings);
 
-  // Pass tri_pts [V,3,3] as means3D (first arg), sigma [V,1] as scales
   auto rasterizer_result = rasterizer.forward(
-      tri_pts, means2D, opacity, dc, shs, colors_precomp, sigma, rotations,
-      cov3D_precomp, world_view_transform);
+      vis_vertices, vis_local_tri, vis_vertex_weights, sigma,
+      dc, shs, colors_precomp, world_view_transform);
 
   auto rendered_image = std::get<0>(rasterizer_result);
-  auto rendered_depth = std::get<1>(rasterizer_result);  // camera-space Z from CUDA kernel
+  auto rendered_depth = std::get<1>(rasterizer_result);
   auto mainGaussID = std::get<2>(rasterizer_result);
   auto radii = std::get<3>(rasterizer_result);
-  auto scaling_visible = std::get<4>(rasterizer_result);  // [V] kernel-computed screen extent
-  auto rend_normal = std::get<5>(rasterizer_result);  // [3, H, W]
+  auto scaling_visible = std::get<4>(rasterizer_result);
+  auto rend_normal = std::get<5>(rasterizer_result);
 
-  // Invert Z → 1/Z here (outside the custom autograd function) so that
-  // PyTorch handles the chain rule correctly during backward.
   auto rendered_inv_depth = 1.0f / rendered_depth.clamp_min(1e-8f);
 
-  // Scatter scaling from visible-triangle space [V] to full-model space [N]
-  int64_t N = model->getTrianglesPoints().size(0);
+  int64_t N = triangle_indices.size(0);
   auto scaling = torch::zeros(
       {N}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
   scaling.index_put_({visible_indices}, scaling_visible.squeeze(1));
 
   rendered_image = viewpoint_camera->applyExposureTransform(rendered_image);
 
-  // surf_normal: normals derived from rendered depth via finite differences.
-  // Used for the self-consistency normal loss (mode 1).
-  // computeNormalsFromDepth expects inverse depth (1/Z) as input.
   float fx = viewpoint_camera->intr_[0];
   float fy = viewpoint_camera->intr_[1];
   float cx = viewpoint_camera->intr_[2];
   float cy = viewpoint_camera->intr_[3];
   auto surf_normal = loss_utils::computeNormalsFromDepth(rendered_inv_depth, fx, fy, cx, cy);
 
-  return std::make_tuple(rendered_inv_depth,  // [0] inverse depth (1/Z)
-                         rendered_image,  // [1] render
-                         radii,           // [2] radii
-                         mainGaussID,     // [3] mainGaussID
-                         scaling,         // [4] full-model screen extent [N]
-                         rend_normal,     // [5] alpha-weighted triangle plane normals [3,H,W]
-                         surf_normal      // [6] normals from rendered depth [3,H,W]
+  return std::make_tuple(rendered_inv_depth,
+                         rendered_image,
+                         radii,
+                         mainGaussID,
+                         scaling,
+                         rend_normal,
+                         surf_normal
   );
 }

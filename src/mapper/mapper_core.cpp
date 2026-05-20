@@ -354,7 +354,7 @@ void TriangleMapper::trainForOneIteration() {
 
   // Occasionally, prune low opacity triangles
   if (getIteration() % 10 == 0) {
-    triangles_->pruneLowOpacityTriangles(viewpoint_cam, visible_triangle_mask, full_model_scaling);
+    triangles_->pruneLowWeightTriangles(viewpoint_cam, visible_triangle_mask, full_model_scaling);
   }
 
   // Training statistics
