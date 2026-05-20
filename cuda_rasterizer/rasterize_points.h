@@ -21,13 +21,13 @@
  */
 
  #pragma once
- #include <torch/extension.h>
+ #include <torch/torch.h>
  #include <cstdio>
  #include <tuple>
  #include <string>
 	
 std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
-RasterizetrianglesCUDA(
+RasterizeTrianglesCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& vertices,
 	const torch::Tensor& triangles_indices,
@@ -48,7 +48,7 @@ RasterizetrianglesCUDA(
 	const bool debug);
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
- RasterizetrianglesBackwardCUDA(
+RasterizeTrianglesBackwardCUDA(
  	const torch::Tensor& background,
 	const torch::Tensor& vertices,
 	const torch::Tensor& triangles_indices,
@@ -85,15 +85,24 @@ std::tuple<torch::Tensor, torch::Tensor> ComputeRelocationCUDA(
 
 
 void adamUpdate(
-	torch::Tensor &param,
-	torch::Tensor &param_grad,
-	torch::Tensor &exp_avg,
-	torch::Tensor &exp_avg_sq,
-	torch::Tensor &visible,
-	const float lr,
+	torch::Tensor& param,
+	const torch::Tensor& param_grad,
+	torch::Tensor& exp_avg,
+	torch::Tensor& exp_avg_sq,
+	torch::Tensor& visible,
+	torch::Tensor& lr,
 	const float b1,
 	const float b2,
 	const float eps,
 	const uint32_t N,
-	const uint32_t M
-);
+	const uint32_t M);
+
+void adamUpdateBasic(
+	torch::Tensor& param,
+	const torch::Tensor& param_grad,
+	torch::Tensor& exp_avg,
+	torch::Tensor& exp_avg_sq,
+	const float lr,
+	const float b1,
+	const float b2,
+	const float eps);
