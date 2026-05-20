@@ -345,8 +345,7 @@ void TriangleMapper::trainForOneIteration() {
     full_model_contributed.index_put_({visible_triangle_indices},
                                       subset_contributed);
 
-    triangles_->optimizerStep(full_model_contributed,
-                              triangles_->getXYZ().size(0));
+    triangles_->optimizerStep(full_model_contributed);
   }
 
   // Zero out gradients

@@ -58,9 +58,17 @@ void TriangleModel::updateLearningRates(const torch::Tensor& visibility) {
   position_lrs_.clamp_min_(position_lr_min_);
 }
 
-void TriangleModel::optimizerStep(torch::Tensor& visibility,
-                                   const uint32_t N) {
+void TriangleModel::optimizerStep(torch::Tensor& triangle_visibility) {
   torch::NoGradGuard no_grad;
+
+  const uint32_t V = vertices_.size(0);
+
+  // Map triangle visibility to vertex visibility via triangle_indices_
+  torch::Tensor vertex_visibility = torch::zeros(
+      {V}, torch::TensorOptions().dtype(torch::kBool).device(device_type_));
+  torch::Tensor visible_tri_indices =
+      triangle_indices_.index({triangle_visibility});  // [T_vis, 3]
+  vertex_visibility.index_put_({visible_tri_indices.flatten()}, true);
 
   auto& param_groups = optimizer_->param_groups();
 
@@ -93,12 +101,12 @@ void TriangleModel::optimizerStep(torch::Tensor& visibility,
           torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
     }
 
-    const uint32_t M = param.numel() / N;
+    const uint32_t M = param.numel() / V;
     adamUpdate(param, param.grad(), param_state.exp_avg(),
-               param_state.exp_avg_sq(), visibility, lr_tensor,
+               param_state.exp_avg_sq(), vertex_visibility, lr_tensor,
                std::get<0>(options.betas()), std::get<1>(options.betas()),
-               options.eps(), N, M);
+               options.eps(), V, M);
   }
 
-  updateLearningRates(visibility);
+  updateLearningRates(vertex_visibility);
 }

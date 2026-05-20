@@ -286,14 +286,13 @@ class TriangleModel {
   void updateLearningRates(const torch::Tensor& visibility);
 
   /**
-   * @brief Performs sparse Adam update for visible Triangles only.
-   * @param visibility Boolean mask of visible Triangles.
-   * @param N Total number of Triangles.
+   * @brief Performs sparse Adam update for vertices of visible triangles.
+   * @param triangle_visibility Boolean mask [T] of visible triangles.
    *
-   * Updates only the Triangles that contributed to the rendered image,
-   * using per-Triangle learning rates for positions.
+   * Maps triangle visibility to per-vertex visibility via triangle_indices_,
+   * then runs sparse Adam on all 4 vertex-level param groups.
    */
-  void optimizerStep(torch::Tensor& visibility, const uint32_t N);
+  void optimizerStep(torch::Tensor& triangle_visibility);
 
   /**
    * @brief Resets opacity of all Triangles to a low value.
