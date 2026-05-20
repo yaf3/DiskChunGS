@@ -214,22 +214,29 @@ TriangleModel::ChunkData TriangleModel::extractChunkData(
     int64_t chunk_id) {
   ChunkData data;
 
-  // TODO: vertex-chunk extraction needs rework for indexed storage
-  // chunk_mask is per-triangle; we extract triangle_indices rows directly,
-  // but vertices/features are per-vertex and need remapping in the future.
-  data.triangle_indices =
-      triangle_indices_.index({chunk_mask}).detach().clone();
-  data.vertices = vertices_.detach().clone();
-  data.features_dc = features_dc_.detach().clone();
-  data.features_rest = features_rest_.detach().clone();
-  data.vertex_weight = vertex_weight_.detach().clone();
+  torch::Tensor chunk_tri_idx =
+      triangle_indices_.index({chunk_mask}).detach();
+
+  auto unique_result = torch::_unique2(
+      chunk_tri_idx.flatten().to(torch::kLong),
+      /*sorted=*/true, /*return_inverse=*/true);
+  torch::Tensor unique_verts = std::get<0>(unique_result);
+  torch::Tensor inverse = std::get<1>(unique_result);
+
+  int64_t T_chunk = chunk_tri_idx.size(0);
+  data.triangle_indices = inverse.reshape({T_chunk, 3}).to(torch::kInt32).clone();
+
+  data.vertices = vertices_.index({unique_verts}).detach().clone();
+  data.features_dc = features_dc_.index({unique_verts}).detach().clone();
+  data.features_rest = features_rest_.index({unique_verts}).detach().clone();
+  data.vertex_weight = vertex_weight_.index({unique_verts}).detach().clone();
+  data.position_lrs = position_lrs_.index({unique_verts}).detach().clone();
+
   data.exist_since = exist_since_iter_.index({chunk_mask}).detach().clone();
-  data.position_lrs = position_lrs_.index({chunk_mask}).detach().clone();
   data.triangle_ids = triangle_ids_.index({chunk_mask}).detach().clone();
-  data.num_points = data.triangle_indices.size(0);
+  data.num_points = T_chunk;
   data.chunk_id = chunk_id;
 
-  // Extract optimizer states
   data.exp_avg_states.resize(kNumParamGroups);
   data.exp_avg_sq_states.resize(kNumParamGroups);
   data.step_counts.resize(kNumParamGroups);
@@ -248,12 +255,10 @@ TriangleModel::ChunkData TriangleModel::extractChunkData(
 
     auto& param_state =
         static_cast<torch::optim::AdamParamState&>(*state[key]);
-    // TODO: vertex-chunk extraction needs rework for indexed storage
-    // optimizer states for per-vertex params cannot be masked by chunk_mask (per-triangle)
     data.exp_avg_states[group_idx] =
-        param_state.exp_avg().detach().clone();
+        param_state.exp_avg().index({unique_verts}).detach().clone();
     data.exp_avg_sq_states[group_idx] =
-        param_state.exp_avg_sq().detach().clone();
+        param_state.exp_avg_sq().index({unique_verts}).detach().clone();
     data.step_counts[group_idx] = param_state.step();
   }
 
@@ -277,9 +282,12 @@ void TriangleModel::appendLoadedChunks(
       all_exp_avg_sq(kNumParamGroups);
   std::vector<int64_t> max_step_counts(kNumParamGroups, 0);
 
+  int64_t vert_offset_in_batch = 0;
   for (const auto& chunk : chunks_data) {
     all_vertices.push_back(chunk.vertices);
-    all_triangle_indices.push_back(chunk.triangle_indices);
+    all_triangle_indices.push_back(
+        chunk.triangle_indices + static_cast<int32_t>(vert_offset_in_batch));
+    vert_offset_in_batch += chunk.vertices.size(0);
     all_features_dc.push_back(chunk.features_dc);
     all_features_rest.push_back(chunk.features_rest);
     all_vertex_weight.push_back(chunk.vertex_weight);
@@ -301,9 +309,12 @@ void TriangleModel::appendLoadedChunks(
     }
   }
 
-  // Batch concatenation
+  // Batch concatenation — offset indices to reference the global vertex array
+  int64_t global_vert_offset = vertices_.size(0);
   torch::Tensor batch_vertices = torch::cat(all_vertices, 0);
-  torch::Tensor batch_triangle_indices = torch::cat(all_triangle_indices, 0);
+  torch::Tensor batch_triangle_indices =
+      torch::cat(all_triangle_indices, 0) +
+      static_cast<int32_t>(global_vert_offset);
   torch::Tensor batch_features_dc = torch::cat(all_features_dc, 0);
   torch::Tensor batch_features_rest = torch::cat(all_features_rest, 0);
   torch::Tensor batch_vertex_weight = torch::cat(all_vertex_weight, 0);
