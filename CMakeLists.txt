@@ -198,6 +198,12 @@ target_include_directories(
 target_link_libraries(cuda_rasterizer glm::glm ${TORCH_LIBRARIES} Eigen3::Eigen)
 
 ##################################################################################
+##  Build the restricted_delaunay library (effrdel C++ port, Tetgen-backed)
+##################################################################################
+
+add_subdirectory(restricted_delaunay)
+
+##################################################################################
 ##  Build the ImGui library to ${PROJECT_SOURCE_DIR}/lib
 ##################################################################################
 
@@ -303,10 +309,11 @@ target_link_libraries(
     ${TORCH_LIBRARIES}
     Eigen3::Eigen
     cuda_rasterizer
+    restricted_delaunay
     xfeat
     OpenMP::OpenMP_CXX
-    depth_anything_tensorrt 
-    ${TENSORRT_LIBS} 
+    depth_anything_tensorrt
+    ${TENSORRT_LIBS}
 )
 
 ##################################################################################

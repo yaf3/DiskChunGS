@@ -65,6 +65,16 @@ additional restrictions from their original licenses.
    - Repository: [https://github.com/casimirfeldmann/xfeat_cpp] (fork of [https://github.com/udaysankar01/xfeat_cpp])
    - **Note: Apache-2.0 is compatible with GPL v3; attribution notices must be preserved**
 
+9. **Mesh-Splatting** (Copyright 2025 authors of "Mesh-Splatting")
+   - License: GPL v3
+   - Repository: [https://github.com/CDcgs/mesh-splatting]
+   - **Note: Source of the shared-vertex mesh parameterization and restricted-Delaunay remesh ported into `cuda_rasterizer/` and `restricted_delaunay/`**
+
+10. **TetGen** (Copyright Hang Si, Weierstrass Institute for Applied Analysis and Stochastics)
+    - License: AGPL-3.0
+    - Repository: [https://www.wias-berlin.de/software/tetgen/]
+    - **Note: AGPL-3 is compatible with GPL-3 under GPL-3 §13. Vendored in-tree at `slam_deps/tetgen/` (1.5.1) and built as the 3D Delaunay backend by `restricted_delaunay`. Upstream `LICENSE` and `README` preserved in that directory.**
+
 ## Usage Terms
 
 ### For Non-Commercial Use (Research & Evaluation):
