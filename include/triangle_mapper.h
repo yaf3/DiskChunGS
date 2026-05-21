@@ -255,11 +255,8 @@ class TriangleMapper {
   /** @brief Get learning rate for spherical harmonic features */
   float featureLearningRate();
 
-  /** @brief Get learning rate for Triangle opacity */
-  float opacityLearningRate();
-
-  /** @brief Get learning rate for Triangle sigma (isotropic scale) */
-  float sigmaLearningRate();
+  /** @brief Get learning rate for per-vertex weight */
+  float weightLearningRate();
 
   /** @brief Get SSIM loss weight (lambda_dssim) */
   float lambdaDssim();
@@ -273,8 +270,8 @@ class TriangleMapper {
   /** @brief Get normal loss mode (0=off, 1=self-consistency, 2=GT-anchored) */
   int normalLossMode();
 
-  /** @brief Get equilateral (area) regularizer weight */
-  float lambdaEquilateral();
+  /** @brief Get vertex weight regularization weight */
+  float lambdaWeight();
 
   /** @brief Get times of use threshold for new keyframes */
   int newKeyframeTimesOfUse();

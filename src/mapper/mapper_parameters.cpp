@@ -36,14 +36,9 @@ float TriangleMapper::featureLearningRate() {
   return opt_params_.feature_lr_;
 }
 
-float TriangleMapper::opacityLearningRate() {
+float TriangleMapper::weightLearningRate() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
-  return opt_params_.opacity_lr_;
-}
-
-float TriangleMapper::sigmaLearningRate() {
-  std::unique_lock<std::mutex> lock(mutex_settings_);
-  return opt_params_.sigma_lr_;
+  return opt_params_.weight_lr_;
 }
 
 float TriangleMapper::lambdaDssim() {
@@ -66,9 +61,9 @@ int TriangleMapper::normalLossMode() {
   return opt_params_.normal_loss_mode_;
 }
 
-float TriangleMapper::lambdaEquilateral() {
+float TriangleMapper::lambdaWeight() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
-  return opt_params_.lambda_equilateral_;
+  return opt_params_.lambda_weight_;
 }
 
 int TriangleMapper::newKeyframeTimesOfUse() {

@@ -48,9 +48,9 @@ groups:
       - name: equil_off
         description: "Equilateral loss disabled"
         overrides:
-          Optimization.lambda_equilateral: 0.0
+Optimization.lambda_weight: 0.0
 
       - name: equil_strong
         description: "Equilateral loss lambda=1e-7"
         overrides:
-          Optimization.lambda_equilateral: 1.0e-7
+Optimization.lambda_weight: 0.0

@@ -132,8 +132,7 @@ class ImGuiViewer {
 
   float position_lr_init_;
   float feature_lr_;
-  float opacity_lr_;
-  float sigma_lr_;
+  float weight_lr_;
   float lambda_dssim_;
   int new_kf_times_of_use_;
   int stable_num_iter_existence_;  ///< loop closure correction

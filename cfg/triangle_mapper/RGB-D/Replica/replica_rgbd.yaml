@@ -44,8 +44,11 @@ Optimization.smooth_l1: 0  # 0:false, 1:true
 Optimization.position_lr_init: 0.0005
 Optimization.position_lr_decay: 0.99998
 Optimization.feature_lr: 0.0025
-Optimization.opacity_lr: 0.03
-Optimization.sigma_lr: 0.0008
+Optimization.weight_lr: 0.03
+Optimization.sigma_init: 0.3
+Optimization.sigma_final: 0.0001
+Optimization.sigma_start_iter: 0
+Optimization.sigma_until_iter: 30000
 Optimization.pose_lr: 0.0000
 Optimization.exposure_lr: 0.00
 Optimization.depth_scale_bias_lr: 0.0001
@@ -53,7 +56,7 @@ Optimization.lambda_dssim: 0.2
 Optimization.lambda_depth: 0.001
 Optimization.lambda_normal: 1.0e-4
 Optimization.normal_loss_mode: 1  # 0:off, 1:self-consistency, 2:GT-anchored (RGBD only)
-Optimization.lambda_equilateral: 1.0e-8  # 0:off, >0:area regularizer weight
+Optimization.lambda_weight: 0.0
 Optimization.exposure_optimization: 0 # 0:false, 1 or other integer:true
 
 TriangleViewer.glfw_window_width: 1400

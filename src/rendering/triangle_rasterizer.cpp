@@ -46,8 +46,8 @@ torch::autograd::tensor_list TriangleRasterizerFunction::forward(
     combined_sh = torch::zeros({V, 0, 3}, float_opts);
   }
 
-  auto [rendered, out_color, out_others, radii, geomBuffer, binningBuffer,
-        imgBuffer, scaling_ret, density_ret, max_blending] =
+  auto [rendered, out_color, out_others, radii, was_rendered, geomBuffer,
+        binningBuffer, imgBuffer, scaling_ret, max_blending] =
       RasterizeTrianglesCUDA(
           raster_settings.bg_,
           vertices,

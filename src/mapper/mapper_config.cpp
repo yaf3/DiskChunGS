@@ -149,10 +149,8 @@ void TriangleMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       readConfig<float>(settings_file, "Optimization.position_lr_decay");
   opt_params_.feature_lr_ =
       readConfig<float>(settings_file, "Optimization.feature_lr");
-  opt_params_.opacity_lr_ =
-      readConfig<float>(settings_file, "Optimization.opacity_lr");
-  opt_params_.sigma_lr_ =
-      readConfig<float>(settings_file, "Optimization.sigma_lr");
+  opt_params_.weight_lr_ =
+      readConfig<float>(settings_file, "Optimization.weight_lr");
   opt_params_.pose_lr_ =
       readConfig<float>(settings_file, "Optimization.pose_lr");
   opt_params_.exposure_lr_ =
@@ -170,8 +168,18 @@ void TriangleMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       readConfig<float>(settings_file, "Optimization.lambda_normal");
   opt_params_.normal_loss_mode_ =
       readConfig<int>(settings_file, "Optimization.normal_loss_mode");
-  opt_params_.lambda_equilateral_ =
-      readConfig<float>(settings_file, "Optimization.lambda_equilateral");
+  opt_params_.lambda_weight_ =
+      readConfig<float>(settings_file, "Optimization.lambda_weight");
+
+  // Sigma schedule
+  opt_params_.sigma_init_ =
+      readConfig<float>(settings_file, "Optimization.sigma_init");
+  opt_params_.sigma_final_ =
+      readConfig<float>(settings_file, "Optimization.sigma_final");
+  opt_params_.sigma_start_iter_ =
+      readConfig<int>(settings_file, "Optimization.sigma_start_iter");
+  opt_params_.sigma_until_iter_ =
+      readConfig<int>(settings_file, "Optimization.sigma_until_iter");
   opt_params_.auto_distribute_ =
       readConfig<int>(settings_file, "Optimization.auto_distribute");
   exposure_optimization_ =

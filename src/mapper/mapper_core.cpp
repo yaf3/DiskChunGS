@@ -247,6 +247,24 @@ void TriangleMapper::trainForOneIteration() {
           scene_->cameras_.at(viewpoint_cam->camera_id_)
               .gaus_pyramid_undistort_mask_);
 
+  // Sigma schedule: linear anneal from sigma_init to sigma_final.
+  {
+    int iter = current_iteration;
+    int start = opt_params_.sigma_start_iter_;
+    int until = opt_params_.sigma_until_iter_;
+    float sigma;
+    if (iter < start) {
+      sigma = opt_params_.sigma_init_;
+    } else {
+      float progress = static_cast<float>(iter - start) /
+                       static_cast<float>(until - start);
+      progress = std::min(progress, 1.0f);
+      sigma = opt_params_.sigma_init_ -
+              (opt_params_.sigma_init_ - opt_params_.sigma_final_) * progress;
+    }
+    triangles_->sigma_value_ = sigma;
+  }
+
   // Mutex lock for usage of the triangle model (Since we allow rendering at the
   // same time from e.g. GUI)
   std::unique_lock<std::mutex> lock_render(mutex_render_);
@@ -312,11 +330,10 @@ void TriangleMapper::trainForOneIteration() {
     }
   }
 
-  // Equilateral (area) regularizer: penalizes collapsed/degenerate triangles.
-  float lambda_equilateral = lambdaEquilateral();
-  if (lambda_equilateral > 0.0f) {
-    auto visible_tri_pts = triangles_->getTrianglesPoints().index({visible_triangle_mask});
-    loss += lambda_equilateral * loss_utils::equilateral_loss(visible_tri_pts);
+  // Vertex weight regularization: penalizes high average weight to encourage pruning.
+  float lambda_weight = lambdaWeight();
+  if (lambda_weight > 0.0f) {
+    loss += lambda_weight * triangles_->getVertexWeightActivation().mean();
   }
 
   // Backwards pass

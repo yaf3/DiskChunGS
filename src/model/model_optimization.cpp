@@ -44,7 +44,7 @@ void TriangleModel::trainingSetup(
                                                  20.0);
 
   optimizer_->add_param_group(Tensor_vec_vertex_weight_);
-  optimizer_->param_groups()[3].options().set_lr(training_args.opacity_lr_);
+  optimizer_->param_groups()[3].options().set_lr(training_args.weight_lr_);
 }
 
 void TriangleModel::updateLearningRates(const torch::Tensor& visibility) {

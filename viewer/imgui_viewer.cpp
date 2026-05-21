@@ -129,8 +129,7 @@ void ImGuiViewer::readConfigFromFile(std::filesystem::path cfg_path) {
   // Initialize configurations same as the TriangleMapper
   position_lr_init_ = pTriMapper_->positionLearningRateInit();
   feature_lr_ = pTriMapper_->featureLearningRate();
-  opacity_lr_ = pTriMapper_->opacityLearningRate();
-  sigma_lr_ = pTriMapper_->sigmaLearningRate();
+  weight_lr_ = pTriMapper_->weightLearningRate();
   lambda_dssim_ = pTriMapper_->lambdaDssim();
   new_kf_times_of_use_ = pTriMapper_->newKeyframeTimesOfUse();
   stable_num_iter_existence_ = pTriMapper_->stableNumIterExistence();

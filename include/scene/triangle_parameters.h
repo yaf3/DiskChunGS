@@ -69,8 +69,7 @@ class TriangleOptimizationParams {
                              float position_lr_init = 0.00005f,
                              float position_lr_decay = 0.99998f,
                              float feature_lr = 0.0025f,
-                             float opacity_lr = 0.05f,
-                             float sigma_lr = 0.005f,
+                             float weight_lr = 0.05f,
                              float pose_lr = 0.0001f,
                              float exposure_lr = 0.05f,
                              float depth_scale_bias_lr = 0.0001f,
@@ -80,7 +79,11 @@ class TriangleOptimizationParams {
                              bool smooth_l1 = false,
                              float lambda_normal = 0.0f,
                              int normal_loss_mode = 0,
-                             float lambda_equilateral = 0.0f);
+                             float lambda_weight = 0.0f,
+                             float sigma_init = 0.3f,
+                             float sigma_final = 0.0001f,
+                             int sigma_start_iter = 0,
+                             int sigma_until_iter = 30000);
 
   // Training settings
   int iterations_;       ///< Total number of optimization iterations.
@@ -91,8 +94,7 @@ class TriangleOptimizationParams {
   float position_lr_init_;      ///< Initial learning rate for position.
   float position_lr_decay_;     ///< Per-iteration decay factor for position LR.
   float feature_lr_;            ///< Learning rate for SH features.
-  float opacity_lr_;            ///< Learning rate for opacity.
-  float sigma_lr_;              ///< Learning rate for triangle sigma (isotropic scale).
+  float weight_lr_;             ///< Learning rate for per-vertex weight.
   float pose_lr_;               ///< Learning rate for camera pose refinement.
   float exposure_lr_;           ///< Learning rate for exposure compensation.
   float depth_scale_bias_lr_;   ///< Learning rate for depth scale/bias.
@@ -102,5 +104,11 @@ class TriangleOptimizationParams {
   float lambda_depth_;        ///< Weight for depth loss term.
   float lambda_normal_;       ///< Weight for normal loss term (0 = disabled).
   int normal_loss_mode_;      ///< 0=off, 1=self-consistency, 2=GT-anchored (RGBD only).
-  float lambda_equilateral_;  ///< Weight for equilateral (area) regularizer (0 = disabled).
+  float lambda_weight_;       ///< Weight for vertex weight regularization (0 = disabled).
+
+  // Sigma schedule
+  float sigma_init_;          ///< Initial sigma value for schedule.
+  float sigma_final_;         ///< Final sigma value for schedule.
+  int sigma_start_iter_;      ///< Iteration to begin sigma annealing.
+  int sigma_until_iter_;      ///< Iteration when sigma reaches final value.
 };
