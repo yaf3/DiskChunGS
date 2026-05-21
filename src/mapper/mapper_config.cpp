@@ -185,6 +185,20 @@ void TriangleMapper::readConfigFromFile(std::filesystem::path cfg_path) {
   exposure_optimization_ =
       readConfig<int>(settings_file, "Optimization.exposure_optimization");
 
+  // Stage 2: Opacity floor + RDT
+  opt_params_.opacity_floor_start_iter_ =
+      readConfig<int>(settings_file, "Optimization.opacity_floor_start_iter");
+  opt_params_.opacity_floor_end_iter_ =
+      readConfig<int>(settings_file, "Optimization.opacity_floor_end_iter");
+  opt_params_.opacity_floor_init_ =
+      readConfig<float>(settings_file, "Optimization.opacity_floor_init");
+  opt_params_.opacity_floor_final_ =
+      readConfig<float>(settings_file, "Optimization.opacity_floor_final");
+  opt_params_.rdt_iter_ =
+      readConfig<int>(settings_file, "Optimization.rdt_iter");
+  opt_params_.enable_rdt_ =
+      readConfigBool(settings_file, "Optimization.enable_rdt");
+
   // ========== Viewer Parameters ==========
   rendered_image_viewer_scale_ =
       readConfig<float>(settings_file, "TriangleViewer.image_scale");

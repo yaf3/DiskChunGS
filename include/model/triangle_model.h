@@ -212,6 +212,12 @@ class TriangleModel {
    */
   torch::Tensor getVertexWeightActivation();
 
+  torch::Tensor inverseVertexWeightActivation(const torch::Tensor& y);
+
+  void updateOpacityFloor(float new_floor);
+
+  void runRestrictedDelaunay(int current_iter);
+
 
   //============================================================================
   // Geometric Transformations
@@ -683,6 +689,7 @@ class TriangleModel {
   torch::Tensor features_rest_;       ///< Higher-order SH coefficients [V, K, 3].
   torch::Tensor vertex_weight_;       ///< Logit-space per-vertex weight [V, 1].
   float sigma_value_ = 0.0f;          ///< Current sigma (scheduled, not learnable).
+  float opacity_floor_ = 0.0f;        ///< Current opacity floor for weight activation.
   torch::Tensor exist_since_iter_;  ///< Creation iteration per Triangle [N].
   torch::Tensor triangle_chunk_ids_;  ///< Spatial chunk ID per Triangle [N].
 

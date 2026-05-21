@@ -330,8 +330,9 @@ void TriangleMapper::trainForOneIteration() {
     }
   }
 
-  // Vertex weight regularization: penalizes high average weight to encourage pruning.
-  float lambda_weight = lambdaWeight();
+  // Vertex weight regularization: disabled once opacity floor is active.
+  float lambda_weight = (current_iteration < opt_params_.opacity_floor_start_iter_)
+      ? lambdaWeight() : 0.0f;
   if (lambda_weight > 0.0f) {
     loss += lambda_weight * triangles_->getVertexWeightActivation().mean();
   }
@@ -368,9 +369,37 @@ void TriangleMapper::trainForOneIteration() {
   // Zero out gradients
   triangles_->optimizer_->zero_grad(true);
 
-  // Occasionally, prune low opacity triangles
-  if (getIteration() % 10 == 0) {
-    triangles_->pruneLowWeightTriangles(viewpoint_cam, visible_triangle_mask, full_model_scaling);
+  // Stage-2 gated pruning, RDT, and opacity floor.
+  {
+    torch::NoGradGuard no_grad;
+    int iter = current_iteration;
+    const auto& op = opt_params_;
+
+    // RDT trigger — runs once
+    if (op.enable_rdt_ && !rdt_completed_ && iter >= op.rdt_iter_) {
+      std::cout << "[Stage2] Running RDT at iteration " << iter << std::endl;
+      triangles_->runRestrictedDelaunay(iter);
+      rdt_completed_ = true;
+    }
+
+    // Before RDT: prune every 10 iters (existing behavior)
+    if (!rdt_completed_ && iter % 10 == 0) {
+      triangles_->pruneLowWeightTriangles(
+          viewpoint_cam, visible_triangle_mask, full_model_scaling);
+    }
+
+    // Opacity floor schedule (both before and after RDT, every 500 iters)
+    if (iter >= op.opacity_floor_start_iter_ &&
+        iter <= op.opacity_floor_end_iter_ && iter % 500 == 0) {
+      float t = static_cast<float>(iter - op.opacity_floor_start_iter_) /
+                static_cast<float>(std::max(
+                    1, op.opacity_floor_end_iter_ - op.opacity_floor_start_iter_));
+      t = std::clamp(t, 0.0f, 1.0f);
+      float new_floor =
+          op.opacity_floor_init_ +
+          (op.opacity_floor_final_ - op.opacity_floor_init_) * t;
+      triangles_->updateOpacityFloor(new_floor);
+    }
   }
 
   // Training statistics

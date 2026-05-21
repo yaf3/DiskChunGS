@@ -17,6 +17,9 @@
 #include "model/triangle_model.h"
 #include "rendering/triangle_rasterizer.h"
 
+#include "effrdel.h"
+#include "chunk_types.h"
+
 TriangleModel::TriangleModel(const TriangleModelParams& model_params,
                              std::string storage_base_path,
                              float chunk_size)
@@ -83,7 +86,83 @@ torch::Tensor TriangleModel::getFeatures() {
 }
 
 torch::Tensor TriangleModel::getVertexWeightActivation() {
-  return torch::sigmoid(this->vertex_weight_);
+  auto raw = torch::sigmoid(this->vertex_weight_);
+  if (opacity_floor_ > 0.0f) {
+    return opacity_floor_ + (1.0f - opacity_floor_) * raw;
+  }
+  return raw;
+}
+
+torch::Tensor TriangleModel::inverseVertexWeightActivation(
+    const torch::Tensor& y) {
+  constexpr float eps = 1e-6f;
+  if (opacity_floor_ > 0.0f) {
+    auto normalized = (y - opacity_floor_) / (1.0f - opacity_floor_ + eps);
+    normalized = normalized.clamp(eps, 1.0f - eps);
+    return general_utils::inverse_sigmoid(normalized);
+  }
+  return general_utils::inverse_sigmoid(y);
+}
+
+void TriangleModel::updateOpacityFloor(float new_floor) {
+  torch::NoGradGuard no_grad;
+  constexpr float eps = 1e-6f;
+  new_floor = std::max(0.0f, std::min(new_floor, 1.0f - 1e-4f));
+
+  torch::Tensor y = getVertexWeightActivation().detach();
+  y = y.clamp(new_floor + eps, 1.0f - eps);
+  opacity_floor_ = new_floor;
+
+  torch::Tensor new_logits = inverseVertexWeightActivation(y);
+  vertex_weight_.data().copy_(new_logits);
+}
+
+void TriangleModel::runRestrictedDelaunay(int current_iter) {
+  torch::NoGradGuard no_grad;
+  const int64_t V = vertices_.size(0);
+  const int64_t T_old = triangle_indices_.size(0);
+
+  std::cout << "[RDT] Running restricted Delaunay on " << V << " vertices, "
+            << T_old << " triangles..." << std::endl;
+
+  auto verts_cpu =
+      vertices_.detach().cpu().to(torch::kFloat64).contiguous();
+  Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor> verts_rm =
+      Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor>>(
+          verts_cpu.data_ptr<double>(), V, 3);
+  Eigen::MatrixXd eigen_verts = verts_rm;
+
+  auto faces_cpu =
+      triangle_indices_.cpu().to(torch::kInt32).contiguous();
+  Eigen::Matrix<int, Eigen::Dynamic, 3, Eigen::RowMajor> faces_rm =
+      Eigen::Map<Eigen::Matrix<int, Eigen::Dynamic, 3, Eigen::RowMajor>>(
+          faces_cpu.data_ptr<int>(), T_old, 3);
+  Eigen::MatrixXi eigen_faces = faces_rm;
+
+  auto [out_verts, out_faces] =
+      restricted_delaunay::run(eigen_verts, eigen_faces);
+  const int64_t T_new = out_faces.rows();
+
+  std::cout << "[RDT] Result: " << T_new << " triangles (was " << T_old << ")"
+            << std::endl;
+
+  Eigen::Matrix<int, Eigen::Dynamic, 3, Eigen::RowMajor> faces_out_rm =
+      out_faces;
+  auto new_faces =
+      torch::from_blob(faces_out_rm.data(), {T_new, 3},
+                        torch::TensorOptions().dtype(torch::kInt32))
+          .clone()
+          .to(device_type_);
+  triangle_indices_ = new_faces;
+
+  exist_since_iter_ = torch::full(
+      {T_new}, current_iter,
+      torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
+  updateChunkIDs();
+  triangle_ids_ = torch::arange(
+      next_triangle_id_, next_triangle_id_ + T_new,
+      torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
+  next_triangle_id_ += T_new;
 }
 
 

@@ -1010,6 +1010,9 @@ class TriangleMapper {
 
   // ========== Private Data Members ==========
 
+  // Stage 2 state
+  bool rdt_completed_ = false;
+
   // Loop closure control
   std::atomic<bool> pause_image_ingestion_{false};
   int loop_closure_optimization_iterations_ = 1000;

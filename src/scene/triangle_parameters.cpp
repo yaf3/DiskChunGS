@@ -66,7 +66,13 @@ TriangleOptimizationParams::TriangleOptimizationParams(
     float sigma_init,
     float sigma_final,
     int sigma_start_iter,
-    int sigma_until_iter)
+    int sigma_until_iter,
+    int opacity_floor_start_iter,
+    int opacity_floor_end_iter,
+    float opacity_floor_init,
+    float opacity_floor_final,
+    int rdt_iter,
+    bool enable_rdt)
     : iterations_(iterations),
       auto_distribute_(auto_distribute),
       smooth_l1_(smooth_l1),
@@ -85,4 +91,10 @@ TriangleOptimizationParams::TriangleOptimizationParams(
       sigma_init_(sigma_init),
       sigma_final_(sigma_final),
       sigma_start_iter_(sigma_start_iter),
-      sigma_until_iter_(sigma_until_iter) {}
+      sigma_until_iter_(sigma_until_iter),
+      opacity_floor_start_iter_(opacity_floor_start_iter),
+      opacity_floor_end_iter_(opacity_floor_end_iter),
+      opacity_floor_init_(opacity_floor_init),
+      opacity_floor_final_(opacity_floor_final),
+      rdt_iter_(rdt_iter),
+      enable_rdt_(enable_rdt) {}

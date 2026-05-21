@@ -27,8 +27,10 @@ void TriangleModel::assignOptimizedTensors(
 }
 
 void TriangleModel::resetVertexWeight() {
-  torch::Tensor weights_new = general_utils::inverse_sigmoid(torch::min(
-      getVertexWeightActivation(), torch::ones_like(getVertexWeightActivation() * 0.01)));
+  torch::Tensor target = torch::min(
+      getVertexWeightActivation(),
+      torch::ones_like(getVertexWeightActivation()) * 0.01);
+  torch::Tensor weights_new = inverseVertexWeightActivation(target);
   torch::Tensor optimizable_tensors =
       replaceTensorToOptimizer(weights_new, 3);  // vertex_weight
   vertex_weight_ = optimizable_tensors;
@@ -56,7 +58,7 @@ void TriangleModel::resetVertexWeightForMask(const torch::Tensor& triangle_mask)
       torch::min(current_weight_activated,
                  torch::ones_like(current_weight_activated) * 0.05f);
   torch::Tensor new_weight_values =
-      general_utils::inverse_sigmoid(target_weight);
+      inverseVertexWeightActivation(target_weight);
 
   vertex_weight_.index_put_({vertex_mask},
                       new_weight_values.index({vertex_mask}));
