@@ -2,7 +2,7 @@
 
 Model.white_background: 0  # 0:false, 1 or other integer:true
 Model.sh_degree: 3
-Model.max_triangles_in_memory: 1500000
+Model.max_vertices_in_memory: 1500000
 Model.init_proba_scaler: 1.0
 Model.downsample_for_sampling: 1
 Model.init_strategy: 0  # 0:normal-based, 1:camera-facing, 2:fibonacci

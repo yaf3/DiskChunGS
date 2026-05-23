@@ -135,7 +135,8 @@ class TriangleModel {
         exp_avg_sq_states;             ///< Second moment estimates [4].
     std::vector<int64_t> step_counts;  ///< Adam step counts [4].
 
-    int num_points;    ///< Number of Triangles in this chunk.
+    int num_vertices;   ///< Number of vertices in this chunk.
+    int num_triangles;  ///< Number of triangles in this chunk.
     int64_t chunk_id;  ///< Encoded spatial coordinate ID.
   };
 
@@ -607,11 +608,11 @@ class TriangleModel {
   /**
    * @brief Selects chunks to evict based on LRU policy.
    * @param candidate_chunks Chunks that may be evicted.
-   * @param target_triangle_count Minimum Triangles to free.
+   * @param target_vertex_count Minimum vertices to free.
    * @return Tensor of chunk IDs to evict.
    */
   torch::Tensor findLRUChunks(const torch::Tensor& candidate_chunks,
-                              int64_t target_triangle_count);
+                              int64_t target_vertex_count);
 
   /**
    * @brief Checks if memory limit exceeded and evicts if needed.
@@ -621,20 +622,17 @@ class TriangleModel {
   /**
    * @brief Evicts LRU chunks until excess Triangles are freed.
    * @param protected_chunk_ids Chunk IDs that must not be evicted.
-   * @param excess_triangles Minimum number of Triangles to free.
-   *
-   * Applies a 5% hysteresis buffer on top of the requested eviction amount
-   * to reduce eviction frequency.
+   * @param excess_vertices Minimum number of vertices to free.
    */
   void evictExcessChunks(const torch::Tensor& protected_chunk_ids,
-                         int64_t excess_triangles);
+                         int64_t excess_vertices);
 
   /**
-   * @brief Computes exact Triangle count for chunks to be loaded from disk.
+   * @brief Computes vertex count for chunks to be loaded from disk.
    * @param chunks_ids_needing_load Chunk IDs to look up.
-   * @return Total number of Triangles across the requested chunks.
+   * @return Total number of vertices across the requested chunks.
    */
-  int64_t countTrianglesToLoad(const torch::Tensor& chunks_ids_needing_load);
+  int64_t countVerticesToLoad(const torch::Tensor& chunks_ids_needing_load);
 
   /**
    * @brief Updates access timestamps for chunks.
@@ -643,10 +641,16 @@ class TriangleModel {
   void updateChunkAccess(const torch::Tensor& accessed_chunk_ids);
 
   /**
-   * @brief Counts total Triangles across memory and disk.
-   * @return Total Triangle count.
+   * @brief Counts triangles currently in memory.
+   * @return In-memory triangle count.
    */
   int64_t countAllTriangles();
+
+  /**
+   * @brief Counts total vertices across memory and disk.
+   * @return Total vertex count.
+   */
+  int64_t countAllVertices();
 
   /**
    * @brief Filters points to exclude sparse chunks.
@@ -719,15 +723,15 @@ class TriangleModel {
   torch::Tensor
       chunks_loaded_from_disk_;   ///< IDs of chunks currently loaded from disk.
   torch::Tensor chunks_on_disk_;  ///< IDs of all chunks saved to disk.
-  torch::Tensor chunk_triangle_counts_;  ///< Triangle count per disk chunk.
+  torch::Tensor chunk_vertex_counts_;  ///< Vertex count per disk chunk.
   torch::Tensor triangle_ids_;  ///< Unique ID per Triangle for tracking.
   int64_t next_triangle_id_ =
       0;  ///< Counter for generating unique Triangle IDs.
   std::string storage_base_path_;  ///< Directory for chunk file storage.
 
   // Memory management configuration
-  int64_t max_triangles_in_memory_ =
-      3000000;  ///< Max Triangles before eviction.
+  int64_t max_vertices_in_memory_ =
+      3000000;  ///< Max vertices before eviction.
   std::unordered_map<int64_t, float>
       chunk_access_times_;  ///< Per-chunk access timestamps.
   std::unordered_map<int64_t, int>

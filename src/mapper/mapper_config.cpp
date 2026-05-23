@@ -68,8 +68,8 @@ void TriangleMapper::readConfigFromFile(std::filesystem::path cfg_path) {
   model_params_.sh_degree_ = readConfig<int>(settings_file, "Model.sh_degree");
   model_params_.white_background_ =
       readConfigBool(settings_file, "Model.white_background");
-  model_params_.max_triangles_in_memory_ =
-      readConfig<int>(settings_file, "Model.max_triangles_in_memory");
+  model_params_.max_vertices_in_memory_ =
+      readConfig<int>(settings_file, "Model.max_vertices_in_memory");
   init_proba_scaler_ =
       readConfig<float>(settings_file, "Model.init_proba_scaler");
   downsample_for_sampling_ =

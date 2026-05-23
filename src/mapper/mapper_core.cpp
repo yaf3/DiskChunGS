@@ -183,6 +183,8 @@ void TriangleMapper::trainForOneIteration() {
 
     int totalTriangles = triangles_->countAllTriangles();
     int activeTriangles = int(triangles_->getXYZ().size(0));
+    int totalVertices = triangles_->countAllVertices();
+    int activeVertices = int(triangles_->getVertices().size(0));
 
     // Get VRAM usage
     namespace c10Alloc = c10::cuda::CUDACachingAllocator;
@@ -204,6 +206,8 @@ void TriangleMapper::trainForOneIteration() {
     metrics.elapsed_time_seconds = elapsed_seconds;
     metrics.active_triangle_count = activeTriangles;
     metrics.total_triangle_count = totalTriangles;
+    metrics.active_vertex_count = activeVertices;
+    metrics.total_vertex_count = totalVertices;
     metrics.reserved_memory_mb = reserved_MB;
     metrics.allocated_memory_mb = alloc_MB;
     metrics.ram_usage_mb = getCurrentRAMUsageMB();

@@ -23,12 +23,12 @@ TriangleModelParams::TriangleModelParams(std::filesystem::path source_path,
                                          std::string images,
                                          bool white_background,
                                          std::string data_device,
-                                         long max_triangles_in_memory)
+                                         long max_vertices_in_memory)
     : sh_degree_(sh_degree),
       images_(images),
       white_background_(white_background),
       data_device_(data_device),
-      max_triangles_in_memory_(max_triangles_in_memory) {
+      max_vertices_in_memory_(max_vertices_in_memory) {
   if (source_path.is_absolute())
     source_path_ = source_path;
   else

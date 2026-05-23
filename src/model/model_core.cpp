@@ -25,7 +25,7 @@ TriangleModel::TriangleModel(const TriangleModelParams& model_params,
                              float chunk_size)
     : storage_base_path_(storage_base_path),
       chunk_size_(chunk_size),
-      max_triangles_in_memory_(model_params.max_triangles_in_memory_),
+      max_vertices_in_memory_(model_params.max_vertices_in_memory_),
       sh_degree_(0),
       spatial_lr_scale_(1.0),
       position_lr_init_(0.00005),
@@ -48,7 +48,7 @@ TriangleModel::TriangleModel(const TriangleModelParams& model_params,
   chunks_loaded_from_disk_ = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
 
-  chunk_triangle_counts_ = torch::empty(
+  chunk_vertex_counts_ = torch::empty(
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
   triangle_ids_ = torch::empty(
       0, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));

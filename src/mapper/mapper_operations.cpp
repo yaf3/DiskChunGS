@@ -271,7 +271,7 @@ void TriangleMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation &opr) {
       auto indices = torch::where(disk_mask)[0];
       if (indices.size(0) > 0) {
         int64_t count =
-            triangles_->chunk_triangle_counts_[indices[0].item<int64_t>()]
+            triangles_->chunk_vertex_counts_[indices[0].item<int64_t>()]
                 .item<int64_t>();
         total_triangles_needed += count;
       }
@@ -302,7 +302,7 @@ void TriangleMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation &opr) {
   // The limit is always restored to the original value at the end.
   // =========================================================================
 
-  int64_t original_limit = triangles_->max_triangles_in_memory_;
+  int64_t original_limit = triangles_->max_vertices_in_memory_;
   int64_t increased_limit =
       static_cast<int64_t>(original_limit * loop_closure_memory_multiplier_);
 
@@ -315,7 +315,7 @@ void TriangleMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation &opr) {
             << std::endl;
 
   // Temporarily increase the memory limit for loop closure processing
-  triangles_->max_triangles_in_memory_ = increased_limit;
+  triangles_->max_vertices_in_memory_ = increased_limit;
 
   for (const auto &[index, keyframe] : scene_->keyframes_) {
     if (keyframe->loaded_) keyframe->saveDataToDisk();
@@ -340,7 +340,7 @@ void TriangleMapper::processLoopClosureBA(ORB_SLAM3::MappingOperation &opr) {
   }
 
   // Always restore the original memory limit
-  triangles_->max_triangles_in_memory_ = original_limit;
+  triangles_->max_vertices_in_memory_ = original_limit;
 
   // Update chunk-keyframe mappings
   for (auto &kf : associated_kfs) {

@@ -389,7 +389,7 @@ void TriangleModel::deleteSparseChunks(int min_triangles_per_chunk) {
   torch::Tensor keep_disk_mask =
       ~torch::isin(chunks_on_disk_, sparse_chunk_ids);
   chunks_on_disk_ = chunks_on_disk_.index({keep_disk_mask});
-  chunk_triangle_counts_ = chunk_triangle_counts_.index({keep_disk_mask});
+  chunk_vertex_counts_ = chunk_vertex_counts_.index({keep_disk_mask});
 
   // Clear access times for deleted chunks
   auto sparse_ids_cpu = sparse_chunk_ids.cpu();

@@ -33,7 +33,7 @@ class TriangleModelParams {
                       std::string images = "images",
                       bool white_background = false,
                       std::string data_device = "cuda",
-                      long max_triangles_in_memory = 1500000);
+                      long max_vertices_in_memory = 1500000);
 
   int sh_degree_;                         ///< Degree of spherical harmonics.
   std::filesystem::path source_path_;     ///< Path to source data.
@@ -41,7 +41,7 @@ class TriangleModelParams {
   std::string images_;                    ///< Subdirectory name for images.
   bool white_background_;                 ///< Use white background if true.
   std::string data_device_;               ///< Device for data storage.
-  long max_triangles_in_memory_;          ///< Maximum Triangles to keep in GPU memory.
+  long max_vertices_in_memory_;           ///< Maximum vertices to keep in GPU memory.
 };
 
 /**

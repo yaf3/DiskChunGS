@@ -557,6 +557,8 @@ class TriangleMapper {
     double elapsed_time_seconds;
     int active_triangle_count;
     int total_triangle_count;
+    int active_vertex_count;
+    int total_vertex_count;
     float reserved_memory_mb;
     float allocated_memory_mb;
     float ram_usage_mb;
@@ -1018,5 +1020,5 @@ class TriangleMapper {
   std::atomic<bool> pause_image_ingestion_{false};
   int loop_closure_optimization_iterations_ = 1000;
   float loop_closure_memory_multiplier_ =
-      8.0f;  ///< Multiplier for max_triangles_in_memory during loop closure
+      8.0f;  ///< Multiplier for max_vertices_in_memory during loop closure
 };

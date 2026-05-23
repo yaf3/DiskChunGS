@@ -86,13 +86,12 @@ size_t TriangleModel::getCurrentGPUMemoryUsage() const {
 }
 
 void TriangleModel::checkMemoryPressure() {
-  int current_triangles = getXYZ().size(0);
-  if (current_triangles <= max_triangles_in_memory_) {
-    return;  // No pressure, exit early
+  int64_t current_vertices = vertices_.size(0);
+  if (current_vertices <= max_vertices_in_memory_) {
+    return;
   }
 
-  // Keep evicting until we reach memory goal or run out of chunks
-  while (current_triangles > max_triangles_in_memory_) {
+  while (current_vertices > max_vertices_in_memory_) {
     torch::Tensor evictable_chunks =
         std::get<0>(torch::_unique2(triangle_chunk_ids_));
 
@@ -101,14 +100,10 @@ void TriangleModel::checkMemoryPressure() {
       break;
     }
 
-    // Calculate how many triangles to evict this iteration
-    int64_t excess_triangles = current_triangles - max_triangles_in_memory_;
-    int64_t triangles_to_evict =
-        std::max(excess_triangles, static_cast<int64_t>(100000));
+    int64_t excess = current_vertices - max_vertices_in_memory_;
+    int64_t to_evict = std::max(excess, static_cast<int64_t>(50000));
 
-    // Get LRU chunks that total at least triangles_to_evict
-    torch::Tensor lru_chunks =
-        findLRUChunks(evictable_chunks, triangles_to_evict);
+    torch::Tensor lru_chunks = findLRUChunks(evictable_chunks, to_evict);
 
     if (lru_chunks.size(0) == 0) {
       std::cout << "[Memory] Warning: No LRU chunks found to evict"
@@ -117,14 +112,14 @@ void TriangleModel::checkMemoryPressure() {
     }
 
     saveAndEvictChunks(lru_chunks);
-    current_triangles = getXYZ().size(0);
+    current_vertices = vertices_.size(0);
   }
 }
 
 torch::Tensor TriangleModel::findLRUChunks(
     const torch::Tensor& candidate_chunks,
-    int64_t target_triangle_count) {
-  if (candidate_chunks.size(0) == 0 || target_triangle_count <= 0) {
+    int64_t target_vertex_count) {
+  if (candidate_chunks.size(0) == 0 || target_vertex_count <= 0) {
     return torch::empty(
         {0}, torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
   }
@@ -132,7 +127,7 @@ torch::Tensor TriangleModel::findLRUChunks(
   auto chunks_cpu = candidate_chunks.cpu();
   auto chunks_accessor = chunks_cpu.accessor<int64_t, 1>();
 
-  // Gather chunk metadata: (chunk_id, access_time, triangle_count)
+  // Gather chunk metadata: (chunk_id, access_time, vertex_count)
   std::vector<std::tuple<int64_t, float, int64_t>> chunk_data;
   for (int64_t i = 0; i < chunks_cpu.size(0); i++) {
     int64_t chunk_id = chunks_accessor[i];
@@ -140,8 +135,9 @@ torch::Tensor TriangleModel::findLRUChunks(
                             ? chunk_access_times_[chunk_id]
                             : 0.0f;
     torch::Tensor chunk_mask = (triangle_chunk_ids_ == chunk_id);
-    int64_t triangle_count = chunk_mask.sum().item<int64_t>();
-    chunk_data.emplace_back(chunk_id, access_time, triangle_count);
+    auto chunk_vert_indices = triangle_indices_.index({chunk_mask}).flatten().to(torch::kLong);
+    int64_t vertex_count = std::get<0>(torch::_unique2(chunk_vert_indices)).size(0);
+    chunk_data.emplace_back(chunk_id, access_time, vertex_count);
   }
 
   // Sort by access time (oldest first for LRU eviction)
@@ -150,13 +146,13 @@ torch::Tensor TriangleModel::findLRUChunks(
               return std::get<1>(a) < std::get<1>(b);
             });
 
-  // Select oldest chunks until target triangle count is reached
+  // Select oldest chunks until target vertex count is reached
   std::vector<int64_t> selected_chunks;
-  int64_t accumulated_triangles = 0;
-  for (const auto& [chunk_id, access_time, triangle_count] : chunk_data) {
+  int64_t accumulated = 0;
+  for (const auto& [chunk_id, access_time, vertex_count] : chunk_data) {
     selected_chunks.push_back(chunk_id);
-    accumulated_triangles += triangle_count;
-    if (accumulated_triangles >= target_triangle_count) {
+    accumulated += vertex_count;
+    if (accumulated >= target_vertex_count) {
       break;
     }
   }

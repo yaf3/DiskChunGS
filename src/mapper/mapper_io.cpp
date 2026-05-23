@@ -391,14 +391,18 @@ void TriangleMapper::writeTrainingMetricsCSV(std::filesystem::path result_dir) {
   CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
   std::ofstream out_stream = openOutputFile(result_dir / "training_metrics.csv");
 
-  out_stream << "iteration,elapsed_time_seconds,active_triangle_count,total_"
-                "triangle_count,reserved_memory_"
-                "mb,allocated_memory_mb,ram_usage_mb,queue_keyframes\n";
+  out_stream << "iteration,elapsed_time_seconds,"
+                "active_triangle_count,total_triangle_count,"
+                "active_vertex_count,total_vertex_count,"
+                "reserved_memory_mb,allocated_memory_mb,"
+                "ram_usage_mb,queue_keyframes\n";
 
   for (const auto& metrics : training_metrics_) {
     out_stream << metrics.iteration << "," << metrics.elapsed_time_seconds
                << "," << metrics.active_triangle_count << ","
                << metrics.total_triangle_count << ","
+               << metrics.active_vertex_count << ","
+               << metrics.total_vertex_count << ","
                << metrics.reserved_memory_mb << ","
                << metrics.allocated_memory_mb << "," << metrics.ram_usage_mb
                << "," << metrics.queue_keyframes << "\n";
@@ -411,54 +415,45 @@ void TriangleMapper::writeTrainingMetricsCSV(std::filesystem::path result_dir) {
 void TriangleMapper::exportToOFF(std::filesystem::path scene_dir) {
   torch::NoGradGuard no_grad;
 
-  // Gather all triangles: [N,3,3] vertices, [N,1,3] dc features, [N,K,3] rest SH
-  auto tri_pts = triangles_->getTrianglesPoints().cpu().contiguous();  // [N,3,3]
-  int64_t N = tri_pts.size(0);
-  if (N == 0) return;
+  auto vertices = triangles_->getVertices().detach().cpu().contiguous();    // [V,3]
+  auto faces = triangles_->getTriangleIndices().cpu().contiguous();         // [T,3]
+  auto features = triangles_->getFeatures().detach().cpu().contiguous();    // [V, 1+K, 3]
 
-  // Bake SH → RGB at centroid view direction (toward origin, matches create_off.py)
-  auto centroids = tri_pts.mean(/*dim=*/1);  // [N,3]
-  auto features = triangles_->getFeatures().cpu().contiguous();  // [N, 1+K, 3]
+  int64_t V = vertices.size(0);
+  int64_t T = faces.size(0);
+  if (T == 0) return;
+
   int max_sh_degree = triangles_->sh_degree_;
+  int total_coeffs = (max_sh_degree + 1) * (max_sh_degree + 1);
+  auto shs_view = features.transpose(1, 2).view({V, 3, total_coeffs});
 
-  torch::Tensor colors_rgb;
-  {
-    // shs_view: [N, 3, (deg+1)^2]
-    int total_coeffs = (max_sh_degree + 1) * (max_sh_degree + 1);
-    auto shs_view = features.transpose(1, 2).view({N, 3, total_coeffs});
+  auto dirs = -vertices;
+  auto dirs_norm = dirs / torch::norm(dirs, 2, /*dim=*/1, /*keepdim=*/true).clamp_min(1e-8f);
+  auto sh2rgb = sh_utils::eval_sh(max_sh_degree, shs_view, dirs_norm);
+  auto colors_rgb = (sh2rgb + 0.5f).clamp(0.0f, 1.0f);  // [V,3]
 
-    // Direction: centroid toward origin (matches original create_off.py)
-    auto dirs = -centroids;  // [N,3]
-    auto dirs_norm = dirs / torch::norm(dirs, 2, /*dim=*/1, /*keepdim=*/true).clamp_min(1e-8f);
-
-    auto sh2rgb = sh_utils::eval_sh(max_sh_degree, shs_view, dirs_norm);
-    colors_rgb = (sh2rgb + 0.5f).clamp(0.0f, 1.0f);  // [N,3] in [0,1]
-  }
-
-  // Write COFF: unique vertices = all 3*N corners (no deduplication for simplicity)
   std::ofstream ofs(scene_dir / "mesh.off");
   ofs << "COFF\n";
-  ofs << (N * 3) << " " << N << " 0\n";
+  ofs << V << " " << T << " 0\n";
   ofs << std::fixed;
 
-  auto pts_acc  = tri_pts.accessor<float, 3>();
-  auto col_acc  = colors_rgb.accessor<float, 2>();
-
-  for (int64_t i = 0; i < N; ++i) {
-    for (int k = 0; k < 3; ++k) {
-      ofs << pts_acc[i][k][0] << " " << pts_acc[i][k][1] << " " << pts_acc[i][k][2] << "\n";
-    }
-  }
-  for (int64_t i = 0; i < N; ++i) {
-    int r = static_cast<int>(col_acc[i][0] * 255.0f);
-    int g = static_cast<int>(col_acc[i][1] * 255.0f);
-    int b = static_cast<int>(col_acc[i][2] * 255.0f);
-    ofs << "3 " << (i*3) << " " << (i*3+1) << " " << (i*3+2)
+  auto v_acc = vertices.accessor<float, 2>();
+  auto c_acc = colors_rgb.accessor<float, 2>();
+  for (int64_t i = 0; i < V; ++i) {
+    int r = static_cast<int>(c_acc[i][0] * 255.0f);
+    int g = static_cast<int>(c_acc[i][1] * 255.0f);
+    int b = static_cast<int>(c_acc[i][2] * 255.0f);
+    ofs << v_acc[i][0] << " " << v_acc[i][1] << " " << v_acc[i][2]
         << " " << r << " " << g << " " << b << " 255\n";
   }
 
-  std::cout << "[TriangleMapper] Exported " << N << " triangles to "
-            << (scene_dir / "mesh.off") << std::endl;
+  auto f_acc = faces.accessor<int, 2>();
+  for (int64_t i = 0; i < T; ++i) {
+    ofs << "3 " << f_acc[i][0] << " " << f_acc[i][1] << " " << f_acc[i][2] << "\n";
+  }
+
+  std::cout << "[TriangleMapper] Exported " << T << " triangles (" << V
+            << " vertices) to " << (scene_dir / "mesh.off") << std::endl;
 }
 
 bool TriangleMapper::saveScene(std::filesystem::path scene_dir) {
@@ -596,22 +591,22 @@ bool TriangleMapper::loadScene(std::filesystem::path scene_dir,
 void TriangleMapper::saveChunkManifest(std::filesystem::path scene_dir) {
   Json::Value json_root;
 
-  // Save chunks_on_disk_ and chunk_triangle_counts_
+  // Save chunks_on_disk_ and chunk_vertex_counts_
   Json::Value chunks_on_disk_array(Json::arrayValue);
-  Json::Value chunk_triangle_counts_array(Json::arrayValue);
+  Json::Value chunk_vertex_counts_array(Json::arrayValue);
   auto chunks_cpu = triangles_->chunks_on_disk_.cpu();
-  auto chunk_triangle_counts_cpu = triangles_->chunk_triangle_counts_.cpu();
+  auto chunk_vertex_counts_cpu = triangles_->chunk_vertex_counts_.cpu();
   auto accessor_id = chunks_cpu.accessor<int64_t, 1>();
-  auto accessor_count = chunk_triangle_counts_cpu.accessor<int64_t, 1>();
+  auto accessor_count = chunk_vertex_counts_cpu.accessor<int64_t, 1>();
 
   for (int i = 0; i < chunks_cpu.size(0); ++i) {
     chunks_on_disk_array.append(
         Json::Value(static_cast<Json::Int64>(accessor_id[i])));
-    chunk_triangle_counts_array.append(
+    chunk_vertex_counts_array.append(
         Json::Value(static_cast<Json::Int64>(accessor_count[i])));
   }
   json_root["chunks_on_disk"] = chunks_on_disk_array;
-  json_root["chunk_triangle_counts"] = chunk_triangle_counts_array;
+  json_root["chunk_vertex_counts"] = chunk_vertex_counts_array;
 
   writeJsonToFile(json_root, scene_dir / "chunk_manifest.json");
 }
@@ -671,32 +666,32 @@ void TriangleMapper::loadChunkManifest(std::filesystem::path scene_dir) {
     }
   }
 
-  if (root.isMember("chunk_triangle_counts") &&
-      root["chunk_triangle_counts"].isArray()) {
-    const Json::Value& chunk_triangle_counts_array =
-        root["chunk_triangle_counts"];
+  // Support both old "chunk_triangle_counts" and new "chunk_vertex_counts" keys
+  std::string counts_key = root.isMember("chunk_vertex_counts")
+      ? "chunk_vertex_counts" : "chunk_triangle_counts";
 
-    // Collect into vector first
-    std::vector<int64_t> chunk_triangle_counts_vec;
-    chunk_triangle_counts_vec.reserve(chunk_triangle_counts_array.size());
+  if (root.isMember(counts_key) && root[counts_key].isArray()) {
+    const Json::Value& counts_array = root[counts_key];
 
-    for (const auto& chunk_value : chunk_triangle_counts_array) {
+    std::vector<int64_t> counts_vec;
+    counts_vec.reserve(counts_array.size());
+
+    for (const auto& chunk_value : counts_array) {
       if (chunk_value.isInt64()) {
-        chunk_triangle_counts_vec.push_back(chunk_value.asInt64());
+        counts_vec.push_back(chunk_value.asInt64());
       }
     }
 
-    // Convert to tensor
-    if (!chunk_triangle_counts_vec.empty()) {
-      triangles_->chunk_triangle_counts_ =
+    if (!counts_vec.empty()) {
+      triangles_->chunk_vertex_counts_ =
           torch::from_blob(
-              chunk_triangle_counts_vec.data(),
-              {static_cast<int64_t>(chunk_triangle_counts_vec.size())},
+              counts_vec.data(),
+              {static_cast<int64_t>(counts_vec.size())},
               torch::TensorOptions().dtype(torch::kInt64))
               .clone()
               .to(triangles_->device_type_);
     } else {
-      triangles_->chunk_triangle_counts_ =
+      triangles_->chunk_vertex_counts_ =
           torch::empty({0}, torch::TensorOptions()
                                 .dtype(torch::kInt64)
                                 .device(triangles_->device_type_));
