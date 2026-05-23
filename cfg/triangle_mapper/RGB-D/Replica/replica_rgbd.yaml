@@ -2,8 +2,8 @@
 
 Model.white_background: 0  # 0:false, 1 or other integer:true
 Model.sh_degree: 3
-Model.max_triangles_in_memory: 1500000
-Model.init_proba_scaler: 0.5
+Model.max_triangles_in_memory: 2000000
+Model.init_proba_scaler: 0.25
 Model.downsample_for_sampling: 0
 Model.init_strategy: 0  # 0:normal-based, 1:camera-facing, 2:fibonacci
 
@@ -33,7 +33,7 @@ Record.record_ground_truth_image: 1 # 0:false, 1 or other integer:true
 Record.record_loss_image: 0 # 0:false, 1 or other integer:true
 Record.training_report_interval: 0 # 0:never, 1:always, others:periodically
 Record.record_loop_ply: 0 # 0:false, 1 or other integer:true
-Record.record_save_off: 0 # 0:false, 1:export mesh.off on save
+Record.record_save_off: 1 # 0:false, 1:export mesh.off on save
 
 
 Chunking.chunk_size: 10.0
@@ -41,14 +41,14 @@ Chunking.chunk_size: 10.0
 Optimization.auto_distribute: 4  # 0:false, 1 or other integer:true
 Optimization.max_num_iterations: -1
 Optimization.smooth_l1: 0  # 0:false, 1:true
-Optimization.position_lr_init: 0.0005
+Optimization.position_lr_init: 0.001
 Optimization.position_lr_decay: 0.99998
 Optimization.feature_lr: 0.0025
 Optimization.weight_lr: 0.03
 Optimization.sigma_init: 0.3
 Optimization.sigma_final: 0.0001
 Optimization.sigma_start_iter: 0
-Optimization.sigma_until_iter: 30000
+Optimization.sigma_until_iter: 3000
 Optimization.pose_lr: 0.0000
 Optimization.exposure_lr: 0.00
 Optimization.depth_scale_bias_lr: 0.0001
@@ -56,13 +56,13 @@ Optimization.lambda_dssim: 0.2
 Optimization.lambda_depth: 0.001
 Optimization.lambda_normal: 1.0e-4
 Optimization.normal_loss_mode: 1  # 0:off, 1:self-consistency, 2:GT-anchored (RGBD only)
-Optimization.lambda_weight: 0.0
+Optimization.lambda_weight: 0.01
 Optimization.exposure_optimization: 0 # 0:false, 1 or other integer:true
-Optimization.opacity_floor_start_iter: 5000
-Optimization.opacity_floor_end_iter: 24000
+Optimization.opacity_floor_start_iter: 450
+Optimization.opacity_floor_end_iter: 2400
 Optimization.opacity_floor_init: 0.1
 Optimization.opacity_floor_final: 0.9999
-Optimization.rdt_iter: 11000
+Optimization.rdt_iter: 1800
 Optimization.enable_rdt: 1
 
 TriangleViewer.glfw_window_width: 1400

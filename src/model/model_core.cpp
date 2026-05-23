@@ -166,6 +166,91 @@ void TriangleModel::runRestrictedDelaunay(int current_iter) {
 }
 
 
+void TriangleModel::runRestrictedDelaunayForChunk(int64_t chunk_id,
+                                                  int current_iter) {
+  torch::NoGradGuard no_grad;
+
+  // Mask triangles belonging to this chunk
+  torch::Tensor chunk_mask = (triangle_chunk_ids_ == chunk_id);
+  int64_t T_chunk = chunk_mask.sum().item<int64_t>();
+  if (T_chunk == 0) return;
+
+  torch::Tensor chunk_tri_indices = torch::where(chunk_mask)[0];
+  torch::Tensor chunk_faces = triangle_indices_.index({chunk_tri_indices});
+
+  // Find unique vertices referenced by this chunk's triangles
+  auto [unique_verts, inverse_map, counts] =
+      at::_unique2(chunk_faces.to(torch::kLong).reshape(-1),
+                   /*sorted=*/true, /*return_inverse=*/true);
+
+  int64_t V_local = unique_verts.size(0);
+  torch::Tensor local_verts = vertices_.index({unique_verts}).detach();
+
+  // Remap faces to local vertex indices
+  torch::Tensor local_faces = inverse_map.reshape({T_chunk, 3}).to(torch::kInt32);
+
+  std::cout << "[RDT] Chunk " << chunk_id << ": " << V_local << " vertices, "
+            << T_chunk << " triangles..." << std::endl;
+
+  // Torch → Eigen
+  auto verts_cpu = local_verts.cpu().to(torch::kFloat64).contiguous();
+  Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor> verts_rm =
+      Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor>>(
+          verts_cpu.data_ptr<double>(), V_local, 3);
+  Eigen::MatrixXd eigen_verts = verts_rm;
+
+  auto faces_cpu = local_faces.cpu().contiguous();
+  Eigen::Matrix<int, Eigen::Dynamic, 3, Eigen::RowMajor> faces_rm =
+      Eigen::Map<Eigen::Matrix<int, Eigen::Dynamic, 3, Eigen::RowMajor>>(
+          faces_cpu.data_ptr<int>(), T_chunk, 3);
+  Eigen::MatrixXi eigen_faces = faces_rm;
+
+  // Run RDT
+  auto [out_verts, out_faces] =
+      restricted_delaunay::run(eigen_verts, eigen_faces);
+  int64_t T_new = out_faces.rows();
+
+  std::cout << "[RDT] Chunk " << chunk_id << " result: " << T_new
+            << " triangles (was " << T_chunk << ")" << std::endl;
+
+  // Eigen → Torch, remap local indices back to global vertex indices
+  Eigen::Matrix<int, Eigen::Dynamic, 3, Eigen::RowMajor> faces_out_rm =
+      out_faces;
+  auto new_local_faces =
+      torch::from_blob(faces_out_rm.data(), {T_new, 3},
+                        torch::TensorOptions().dtype(torch::kInt32))
+          .clone()
+          .to(device_type_);
+
+  // Map local vertex indices → global vertex indices
+  torch::Tensor global_vert_lut = unique_verts.to(torch::kInt32).to(device_type_);
+  torch::Tensor new_global_faces = global_vert_lut.index(
+      {new_local_faces.to(torch::kLong).reshape(-1)}).reshape({T_new, 3});
+
+  // Replace chunk's triangles: remove old, append new
+  torch::Tensor keep_mask = ~chunk_mask;
+  torch::Tensor kept_faces = triangle_indices_.index({keep_mask});
+  torch::Tensor kept_exist = exist_since_iter_.index({keep_mask});
+  torch::Tensor kept_chunk_ids = triangle_chunk_ids_.index({keep_mask});
+  torch::Tensor kept_tri_ids = triangle_ids_.index({keep_mask});
+
+  torch::Tensor new_exist = torch::full(
+      {T_new}, current_iter,
+      torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
+  torch::Tensor new_chunk_ids = torch::full(
+      {T_new}, chunk_id,
+      torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
+  torch::Tensor new_tri_ids = torch::arange(
+      next_triangle_id_, next_triangle_id_ + T_new,
+      torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
+  next_triangle_id_ += T_new;
+
+  triangle_indices_ = torch::cat({kept_faces, new_global_faces}, 0);
+  exist_since_iter_ = torch::cat({kept_exist, new_exist}, 0);
+  triangle_chunk_ids_ = torch::cat({kept_chunk_ids, new_chunk_ids}, 0);
+  triangle_ids_ = torch::cat({kept_tri_ids, new_tri_ids}, 0);
+}
+
 void TriangleModel::applyScaledTransformation(const float s,
                                               const Sophus::SE3f T) {
   torch::NoGradGuard no_grad;
@@ -620,6 +705,7 @@ torch::Tensor TriangleModel::cullVisibleTriangles(
       createTriangleMaskFromChunks(visible_chunk_ids);
 
   updateChunkAccess(visible_chunk_ids);
+  last_visible_chunk_ids_ = visible_chunk_ids;
 
   return chunk_visibility_mask;
 }
@@ -633,6 +719,22 @@ torch::Tensor TriangleModel::createTriangleMaskFromChunks(
   }
 
   return torch::isin(triangle_chunk_ids_, visible_chunk_ids);
+}
+
+void TriangleModel::incrementChunkOptCounts() {
+  if (!last_visible_chunk_ids_.defined() ||
+      last_visible_chunk_ids_.size(0) == 0)
+    return;
+  auto ids_cpu = last_visible_chunk_ids_.cpu();
+  auto acc = ids_cpu.accessor<int64_t, 1>();
+  for (int64_t i = 0; i < ids_cpu.size(0); i++) {
+    chunk_opt_counts_[acc[i]]++;
+  }
+}
+
+int TriangleModel::getChunkOptCount(int64_t chunk_id) const {
+  auto it = chunk_opt_counts_.find(chunk_id);
+  return it != chunk_opt_counts_.end() ? it->second : 0;
 }
 
 void TriangleModel::initializeEmpty(float spatial_lr_scale) {

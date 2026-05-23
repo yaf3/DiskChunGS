@@ -50,6 +50,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <tuple>
 #include <vector>
 
@@ -1011,7 +1012,7 @@ class TriangleMapper {
   // ========== Private Data Members ==========
 
   // Stage 2 state
-  bool rdt_completed_ = false;
+  std::unordered_set<int64_t> rdt_completed_chunks_;
 
   // Loop closure control
   std::atomic<bool> pause_image_ingestion_{false};

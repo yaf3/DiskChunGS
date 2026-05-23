@@ -15,6 +15,7 @@
  */
 
 #include "triangle_mapper.h"
+#include <limits>
 #include "rendering/triangle_rasterizer.h"
 #include "rendering/triangle_renderer.h"
 #include "utils/loss_utils.h"
@@ -273,6 +274,7 @@ void TriangleMapper::trainForOneIteration() {
   // necessary
   torch::Tensor visible_triangle_mask =
       triangles_->cullVisibleTriangles(viewpoint_cam);
+  triangles_->incrementChunkOptCounts();
 
   // Get view matrix of keyframe
   torch::Tensor view_matrix = viewpoint_cam->getRT().transpose(0, 1);
@@ -331,7 +333,22 @@ void TriangleMapper::trainForOneIteration() {
   }
 
   // Vertex weight regularization: disabled once opacity floor is active.
-  float lambda_weight = (current_iteration < opt_params_.opacity_floor_start_iter_)
+  // Use minimum chunk age across visible chunks as the conservative threshold.
+  int min_chunk_age = std::numeric_limits<int>::max();
+  {
+    const auto& vis_ids = triangles_->getLastVisibleChunkIds();
+    if (vis_ids.defined() && vis_ids.size(0) > 0) {
+      auto ids_cpu = vis_ids.cpu();
+      auto acc = ids_cpu.accessor<int64_t, 1>();
+      for (int64_t i = 0; i < ids_cpu.size(0); i++) {
+        min_chunk_age = std::min(min_chunk_age,
+                                 triangles_->getChunkOptCount(acc[i]));
+      }
+    }
+  }
+  if (min_chunk_age == std::numeric_limits<int>::max()) min_chunk_age = 0;
+
+  float lambda_weight = (min_chunk_age < opt_params_.opacity_floor_start_iter_)
       ? lambdaWeight() : 0.0f;
   if (lambda_weight > 0.0f) {
     loss += lambda_weight * triangles_->getVertexWeightActivation().mean();
@@ -369,29 +386,42 @@ void TriangleMapper::trainForOneIteration() {
   // Zero out gradients
   triangles_->optimizer_->zero_grad(true);
 
-  // Stage-2 gated pruning, RDT, and opacity floor.
+  // Stage-2 gated pruning, RDT, and opacity floor (per-chunk).
   {
     torch::NoGradGuard no_grad;
-    int iter = current_iteration;
     const auto& op = opt_params_;
+    const auto& vis_ids = triangles_->getLastVisibleChunkIds();
+    bool any_chunk_pre_rdt = false;
 
-    // RDT trigger — runs once
-    if (op.enable_rdt_ && !rdt_completed_ && iter >= op.rdt_iter_) {
-      std::cout << "[Stage2] Running RDT at iteration " << iter << std::endl;
-      triangles_->runRestrictedDelaunay(iter);
-      rdt_completed_ = true;
+    if (vis_ids.defined() && vis_ids.size(0) > 0) {
+      auto ids_cpu = vis_ids.cpu();
+      auto acc = ids_cpu.accessor<int64_t, 1>();
+      for (int64_t i = 0; i < ids_cpu.size(0); i++) {
+        int64_t cid = acc[i];
+        int age = triangles_->getChunkOptCount(cid);
+        bool rdt_done = rdt_completed_chunks_.count(cid) > 0;
+
+        if (!rdt_done) any_chunk_pre_rdt = true;
+
+        // Per-chunk RDT trigger
+        if (op.enable_rdt_ && !rdt_done && age >= op.rdt_iter_) {
+          triangles_->runRestrictedDelaunayForChunk(cid, current_iteration);
+          rdt_completed_chunks_.insert(cid);
+        }
+      }
     }
 
-    // Before RDT: prune every 10 iters (existing behavior)
-    if (!rdt_completed_ && iter % 10 == 0) {
+    // Pruning: only if any visible chunk hasn't completed RDT yet
+    if (any_chunk_pre_rdt && current_iteration % 10 == 0) {
       triangles_->pruneLowWeightTriangles(
           viewpoint_cam, visible_triangle_mask, full_model_scaling);
     }
 
-    // Opacity floor schedule (both before and after RDT, every 500 iters)
-    if (iter >= op.opacity_floor_start_iter_ &&
-        iter <= op.opacity_floor_end_iter_ && iter % 500 == 0) {
-      float t = static_cast<float>(iter - op.opacity_floor_start_iter_) /
+    // Opacity floor schedule: driven by min chunk age across visible chunks
+    if (min_chunk_age >= op.opacity_floor_start_iter_ &&
+        min_chunk_age <= op.opacity_floor_end_iter_ &&
+        current_iteration % 500 == 0) {
+      float t = static_cast<float>(min_chunk_age - op.opacity_floor_start_iter_) /
                 static_cast<float>(std::max(
                     1, op.opacity_floor_end_iter_ - op.opacity_floor_start_iter_));
       t = std::clamp(t, 0.0f, 1.0f);

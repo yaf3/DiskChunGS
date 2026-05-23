@@ -217,6 +217,7 @@ class TriangleModel {
   void updateOpacityFloor(float new_floor);
 
   void runRestrictedDelaunay(int current_iter);
+  void runRestrictedDelaunayForChunk(int64_t chunk_id, int current_iter);
 
 
   //============================================================================
@@ -495,6 +496,12 @@ class TriangleModel {
    */
   void updateChunkIDs();
 
+  void incrementChunkOptCounts();
+  int getChunkOptCount(int64_t chunk_id) const;
+  const torch::Tensor& getLastVisibleChunkIds() const {
+    return last_visible_chunk_ids_;
+  }
+
   //============================================================================
   // Disk I/O
   //============================================================================
@@ -723,6 +730,9 @@ class TriangleModel {
       3000000;  ///< Max Triangles before eviction.
   std::unordered_map<int64_t, float>
       chunk_access_times_;  ///< Per-chunk access timestamps.
+  std::unordered_map<int64_t, int>
+      chunk_opt_counts_;              ///< Per-chunk training step count.
+  torch::Tensor last_visible_chunk_ids_;  ///< Cached from last cullVisibleTriangles.
   int new_triangle_chunk_density_ =
       100;  ///< Min Triangles/chunk for new points.
 

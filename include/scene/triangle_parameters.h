@@ -84,11 +84,11 @@ class TriangleOptimizationParams {
                              float sigma_final = 0.0001f,
                              int sigma_start_iter = 0,
                              int sigma_until_iter = 30000,
-                             int opacity_floor_start_iter = 5000,
-                             int opacity_floor_end_iter = 24000,
+                             int opacity_floor_start_iter = 800,
+                             int opacity_floor_end_iter = 4000,
                              float opacity_floor_init = 0.1f,
                              float opacity_floor_final = 0.9999f,
-                             int rdt_iter = 11000,
+                             int rdt_iter = 3000,
                              bool enable_rdt = true);
 
   // Training settings
@@ -118,13 +118,13 @@ class TriangleOptimizationParams {
   int sigma_start_iter_;      ///< Iteration to begin sigma annealing.
   int sigma_until_iter_;      ///< Iteration when sigma reaches final value.
 
-  // Stage 2: Opacity floor
+  // Stage 2: Opacity floor (thresholds are per-chunk opt step counts)
   int opacity_floor_start_iter_;
   int opacity_floor_end_iter_;
   float opacity_floor_init_;
   float opacity_floor_final_;
 
-  // Stage 2: Restricted Delaunay Triangulation
+  // Stage 2: Restricted Delaunay Triangulation (per-chunk opt step threshold)
   int rdt_iter_;
   bool enable_rdt_;
 };
