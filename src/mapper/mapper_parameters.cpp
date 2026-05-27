@@ -66,6 +66,21 @@ float TriangleMapper::lambdaWeight() {
   return opt_params_.lambda_weight_;
 }
 
+float TriangleMapper::lambdaVertexDepth() {
+  std::unique_lock<std::mutex> lock(mutex_settings_);
+  return opt_params_.lambda_vertex_depth_;
+}
+
+float TriangleMapper::maxVertexDepthDiff() {
+  std::unique_lock<std::mutex> lock(mutex_settings_);
+  return opt_params_.max_vertex_depth_diff_;
+}
+
+int TriangleMapper::vertexDepthMode() {
+  std::unique_lock<std::mutex> lock(mutex_settings_);
+  return opt_params_.vertex_depth_mode_;
+}
+
 int TriangleMapper::newKeyframeTimesOfUse() {
   std::unique_lock<std::mutex> lock(mutex_settings_);
   return new_keyframe_times_of_use_;

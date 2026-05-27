@@ -66,6 +66,9 @@ Optimization.opacity_floor_final: 0.9999
 Optimization.rdt_iter: 3000
 Optimization.enable_rdt: 1
 Optimization.rdt_update_interval: 200
+Optimization.lambda_vertex_depth: 1.0
+Optimization.max_vertex_depth_diff: 0.5
+Optimization.vertex_depth_mode: 2
 
 TriangleViewer.glfw_window_width: 1862
 TriangleViewer.glfw_window_height: 564

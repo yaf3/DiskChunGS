@@ -73,7 +73,10 @@ TriangleOptimizationParams::TriangleOptimizationParams(
     float opacity_floor_final,
     int rdt_iter,
     bool enable_rdt,
-    int rdt_update_interval)
+    int rdt_update_interval,
+    float lambda_vertex_depth,
+    float max_vertex_depth_diff,
+    int vertex_depth_mode)
     : iterations_(iterations),
       auto_distribute_(auto_distribute),
       smooth_l1_(smooth_l1),
@@ -99,4 +102,7 @@ TriangleOptimizationParams::TriangleOptimizationParams(
       opacity_floor_final_(opacity_floor_final),
       rdt_iter_(rdt_iter),
       enable_rdt_(enable_rdt),
-      rdt_update_interval_(rdt_update_interval) {}
+      rdt_update_interval_(rdt_update_interval),
+      lambda_vertex_depth_(lambda_vertex_depth),
+      max_vertex_depth_diff_(max_vertex_depth_diff),
+      vertex_depth_mode_(vertex_depth_mode) {}

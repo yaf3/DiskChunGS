@@ -200,6 +200,12 @@ void TriangleMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       readConfigBool(settings_file, "Optimization.enable_rdt");
   opt_params_.rdt_update_interval_ =
       readConfig<int>(settings_file, "Optimization.rdt_update_interval");
+  opt_params_.lambda_vertex_depth_ =
+      readConfig<float>(settings_file, "Optimization.lambda_vertex_depth");
+  opt_params_.max_vertex_depth_diff_ =
+      readConfig<float>(settings_file, "Optimization.max_vertex_depth_diff");
+  opt_params_.vertex_depth_mode_ =
+      readConfig<int>(settings_file, "Optimization.vertex_depth_mode");
 
   // ========== Viewer Parameters ==========
   rendered_image_viewer_scale_ =

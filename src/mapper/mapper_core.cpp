@@ -18,6 +18,7 @@
 #include <limits>
 #include "rendering/triangle_rasterizer.h"
 #include "rendering/triangle_renderer.h"
+#include "utils/depth_utils.h"
 #include "utils/loss_utils.h"
 #include "utils/profiling.h"
 #include "utils/trajectory_viewer.h"
@@ -304,11 +305,19 @@ void TriangleMapper::trainForOneIteration() {
   float lambda_dssim = lambdaDssim();
   auto loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - Lssim);
 
+  // Depth confidence: downweight depth/normal losses at depth discontinuities.
+  torch::Tensor depth_conf;
+  if (gt_inv_depth.defined()) {
+    depth_conf = depth_utils::computeDepthConfidence(
+        gt_inv_depth.unsqueeze(0)).squeeze(0);  // [1, H, W]
+  }
+
   // Calculate depth loss if gt depth exists
   if (gt_inv_depth.defined()) {
     float lambda_depth = lambdaDepth();
     torch::Tensor rendered_inv_depth = std::get<0>(render_pkg);
-    torch::Tensor depth_loss = (rendered_inv_depth - gt_inv_depth).abs().mean();
+    torch::Tensor depth_loss =
+        ((rendered_inv_depth - gt_inv_depth).abs() * depth_conf).mean();
     loss += lambda_depth * depth_loss;
   }
 
@@ -330,9 +339,62 @@ void TriangleMapper::trainForOneIteration() {
       }
     }
     if (ref_normal.defined()) {
-      torch::Tensor normal_loss =
-          lambda_normal * (1.0f - (rend_normal * ref_normal).sum(0)).mean();
-      loss += normal_loss;
+      torch::Tensor per_pixel = 1.0f - (rend_normal * ref_normal).sum(0);
+      if (depth_conf.defined())
+        per_pixel = per_pixel * depth_conf.squeeze(0);  // [H, W]
+      loss += lambda_normal * per_pixel.mean();
+    }
+  }
+
+  // Vertex depth regularization: project each vertex into the camera,
+  // compare its view-space z to a reference depth at that pixel.
+  // Mode 1: GT sensor depth.  Mode 2: rendered surface depth (detached).
+  float lambda_vd = lambdaVertexDepth();
+  int vd_mode = vertexDepthMode();
+  torch::Tensor ref_inv_depth;
+  if (vd_mode == 1 && gt_inv_depth.defined())
+    ref_inv_depth = gt_inv_depth;
+  else if (vd_mode == 2)
+    ref_inv_depth = std::get<0>(render_pkg).detach();
+
+  if (lambda_vd > 0.0f && ref_inv_depth.defined()) {
+    float fx = viewpoint_cam->intr_[0], fy = viewpoint_cam->intr_[1];
+    float cx = viewpoint_cam->intr_[2], cy = viewpoint_cam->intr_[3];
+    int H = image_height, W = image_width;
+
+    // Only regularize vertices belonging to visible triangles.
+    auto vis_tri_idx = triangles_->triangle_indices_.index({visible_triangle_mask});
+    auto vis_vert_ids = std::get<0>(torch::_unique(
+        vis_tri_idx.flatten().to(torch::kLong)));
+    torch::Tensor verts = triangles_->vertices_.index({vis_vert_ids});
+
+    torch::Tensor ones = torch::ones({verts.size(0), 1}, verts.options());
+    torch::Tensor verts_h = torch::cat({verts, ones}, 1);
+    torch::Tensor verts_view = verts_h.mm(view_matrix);
+    torch::Tensor vz = verts_view.select(1, 2);
+
+    torch::Tensor px = (verts_view.select(1, 0) / vz) * fx + cx;
+    torch::Tensor py = (verts_view.select(1, 1) / vz) * fy + cy;
+
+    torch::Tensor inside = (px >= 0) & (px < W) & (py >= 0) & (py < H) & (vz > 0);
+    if (inside.any().item<bool>()) {
+      torch::Tensor vz_k = vz.index({inside});
+
+      torch::Tensor xi = torch::clamp(torch::round(px.index({inside})).to(torch::kLong), 0, W - 1);
+      torch::Tensor yi = torch::clamp(torch::round(py.index({inside})).to(torch::kLong), 0, H - 1);
+
+      torch::Tensor sampled_inv = ref_inv_depth.squeeze(0).index({yi, xi});
+      torch::Tensor valid = (sampled_inv > 0) & torch::isfinite(sampled_inv);
+      if (valid.any().item<bool>()) {
+        torch::Tensor ref_depth = 1.0f / sampled_inv.index({valid});
+        torch::Tensor v_depth = vz_k.index({valid});
+        torch::Tensor diffs = (v_depth - ref_depth).abs();
+        float max_diff = maxVertexDepthDiff();
+        torch::Tensor use = diffs < max_diff;
+        if (use.any().item<bool>()) {
+          loss += lambda_vd * diffs.index({use}).mean();
+        }
+      }
     }
   }
 

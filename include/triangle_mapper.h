@@ -274,6 +274,15 @@ class TriangleMapper {
   /** @brief Get vertex weight regularization weight */
   float lambdaWeight();
 
+  /** @brief Get vertex depth regularization weight */
+  float lambdaVertexDepth();
+
+  /** @brief Get maximum vertex depth difference threshold */
+  float maxVertexDepthDiff();
+
+  /** @brief Get vertex depth mode (0=off, 1=GT, 2=rendered) */
+  int vertexDepthMode();
+
   /** @brief Get times of use threshold for new keyframes */
   int newKeyframeTimesOfUse();
 

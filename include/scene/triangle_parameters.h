@@ -90,7 +90,10 @@ class TriangleOptimizationParams {
                              float opacity_floor_final = 0.9999f,
                              int rdt_iter = 3000,
                              bool enable_rdt = true,
-                             int rdt_update_interval = 0);
+                             int rdt_update_interval = 0,
+                             float lambda_vertex_depth = 0.0f,
+                             float max_vertex_depth_diff = 0.5f,
+                             int vertex_depth_mode = 0);
 
   // Training settings
   int iterations_;       ///< Total number of optimization iterations.
@@ -129,4 +132,9 @@ class TriangleOptimizationParams {
   int rdt_iter_;
   bool enable_rdt_;
   int rdt_update_interval_;
+
+  // Vertex depth regularization
+  float lambda_vertex_depth_;
+  float max_vertex_depth_diff_;
+  int vertex_depth_mode_;         ///< 0=off, 1=GT depth, 2=rendered depth.
 };

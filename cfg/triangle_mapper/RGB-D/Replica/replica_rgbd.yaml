@@ -3,9 +3,9 @@
 Model.white_background: 0  # 0:false, 1 or other integer:true
 Model.sh_degree: 3
 Model.max_vertices_in_memory: 2000000
-Model.init_proba_scaler: 0.25
+Model.init_proba_scaler: 0.3
 Model.downsample_for_sampling: 0
-Model.init_strategy: 0  # 0:normal-based, 1:camera-facing, 2:fibonacci
+Model.init_strategy: 2  # 0:normal-based, 1:camera-facing, 2:fibonacci
 
 Camera.z_near: 0.01
 Camera.z_far: 100.0
@@ -53,16 +53,19 @@ Optimization.pose_lr: 0.0000
 Optimization.exposure_lr: 0.00
 Optimization.depth_scale_bias_lr: 0.0001
 Optimization.lambda_dssim: 0.2
-Optimization.lambda_depth: 0.001
-Optimization.lambda_normal: 1.0e-4
+Optimization.lambda_depth: 0.1
+Optimization.lambda_normal: 0.01
 Optimization.normal_loss_mode: 1  # 0:off, 1:self-consistency, 2:GT-anchored (RGBD only)
 Optimization.lambda_weight: 0.01
+Optimization.lambda_vertex_depth: 0.2
+Optimization.max_vertex_depth_diff: 0.5
+Optimization.vertex_depth_mode: 2
 Optimization.exposure_optimization: 0 # 0:false, 1 or other integer:true
-Optimization.opacity_floor_start_iter: 450
+Optimization.opacity_floor_start_iter: 500
 Optimization.opacity_floor_end_iter: 2400
-Optimization.opacity_floor_init: 0.1
+Optimization.opacity_floor_init: 0.9
 Optimization.opacity_floor_final: 0.9999
-Optimization.rdt_iter: 1800
+Optimization.rdt_iter: 500
 Optimization.enable_rdt: 1
 Optimization.rdt_update_interval: 800
 
