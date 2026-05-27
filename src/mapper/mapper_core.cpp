@@ -403,20 +403,22 @@ void TriangleMapper::trainForOneIteration() {
       for (int64_t i = 0; i < ids_cpu.size(0); i++) {
         int64_t cid = acc[i];
         int age = triangles_->getChunkOptCount(cid);
-        bool rdt_done = rdt_completed_chunks_.count(cid) > 0;
 
-        if (!rdt_done) any_chunk_pre_rdt = true;
+        if (age < op.rdt_iter_) any_chunk_pre_rdt = true;
 
-        // Per-chunk RDT trigger
-        if (op.enable_rdt_ && !rdt_done && age >= op.rdt_iter_) {
-          triangles_->runRestrictedDelaunayForChunk(cid, current_iteration);
-          rdt_completed_chunks_.insert(cid);
+        if (op.enable_rdt_ && !loop_closure_iteration_ &&
+            age >= op.rdt_iter_ &&
+            op.rdt_update_interval_ > 0 &&
+            (age - op.rdt_iter_) % op.rdt_update_interval_ == 0) {
+          triangles_->initChunkDelaunay(cid);
+          triangles_->rebuildChunkMeshFromDelaunay(cid, current_iteration);
         }
       }
     }
 
     // Pruning: only if any visible chunk hasn't completed RDT yet
-    if (any_chunk_pre_rdt && current_iteration % 10 == 0) {
+    if (any_chunk_pre_rdt && !loop_closure_iteration_ &&
+        current_iteration % 10 == 0) {
       triangles_->pruneLowWeightTriangles(
           viewpoint_cam, visible_triangle_mask, full_model_scaling);
     }
@@ -469,8 +471,6 @@ void TriangleMapper::trainForOneIteration() {
     saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
               "data");
   }
-
-  if (loop_closure_iteration_) loop_closure_iteration_ = false;
 
   // If keyframe had to be loaded, save back to disk
   if (had_to_load) {

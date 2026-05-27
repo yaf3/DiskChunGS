@@ -199,6 +199,9 @@ void TriangleModel::gcUnreferencedVertices() {
   triangle_indices_ =
       new_ids.index({triangle_indices_.to(torch::kLong)}).to(torch::kInt32);
 
+  chunk_delaunay_.clear();
+  chunk_delaunay_vert_map_.clear();
+
   pruneVertexData(referenced);
 }
 

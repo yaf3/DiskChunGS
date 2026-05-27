@@ -111,6 +111,8 @@ void TriangleMapper::combineMappingOperations() {
       }
     }
 
+    loop_closure_iteration_ = false;
+
     // Resume image ingestion
     std::cout << "\n[Loop Closure] ========================================\n"
               << "[Loop Closure] Optimization complete. RESUMING ORB-SLAM3...\n"

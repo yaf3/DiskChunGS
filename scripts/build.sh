@@ -70,7 +70,7 @@ cmake -B build -G Ninja \
  -DCMAKE_CUDA_FLAGS="-O3 -use_fast_math" \
  -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++
 
-cmake --build build -j2 # Reduce if causes OOM
+cmake --build build -j4 # Reduce if causes OOM
 
 echo "✓ Build completed successfully!"
 echo "----------------------------------------"

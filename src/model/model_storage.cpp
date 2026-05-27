@@ -87,7 +87,7 @@ void TriangleModel::saveSingleChunkToDisk(int64_t chunk_id,
 
   try {
     uint32_t magic = 0x43484E4B;  // "CHNK"
-    uint32_t version = 3;         // version 3: vertices+triangle_indices, no sigma tensor
+    uint32_t version = 4;         // version 4: adds per-chunk IncrementalDelaunay state
     file.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
     file.write(reinterpret_cast<const char*>(&version), sizeof(version));
 
@@ -121,6 +121,17 @@ void TriangleModel::saveSingleChunkToDisk(int64_t chunk_id,
       }
     }
 
+    // Incremental Delaunay state
+    auto del_it = chunk_delaunay_.find(chunk_id);
+    if (del_it != chunk_delaunay_.end() && del_it->second.isInitialized()) {
+      uint8_t has_delaunay = 1;
+      file.write(reinterpret_cast<const char*>(&has_delaunay), sizeof(has_delaunay));
+      del_it->second.serialize(file);
+    } else {
+      uint8_t has_delaunay = 0;
+      file.write(reinterpret_cast<const char*>(&has_delaunay), sizeof(has_delaunay));
+    }
+
     file.close();
   } catch (const std::exception& e) {
     file.close();
@@ -150,10 +161,10 @@ std::optional<TriangleModel::ChunkData> TriangleModel::loadSingleChunkFromDisk(
   if (magic != 0x43484E4B) {
     throw std::runtime_error("Invalid chunk file format: " + chunk_filename);
   }
-  if (version != 3) {
+  if (version != 3 && version != 4) {
     throw std::runtime_error(
         "Incompatible chunk file version " + std::to_string(version) +
-        " (expected 3): " + chunk_filename);
+        " (expected 3 or 4): " + chunk_filename);
   }
 
   int64_t stored_chunk_id;
@@ -186,6 +197,21 @@ std::optional<TriangleModel::ChunkData> TriangleModel::loadSingleChunkFromDisk(
                 sizeof(int64_t));
       data.exp_avg_states[group_idx] = loadTensorBinary(file);
       data.exp_avg_sq_states[group_idx] = loadTensorBinary(file);
+    }
+
+    if (version >= 4) {
+      uint8_t has_delaunay;
+      file.read(reinterpret_cast<char*>(&has_delaunay), sizeof(has_delaunay));
+      if (has_delaunay) {
+        // Skip serialized Delaunay data — the mapper will re-initialize from
+        // the loaded vertices. We can't restore the vert map here because
+        // extractChunkData only saves face-referenced vertices while the
+        // Delaunay may contain additional incrementally-inserted vertices.
+        int32_t nv;
+        file.read(reinterpret_cast<char*>(&nv), sizeof(nv));
+        file.seekg(static_cast<std::streamoff>(nv) * 3 * sizeof(double),
+                   std::ios::cur);
+      }
     }
 
     data.num_vertices = data.vertices.size(0);

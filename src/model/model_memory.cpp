@@ -62,6 +62,16 @@ void TriangleModel::saveAndEvictChunks(const torch::Tensor& chunk_ids) {
     prunePoints(remove_mask);
   }
 
+  // Erase Delaunay state for evicted chunks
+  {
+    auto ids_cpu = chunk_ids.cpu();
+    auto ids_acc = ids_cpu.accessor<int64_t, 1>();
+    for (int64_t i = 0; i < ids_cpu.size(0); ++i) {
+      chunk_delaunay_.erase(ids_acc[i]);
+      chunk_delaunay_vert_map_.erase(ids_acc[i]);
+    }
+  }
+
   // Update loaded chunk tracking
   // Mask of loaded chunks not in the requested chunks to save
   torch::Tensor keep_loaded_mask =

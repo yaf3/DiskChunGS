@@ -18,10 +18,17 @@
 #include <Eigen/Core>
 #include <tuple>
 
+#include "delaunay.h"
+
 namespace restricted_delaunay {
 
 // verts: (V,3) double, faces: (F,3) int32. Returns (out_verts, out_faces).
 std::tuple<Eigen::MatrixXd, Eigen::MatrixXi>
 run(const Eigen::MatrixXd& verts, const Eigen::MatrixXi& faces);
+
+// Overload that accepts a pre-built Delaunay tetrahedralization, skipping
+// the tetgen step. Used by IncrementalDelaunay-based callers.
+std::tuple<Eigen::MatrixXd, Eigen::MatrixXi>
+run(const DelaunayOut& delaunay, const Eigen::MatrixXd& verts, const Eigen::MatrixXi& faces);
 
 }  // namespace restricted_delaunay

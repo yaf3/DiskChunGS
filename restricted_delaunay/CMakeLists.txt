@@ -33,6 +33,8 @@ add_library(
     lbvh.h
     delaunay.h
     delaunay.cpp
+    incremental_delaunay.h
+    incremental_delaunay.cpp
     intersect.h
     intersect.cpp
     orient.h
@@ -55,3 +57,6 @@ target_compile_definitions(restricted_delaunay PRIVATE TETLIBRARY)
 # --- Smoke test ---------------------------------------------------------------
 add_executable(test_effrdel test_effrdel.cpp)
 target_link_libraries(test_effrdel restricted_delaunay Eigen3::Eigen)
+
+add_executable(test_incremental test_incremental.cpp)
+target_link_libraries(test_incremental restricted_delaunay Eigen3::Eigen)

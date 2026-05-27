@@ -50,7 +50,7 @@ inline std::array<int, 3> face_opposite(const int* tet, int k) {
 }  // namespace
 
 std::tuple<Eigen::MatrixXd, Eigen::MatrixXi>
-run(const Eigen::MatrixXd& verts, const Eigen::MatrixXi& faces) {
+run(const DelaunayOut& dt, const Eigen::MatrixXd& verts, const Eigen::MatrixXi& faces) {
     if (verts.cols() != 3 || faces.cols() != 3) {
         throw std::invalid_argument(
             "restricted_delaunay::run: verts must be (V,3), faces must be (F,3)");
@@ -60,6 +60,10 @@ run(const Eigen::MatrixXd& verts, const Eigen::MatrixXi& faces) {
     if (V < 4 || F < 1) {
         throw std::invalid_argument(
             "restricted_delaunay::run: need at least 4 verts and 1 face");
+    }
+    if (dt.tets.rows() == 0) {
+        throw std::invalid_argument(
+            "restricted_delaunay::run: delaunay must have at least 1 tet");
     }
 
     // 1) Build LBVH over the input triangle soup (float32).
@@ -76,14 +80,9 @@ run(const Eigen::MatrixXd& verts, const Eigen::MatrixXi& faces) {
     lbvh::BuildInput bin{verts_f, faces_v};
     lbvh::BVH bvh = lbvh::buildLBVH(bin);
 
-    // 2) Delaunay tetrahedralization of the vertex set (Tetgen).
-    DelaunayOut dt = tetrahedralize_delaunay(verts);
     const int T = static_cast<int>(dt.tets.rows());
-    if (T == 0) {
-        return {verts, Eigen::MatrixXi(0, 3)};
-    }
 
-    // 3) Compute tet circumcenters.
+    // 2) Compute tet circumcenters.
     Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor> tet_cc(T, 3);
     for (int t = 0; t < T; ++t) {
         Eigen::Vector3d p0 = verts.row(dt.tets(t, 0)).transpose();
@@ -93,7 +92,7 @@ run(const Eigen::MatrixXd& verts, const Eigen::MatrixXi& faces) {
         tet_cc.row(t) = tet_circumcenter(p0, p1, p2, p3).transpose();
     }
 
-    // 4) Enumerate interior Delaunay faces (those shared by two tets) and
+    // 3) Enumerate interior Delaunay faces (those shared by two tets) and
     //    the Voronoi segments between their tet circumcenters.
     std::vector<std::array<int, 3>> cand_faces;
     cand_faces.reserve((size_t)T * 2);
@@ -123,11 +122,11 @@ run(const Eigen::MatrixXd& verts, const Eigen::MatrixXi& faces) {
         P1(i, 2) = static_cast<float>(tet_cc(cand_tets[(size_t)i].second, 2));
     }
 
-    // 5) BVH any-hit test on the Voronoi edges.
+    // 4) BVH any-hit test on the Voronoi edges.
     std::vector<uint8_t> hits =
         segments_any_hit(bvh, verts_f, faces_v, P0, P1);
 
-    // 6) Collect surviving faces.
+    // 5) Collect surviving faces.
     int n_hit = 0;
     for (auto h : hits) n_hit += (h != 0);
     Eigen::Matrix<int, Eigen::Dynamic, 3, Eigen::RowMajor> out_faces(n_hit, 3);
@@ -140,13 +139,22 @@ run(const Eigen::MatrixXd& verts, const Eigen::MatrixXi& faces) {
         ++w;
     }
 
-    // 7) Orient face normals consistently across each connected component
+    // 6) Orient face normals consistently across each connected component
     //    (required for downstream physics / sim consumption).
     out_faces = bfs_orient(out_faces);
 
     // The output references the same vertex array as the input; downstream
     // code that wants only used vertices can compact externally.
     return {verts, Eigen::MatrixXi(out_faces)};
+}
+
+std::tuple<Eigen::MatrixXd, Eigen::MatrixXi>
+run(const Eigen::MatrixXd& verts, const Eigen::MatrixXi& faces) {
+    DelaunayOut dt = tetrahedralize_delaunay(verts);
+    if (dt.tets.rows() == 0) {
+        return {verts, Eigen::MatrixXi(0, 3)};
+    }
+    return run(dt, verts, faces);
 }
 
 }  // namespace restricted_delaunay

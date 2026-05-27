@@ -89,7 +89,8 @@ class TriangleOptimizationParams {
                              float opacity_floor_init = 0.1f,
                              float opacity_floor_final = 0.9999f,
                              int rdt_iter = 3000,
-                             bool enable_rdt = true);
+                             bool enable_rdt = true,
+                             int rdt_update_interval = 0);
 
   // Training settings
   int iterations_;       ///< Total number of optimization iterations.
@@ -127,4 +128,5 @@ class TriangleOptimizationParams {
   // Stage 2: Restricted Delaunay Triangulation (per-chunk opt step threshold)
   int rdt_iter_;
   bool enable_rdt_;
+  int rdt_update_interval_;
 };

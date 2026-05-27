@@ -198,6 +198,8 @@ void TriangleMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       readConfig<int>(settings_file, "Optimization.rdt_iter");
   opt_params_.enable_rdt_ =
       readConfigBool(settings_file, "Optimization.enable_rdt");
+  opt_params_.rdt_update_interval_ =
+      readConfig<int>(settings_file, "Optimization.rdt_update_interval");
 
   // ========== Viewer Parameters ==========
   rendered_image_viewer_scale_ =

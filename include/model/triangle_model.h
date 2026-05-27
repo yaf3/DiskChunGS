@@ -53,6 +53,7 @@
 #include "scene/triangle_keyframe.h"
 #include "scene/triangle_parameters.h"
 #include "types.h"
+#include "incremental_delaunay.h"
 #include "utils/general_utils.h"
 #include "utils/sh_utils.h"
 #include "utils/tensor_utils.h"
@@ -219,6 +220,11 @@ class TriangleModel {
 
   void runRestrictedDelaunay(int current_iter);
   void runRestrictedDelaunayForChunk(int64_t chunk_id, int current_iter);
+
+  void initChunkDelaunay(int64_t chunk_id);
+  void insertNewVerticesIntoDelaunay(int64_t chunk_id,
+                                     const torch::Tensor& new_vertex_indices);
+  void rebuildChunkMeshFromDelaunay(int64_t chunk_id, int current_iter);
 
 
   //============================================================================
@@ -736,6 +742,10 @@ class TriangleModel {
       chunk_access_times_;  ///< Per-chunk access timestamps.
   std::unordered_map<int64_t, int>
       chunk_opt_counts_;              ///< Per-chunk training step count.
+  std::unordered_map<int64_t, restricted_delaunay::IncrementalDelaunay>
+      chunk_delaunay_;                ///< Per-chunk persistent Delaunay.
+  std::unordered_map<int64_t, std::vector<int64_t>>
+      chunk_delaunay_vert_map_;       ///< Delaunay pointmark → global vertex index.
   torch::Tensor last_visible_chunk_ids_;  ///< Cached from last cullVisibleTriangles.
   int new_triangle_chunk_density_ =
       100;  ///< Min Triangles/chunk for new points.

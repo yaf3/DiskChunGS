@@ -251,6 +251,165 @@ void TriangleModel::runRestrictedDelaunayForChunk(int64_t chunk_id,
   triangle_ids_ = torch::cat({kept_tri_ids, new_tri_ids}, 0);
 }
 
+void TriangleModel::initChunkDelaunay(int64_t chunk_id) {
+  torch::NoGradGuard no_grad;
+
+  torch::Tensor chunk_mask = (triangle_chunk_ids_ == chunk_id);
+  int64_t T_chunk = chunk_mask.sum().item<int64_t>();
+  if (T_chunk == 0) return;
+
+  torch::Tensor chunk_tri_indices = torch::where(chunk_mask)[0];
+  torch::Tensor chunk_faces = triangle_indices_.index({chunk_tri_indices});
+
+  auto [unique_verts, inverse_map, counts] =
+      at::_unique2(chunk_faces.to(torch::kLong).reshape(-1),
+                   /*sorted=*/true, /*return_inverse=*/true);
+
+  int64_t V_local = unique_verts.size(0);
+  if (V_local < 4) return;
+
+  torch::Tensor local_verts = vertices_.index({unique_verts}).detach();
+  auto verts_cpu = local_verts.cpu().to(torch::kFloat64).contiguous();
+  Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor> verts_rm =
+      Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor>>(
+          verts_cpu.data_ptr<double>(), V_local, 3);
+  Eigen::MatrixXd eigen_verts = verts_rm;
+
+  auto& delaunay = chunk_delaunay_[chunk_id];
+  delaunay.initialize(eigen_verts);
+
+  // Store the mapping: Delaunay pointmark i → global vertex index unique_verts[i]
+  auto uv_cpu = unique_verts.cpu();
+  auto uv_acc = uv_cpu.accessor<int64_t, 1>();
+  auto& vert_map = chunk_delaunay_vert_map_[chunk_id];
+  vert_map.resize(V_local);
+  for (int64_t i = 0; i < V_local; ++i) {
+    vert_map[i] = uv_acc[i];
+  }
+
+  std::cout << "[RDT-incr] Chunk " << chunk_id << ": initialized Delaunay with "
+            << V_local << " vertices" << std::endl;
+}
+
+void TriangleModel::insertNewVerticesIntoDelaunay(
+    int64_t chunk_id,
+    const torch::Tensor& new_vertex_indices) {
+  auto it = chunk_delaunay_.find(chunk_id);
+  if (it == chunk_delaunay_.end() || !it->second.isInitialized()) return;
+
+  int64_t N = new_vertex_indices.size(0);
+  if (N == 0) return;
+
+  torch::Tensor new_verts =
+      vertices_.index({new_vertex_indices.to(torch::kLong)}).detach();
+  auto verts_cpu = new_verts.cpu().to(torch::kFloat64).contiguous();
+  Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor> verts_rm =
+      Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor>>(
+          verts_cpu.data_ptr<double>(), N, 3);
+  Eigen::MatrixXd eigen_verts = verts_rm;
+
+  it->second.insertPoints(eigen_verts);
+
+  std::cout << "[RDT-incr] Chunk " << chunk_id << ": inserted " << N
+            << " vertices (total " << it->second.numVertices() << ")"
+            << std::endl;
+}
+
+void TriangleModel::rebuildChunkMeshFromDelaunay(int64_t chunk_id,
+                                                  int current_iter) {
+  torch::NoGradGuard no_grad;
+
+  auto it = chunk_delaunay_.find(chunk_id);
+  if (it == chunk_delaunay_.end() || !it->second.isInitialized()) return;
+  auto map_it = chunk_delaunay_vert_map_.find(chunk_id);
+  if (map_it == chunk_delaunay_vert_map_.end()) return;
+
+  torch::Tensor chunk_mask = (triangle_chunk_ids_ == chunk_id);
+  int64_t T_chunk = chunk_mask.sum().item<int64_t>();
+  if (T_chunk == 0) return;
+
+  torch::Tensor chunk_faces =
+      triangle_indices_.index({torch::where(chunk_mask)[0]});
+
+  auto& vert_map = map_it->second;
+  int64_t V_del = static_cast<int64_t>(vert_map.size());
+
+  // Build vertex array using the Delaunay's vertex ordering
+  torch::Tensor global_indices = torch::tensor(
+      vert_map, torch::TensorOptions().dtype(torch::kLong)).to(device_type_);
+  torch::Tensor local_verts = vertices_.index({global_indices}).detach();
+
+  // Build reverse lookup: global vertex index → Delaunay local index
+  int64_t max_global = global_indices.max().item<int64_t>();
+  torch::Tensor reverse_map = torch::full(
+      {max_global + 1}, -1,
+      torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
+  reverse_map.index_put_(
+      {global_indices},
+      torch::arange(V_del, torch::TensorOptions().dtype(torch::kInt32)
+                                .device(device_type_)));
+  torch::Tensor local_faces =
+      reverse_map.index({chunk_faces.to(torch::kLong).reshape(-1)})
+          .reshape({T_chunk, 3});
+
+  // Torch → Eigen
+  auto verts_cpu = local_verts.cpu().to(torch::kFloat64).contiguous();
+  Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor> verts_rm =
+      Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor>>(
+          verts_cpu.data_ptr<double>(), V_del, 3);
+  Eigen::MatrixXd eigen_verts = verts_rm;
+
+  auto faces_cpu = local_faces.cpu().contiguous();
+  Eigen::Matrix<int, Eigen::Dynamic, 3, Eigen::RowMajor> faces_rm =
+      Eigen::Map<Eigen::Matrix<int, Eigen::Dynamic, 3, Eigen::RowMajor>>(
+          faces_cpu.data_ptr<int>(), T_chunk, 3);
+  Eigen::MatrixXi eigen_faces = faces_rm;
+
+  // Extract tets from the persistent Delaunay and run restriction
+  restricted_delaunay::DelaunayOut dt = it->second.extractTetsAndNeighbors();
+  auto [out_verts, out_faces] =
+      restricted_delaunay::run(dt, eigen_verts, eigen_faces);
+  int64_t T_new = out_faces.rows();
+
+  std::cout << "[RDT-incr] Chunk " << chunk_id << " rebuild: " << T_new
+            << " triangles (was " << T_chunk << ")" << std::endl;
+
+  // Eigen → Torch, remap Delaunay local → global
+  Eigen::Matrix<int, Eigen::Dynamic, 3, Eigen::RowMajor> faces_out_rm =
+      out_faces;
+  auto new_local_faces =
+      torch::from_blob(faces_out_rm.data(), {T_new, 3},
+                        torch::TensorOptions().dtype(torch::kInt32))
+          .clone()
+          .to(device_type_);
+
+  torch::Tensor new_global_faces = global_indices.to(torch::kInt32).index(
+      {new_local_faces.to(torch::kLong).reshape(-1)}).reshape({T_new, 3});
+
+  // Replace chunk's triangles
+  torch::Tensor keep_mask = ~chunk_mask;
+  torch::Tensor kept_faces_t = triangle_indices_.index({keep_mask});
+  torch::Tensor kept_exist = exist_since_iter_.index({keep_mask});
+  torch::Tensor kept_chunk_ids = triangle_chunk_ids_.index({keep_mask});
+  torch::Tensor kept_tri_ids = triangle_ids_.index({keep_mask});
+
+  torch::Tensor new_exist = torch::full(
+      {T_new}, current_iter,
+      torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
+  torch::Tensor new_chunk_ids = torch::full(
+      {T_new}, chunk_id,
+      torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
+  torch::Tensor new_tri_ids = torch::arange(
+      next_triangle_id_, next_triangle_id_ + T_new,
+      torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
+  next_triangle_id_ += T_new;
+
+  triangle_indices_ = torch::cat({kept_faces_t, new_global_faces}, 0);
+  exist_since_iter_ = torch::cat({kept_exist, new_exist}, 0);
+  triangle_chunk_ids_ = torch::cat({kept_chunk_ids, new_chunk_ids}, 0);
+  triangle_ids_ = torch::cat({kept_tri_ids, new_tri_ids}, 0);
+}
+
 void TriangleModel::applyScaledTransformation(const float s,
                                               const Sophus::SE3f T) {
   torch::NoGradGuard no_grad;

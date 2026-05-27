@@ -72,7 +72,8 @@ TriangleOptimizationParams::TriangleOptimizationParams(
     float opacity_floor_init,
     float opacity_floor_final,
     int rdt_iter,
-    bool enable_rdt)
+    bool enable_rdt,
+    int rdt_update_interval)
     : iterations_(iterations),
       auto_distribute_(auto_distribute),
       smooth_l1_(smooth_l1),
@@ -97,4 +98,5 @@ TriangleOptimizationParams::TriangleOptimizationParams(
       opacity_floor_init_(opacity_floor_init),
       opacity_floor_final_(opacity_floor_final),
       rdt_iter_(rdt_iter),
-      enable_rdt_(enable_rdt) {}
+      enable_rdt_(enable_rdt),
+      rdt_update_interval_(rdt_update_interval) {}

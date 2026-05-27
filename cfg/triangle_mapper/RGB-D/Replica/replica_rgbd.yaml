@@ -64,6 +64,7 @@ Optimization.opacity_floor_init: 0.1
 Optimization.opacity_floor_final: 0.9999
 Optimization.rdt_iter: 1800
 Optimization.enable_rdt: 1
+Optimization.rdt_update_interval: 800
 
 TriangleViewer.glfw_window_width: 1400
 TriangleViewer.glfw_window_height: 1050
