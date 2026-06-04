@@ -93,7 +93,12 @@ class TriangleOptimizationParams {
                              int rdt_update_interval = 0,
                              float lambda_vertex_depth = 0.0f,
                              float max_vertex_depth_diff = 0.5f,
-                             int vertex_depth_mode = 0);
+                             int vertex_depth_mode = 0,
+                             int subdivide_interval = 0,
+                             int subdivide_start_iter = 0,
+                             float subdivide_area_threshold = 0.0f,
+                             int subdivide_max_triangles = 500,
+                             float depth_prune_threshold = 0.0f);
 
   // Training settings
   int iterations_;       ///< Total number of optimization iterations.
@@ -137,4 +142,13 @@ class TriangleOptimizationParams {
   float lambda_vertex_depth_;
   float max_vertex_depth_diff_;
   int vertex_depth_mode_;         ///< 0=off, 1=GT depth, 2=rendered depth.
+
+  // Depth-based pruning
+  float depth_prune_threshold_;   ///< Prune vertices with depth error above this (meters). 0 = disabled.
+
+  // Midpoint subdivision
+  int subdivide_interval_ = 0;
+  int subdivide_start_iter_ = 0;
+  float subdivide_area_threshold_ = 0.0f;
+  int subdivide_max_triangles_ = 500;
 };

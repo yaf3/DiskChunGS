@@ -398,6 +398,16 @@ class TriangleModel {
                                 const torch::Tensor& visible_triangle_mask,
                                 const torch::Tensor& full_model_scaling);
 
+  void pruneDepthInconsistent(std::shared_ptr<TriangleKeyframe> pkf,
+                              const torch::Tensor& visible_triangle_mask,
+                              const torch::Tensor& gt_inv_depth,
+                              const torch::Tensor& view_matrix,
+                              float threshold,
+                              const torch::Tensor& depth_confidence = {},
+                              const torch::Tensor& rendered_inv_depth = {});
+
+  void subdivideMidpoint(const torch::Tensor& triangle_mask, int current_iter);
+
   //============================================================================
   // Point Management
   //============================================================================

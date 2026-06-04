@@ -827,9 +827,10 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
     penalty = computeLoGProbability(rendered_image);
   }
 
-  // Apply scaling factor and compute sampling probability
+  // Apply scaling factor and uniform floor for mesh coverage
   init_proba *= init_proba_scaler_;
   penalty *= init_proba_scaler_;
+  init_proba = torch::clamp_min(init_proba, uniform_sampling_floor_);
 
   // Generate initial sample mask based on probability
   torch::Tensor sample_mask =
@@ -976,6 +977,7 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
                                       true);
     }
   }
+
 
   // Early exit if no samples remain
   if (depth.size(0) == 0) {
@@ -1164,10 +1166,10 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
 
   int num_sampled = sampled_points3D.size(0);
 
-  // Initial opacities match original triangle-splatting set_opacity = 0.28
-  constexpr float kAccurateOpacity = 0.28f;
-  constexpr float kInaccurateOpacity = 0.14f;
-  constexpr float kMatchedOpacity = 0.28f;
+  float floor = triangles_->opacity_floor_;
+  float kAccurateOpacity = std::max(0.28f, floor);
+  float kInaccurateOpacity = std::max(0.14f, floor);
+  float kMatchedOpacity = std::max(0.28f, floor);
 
   if (num_sampled > 0) {
     torch::Tensor sampled_accurate_opacity =

@@ -362,6 +362,8 @@ class TriangleMapper {
   /** @brief Export all triangles to a COFF mesh file (mesh.off) in scene_dir. */
   void exportToOFF(std::filesystem::path scene_dir);
 
+  void finalDepthPrune();
+
   /**
    * @brief Load complete scene from disk
    * @param scene_dir Directory containing scene data
@@ -579,6 +581,7 @@ class TriangleMapper {
   // Sampling parameters
   int exposure_optimization_ = 0;
   float init_proba_scaler_ = 2.0;
+  float uniform_sampling_floor_ = 0.02f;
   bool downsample_for_sampling_ = false;
   int init_strategy_ = 0;  ///< 0=normal-based, 1=camera-facing, 2=fibonacci
 

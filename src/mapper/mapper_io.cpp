@@ -412,6 +412,101 @@ void TriangleMapper::writeTrainingMetricsCSV(std::filesystem::path result_dir) {
             << result_dir / "training_metrics.csv" << std::endl;
 }
 
+void TriangleMapper::finalDepthPrune() {
+  torch::NoGradGuard no_grad;
+  float threshold = opt_params_.depth_prune_threshold_;
+  int64_t V;
+  torch::Tensor bad_count, seen_count;
+
+  // Load all keyframes first to avoid chunk loading changing vertex count mid-loop
+  for (const auto& [kfid, pkf] : scene_->keyframes()) {
+    if (!pkf->loaded_) pkf->loadDataFromDisk();
+  }
+
+  V = triangles_->vertices_.size(0);
+  bad_count = torch::zeros({V}, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA));
+  seen_count = torch::zeros({V}, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA));
+
+  for (const auto& [kfid, pkf] : scene_->keyframes()) {
+    if (!pkf->gaus_pyramid_inv_depth_image_.empty() &&
+        pkf->gaus_pyramid_inv_depth_image_[0].defined()) {
+
+      torch::Tensor gt_inv_depth = pkf->gaus_pyramid_inv_depth_image_[0].cuda();
+      gt_inv_depth = gt_inv_depth * pkf->depth_scale_ + pkf->depth_bias_;
+      torch::Tensor view_matrix = pkf->getRT().transpose(0, 1);
+
+      float fx = pkf->intr_[0], fy = pkf->intr_[1];
+      float cx = pkf->intr_[2], cy = pkf->intr_[3];
+      int H = pkf->image_height_, W = pkf->image_width_;
+
+      torch::Tensor verts = triangles_->vertices_;
+      int64_t Vk = verts.size(0);
+      if (Vk != V) {
+        V = Vk;
+        bad_count = torch::zeros({V}, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA));
+        seen_count = torch::zeros({V}, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA));
+      }
+      torch::Tensor ones = torch::ones({V, 1}, verts.options());
+      torch::Tensor verts_view = torch::cat({verts, ones}, 1).mm(view_matrix);
+      torch::Tensor vz = verts_view.select(1, 2);
+      torch::Tensor px = (verts_view.select(1, 0) / vz) * fx + cx;
+      torch::Tensor py = (verts_view.select(1, 1) / vz) * fy + cy;
+
+      torch::Tensor inside = (px >= 0) & (px < W) & (py >= 0) & (py < H) & (vz > 0);
+      if (!inside.any().item<bool>()) {
+          continue;
+      }
+
+      torch::Tensor xi = torch::clamp(torch::round(px.index({inside})).to(torch::kLong), 0, W - 1);
+      torch::Tensor yi = torch::clamp(torch::round(py.index({inside})).to(torch::kLong), 0, H - 1);
+      torch::Tensor vz_k = vz.index({inside});
+
+      torch::Tensor sampled_inv = gt_inv_depth.squeeze(0).index({yi, xi});
+      torch::Tensor valid = (sampled_inv > 0) & torch::isfinite(sampled_inv);
+
+      if (valid.any().item<bool>()) {
+        torch::Tensor ref_depth = 1.0f / sampled_inv.index({valid});
+        torch::Tensor v_depth = vz_k.index({valid});
+        torch::Tensor bad = torch::abs(ref_depth - v_depth) > threshold;
+
+        torch::Tensor inside_idx = torch::where(inside)[0];
+        torch::Tensor valid_idx = torch::where(valid)[0];
+
+        // All valid vertices are "seen"
+        torch::Tensor seen_verts = inside_idx.index({valid_idx});
+        seen_count.index_put_({seen_verts}, seen_count.index({seen_verts}) + 1);
+
+        if (bad.any().item<bool>()) {
+          torch::Tensor bad_verts = inside_idx.index({valid_idx.index({torch::where(bad)[0]})});
+          bad_count.index_put_({bad_verts}, bad_count.index({bad_verts}) + 1);
+        }
+      }
+
+    }
+  }
+
+  // Prune vertices that were bad from every view that saw them (and seen >= 2)
+  torch::Tensor prune_verts = (seen_count >= 2) & (bad_count == seen_count);
+  int n_bad_verts = prune_verts.sum().item<int>();
+  if (n_bad_verts == 0) {
+    std::cout << "[FinalDepthPrune] No vertices to prune" << std::endl;
+    return;
+  }
+
+  torch::Tensor tri_idx = triangles_->triangle_indices_.to(torch::kLong);
+  torch::Tensor tri_v0 = prune_verts.index({tri_idx.select(1, 0)});
+  torch::Tensor tri_v1 = prune_verts.index({tri_idx.select(1, 1)});
+  torch::Tensor tri_v2 = prune_verts.index({tri_idx.select(1, 2)});
+  torch::Tensor prune_mask = tri_v0 | tri_v1 | tri_v2;
+
+  int n_pruned = prune_mask.sum().item<int>();
+  std::cout << "[FinalDepthPrune] Removing " << n_pruned
+            << " triangles (" << n_bad_verts << " bad vertices)" << std::endl;
+  if (n_pruned > 0) {
+    triangles_->prunePoints(prune_mask);
+  }
+}
+
 void TriangleMapper::exportToOFF(std::filesystem::path scene_dir) {
   torch::NoGradGuard no_grad;
 
@@ -496,6 +591,9 @@ bool TriangleMapper::saveScene(std::filesystem::path scene_dir) {
   std::cout << "Scene saved to " << scene_dir << std::endl;
 
   if (record_save_off_) {
+    if (opt_params_.depth_prune_threshold_ > 0.0f) {
+      finalDepthPrune();
+    }
     exportToOFF(scene_dir);
   }
 

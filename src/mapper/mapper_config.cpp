@@ -72,6 +72,8 @@ void TriangleMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       readConfig<int>(settings_file, "Model.max_vertices_in_memory");
   init_proba_scaler_ =
       readConfig<float>(settings_file, "Model.init_proba_scaler");
+  uniform_sampling_floor_ =
+      readConfig<float>(settings_file, "Model.uniform_sampling_floor");
   downsample_for_sampling_ =
       readConfigBool(settings_file, "Model.downsample_for_sampling");
   init_strategy_ = readConfig<int>(settings_file, "Model.init_strategy");
@@ -206,6 +208,18 @@ void TriangleMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       readConfig<float>(settings_file, "Optimization.max_vertex_depth_diff");
   opt_params_.vertex_depth_mode_ =
       readConfig<int>(settings_file, "Optimization.vertex_depth_mode");
+
+  // Midpoint subdivision
+  opt_params_.subdivide_interval_ =
+      readConfig<int>(settings_file, "Optimization.subdivide_interval");
+  opt_params_.subdivide_start_iter_ =
+      readConfig<int>(settings_file, "Optimization.subdivide_start_iter");
+  opt_params_.subdivide_area_threshold_ =
+      readConfig<float>(settings_file, "Optimization.subdivide_area_threshold");
+  opt_params_.subdivide_max_triangles_ =
+      readConfig<int>(settings_file, "Optimization.subdivide_max_triangles");
+  opt_params_.depth_prune_threshold_ =
+      readConfig<float>(settings_file, "Optimization.depth_prune_threshold");
 
   // ========== Viewer Parameters ==========
   rendered_image_viewer_scale_ =

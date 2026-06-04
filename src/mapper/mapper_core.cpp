@@ -292,6 +292,7 @@ void TriangleMapper::trainForOneIteration() {
                                viewpoint_cam->FoVx_, viewpoint_cam->FoVy_,
                                view_matrix, viewpoint_cam->full_proj_transform_);
 
+  torch::Tensor rendered_inv_depth_full = std::get<0>(render_pkg);
   torch::Tensor rendered_image = std::get<1>(render_pkg);
   torch::Tensor radii = std::get<2>(render_pkg);
   torch::Tensor full_model_scaling = std::get<4>(render_pkg);
@@ -315,9 +316,8 @@ void TriangleMapper::trainForOneIteration() {
   // Calculate depth loss if gt depth exists
   if (gt_inv_depth.defined()) {
     float lambda_depth = lambdaDepth();
-    torch::Tensor rendered_inv_depth = std::get<0>(render_pkg);
     torch::Tensor depth_loss =
-        ((rendered_inv_depth - gt_inv_depth).abs() * depth_conf).mean();
+        ((rendered_inv_depth_full - gt_inv_depth).abs() * depth_conf).mean();
     loss += lambda_depth * depth_loss;
   }
 
@@ -390,10 +390,8 @@ void TriangleMapper::trainForOneIteration() {
         torch::Tensor v_depth = vz_k.index({valid});
         torch::Tensor diffs = (v_depth - ref_depth).abs();
         float max_diff = maxVertexDepthDiff();
-        torch::Tensor use = diffs < max_diff;
-        if (use.any().item<bool>()) {
-          loss += lambda_vd * diffs.index({use}).mean();
-        }
+        torch::Tensor clamped = torch::clamp(diffs, 0.0f, max_diff);
+        loss += lambda_vd * clamped.mean();
       }
     }
   }
@@ -472,6 +470,13 @@ void TriangleMapper::trainForOneIteration() {
             age >= op.rdt_iter_ &&
             op.rdt_update_interval_ > 0 &&
             (age - op.rdt_iter_) % op.rdt_update_interval_ == 0) {
+          if (op.depth_prune_threshold_ > 0.0f && gt_inv_depth.defined()) {
+            auto fresh_mask = triangles_->cullVisibleTriangles(viewpoint_cam);
+            triangles_->pruneDepthInconsistent(
+                viewpoint_cam, fresh_mask, gt_inv_depth,
+                view_matrix, op.depth_prune_threshold_,
+                viewpoint_cam->depth_confidence_);
+          }
           triangles_->initChunkDelaunay(cid);
           triangles_->rebuildChunkMeshFromDelaunay(cid, current_iteration);
         }
@@ -480,15 +485,27 @@ void TriangleMapper::trainForOneIteration() {
 
     // Pruning: only if any visible chunk hasn't completed RDT yet
     if (any_chunk_pre_rdt && !loop_closure_iteration_ &&
-        current_iteration % 10 == 0) {
+        current_iteration % 10 == 0 &&
+        full_model_scaling.size(0) == triangles_->triangle_indices_.size(0)) {
+      auto fresh_vis_mask = triangles_->cullVisibleTriangles(viewpoint_cam);
       triangles_->pruneLowWeightTriangles(
-          viewpoint_cam, visible_triangle_mask, full_model_scaling);
+          viewpoint_cam, fresh_vis_mask, full_model_scaling);
+    }
+
+    // Depth-based pruning: remove triangles whose vertices are far from GT depth
+    if (op.depth_prune_threshold_ > 0.0f && gt_inv_depth.defined() &&
+        !loop_closure_iteration_ && current_iteration % 50 == 0) {
+      auto fresh_mask = triangles_->cullVisibleTriangles(viewpoint_cam);
+      triangles_->pruneDepthInconsistent(
+          viewpoint_cam, fresh_mask, gt_inv_depth,
+          view_matrix, op.depth_prune_threshold_,
+          viewpoint_cam->depth_confidence_,
+          rendered_inv_depth_full);
     }
 
     // Opacity floor schedule: driven by min chunk age across visible chunks
     if (min_chunk_age >= op.opacity_floor_start_iter_ &&
-        min_chunk_age <= op.opacity_floor_end_iter_ &&
-        current_iteration % 500 == 0) {
+        min_chunk_age <= op.opacity_floor_end_iter_) {
       float t = static_cast<float>(min_chunk_age - op.opacity_floor_start_iter_) /
                 static_cast<float>(std::max(
                     1, op.opacity_floor_end_iter_ - op.opacity_floor_start_iter_));
@@ -497,6 +514,60 @@ void TriangleMapper::trainForOneIteration() {
           op.opacity_floor_init_ +
           (op.opacity_floor_final_ - op.opacity_floor_init_) * t;
       triangles_->updateOpacityFloor(new_floor);
+    }
+
+    // Midpoint subdivision for mature chunks
+    if (op.subdivide_interval_ > 0 && !loop_closure_iteration_ &&
+        vis_ids.defined() && vis_ids.size(0) > 0) {
+      auto ids_cpu = vis_ids.cpu();
+      auto acc = ids_cpu.accessor<int64_t, 1>();
+      for (int64_t i = 0; i < ids_cpu.size(0); i++) {
+        int64_t cid = acc[i];
+        int age = triangles_->getChunkOptCount(cid);
+        if (age >= op.subdivide_start_iter_ &&
+            (age - op.subdivide_start_iter_) % op.subdivide_interval_ == 0) {
+          // Select triangles in this chunk
+          torch::Tensor chunk_mask =
+              (triangles_->triangle_chunk_ids_ == cid);
+          int64_t chunk_tri_count = chunk_mask.sum().item<int64_t>();
+          if (chunk_tri_count == 0) continue;
+
+          // Compute triangle areas
+          torch::Tensor chunk_tri_idx =
+              triangles_->triangle_indices_.index({chunk_mask}).to(torch::kLong);
+          torch::Tensor v0 = triangles_->vertices_.index({chunk_tri_idx.select(1, 0)});
+          torch::Tensor v1 = triangles_->vertices_.index({chunk_tri_idx.select(1, 1)});
+          torch::Tensor v2 = triangles_->vertices_.index({chunk_tri_idx.select(1, 2)});
+          torch::Tensor areas =
+              0.5f * torch::norm(torch::cross(v1 - v0, v2 - v0, 1), 2, 1);
+
+          // Select by area threshold
+          torch::Tensor eligible = areas > op.subdivide_area_threshold_;
+          int64_t num_eligible = eligible.sum().item<int64_t>();
+          if (num_eligible == 0) continue;
+
+          // Cap to max triangles: take the largest eligible ones
+          int64_t num_to_subdivide =
+              std::min(num_eligible, (int64_t)op.subdivide_max_triangles_);
+          torch::Tensor eligible_areas = areas.index({eligible});
+          torch::Tensor topk_vals, topk_idx;
+          std::tie(topk_vals, topk_idx) =
+              eligible_areas.topk(num_to_subdivide, 0, true, false);
+
+          // Map back to full model mask
+          torch::Tensor chunk_indices = torch::where(chunk_mask)[0];
+          torch::Tensor eligible_indices = chunk_indices.index({eligible});
+          torch::Tensor selected_full_indices = eligible_indices.index({topk_idx});
+
+          torch::Tensor subdivide_mask = torch::zeros(
+              {triangles_->triangle_indices_.size(0)},
+              torch::TensorOptions().dtype(torch::kBool)
+                  .device(triangles_->device_type_));
+          subdivide_mask.index_put_({selected_full_indices}, true);
+
+          triangles_->subdivideMidpoint(subdivide_mask, current_iteration);
+        }
+      }
     }
   }
 

@@ -110,7 +110,10 @@ TriangleRenderer::render(std::shared_ptr<TriangleModel> model,
   auto scaling_visible = std::get<4>(rasterizer_result);
   auto rend_normal = std::get<5>(rasterizer_result);
 
-  auto rendered_inv_depth = 1.0f / rendered_depth.clamp_min(1e-8f);
+  auto rendered_inv_depth = torch::where(
+      rendered_depth > 1e-6f,
+      1.0f / rendered_depth,
+      torch::zeros_like(rendered_depth));
 
   int64_t N = triangle_indices.size(0);
   auto scaling = torch::zeros(
