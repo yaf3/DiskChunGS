@@ -81,7 +81,8 @@ TriangleOptimizationParams::TriangleOptimizationParams(
     int subdivide_start_iter,
     float subdivide_area_threshold,
     int subdivide_max_triangles,
-    float depth_prune_threshold)
+    float depth_prune_threshold,
+    int depth_prune_interval)
     : iterations_(iterations),
       auto_distribute_(auto_distribute),
       smooth_l1_(smooth_l1),
@@ -115,4 +116,5 @@ TriangleOptimizationParams::TriangleOptimizationParams(
       subdivide_start_iter_(subdivide_start_iter),
       subdivide_area_threshold_(subdivide_area_threshold),
       subdivide_max_triangles_(subdivide_max_triangles),
-      depth_prune_threshold_(depth_prune_threshold) {}
+      depth_prune_threshold_(depth_prune_threshold),
+      depth_prune_interval_(depth_prune_interval) {}

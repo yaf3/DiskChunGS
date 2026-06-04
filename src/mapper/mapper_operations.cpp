@@ -978,6 +978,32 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
     }
   }
 
+  // Depth agreement: reject samples whose depth disagrees with GT depth (relative threshold)
+  if (depth_agreement_threshold_ > 0.0f && depth.size(0) > 0 &&
+      pkf->gaus_pyramid_inv_depth_image_[0].defined()) {
+    torch::Tensor gt_depth_map =
+        1.0f / pkf->gaus_pyramid_inv_depth_image_[0].clamp_min(1e-8f);
+    torch::Tensor flat_idx =
+        sampled_uv.select(1, 1) * pkf->image_width_ + sampled_uv.select(1, 0);
+    torch::Tensor gt_depth_sampled =
+        gt_depth_map.flatten().index({flat_idx.to(torch::kLong)});
+    torch::Tensor gt_valid = gt_depth_sampled > 1e-6f;
+    torch::Tensor agree = torch::abs(depth - gt_depth_sampled) <=
+                          depth_agreement_threshold_ * gt_depth_sampled;
+    torch::Tensor keep = agree | ~gt_valid;
+
+    depth = depth.index({keep});
+    sampled_uv = sampled_uv.index({keep});
+    accurate_mask = accurate_mask.index({keep});
+
+    sample_mask.fill_(false);
+    if (depth.size(0) > 0) {
+      torch::Tensor final_flat_indices =
+          sampled_uv.select(1, 1) * pkf->image_width_ + sampled_uv.select(1, 0);
+      sample_mask.view(-1).index_put_({final_flat_indices.to(torch::kLong)},
+                                      true);
+    }
+  }
 
   // Early exit if no samples remain
   if (depth.size(0) == 0) {

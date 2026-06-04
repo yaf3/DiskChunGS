@@ -582,6 +582,7 @@ class TriangleMapper {
   int exposure_optimization_ = 0;
   float init_proba_scaler_ = 2.0;
   float uniform_sampling_floor_ = 0.02f;
+  float depth_agreement_threshold_ = 0.0f;
   bool downsample_for_sampling_ = false;
   int init_strategy_ = 0;  ///< 0=normal-based, 1=camera-facing, 2=fibonacci
 

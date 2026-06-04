@@ -5,6 +5,7 @@ Model.sh_degree: 3
 Model.max_vertices_in_memory: 1500000
 Model.init_proba_scaler: 1.0
 Model.uniform_sampling_floor: 0.02
+Model.depth_agreement_threshold: 0.0
 Model.downsample_for_sampling: 0
 Model.init_strategy: 0  # 0:normal-based, 1:camera-facing, 2:fibonacci
 
@@ -74,6 +75,7 @@ Optimization.subdivide_start_iter: 1000
 Optimization.subdivide_area_threshold: 0.001
 Optimization.subdivide_max_triangles: 500
 Optimization.depth_prune_threshold: 0.0
+Optimization.depth_prune_interval: 50
 
 TriangleViewer.glfw_window_width: 1400
 TriangleViewer.glfw_window_height: 1050

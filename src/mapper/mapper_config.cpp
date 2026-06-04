@@ -74,6 +74,8 @@ void TriangleMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       readConfig<float>(settings_file, "Model.init_proba_scaler");
   uniform_sampling_floor_ =
       readConfig<float>(settings_file, "Model.uniform_sampling_floor");
+  depth_agreement_threshold_ =
+      readConfig<float>(settings_file, "Model.depth_agreement_threshold");
   downsample_for_sampling_ =
       readConfigBool(settings_file, "Model.downsample_for_sampling");
   init_strategy_ = readConfig<int>(settings_file, "Model.init_strategy");
@@ -220,6 +222,8 @@ void TriangleMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       readConfig<int>(settings_file, "Optimization.subdivide_max_triangles");
   opt_params_.depth_prune_threshold_ =
       readConfig<float>(settings_file, "Optimization.depth_prune_threshold");
+  opt_params_.depth_prune_interval_ =
+      readConfig<int>(settings_file, "Optimization.depth_prune_interval");
 
   // ========== Viewer Parameters ==========
   rendered_image_viewer_scale_ =

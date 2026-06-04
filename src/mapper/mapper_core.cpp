@@ -475,7 +475,8 @@ void TriangleMapper::trainForOneIteration() {
             triangles_->pruneDepthInconsistent(
                 viewpoint_cam, fresh_mask, gt_inv_depth,
                 view_matrix, op.depth_prune_threshold_,
-                viewpoint_cam->depth_confidence_);
+                viewpoint_cam->depth_confidence_,
+                rendered_inv_depth_full);
           }
           triangles_->initChunkDelaunay(cid);
           triangles_->rebuildChunkMeshFromDelaunay(cid, current_iteration);
@@ -494,7 +495,8 @@ void TriangleMapper::trainForOneIteration() {
 
     // Depth-based pruning: remove triangles whose vertices are far from GT depth
     if (op.depth_prune_threshold_ > 0.0f && gt_inv_depth.defined() &&
-        !loop_closure_iteration_ && current_iteration % 50 == 0) {
+        !loop_closure_iteration_ && op.depth_prune_interval_ > 0 &&
+        current_iteration % op.depth_prune_interval_ == 0) {
       auto fresh_mask = triangles_->cullVisibleTriangles(viewpoint_cam);
       triangles_->pruneDepthInconsistent(
           viewpoint_cam, fresh_mask, gt_inv_depth,

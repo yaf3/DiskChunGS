@@ -3,8 +3,9 @@
 Model.white_background: 0  # 0:false, 1 or other integer:true
 Model.sh_degree: 0
 Model.max_vertices_in_memory: 2000000
-Model.init_proba_scaler: 0.5
-Model.uniform_sampling_floor: 0.0
+Model.init_proba_scaler: 0.2
+Model.uniform_sampling_floor: 0.05
+Model.depth_agreement_threshold: 0.01
 Model.downsample_for_sampling: 0
 Model.init_strategy: 0  # 0:normal-based, 1:camera-facing, 2:fibonacci
 
@@ -63,17 +64,18 @@ Optimization.opacity_floor_start_iter: 2000
 Optimization.opacity_floor_end_iter: 4000
 Optimization.opacity_floor_init: 0.7
 Optimization.opacity_floor_final: 0.9999
-Optimization.rdt_iter: 1000
+Optimization.rdt_iter: 2000
 Optimization.enable_rdt: 1
-Optimization.rdt_update_interval: 800
+Optimization.rdt_update_interval: 1200
 Optimization.lambda_vertex_depth: 0.1
 Optimization.max_vertex_depth_diff: 0.1
 Optimization.vertex_depth_mode: 1
 Optimization.subdivide_interval: 20000
 Optimization.subdivide_start_iter: 0
 Optimization.subdivide_area_threshold: 0.01
-Optimization.subdivide_max_triangles: 100
-Optimization.depth_prune_threshold: 0.05
+Optimization.subdivide_max_triangles: 0
+Optimization.depth_prune_threshold: 0.10
+Optimization.depth_prune_interval: 500
 
 TriangleViewer.glfw_window_width: 1400
 TriangleViewer.glfw_window_height: 1050

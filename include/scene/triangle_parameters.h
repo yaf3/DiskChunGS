@@ -98,7 +98,8 @@ class TriangleOptimizationParams {
                              int subdivide_start_iter = 0,
                              float subdivide_area_threshold = 0.0f,
                              int subdivide_max_triangles = 500,
-                             float depth_prune_threshold = 0.0f);
+                             float depth_prune_threshold = 0.0f,
+                             int depth_prune_interval = 50);
 
   // Training settings
   int iterations_;       ///< Total number of optimization iterations.
@@ -145,6 +146,7 @@ class TriangleOptimizationParams {
 
   // Depth-based pruning
   float depth_prune_threshold_;   ///< Prune vertices with depth error above this (meters). 0 = disabled.
+  int depth_prune_interval_ = 50;
 
   // Midpoint subdivision
   int subdivide_interval_ = 0;
