@@ -434,6 +434,13 @@ class TriangleModel {
                  const torch::Tensor& cam_center = {},
                  const torch::Tensor& normals = {});
 
+  void addMeshedPoints(const torch::Tensor& vertices,
+                       const torch::Tensor& triangle_indices,
+                       const torch::Tensor& colors,
+                       const torch::Tensor& opacities,
+                       int iteration,
+                       float spatial_lr_scale);
+
   /**
    * @brief Initializes the model with the first set of points.
    * @param initial_xyz Point positions [N, 3].

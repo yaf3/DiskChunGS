@@ -669,9 +669,13 @@ void TriangleMapper::createAndInitializeKeyframe(
 
   pkf->loaded_ = true;
 
-  // Sample triangles (requires render lock)
+  // Add geometry from new keyframe (requires render lock)
   std::unique_lock<std::mutex> lock_render(mutex_render_);
-  sampleTriangles(pkf);
+  if (depth_mesh_stride_ > 0 && sensor_type_ == RGBD) {
+    meshDepthMap(pkf);
+  } else {
+    sampleTriangles(pkf);
+  }
 
   pkf->allow_eviction_ = true;
 }
@@ -1250,4 +1254,158 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
   for (const auto &kf : newly_loaded_keyframes) {
     kf->saveDataToDisk();
   }
+}
+
+void TriangleMapper::meshDepthMap(std::shared_ptr<TriangleKeyframe> pkf) {
+  torch::NoGradGuard no_grad;
+
+  if (!pkf->loaded_) {
+    pkf->loadDataFromDisk();
+  }
+
+  int H = pkf->image_height_;
+  int W = pkf->image_width_;
+  int S = depth_mesh_stride_;
+  float disc_thresh = depth_mesh_disc_threshold_;
+
+  // Get GT depth map (RGBD only)
+  assert(pkf->gaus_pyramid_inv_depth_image_[0].defined());
+  torch::Tensor depth_map =
+      (1.0f / pkf->gaus_pyramid_inv_depth_image_[0].clamp_min(1e-8f))
+          .squeeze(0);  // [H, W]
+
+  // Render existing mesh for coverage detection
+  torch::Tensor uncovered;
+  if (initial_mapped_) {
+    auto visible_mask = triangles_->cullVisibleTriangles(pkf);
+    torch::Tensor view_matrix = pkf->getRT().transpose(0, 1);
+    auto render_pkg = TriangleRenderer::render(
+        triangles_, visible_mask, pkf, H, W, pipe_params_, background_,
+        override_color_, 1.0f, false, pkf->FoVx_, pkf->FoVy_, view_matrix,
+        pkf->full_proj_transform_);
+    torch::Tensor rendered_inv_depth = std::get<0>(render_pkg);
+    uncovered = (rendered_inv_depth.squeeze() < 1e-6f);  // [H, W]
+  } else {
+    uncovered = torch::ones({H, W}, torch::kBool).cuda();
+  }
+
+  // Build grid positions at stride S over uncovered pixels
+  int grid_h = (H + S - 1) / S;
+  int grid_w = (W + S - 1) / S;
+
+  auto depth_cpu = depth_map.cpu();
+  auto uncov_cpu = uncovered.cpu();
+  auto depth_acc = depth_cpu.accessor<float, 2>();
+  auto uncov_acc = uncov_cpu.accessor<bool, 2>();
+
+  // Grid of vertex indices: -1 means invalid (no vertex at this grid cell)
+  std::vector<int> grid_vertex_id(grid_h * grid_w, -1);
+  std::vector<float> vert_positions;  // flattened x, y, z in camera space
+  std::vector<float> vert_uvs;        // pixel u, v for color/normal sampling
+  std::vector<float> vert_depths;
+  int n_verts = 0;
+
+  float fx = pkf->intr_[0], fy = pkf->intr_[1];
+  float cx = pkf->intr_[2], cy = pkf->intr_[3];
+
+  for (int gy = 0; gy < grid_h; gy++) {
+    for (int gx = 0; gx < grid_w; gx++) {
+      int py = std::min(gy * S, H - 1);
+      int px = std::min(gx * S, W - 1);
+
+      if (!uncov_acc[py][px]) continue;
+      float d = depth_acc[py][px];
+      if (d <= 1e-6f || !std::isfinite(d)) continue;
+
+      grid_vertex_id[gy * grid_w + gx] = n_verts;
+      float cam_x = (static_cast<float>(px) - cx) * d / fx;
+      float cam_y = (static_cast<float>(py) - cy) * d / fy;
+      vert_positions.push_back(cam_x);
+      vert_positions.push_back(cam_y);
+      vert_positions.push_back(d);
+      vert_uvs.push_back(static_cast<float>(px));
+      vert_uvs.push_back(static_cast<float>(py));
+      vert_depths.push_back(d);
+      n_verts++;
+    }
+  }
+
+  if (n_verts < 3) return;
+
+  // Generate grid triangles with depth discontinuity culling
+  std::vector<int32_t> tri_indices;
+  for (int gy = 0; gy < grid_h - 1; gy++) {
+    for (int gx = 0; gx < grid_w - 1; gx++) {
+      int id_tl = grid_vertex_id[gy * grid_w + gx];
+      int id_tr = grid_vertex_id[gy * grid_w + gx + 1];
+      int id_bl = grid_vertex_id[(gy + 1) * grid_w + gx];
+      int id_br = grid_vertex_id[(gy + 1) * grid_w + gx + 1];
+
+      // Check each edge for depth discontinuity
+      auto depth_ok = [&](int a, int b) -> bool {
+        if (a < 0 || b < 0) return false;
+        float da = vert_depths[a], db = vert_depths[b];
+        float ratio = (da > db) ? da / db : db / da;
+        return ratio < disc_thresh;
+      };
+
+      // Upper-left triangle: tl-tr-bl
+      if (depth_ok(id_tl, id_tr) && depth_ok(id_tl, id_bl) &&
+          depth_ok(id_tr, id_bl)) {
+        tri_indices.push_back(id_tl);
+        tri_indices.push_back(id_tr);
+        tri_indices.push_back(id_bl);
+      }
+      // Lower-right triangle: tr-br-bl
+      if (depth_ok(id_tr, id_br) && depth_ok(id_tr, id_bl) &&
+          depth_ok(id_br, id_bl)) {
+        tri_indices.push_back(id_tr);
+        tri_indices.push_back(id_br);
+        tri_indices.push_back(id_bl);
+      }
+    }
+  }
+
+  int n_tris = static_cast<int>(tri_indices.size()) / 3;
+  if (n_tris == 0) return;
+
+  // Build tensors on GPU
+  torch::Tensor verts_cam = torch::from_blob(
+      vert_positions.data(), {n_verts, 3},
+      torch::TensorOptions().dtype(torch::kFloat32))
+      .clone().cuda();
+
+  torch::Tensor triangle_idx = torch::from_blob(
+      tri_indices.data(), {n_tris, 3},
+      torch::TensorOptions().dtype(torch::kInt32))
+      .clone().cuda();
+
+  // Transform vertices to world space
+  Sophus::SE3f Twc = pkf->getPosef().inverse();
+  torch::Tensor Twc_tensor =
+      tensor_utils::EigenMatrix2TorchTensor(Twc.matrix(), device_type_)
+          .transpose(0, 1);
+  transformPoints(verts_cam, Twc_tensor);
+
+  // Sample colors from RGB image
+  torch::Tensor uv_tensor = torch::from_blob(
+      vert_uvs.data(), {n_verts, 2},
+      torch::TensorOptions().dtype(torch::kFloat32))
+      .clone().cuda();
+
+  torch::Tensor rgb = pkf->gaus_pyramid_original_image_[0];  // [3, H, W]
+  torch::Tensor u_l = uv_tensor.select(1, 0).to(torch::kLong);
+  torch::Tensor v_l = uv_tensor.select(1, 1).to(torch::kLong);
+  torch::Tensor colors =
+      rgb.permute({1, 2, 0}).index({v_l, u_l});  // [V, 3]
+
+  // Set uniform opacity
+  float floor = triangles_->opacity_floor_;
+  float init_opacity = std::max(0.28f, floor);
+  torch::Tensor opacities = general_utils::inverse_sigmoid(
+      torch::full({n_verts, 1}, init_opacity,
+                  torch::TensorOptions().device(device_type_)));
+
+  triangles_->addMeshedPoints(verts_cam, triangle_idx, colors, opacities,
+                              getIteration(), scene_->cameras_extent_);
 }

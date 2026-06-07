@@ -826,6 +826,91 @@ void TriangleModel::appendPoints(const torch::Tensor& new_xyzs,
                        new_chunk_ids, new_position_lrs, new_triangle_ids);
 }
 
+void TriangleModel::addMeshedPoints(const torch::Tensor& vertices,
+                                    const torch::Tensor& triangle_indices,
+                                    const torch::Tensor& colors,
+                                    const torch::Tensor& opacities,
+                                    int iteration,
+                                    float spatial_lr_scale) {
+  torch::NoGradGuard no_grad;
+  int64_t V = vertices.size(0);
+  int64_t T = triangle_indices.size(0);
+  if (V == 0 || T == 0) return;
+
+  torch::Tensor fused_colors = sh_utils::RGB2SH(colors);
+  auto temp = this->sh_degree_ + 1;
+  torch::Tensor features = torch::zeros(
+      {V, 3, temp * temp},
+      torch::TensorOptions().dtype(torch::kFloat).device(device_type_));
+  features.index({torch::indexing::Slice(), torch::indexing::Slice(0, 3), 0}) =
+      fused_colors;
+
+  auto new_features_dc =
+      features
+          .index({torch::indexing::Slice(), torch::indexing::Slice(),
+                  torch::indexing::Slice(0, 1)})
+          .transpose(1, 2)
+          .contiguous();
+  auto new_features_rest =
+      features
+          .index({torch::indexing::Slice(), torch::indexing::Slice(),
+                  torch::indexing::Slice(1, features.size(2))})
+          .transpose(1, 2)
+          .contiguous();
+
+  torch::Tensor new_vert_weights = opacities;
+  torch::Tensor new_position_lrs =
+      torch::full({V}, position_lr_init_,
+                  torch::TensorOptions().device(device_type_));
+
+  torch::Tensor new_exist_since_iter = torch::full(
+      {T}, iteration,
+      torch::TensorOptions().dtype(torch::kInt32).device(device_type_));
+
+  torch::Tensor new_triangle_ids = torch::arange(
+      next_triangle_id_, next_triangle_id_ + T,
+      torch::TensorOptions().dtype(torch::kInt64).device(device_type_));
+  next_triangle_id_ += T;
+
+  // Chunk IDs from triangle centroids
+  auto verts_cpu = vertices.detach();
+  auto idx_long = triangle_indices.to(torch::kLong);
+  torch::Tensor v0 = verts_cpu.index({idx_long.select(1, 0)});
+  torch::Tensor v1 = verts_cpu.index({idx_long.select(1, 1)});
+  torch::Tensor v2 = verts_cpu.index({idx_long.select(1, 2)});
+  torch::Tensor centroids = (v0 + v1 + v2) / 3.0f;
+  torch::Tensor new_chunk_ids = computeChunkIds(centroids, chunk_size_);
+
+  // Offset indices by existing vertex count
+  torch::Tensor offset_indices = triangle_indices;
+  if (is_initialized_) {
+    int64_t vert_offset = this->vertices_.size(0);
+    offset_indices = triangle_indices + static_cast<int>(vert_offset);
+  }
+
+  if (!is_initialized_) {
+    this->vertices_ = vertices.requires_grad_();
+    this->triangle_indices_ = offset_indices;
+    this->features_dc_ = new_features_dc.requires_grad_();
+    this->features_rest_ = new_features_rest.requires_grad_();
+    this->vertex_weight_ = new_vert_weights.requires_grad_();
+    triangle_chunk_ids_ = new_chunk_ids;
+    refreshActiveChunkIds();
+    triangle_ids_ = new_triangle_ids;
+    exist_since_iter_ = new_exist_since_iter;
+    position_lrs_ = new_position_lrs;
+    TRIANGLE_MODEL_TENSORS_TO_VEC
+    is_initialized_ = true;
+    spatial_lr_scale_ = spatial_lr_scale;
+  } else {
+    torch::Tensor new_verts = vertices;
+    densificationPostfix(new_verts, offset_indices, new_features_dc,
+                         new_features_rest, new_vert_weights,
+                         new_exist_since_iter, new_chunk_ids,
+                         new_position_lrs, new_triangle_ids);
+  }
+}
+
 std::vector<ChunkCoord> TriangleModel::frustumCullChunks(
     std::shared_ptr<TriangleKeyframe> keyframe,
     bool use_cache) {

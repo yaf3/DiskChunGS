@@ -81,6 +81,9 @@ void TriangleMapper::readConfigFromFile(std::filesystem::path cfg_path) {
   downsample_for_sampling_ =
       readConfigBool(settings_file, "Model.downsample_for_sampling");
   init_strategy_ = readConfig<int>(settings_file, "Model.init_strategy");
+  depth_mesh_stride_ = readConfig<int>(settings_file, "Model.depth_mesh_stride");
+  depth_mesh_disc_threshold_ =
+      readConfig<float>(settings_file, "Model.depth_mesh_disc_threshold");
 
   // ========== Camera Parameters ==========
   z_near_ = readConfig<float>(settings_file, "Camera.z_near");

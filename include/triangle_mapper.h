@@ -586,6 +586,8 @@ class TriangleMapper {
   bool coverage_aware_sampling_ = false;
   bool downsample_for_sampling_ = false;
   int init_strategy_ = 0;  ///< 0=normal-based, 1=camera-facing, 2=fibonacci
+  int depth_mesh_stride_ = 0;  ///< Grid stride for depth map meshing (0=disabled)
+  float depth_mesh_disc_threshold_ = 1.5f;  ///< Max depth ratio for edge continuity
 
   // Utilities
   std::random_device rd_;
@@ -742,6 +744,7 @@ class TriangleMapper {
    * @param pkf Keyframe to sample Triangles from
    */
   void sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf);
+  void meshDepthMap(std::shared_ptr<TriangleKeyframe> pkf);
 
   /**
    * @brief Record rendered image, ground truth, and loss visualization
