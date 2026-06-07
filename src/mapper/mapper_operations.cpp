@@ -1308,12 +1308,39 @@ void TriangleMapper::meshDepthMap(std::shared_ptr<TriangleKeyframe> pkf) {
   float fx = pkf->intr_[0], fy = pkf->intr_[1];
   float cx = pkf->intr_[2], cy = pkf->intr_[3];
 
+  // Mark uncovered grid cells, then dilate by 1 cell for stitching overlap
+  std::vector<bool> mesh_cell(grid_h * grid_w, false);
   for (int gy = 0; gy < grid_h; gy++) {
     for (int gx = 0; gx < grid_w; gx++) {
       int py = std::min(gy * S, H - 1);
       int px = std::min(gx * S, W - 1);
+      if (uncov_acc[py][px]) mesh_cell[gy * grid_w + gx] = true;
+    }
+  }
+  // Dilate: also mesh covered cells adjacent to uncovered cells
+  std::vector<bool> mesh_cell_dilated = mesh_cell;
+  for (int gy = 0; gy < grid_h; gy++) {
+    for (int gx = 0; gx < grid_w; gx++) {
+      if (mesh_cell[gy * grid_w + gx]) continue;
+      for (int dy = -1; dy <= 1 && !mesh_cell_dilated[gy * grid_w + gx]; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+          int ny = gy + dy, nx = gx + dx;
+          if (ny >= 0 && ny < grid_h && nx >= 0 && nx < grid_w &&
+              mesh_cell[ny * grid_w + nx]) {
+            mesh_cell_dilated[gy * grid_w + gx] = true;
+            break;
+          }
+        }
+      }
+    }
+  }
 
-      if (!uncov_acc[py][px]) continue;
+  for (int gy = 0; gy < grid_h; gy++) {
+    for (int gx = 0; gx < grid_w; gx++) {
+      if (!mesh_cell_dilated[gy * grid_w + gx]) continue;
+      int py = std::min(gy * S, H - 1);
+      int px = std::min(gx * S, W - 1);
+
       float d = depth_acc[py][px];
       if (d <= 1e-6f || !std::isfinite(d)) continue;
 
