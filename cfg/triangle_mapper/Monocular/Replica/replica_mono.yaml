@@ -6,6 +6,7 @@ Model.max_vertices_in_memory: 1500000
 Model.init_proba_scaler: 1.0
 Model.uniform_sampling_floor: 0.02
 Model.depth_agreement_threshold: 0.0
+Model.coverage_aware_sampling: 0
 Model.downsample_for_sampling: 0
 Model.init_strategy: 0  # 0:normal-based, 1:camera-facing, 2:fibonacci
 

@@ -400,14 +400,10 @@ void TriangleMapper::trainForOneIteration() {
   // Use minimum chunk age across visible chunks as the conservative threshold.
   int min_chunk_age = std::numeric_limits<int>::max();
   {
-    const auto& vis_ids = triangles_->getLastVisibleChunkIds();
-    if (vis_ids.defined() && vis_ids.size(0) > 0) {
-      auto ids_cpu = vis_ids.cpu();
-      auto acc = ids_cpu.accessor<int64_t, 1>();
-      for (int64_t i = 0; i < ids_cpu.size(0); i++) {
-        min_chunk_age = std::min(min_chunk_age,
-                                 triangles_->getChunkOptCount(acc[i]));
-      }
+    const auto& chunk_ids = triangles_->getActiveChunkIds();
+    for (int64_t cid : chunk_ids) {
+      min_chunk_age = std::min(min_chunk_age,
+                               triangles_->getChunkOptCount(cid));
     }
   }
   if (min_chunk_age == std::numeric_limits<int>::max()) min_chunk_age = 0;
@@ -454,33 +450,31 @@ void TriangleMapper::trainForOneIteration() {
   {
     torch::NoGradGuard no_grad;
     const auto& op = opt_params_;
-    const auto& vis_ids = triangles_->getLastVisibleChunkIds();
+    const auto& active = triangles_->getActiveChunkIds();
     bool any_chunk_pre_rdt = false;
+    bool did_depth_prune = false;
 
-    if (vis_ids.defined() && vis_ids.size(0) > 0) {
-      auto ids_cpu = vis_ids.cpu();
-      auto acc = ids_cpu.accessor<int64_t, 1>();
-      for (int64_t i = 0; i < ids_cpu.size(0); i++) {
-        int64_t cid = acc[i];
-        int age = triangles_->getChunkOptCount(cid);
+    for (int64_t cid : active) {
+      int age = triangles_->getChunkOptCount(cid);
 
-        if (age < op.rdt_iter_) any_chunk_pre_rdt = true;
+      if (age < op.rdt_iter_) any_chunk_pre_rdt = true;
 
-        if (op.enable_rdt_ && !loop_closure_iteration_ &&
-            age >= op.rdt_iter_ &&
-            op.rdt_update_interval_ > 0 &&
-            (age - op.rdt_iter_) % op.rdt_update_interval_ == 0) {
-          if (op.depth_prune_threshold_ > 0.0f && gt_inv_depth.defined()) {
-            auto fresh_mask = triangles_->cullVisibleTriangles(viewpoint_cam);
-            triangles_->pruneDepthInconsistent(
-                viewpoint_cam, fresh_mask, gt_inv_depth,
-                view_matrix, op.depth_prune_threshold_,
-                viewpoint_cam->depth_confidence_,
-                rendered_inv_depth_full);
-          }
-          triangles_->initChunkDelaunay(cid);
-          triangles_->rebuildChunkMeshFromDelaunay(cid, current_iteration);
+      if (op.enable_rdt_ && !loop_closure_iteration_ &&
+          age >= op.rdt_iter_ &&
+          op.rdt_update_interval_ > 0 &&
+          (age - op.rdt_iter_) % op.rdt_update_interval_ == 0) {
+        if (!did_depth_prune &&
+            op.depth_prune_threshold_ > 0.0f && gt_inv_depth.defined()) {
+          auto fresh_mask = triangles_->cullVisibleTriangles(viewpoint_cam);
+          triangles_->pruneDepthInconsistent(
+              viewpoint_cam, fresh_mask, gt_inv_depth,
+              view_matrix, op.depth_prune_threshold_,
+              viewpoint_cam->depth_confidence_,
+              rendered_inv_depth_full);
+          did_depth_prune = true;
         }
+        triangles_->initChunkDelaunay(cid);
+        triangles_->rebuildChunkMeshFromDelaunay(cid, current_iteration);
       }
     }
 
@@ -519,12 +513,8 @@ void TriangleMapper::trainForOneIteration() {
     }
 
     // Midpoint subdivision for mature chunks
-    if (op.subdivide_interval_ > 0 && !loop_closure_iteration_ &&
-        vis_ids.defined() && vis_ids.size(0) > 0) {
-      auto ids_cpu = vis_ids.cpu();
-      auto acc = ids_cpu.accessor<int64_t, 1>();
-      for (int64_t i = 0; i < ids_cpu.size(0); i++) {
-        int64_t cid = acc[i];
+    if (op.subdivide_interval_ > 0 && !loop_closure_iteration_) {
+      for (int64_t cid : active) {
         int age = triangles_->getChunkOptCount(cid);
         if (age >= op.subdivide_start_iter_ &&
             (age - op.subdivide_start_iter_) % op.subdivide_interval_ == 0) {

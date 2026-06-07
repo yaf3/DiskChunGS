@@ -44,6 +44,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "ORB-SLAM3/Thirdparty/Sophus/sophus/se3.hpp"
@@ -515,6 +516,10 @@ class TriangleModel {
 
   void incrementChunkOptCounts();
   int getChunkOptCount(int64_t chunk_id) const;
+  void refreshActiveChunkIds();
+  const std::unordered_set<int64_t>& getActiveChunkIds() const {
+    return active_chunk_ids_;
+  }
   const torch::Tensor& getLastVisibleChunkIds() const {
     return last_visible_chunk_ids_;
   }
@@ -757,6 +762,7 @@ class TriangleModel {
   std::unordered_map<int64_t, std::vector<int64_t>>
       chunk_delaunay_vert_map_;       ///< Delaunay pointmark → global vertex index.
   torch::Tensor last_visible_chunk_ids_;  ///< Cached from last cullVisibleTriangles.
+  std::unordered_set<int64_t> active_chunk_ids_;  ///< Chunk IDs with triangles.
   int new_triangle_chunk_density_ =
       100;  ///< Min Triangles/chunk for new points.
 

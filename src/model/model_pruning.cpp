@@ -327,6 +327,7 @@ void TriangleModel::densificationPostfix(
   position_lrs_ = torch::cat({position_lrs_, new_position_lrs}, 0);
   triangle_chunk_ids_ = torch::cat({triangle_chunk_ids_, new_chunk_ids}, 0);
   triangle_ids_ = torch::cat({triangle_ids_, new_triangle_ids}, 0);
+  refreshActiveChunkIds();
 }
 
 void TriangleModel::pruneLowWeightTriangles(

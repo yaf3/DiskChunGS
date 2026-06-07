@@ -1,13 +1,14 @@
 %YAML:1.0
 
 Model.white_background: 0  # 0:false, 1 or other integer:true
-Model.sh_degree: 0
+Model.sh_degree: 3
 Model.max_vertices_in_memory: 2000000
-Model.init_proba_scaler: 0.2
-Model.uniform_sampling_floor: 0.05
-Model.depth_agreement_threshold: 0.01
+Model.init_proba_scaler: 0.4
+Model.uniform_sampling_floor: 0.0
+Model.depth_agreement_threshold: 0.0001
+Model.coverage_aware_sampling: 1
 Model.downsample_for_sampling: 0
-Model.init_strategy: 0  # 0:normal-based, 1:camera-facing, 2:fibonacci
+Model.init_strategy: 0 # 0:normal-based, 1:camera-facing, 2:fibonacci
 
 Camera.z_near: 0.01
 Camera.z_far: 100.0
@@ -15,7 +16,7 @@ Camera.z_far: 100.0
 Mapper.min_depth_: 0.01
 Mapper.max_depth_: 100.0
 Mapper.min_num_initial_map_kfs: 10
-Mapper.new_keyframe_times_of_use: 8
+Mapper.new_keyframe_times_of_use: 16
 Mapper.local_BA_increased_times_of_use: 0
 Mapper.loop_closure_increased_times_of_use_: 2
 Mapper.large_rotation_threshold: 1.0
@@ -48,33 +49,33 @@ Optimization.position_lr_decay: 0.9998
 Optimization.feature_lr: 0.0025
 Optimization.weight_lr: 0.03
 Optimization.sigma_init: 0.1
-Optimization.sigma_final: 0.00001
+Optimization.sigma_final: 0.01
 Optimization.sigma_start_iter: 0
-Optimization.sigma_until_iter: 2000
+Optimization.sigma_until_iter: 3000
 Optimization.pose_lr: 0.00
 Optimization.exposure_lr: 0.00
 Optimization.depth_scale_bias_lr: 0.0001
 Optimization.lambda_dssim: 0.2
-Optimization.lambda_depth: 0.01
-Optimization.lambda_normal: 0.02
-Optimization.normal_loss_mode: 1  # 0:off, 1:self-consistency, 2:GT-anchored (RGBD only)
+Optimization.lambda_depth: 0.0
+Optimization.lambda_normal: 100.0
+Optimization.normal_loss_mode: 2  # 0:off, 1:self-consistency, 2:GT-anchored (RGBD only)
 Optimization.lambda_weight: 0.02
-Optimization.exposure_optimization: 0 # 0:false, 1 or other integer:true
-Optimization.opacity_floor_start_iter: 2000
-Optimization.opacity_floor_end_iter: 4000
-Optimization.opacity_floor_init: 0.7
-Optimization.opacity_floor_final: 0.9999
-Optimization.rdt_iter: 2000
-Optimization.enable_rdt: 1
-Optimization.rdt_update_interval: 1200
 Optimization.lambda_vertex_depth: 0.1
-Optimization.max_vertex_depth_diff: 0.1
+Optimization.max_vertex_depth_diff: 0.01
 Optimization.vertex_depth_mode: 1
+Optimization.exposure_optimization: 0 # 0:false, 1 or other integer:true
+Optimization.opacity_floor_start_iter: 0
+Optimization.opacity_floor_end_iter: 100
+Optimization.opacity_floor_init: 0.9999
+Optimization.opacity_floor_final: 0.9999
+Optimization.rdt_iter: 600
+Optimization.enable_rdt: 1
+Optimization.rdt_update_interval: 400
 Optimization.subdivide_interval: 20000
 Optimization.subdivide_start_iter: 0
 Optimization.subdivide_area_threshold: 0.01
 Optimization.subdivide_max_triangles: 0
-Optimization.depth_prune_threshold: 0.10
+Optimization.depth_prune_threshold: 0.05
 Optimization.depth_prune_interval: 500
 
 TriangleViewer.glfw_window_width: 1400

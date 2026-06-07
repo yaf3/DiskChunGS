@@ -747,6 +747,7 @@ void TriangleModel::initializeFromPoints(const torch::Tensor& initial_xyz,
   this->vertex_weight_ = vert_opacities.requires_grad_();
 
   triangle_chunk_ids_ = computeChunkIds(initial_xyz, chunk_size_);
+  refreshActiveChunkIds();
 
   triangle_ids_ = torch::arange(
       next_triangle_id_, next_triangle_id_ + N,
@@ -880,15 +881,18 @@ torch::Tensor TriangleModel::createTriangleMaskFromChunks(
   return torch::isin(triangle_chunk_ids_, visible_chunk_ids);
 }
 
+void TriangleModel::refreshActiveChunkIds() {
+  active_chunk_ids_.clear();
+  if (triangle_chunk_ids_.size(0) == 0) return;
+  auto ids = std::get<0>(torch::_unique(triangle_chunk_ids_)).cpu();
+  auto acc = ids.accessor<int64_t, 1>();
+  for (int64_t i = 0; i < ids.size(0); i++)
+    active_chunk_ids_.insert(acc[i]);
+}
+
 void TriangleModel::incrementChunkOptCounts() {
-  if (!last_visible_chunk_ids_.defined() ||
-      last_visible_chunk_ids_.size(0) == 0)
-    return;
-  auto ids_cpu = last_visible_chunk_ids_.cpu();
-  auto acc = ids_cpu.accessor<int64_t, 1>();
-  for (int64_t i = 0; i < ids_cpu.size(0); i++) {
-    chunk_opt_counts_[acc[i]]++;
-  }
+  for (int64_t cid : active_chunk_ids_)
+    chunk_opt_counts_[cid]++;
 }
 
 int TriangleModel::getChunkOptCount(int64_t chunk_id) const {

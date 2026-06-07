@@ -76,6 +76,8 @@ void TriangleMapper::readConfigFromFile(std::filesystem::path cfg_path) {
       readConfig<float>(settings_file, "Model.uniform_sampling_floor");
   depth_agreement_threshold_ =
       readConfig<float>(settings_file, "Model.depth_agreement_threshold");
+  coverage_aware_sampling_ =
+      readConfigBool(settings_file, "Model.coverage_aware_sampling");
   downsample_for_sampling_ =
       readConfigBool(settings_file, "Model.downsample_for_sampling");
   init_strategy_ = readConfig<int>(settings_file, "Model.init_strategy");

@@ -804,6 +804,7 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
   // Render current view and compute penalty if scene is initialized
   torch::Tensor penalty = torch::zeros_like(init_proba);
   torch::Tensor rendered_depth;
+  torch::Tensor rendered_inv_depth;
   torch::Tensor main_triangle_ids;
   torch::Tensor visible_triangle_mask;
   bool has_rendered_depth = false;
@@ -820,7 +821,8 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
         false, pkf->FoVx_, pkf->FoVy_, view_matrix, pkf->full_proj_transform_);
 
     torch::Tensor rendered_image = std::get<1>(render_pkg);
-    rendered_depth = 1 / std::get<0>(render_pkg).clamp_min(1e-8);
+    rendered_inv_depth = std::get<0>(render_pkg);
+    rendered_depth = 1 / rendered_inv_depth.clamp_min(1e-8);
     has_rendered_depth = true;
     main_triangle_ids = std::get<3>(render_pkg)[0];
     full_model_scaling = std::get<4>(render_pkg);
@@ -835,6 +837,11 @@ void TriangleMapper::sampleTriangles(std::shared_ptr<TriangleKeyframe> pkf) {
   // Generate initial sample mask based on probability
   torch::Tensor sample_mask =
       torch::rand_like(init_proba) < init_proba - penalty;
+
+  if (coverage_aware_sampling_ && has_rendered_depth) {
+    sample_mask &= (rendered_inv_depth.squeeze() < 1e-6f);
+  }
+
   torch::Tensor flat_sample_mask = sample_mask.flatten();
 
   // Pre-compute UV grid

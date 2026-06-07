@@ -67,6 +67,7 @@ std::string TriangleModel::getChunkFilename(const ChunkCoord& coord) {
 
 void TriangleModel::updateChunkIDs() {
   triangle_chunk_ids_ = computeChunkIds(getXYZ(), chunk_size_);
+  refreshActiveChunkIds();
 }
 
 // =============================================================================
