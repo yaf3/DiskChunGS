@@ -638,6 +638,7 @@ bool TriangleMapper::loadScene(std::filesystem::path scene_dir,
   if (!triangles_->is_initialized_) {
     triangles_->initializeEmpty(scene_->cameras_extent_);
     triangles_->trainingSetup(opt_params_);
+    triangles_->updateOpacityFloor(opt_params_.opacity_floor_final_);
     std::cout << "Initialized empty Triangle model for loading" << std::endl;
   }
 

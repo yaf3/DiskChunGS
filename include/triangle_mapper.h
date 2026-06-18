@@ -587,7 +587,9 @@ class TriangleMapper {
   bool downsample_for_sampling_ = false;
   int init_strategy_ = 0;  ///< 0=normal-based, 1=camera-facing, 2=fibonacci
   int depth_mesh_stride_ = 0;  ///< Grid stride for depth map meshing (0=disabled)
+  int depth_mesh_min_stride_ = 2;  ///< Finest subdivision stride (adaptive LoG)
   float depth_mesh_disc_threshold_ = 1.5f;  ///< Max depth ratio for edge continuity
+  float depth_mesh_log_scale_ = 0.5f;
 
   // Utilities
   std::random_device rd_;

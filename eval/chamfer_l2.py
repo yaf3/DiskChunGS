@@ -1,22 +1,24 @@
-"""Compute bidirectional Chamfer-L2 between a predicted mesh and a GT mesh.
-
-Ch-L2 = mean_{p in P} min_{q in Q} ||p-q||^2  +  mean_{q in Q} min_{p in P} ||q-p||^2
+"""Mesh geometry evaluation: Chamfer-L2, Accuracy, Completion, Completion Ratio, F-score.
 
 Usage:
-    python3 eval/chamfer_l2.py <pred_mesh.off> <gt_mesh.ply> [--n_points 200000]
+    python3 eval/chamfer_l2.py <pred_mesh.off> <gt_mesh.ply> [--n_points 200000] [--tau 0.05]
 
 Importable:
-    from chamfer_l2 import compute
-    value = compute("mesh.off", "mesh.ply")
+    from chamfer_l2 import compute, compute_all
+    chamfer = compute("mesh.off", "mesh.ply")
+    metrics = compute_all("mesh.off", "mesh.ply")
 """
 
 import argparse
+import json
 import os
 import struct
 import numpy as np
 import open3d as o3d
+from scipy.spatial.transform import Rotation
 
 N_POINTS_DEFAULT = 200_000
+TAU_DEFAULT = 0.05  # 5 cm threshold for completion ratio and F-score
 
 
 # ---------------------------------------------------------------------------
@@ -128,20 +130,191 @@ def _load_mesh(path):
 
 
 # ---------------------------------------------------------------------------
-# Chamfer-L2
+# Alignment
 # ---------------------------------------------------------------------------
 
-def compute(pred_path, gt_path, n_points=N_POINTS_DEFAULT):
+def _load_tum_trajectory(path):
+    """Load TUM-format trajectory: timestamp tx ty tz qx qy qz qw."""
+    poses = []
+    with open(path) as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            vals = line.strip().split()
+            if len(vals) < 8:
+                continue
+            poses.append([float(v) for v in vals[1:4]])
+    return np.array(poses)
+
+
+def _umeyama_alignment(src, dst):
+    """Compute rigid SE(3) alignment (no scale) from src to dst point sets.
+    Returns 4x4 transform T such that dst ≈ T @ src."""
+    assert src.shape == dst.shape
+    n = src.shape[0]
+    src_mean = src.mean(axis=0)
+    dst_mean = dst.mean(axis=0)
+    src_c = src - src_mean
+    dst_c = dst - dst_mean
+    H = src_c.T @ dst_c
+    U, _, Vt = np.linalg.svd(H)
+    d = np.linalg.det(Vt.T @ U.T)
+    S = np.diag([1.0, 1.0, d])
+    R = Vt.T @ S @ U.T
+    t = dst_mean - R @ src_mean
+    T = np.eye(4)
+    T[:3, :3] = R
+    T[:3, 3] = t
+    return T
+
+
+def _align(pred_pc, gt_pc, est_traj_path=None, gt_traj_path=None):
+    """Align pred to GT. Uses trajectory-based Umeyama if paths given, else centroid+ICP."""
+    if est_traj_path and gt_traj_path:
+        est_pos = _load_tum_trajectory(est_traj_path)
+        gt_pos = _load_tum_trajectory(gt_traj_path)
+        n = min(len(est_pos), len(gt_pos))
+        T = _umeyama_alignment(est_pos[:n], gt_pos[:n])
+    else:
+        pred_center = pred_pc.get_center()
+        gt_center = gt_pc.get_center()
+        T = np.eye(4)
+        T[:3, 3] = gt_center - pred_center
+
+    reg = o3d.pipelines.registration.registration_icp(
+        pred_pc, gt_pc,
+        0.2,
+        T,
+        o3d.pipelines.registration.TransformationEstimationPointToPoint(),
+        o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=200),
+    )
+    pred_pc.transform(reg.transformation)
+    return pred_pc, reg.transformation
+
+
+# ---------------------------------------------------------------------------
+# View-based culling
+# ---------------------------------------------------------------------------
+
+def _load_tum_poses(path):
+    """Load TUM trajectory as list of 4x4 world-to-camera matrices."""
+    poses = []
+    with open(path) as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            vals = line.strip().split()
+            if len(vals) < 8:
+                continue
+            t = np.array([float(vals[1]), float(vals[2]), float(vals[3])])
+            q = [float(vals[4]), float(vals[5]), float(vals[6]), float(vals[7])]
+            R = Rotation.from_quat(q).as_matrix()
+            T = np.eye(4)
+            T[:3, :3] = R
+            T[:3, 3] = t
+            poses.append(np.linalg.inv(T))
+    return poses
+
+
+def _cull_gt_points(gt_points, gt_traj_path, cam_params_path, max_depth=10.0,
+                    stride=10):
+    """Keep only GT points visible from at least one camera pose."""
+    w2c_list = _load_tum_poses(gt_traj_path)
+    with open(cam_params_path) as f:
+        cam = json.load(f)["camera"]
+    fx, fy = cam["fx"], cam["fy"]
+    cx, cy = cam["cx"], cam["cy"]
+    w, h = cam["w"], cam["h"]
+
+    visible = np.zeros(len(gt_points), dtype=bool)
+
+    for i in range(0, len(w2c_list), stride):
+        w2c = w2c_list[i]
+        pts_h = np.hstack([gt_points, np.ones((len(gt_points), 1))])
+        pts_cam = (w2c @ pts_h.T).T[:, :3]
+        z = pts_cam[:, 2]
+        valid_depth = (z > 0) & (z < max_depth)
+        u = fx * pts_cam[:, 0] / z + cx
+        v = fy * pts_cam[:, 1] / z + cy
+        in_frame = (u >= 0) & (u < w) & (v >= 0) & (v < h)
+        visible |= valid_depth & in_frame
+
+    return visible
+
+
+# ---------------------------------------------------------------------------
+# Core distance computation
+# ---------------------------------------------------------------------------
+
+def _sample_and_distances(pred_path, gt_path, n_points=N_POINTS_DEFAULT, align=True,
+                          est_traj=None, gt_traj=None, cam_params=None):
     pred_mesh = _load_mesh(pred_path)
     gt_mesh   = _load_mesh(gt_path)
 
     pred_pc = pred_mesh.sample_points_uniformly(n_points)
     gt_pc   = gt_mesh.sample_points_uniformly(n_points)
 
+    if align:
+        pred_pc, _ = _align(pred_pc, gt_pc, est_traj, gt_traj)
+
+    if gt_traj and cam_params:
+        gt_pts = np.asarray(gt_pc.points)
+        gt_mask = _cull_gt_points(gt_pts, gt_traj, cam_params)
+        gt_pc = gt_pc.select_by_index(np.where(gt_mask)[0])
+        print(f"View culling GT: kept {int(np.sum(gt_mask))}/{len(gt_mask)}")
+
+        pred_pts = np.asarray(pred_pc.points)
+        pred_mask = _cull_gt_points(pred_pts, gt_traj, cam_params)
+        pred_pc = pred_pc.select_by_index(np.where(pred_mask)[0])
+        print(f"View culling pred: kept {int(np.sum(pred_mask))}/{len(pred_mask)}")
+
     d_pred_to_gt = np.asarray(pred_pc.compute_point_cloud_distance(gt_pc))
     d_gt_to_pred = np.asarray(gt_pc.compute_point_cloud_distance(pred_pc))
 
+    return d_pred_to_gt, d_gt_to_pred
+
+
+# ---------------------------------------------------------------------------
+# Individual metrics
+# ---------------------------------------------------------------------------
+
+def compute(pred_path, gt_path, n_points=N_POINTS_DEFAULT, align=True,
+            est_traj=None, gt_traj=None, cam_params=None):
+    """Chamfer-L2 (backward compatible)."""
+    d_pred_to_gt, d_gt_to_pred = _sample_and_distances(
+        pred_path, gt_path, n_points, align, est_traj, gt_traj, cam_params)
     return float(np.mean(d_pred_to_gt ** 2) + np.mean(d_gt_to_pred ** 2))
+
+
+def compute_all(pred_path, gt_path, n_points=N_POINTS_DEFAULT, tau=TAU_DEFAULT,
+                align=True, est_traj=None, gt_traj=None, cam_params=None):
+    """All standard geometry metrics. Returns dict."""
+    d_pred_to_gt, d_gt_to_pred = _sample_and_distances(
+        pred_path, gt_path, n_points, align, est_traj, gt_traj, cam_params)
+
+    accuracy   = float(np.mean(d_pred_to_gt))
+    completion = float(np.mean(d_gt_to_pred))
+    chamfer_l1 = accuracy + completion
+    chamfer_l2 = float(np.mean(d_pred_to_gt ** 2) + np.mean(d_gt_to_pred ** 2))
+
+    completion_ratio = float(np.mean(d_gt_to_pred < tau)) * 100.0
+
+    precision = float(np.mean(d_pred_to_gt < tau))
+    recall    = float(np.mean(d_gt_to_pred < tau))
+    f_score   = 2.0 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    f_score  *= 100.0
+
+    return {
+        "accuracy_cm":        accuracy * 100.0,
+        "completion_cm":      completion * 100.0,
+        "chamfer_l1_cm":      chamfer_l1 * 100.0,
+        "chamfer_l2":         chamfer_l2,
+        "completion_ratio_%": completion_ratio,
+        "precision_%":        precision * 100.0,
+        "recall_%":           recall * 100.0,
+        "f_score_%":          f_score,
+        "tau_m":              tau,
+    }
 
 
 if __name__ == "__main__":
@@ -149,10 +322,26 @@ if __name__ == "__main__":
     parser.add_argument("pred_mesh")
     parser.add_argument("gt_mesh")
     parser.add_argument("--n_points", type=int, default=N_POINTS_DEFAULT)
+    parser.add_argument("--tau", type=float, default=TAU_DEFAULT,
+                        help="threshold in meters for completion ratio / F-score (default: 0.05)")
+    parser.add_argument("--no_align", action="store_true",
+                        help="skip ICP alignment (use if meshes are already in the same frame)")
+    parser.add_argument("--est_traj", type=str, default=None,
+                        help="estimated trajectory (TUM format) for Umeyama alignment")
+    parser.add_argument("--gt_traj", type=str, default=None,
+                        help="GT trajectory (TUM format) for Umeyama alignment")
+    parser.add_argument("--cam_params", type=str, default=None,
+                        help="camera params JSON for view-based GT culling")
     args = parser.parse_args()
 
-    value = compute(args.pred_mesh, args.gt_mesh, args.n_points)
-    out_path = os.path.join(os.path.dirname(args.pred_mesh), "chamfer.txt")
+    metrics = compute_all(args.pred_mesh, args.gt_mesh, args.n_points, args.tau,
+                          align=not args.no_align,
+                          est_traj=args.est_traj, gt_traj=args.gt_traj,
+                          cam_params=args.cam_params)
+    out_path = os.path.join(os.path.dirname(args.pred_mesh), "mesh_metrics.txt")
     with open(out_path, "w") as f:
-        f.write(f"{value}\n")
-    print(f"Ch-L2: {value:.6f}  →  {out_path}")
+        for k, v in metrics.items():
+            line = f"{k}: {v:.6f}"
+            f.write(line + "\n")
+            print(line)
+    print(f"\n→  {out_path}")

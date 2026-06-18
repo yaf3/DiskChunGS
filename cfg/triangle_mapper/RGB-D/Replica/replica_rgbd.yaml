@@ -7,8 +7,10 @@ Model.init_proba_scaler: 0.4
 Model.uniform_sampling_floor: 0.0
 Model.depth_agreement_threshold: 0.0001
 Model.coverage_aware_sampling: 1
-Model.depth_mesh_stride: 8
-Model.depth_mesh_disc_threshold: 1.2
+Model.depth_mesh_stride: 4
+Model.depth_mesh_min_stride: 1
+Model.depth_mesh_disc_threshold: 1.08
+Model.depth_mesh_log_scale: 0.55
 Model.downsample_for_sampling: 0
 Model.init_strategy: 0 # 0:normal-based, 1:camera-facing, 2:fibonacci
 
@@ -50,8 +52,8 @@ Optimization.position_lr_init: 0.0001
 Optimization.position_lr_decay: 0.9998
 Optimization.feature_lr: 0.0025
 Optimization.weight_lr: 0.03
-Optimization.sigma_init: 0.1
-Optimization.sigma_final: 0.001
+Optimization.sigma_init: 0.00
+Optimization.sigma_final: 0.00
 Optimization.sigma_start_iter: 0
 Optimization.sigma_until_iter: 3000
 Optimization.pose_lr: 0.00
@@ -59,7 +61,7 @@ Optimization.exposure_lr: 0.00
 Optimization.depth_scale_bias_lr: 0.0001
 Optimization.lambda_dssim: 0.2
 Optimization.lambda_depth: 0.0
-Optimization.lambda_normal: 0.0
+Optimization.lambda_normal: 0.1
 Optimization.normal_loss_mode: 2  # 0:off, 1:self-consistency, 2:GT-anchored (RGBD only)
 Optimization.lambda_weight: 0.1
 Optimization.lambda_vertex_depth: 0.1
@@ -68,10 +70,10 @@ Optimization.vertex_depth_mode: 1
 Optimization.exposure_optimization: 0 # 0:false, 1 or other integer:true
 Optimization.opacity_floor_start_iter: 0
 Optimization.opacity_floor_end_iter: 2000
-Optimization.opacity_floor_init: 0.9
+Optimization.opacity_floor_init: 0.9999
 Optimization.opacity_floor_final: 0.9999
 Optimization.rdt_iter: 1000
-Optimization.enable_rdt: 0
+Optimization.enable_rdt: 1
 Optimization.rdt_update_interval: 1000
 Optimization.subdivide_interval: 20000
 Optimization.subdivide_start_iter: 0
@@ -84,4 +86,4 @@ TriangleViewer.glfw_window_width: 1400
 TriangleViewer.glfw_window_height: 1050
 TriangleViewer.image_scale: 0.5
 TriangleViewer.image_scale_main: 1.0
-TriangleViewer.camera_watch_dist: 0.000001
+TriangleViewer.camera_watch_dist: 1.0

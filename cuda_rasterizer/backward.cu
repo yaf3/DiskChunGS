@@ -711,8 +711,13 @@
 				 continue;
  
 			 float phi_x = max_val;
-			 float phi_final = phi_x * phi_center_min.x;
-			 float Cx = fmaxf(0.0f,  __powf(phi_final, sigma));
+			 float Cx;
+			 if (sigma <= 0.0f) {
+				 Cx = 1.0f;
+			 } else {
+				 float phi_final = phi_x * phi_center_min.x;
+				 Cx = fmaxf(0.0f, __powf(phi_final, sigma));
+			 }
  
 			 const float alpha = min(0.99f, con_o.w * Cx);
  
@@ -916,8 +921,8 @@
 			 // Helpful reusable temporary variables
 			 const float dL_dC = con_o.w * dL_dalpha;
 			
-			// Calculate gradient w.r.t phi_x 
-			float dL_dphi_x = dL_dC * (sigma / phi_x) * Cx;
+			// Calculate gradient w.r.t phi_x
+			float dL_dphi_x = (sigma <= 0.0f) ? 0.0f : dL_dC * (sigma / phi_x) * Cx;
  
 			 #pragma unroll
 			 for (int k = 0; k < 3; k++) {

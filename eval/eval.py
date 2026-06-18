@@ -175,18 +175,23 @@ for gt_dataset_name in gt_dataset:
                     Rendering_fps = 1000 / np.mean(render_time)
 
                 Chamfer = None
+                mesh_metrics = {}
                 if gt_dataset_name == "replica":
                     pred_mesh_matches = glob.glob(os.path.join(result, scene, "*_shutdown", "data", "mesh.off"))
                     gt_mesh   = os.path.join(gt_dataset[gt_dataset_name]["path"], f"{scene}_mesh.ply")
                     pred_mesh = pred_mesh_matches[0] if pred_mesh_matches else None
                     if pred_mesh and os.path.exists(pred_mesh) and os.path.exists(gt_mesh):
                         try:
-                            Chamfer = chamfer_l2.compute(pred_mesh, gt_mesh)
-                            print(f"  Ch-L2 {scene}: {Chamfer:.6f}")
+                            mesh_metrics = chamfer_l2.compute_all(pred_mesh, gt_mesh)
+                            Chamfer = mesh_metrics["chamfer_l2"]
+                            print(f"  {scene}: Ch-L2={Chamfer:.6f}  Acc={mesh_metrics['accuracy_cm']:.2f}cm  "
+                                  f"Comp={mesh_metrics['completion_cm']:.2f}cm  "
+                                  f"CompR={mesh_metrics['completion_ratio_%']:.1f}%  "
+                                  f"F={mesh_metrics['f_score_%']:.1f}%")
                         except Exception as e:
                             print(f"Chamfer failed for {scene}: {e}")
 
-                result_str = "{} {} {} {} {} {} {} {} {} {} {}\n".format(
+                result_str = "{} {} {} {} {} {} {} {} {} {} {} {} {} {}\n".format(
                     scene,
                     T,
                     R,
@@ -198,6 +203,9 @@ for gt_dataset_name in gt_dataset:
                     Num_Gaussians,
                     vram_usage,
                     Chamfer,
+                    mesh_metrics.get("accuracy_cm"),
+                    mesh_metrics.get("completion_cm"),
+                    mesh_metrics.get("f_score_%"),
                 )
                 print(result_str)
                 logs.append(result_str)
@@ -213,7 +221,7 @@ with open(os.path.join(result_main_folder, "log.csv"), "w") as out_file:
         (
             "scene",
             "T",
-            "R", 
+            "R",
             "PSNR",
             "SSIM",
             "LPIPS",
@@ -222,6 +230,9 @@ with open(os.path.join(result_main_folder, "log.csv"), "w") as out_file:
             "Num Gaussians",
             "VRAM Usage",
             "Chamfer-L2",
+            "Accuracy (cm)",
+            "Completion (cm)",
+            "F-score (%)",
         )
     )
     for log in logs:

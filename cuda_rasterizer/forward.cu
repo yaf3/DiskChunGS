@@ -352,8 +352,14 @@
 		offsets[cumsum_for_triangle + i] = offset; 
 	 }
 
-	 // or distance_points < 1 or dist > -1
-	if (distance_points > 1600 or distance_points < 1 or dist > -1) {
+	 if (sigma <= 0.0f) {
+		if (distance_points > 1600) {
+			radii[idx] = 0;
+			tiles_touched[idx] = 0;
+			scaling[idx] = 0.0f;
+			return;
+		}
+	 } else if (distance_points > 1600 or distance_points < 1 or dist > -1) {
 			radii[idx] = 0;
 			tiles_touched[idx] = 0;
 			scaling[idx] = 0.0f;
@@ -551,9 +557,14 @@
 			 if (outside)
 				continue;
  
-			 float phi_x = max_val;
-			 float phi_final = phi_x * phi_center_min.x;
-			 float Cx = fmaxf(0.0f,  __powf(phi_final, sigma));
+			 float Cx;
+			 if (sigma <= 0.0f) {
+				 Cx = 1.0f;
+			 } else {
+				 float phi_x = max_val;
+				 float phi_final = phi_x * phi_center_min.x;
+				 Cx = fmaxf(0.0f, __powf(phi_final, sigma));
+			 }
  
 			 float alpha = min(0.999f, con_o.w * Cx); 
 			 if (alpha < 1.0f / 255.0f)

@@ -18,6 +18,7 @@
 #include "rendering/triangle_renderer.h"
 #include "utils/loss_utils.h"
 #include "utils/profiling.h"
+#include "CDT/CDT.h"
 
 // ============================================================================
 // Helper Methods
@@ -1265,17 +1266,22 @@ void TriangleMapper::meshDepthMap(std::shared_ptr<TriangleKeyframe> pkf) {
 
   int H = pkf->image_height_;
   int W = pkf->image_width_;
-  int S = depth_mesh_stride_;
   float disc_thresh = depth_mesh_disc_threshold_;
+  int max_stride = depth_mesh_stride_;
+  int min_stride = depth_mesh_min_stride_;
 
   // Get GT depth map (RGBD only)
   assert(pkf->gaus_pyramid_inv_depth_image_[0].defined());
+  torch::Tensor inv_depth = pkf->gaus_pyramid_inv_depth_image_[0];
   torch::Tensor depth_map =
-      (1.0f / pkf->gaus_pyramid_inv_depth_image_[0].clamp_min(1e-8f))
-          .squeeze(0);  // [H, W]
+      (1.0f / inv_depth.clamp_min(1e-8f)).squeeze(0);  // [H, W]
 
-  // Render existing mesh for coverage detection
-  torch::Tensor uncovered;
+  // Compute LoG edge map for adaptive stride
+  torch::Tensor rgb = pkf->gaus_pyramid_original_image_[0];
+  torch::Tensor log_prob = computeLoGProbability(rgb);  // [H, W] in [0,1]
+
+  // Coverage mask
+  torch::Tensor coverage_mask;
   if (initial_mapped_) {
     auto visible_mask = triangles_->cullVisibleTriangles(pkf);
     torch::Tensor view_matrix = pkf->getRT().transpose(0, 1);
@@ -1284,128 +1290,164 @@ void TriangleMapper::meshDepthMap(std::shared_ptr<TriangleKeyframe> pkf) {
         override_color_, 1.0f, false, pkf->FoVx_, pkf->FoVy_, view_matrix,
         pkf->full_proj_transform_);
     torch::Tensor rendered_inv_depth = std::get<0>(render_pkg);
-    uncovered = (rendered_inv_depth.squeeze() < 1e-6f);  // [H, W]
-  } else {
-    uncovered = torch::ones({H, W}, torch::kBool).cuda();
+    coverage_mask = (rendered_inv_depth.squeeze() < 1e-6f);
+    // Dilate coverage mask so new keyframes mesh slightly into covered regions
+    int dilation = max_stride * 2;
+    auto kernel = torch::ones({1, 1, 2 * dilation + 1, 2 * dilation + 1},
+                              coverage_mask.options().dtype(torch::kFloat32));
+    auto mask_float = coverage_mask.unsqueeze(0).unsqueeze(0).to(torch::kFloat32);
+    auto dilated = torch::conv2d(mask_float, kernel, {}, 1, dilation);
+    coverage_mask = (dilated.squeeze() > 0.5f);
   }
 
-  // Build grid positions at stride S over uncovered pixels
-  int grid_h = (H + S - 1) / S;
-  int grid_w = (W + S - 1) / S;
-
+  // Move tensors to CPU for grid sampling
   auto depth_cpu = depth_map.cpu();
-  auto uncov_cpu = uncovered.cpu();
+  auto log_cpu = log_prob.cpu();
   auto depth_acc = depth_cpu.accessor<float, 2>();
-  auto uncov_acc = uncov_cpu.accessor<bool, 2>();
+  auto log_acc = log_cpu.accessor<float, 2>();
 
-  // Grid of vertex indices: -1 means invalid (no vertex at this grid cell)
-  std::vector<int> grid_vertex_id(grid_h * grid_w, -1);
-  std::vector<float> vert_positions;  // flattened x, y, z in camera space
-  std::vector<float> vert_uvs;        // pixel u, v for color/normal sampling
-  std::vector<float> vert_depths;
-  int n_verts = 0;
+  torch::Tensor coverage_cpu;
+  if (coverage_mask.defined())
+    coverage_cpu = coverage_mask.cpu();
 
-  float fx = pkf->intr_[0], fy = pkf->intr_[1];
-  float cx = pkf->intr_[2], cy = pkf->intr_[3];
+  // Multi-resolution grid sampling:
+  // Iterate finest grid. Each point aligns to some coarsest power-of-2 stride.
+  // Coarse-grid points are always kept; finer points need higher LoG to qualify.
+  int num_levels = 0;
+  for (int s = min_stride; s <= max_stride; s *= 2) num_levels++;
+  float log2_ratio = std::log2(static_cast<float>(max_stride) / min_stride);
 
-  // Mark uncovered grid cells, then dilate by 1 cell for stitching overlap
-  std::vector<bool> mesh_cell(grid_h * grid_w, false);
-  for (int gy = 0; gy < grid_h; gy++) {
-    for (int gx = 0; gx < grid_w; gx++) {
-      int py = std::min(gy * S, H - 1);
-      int px = std::min(gx * S, W - 1);
-      if (uncov_acc[py][px]) mesh_cell[gy * grid_w + gx] = true;
-    }
-  }
-  // Dilate: also mesh covered cells adjacent to uncovered cells
-  std::vector<bool> mesh_cell_dilated = mesh_cell;
-  for (int gy = 0; gy < grid_h; gy++) {
-    for (int gx = 0; gx < grid_w; gx++) {
-      if (mesh_cell[gy * grid_w + gx]) continue;
-      for (int dy = -1; dy <= 1 && !mesh_cell_dilated[gy * grid_w + gx]; dy++) {
-        for (int dx = -1; dx <= 1; dx++) {
-          int ny = gy + dy, nx = gx + dx;
-          if (ny >= 0 && ny < grid_h && nx >= 0 && nx < grid_w &&
-              mesh_cell[ny * grid_w + nx]) {
-            mesh_cell_dilated[gy * grid_w + gx] = true;
-            break;
-          }
-        }
+  std::vector<float> px_vec, py_vec;
+  auto* cov_ptr = coverage_cpu.defined()
+                      ? coverage_cpu.data_ptr<bool>()
+                      : nullptr;
+  for (int y = 0; y < H; y += min_stride) {
+    for (int x = 0; x < W; x += min_stride) {
+      float d = depth_acc[y][x];
+      if (d < 1e-6f || !std::isfinite(d)) continue;
+      if (cov_ptr && !cov_ptr[y * W + x]) continue;
+
+      // Find coarsest grid this point aligns to
+      int level = min_stride;
+      for (int s = max_stride; s > min_stride; s /= 2) {
+        if (x % s == 0 && y % s == 0) { level = s; break; }
       }
+
+      if (level < max_stride) {
+        // Finer points need LoG above a threshold
+        // level_frac: 0 at coarsest, 1 at finest
+        float level_frac = std::log2(static_cast<float>(max_stride) / level)
+                           / log2_ratio;
+        if (log_acc[y][x] < level_frac * depth_mesh_log_scale_) continue;
+      }
+
+      px_vec.push_back(static_cast<float>(x));
+      py_vec.push_back(static_cast<float>(y));
     }
   }
 
-  for (int gy = 0; gy < grid_h; gy++) {
-    for (int gx = 0; gx < grid_w; gx++) {
-      if (!mesh_cell_dilated[gy * grid_w + gx]) continue;
-      int py = std::min(gy * S, H - 1);
-      int px = std::min(gx * S, W - 1);
-
-      float d = depth_acc[py][px];
-      if (d <= 1e-6f || !std::isfinite(d)) continue;
-
-      grid_vertex_id[gy * grid_w + gx] = n_verts;
-      float cam_x = (static_cast<float>(px) - cx) * d / fx;
-      float cam_y = (static_cast<float>(py) - cy) * d / fy;
-      vert_positions.push_back(cam_x);
-      vert_positions.push_back(cam_y);
-      vert_positions.push_back(d);
-      vert_uvs.push_back(static_cast<float>(px));
-      vert_uvs.push_back(static_cast<float>(py));
-      vert_depths.push_back(d);
-      n_verts++;
-    }
-  }
-
+  int n_verts = static_cast<int>(px_vec.size());
   if (n_verts < 3) return;
 
-  // Generate grid triangles with depth discontinuity culling
+  // Build tensors from sampled positions
+  torch::Tensor px_t =
+      torch::from_blob(px_vec.data(), {n_verts}, torch::kFloat32).clone().cuda();
+  torch::Tensor py_t =
+      torch::from_blob(py_vec.data(), {n_verts}, torch::kFloat32).clone().cuda();
+  torch::Tensor sample_indices =
+      (py_t.to(torch::kLong) * W + px_t.to(torch::kLong));
+  torch::Tensor sampled_depth = depth_map.flatten().index({sample_indices});
+
+  // Backproject to camera space
+  float f_x = pkf->intr_[0], f_y = pkf->intr_[1];
+  float c_x = pkf->intr_[2], c_y = pkf->intr_[3];
+  torch::Tensor cam_x = (px_t - c_x) * sampled_depth / f_x;
+  torch::Tensor cam_y = (py_t - c_y) * sampled_depth / f_y;
+  torch::Tensor verts_cam = torch::stack({cam_x, cam_y, sampled_depth}, 1);
+
+  // 2D Delaunay triangulation in pixel space using CDT
+  std::vector<CDT::V2d<double>> cdt_verts(n_verts);
+  for (int i = 0; i < n_verts; i++) {
+    cdt_verts[i] = CDT::V2d<double>(
+        static_cast<double>(px_vec[i]), static_cast<double>(py_vec[i]));
+  }
+
+  torch::cuda::synchronize();
+  CDT::Triangulation<double> cdt;
+  try {
+    cdt.insertVertices(cdt_verts);
+    cdt.eraseSuperTriangle();
+  } catch (const std::exception& e) {
+    std::cerr << "[meshDepthMap] CDT failed (" << n_verts
+              << " points): " << e.what() << std::endl;
+    return;
+  }
+  if (cdt.triangles.empty()) return;
+
+  // Filter triangles by depth discontinuity and max edge length
+  auto sd_cpu = sampled_depth.cpu();
+  auto sd_ptr = sd_cpu.data_ptr<float>();
+  float max_edge_sq = static_cast<float>(max_stride * max_stride) * 4.0f;
   std::vector<int32_t> tri_indices;
-  for (int gy = 0; gy < grid_h - 1; gy++) {
-    for (int gx = 0; gx < grid_w - 1; gx++) {
-      int id_tl = grid_vertex_id[gy * grid_w + gx];
-      int id_tr = grid_vertex_id[gy * grid_w + gx + 1];
-      int id_bl = grid_vertex_id[(gy + 1) * grid_w + gx];
-      int id_br = grid_vertex_id[(gy + 1) * grid_w + gx + 1];
+  int n_del_tris = static_cast<int>(cdt.triangles.size());
+  for (int t = 0; t < n_del_tris; t++) {
+    int a = static_cast<int>(cdt.triangles[t].vertices[0]);
+    int b = static_cast<int>(cdt.triangles[t].vertices[1]);
+    int c = static_cast<int>(cdt.triangles[t].vertices[2]);
 
-      // Check each edge for depth discontinuity
-      auto depth_ok = [&](int a, int b) -> bool {
-        if (a < 0 || b < 0) return false;
-        float da = vert_depths[a], db = vert_depths[b];
-        float ratio = (da > db) ? da / db : db / da;
-        return ratio < disc_thresh;
-      };
+    // Edge length filter in pixel space
+    auto edge_len_sq = [&](int i, int j) -> float {
+      float dx = px_vec[i] - px_vec[j];
+      float dy = py_vec[i] - py_vec[j];
+      return dx * dx + dy * dy;
+    };
+    if (edge_len_sq(a, b) > max_edge_sq || edge_len_sq(a, c) > max_edge_sq ||
+        edge_len_sq(b, c) > max_edge_sq)
+      continue;
 
-      // Upper-left triangle: tl-tr-bl
-      if (depth_ok(id_tl, id_tr) && depth_ok(id_tl, id_bl) &&
-          depth_ok(id_tr, id_bl)) {
-        tri_indices.push_back(id_tl);
-        tri_indices.push_back(id_tr);
-        tri_indices.push_back(id_bl);
-      }
-      // Lower-right triangle: tr-br-bl
-      if (depth_ok(id_tr, id_br) && depth_ok(id_tr, id_bl) &&
-          depth_ok(id_br, id_bl)) {
-        tri_indices.push_back(id_tr);
-        tri_indices.push_back(id_br);
-        tri_indices.push_back(id_bl);
-      }
-    }
+    // Depth ratio filter
+    float da = sd_ptr[a], db = sd_ptr[b], dc = sd_ptr[c];
+    auto ratio_ok = [&](float d1, float d2) -> bool {
+      float r = (d1 > d2) ? d1 / d2 : d2 / d1;
+      return r < disc_thresh;
+    };
+    if (!ratio_ok(da, db) || !ratio_ok(da, dc) || !ratio_ok(db, dc))
+      continue;
+
+    tri_indices.push_back(a);
+    tri_indices.push_back(b);
+    tri_indices.push_back(c);
   }
 
   int n_tris = static_cast<int>(tri_indices.size()) / 3;
   if (n_tris == 0) return;
 
-  // Build tensors on GPU
-  torch::Tensor verts_cam = torch::from_blob(
-      vert_positions.data(), {n_verts, 3},
-      torch::TensorOptions().dtype(torch::kFloat32))
-      .clone().cuda();
+  // Compact: keep only vertices referenced by surviving triangles
+  std::vector<bool> used(n_verts, false);
+  for (int idx : tri_indices) used[idx] = true;
+  std::vector<int32_t> remap(n_verts, -1);
+  int compact_count = 0;
+  std::vector<int64_t> keep_indices;
+  for (int i = 0; i < n_verts; i++) {
+    if (used[i]) {
+      remap[i] = compact_count++;
+      keep_indices.push_back(i);
+    }
+  }
+  for (auto& idx : tri_indices) idx = remap[idx];
+
+  torch::Tensor keep_tensor = torch::tensor(keep_indices, torch::kLong).cuda();
+  verts_cam = verts_cam.index({keep_tensor});
+  px_t = px_t.index({keep_tensor});
+  py_t = py_t.index({keep_tensor});
 
   torch::Tensor triangle_idx = torch::from_blob(
       tri_indices.data(), {n_tris, 3},
       torch::TensorOptions().dtype(torch::kInt32))
       .clone().cuda();
+
+  std::cout << "[meshDepthMap] " << compact_count << " verts, " << n_tris
+            << " tris (from " << n_verts << " sampled)" << std::endl;
 
   // Transform vertices to world space
   Sophus::SE3f Twc = pkf->getPosef().inverse();
@@ -1415,24 +1457,21 @@ void TriangleMapper::meshDepthMap(std::shared_ptr<TriangleKeyframe> pkf) {
   transformPoints(verts_cam, Twc_tensor);
 
   // Sample colors from RGB image
-  torch::Tensor uv_tensor = torch::from_blob(
-      vert_uvs.data(), {n_verts, 2},
-      torch::TensorOptions().dtype(torch::kFloat32))
-      .clone().cuda();
-
-  torch::Tensor rgb = pkf->gaus_pyramid_original_image_[0];  // [3, H, W]
-  torch::Tensor u_l = uv_tensor.select(1, 0).to(torch::kLong);
-  torch::Tensor v_l = uv_tensor.select(1, 1).to(torch::kLong);
+  torch::Tensor u_l = px_t.to(torch::kLong);
+  torch::Tensor v_l = py_t.to(torch::kLong);
   torch::Tensor colors =
-      rgb.permute({1, 2, 0}).index({v_l, u_l});  // [V, 3]
+      rgb.permute({1, 2, 0}).index({v_l, u_l});
 
-  // Set uniform opacity
-  float floor = triangles_->opacity_floor_;
+  // Set uniform opacity — use config init value, not current (may be 0 before training starts)
+  float floor = std::max(triangles_->opacity_floor_, opt_params_.opacity_floor_init_);
   float init_opacity = std::max(0.28f, floor);
   torch::Tensor opacities = general_utils::inverse_sigmoid(
-      torch::full({n_verts, 1}, init_opacity,
+      torch::full({compact_count, 1}, init_opacity,
                   torch::TensorOptions().device(device_type_)));
 
   triangles_->addMeshedPoints(verts_cam, triangle_idx, colors, opacities,
                               getIteration(), scene_->cameras_extent_);
+  torch::cuda::synchronize();
+  std::cout << "[meshDepthMap] addMeshedPoints complete" << std::flush
+            << std::endl;
 }

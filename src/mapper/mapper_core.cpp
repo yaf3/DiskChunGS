@@ -154,6 +154,7 @@ void TriangleMapper::run() {
   }
 
   // Finalization: save outputs and clean up
+  triangles_->sigma_value_ = 0.0f;
   saveTotalTriangles("_shutdown");
   renderAndRecordAllKeyframes("_shutdown");
   saveScene(result_dir_ / (std::to_string(getIteration()) + "_shutdown") /
