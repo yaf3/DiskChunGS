@@ -1,10 +1,10 @@
-"""Mesh geometry evaluation: Chamfer-L2, Accuracy, Completion, Completion Ratio, F-score.
+"""Mesh geometry evaluation metrics.
 
 Usage:
-    python3 eval/chamfer_l2.py <pred_mesh.off> <gt_mesh.ply> [--n_points 200000] [--tau 0.05]
+    python3 eval/mesh_metrics.py <pred_mesh.off> <gt_mesh.ply> [--n_points 200000] [--tau 0.05]
 
 Importable:
-    from chamfer_l2 import compute, compute_all
+    from mesh_metrics import compute, compute_all
     chamfer = compute("mesh.off", "mesh.ply")
     metrics = compute_all("mesh.off", "mesh.ply")
 """
@@ -126,6 +126,9 @@ def _load_mesh(path):
         return _load_off(path)
     if path.lower().endswith(".ply"):
         return _load_ply(path)
+    if path.lower().endswith(".obj"):
+        import open3d as o3d
+        return o3d.io.read_triangle_mesh(path)
     raise ValueError(f"Unsupported mesh format: {path}")
 
 
@@ -193,6 +196,55 @@ def _align(pred_pc, gt_pc, est_traj_path=None, gt_traj_path=None):
 
 
 # ---------------------------------------------------------------------------
+# Gravity estimation from camera poses
+# ---------------------------------------------------------------------------
+
+def estimate_gravity_direction(traj_path):
+    """Estimate gravity direction in SLAM frame from camera poses.
+
+    In OpenCV convention (ORB-SLAM), camera Y-axis points down.
+    Rotating (0,1,0) by each pose's rotation gives the down direction
+    in the SLAM world frame. Averaging across poses is robust to noise.
+
+    Returns unit vector pointing in the gravity (down) direction.
+    """
+    down_vectors = []
+    with open(traj_path) as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            vals = line.strip().split()
+            if len(vals) < 8:
+                continue
+            q = [float(vals[4]), float(vals[5]), float(vals[6]), float(vals[7])]
+            R = Rotation.from_quat(q).as_matrix()
+            down_vectors.append(R @ np.array([0.0, 1.0, 0.0]))
+    avg_down = np.mean(down_vectors, axis=0)
+    return avg_down / np.linalg.norm(avg_down)
+
+
+def compute_gravity_rotation(gravity_dir, target_down=None):
+    """Compute rotation matrix that aligns gravity_dir with target_down.
+
+    Default target_down is (0, 0, -1) for Z-up convention (Isaac Sim / USD).
+    Returns 3x3 rotation matrix.
+    """
+    if target_down is None:
+        target_down = np.array([0.0, 0.0, -1.0])
+    gravity_dir = gravity_dir / np.linalg.norm(gravity_dir)
+    target_down = target_down / np.linalg.norm(target_down)
+    v = np.cross(gravity_dir, target_down)
+    c = np.dot(gravity_dir, target_down)
+    if np.linalg.norm(v) < 1e-8:
+        return np.eye(3) if c > 0 else -np.eye(3)
+    vx = np.array([[0, -v[2], v[1]],
+                    [v[2], 0, -v[0]],
+                    [-v[1], v[0], 0]])
+    R = np.eye(3) + vx + vx @ vx / (1.0 + c)
+    return R
+
+
+# ---------------------------------------------------------------------------
 # View-based culling
 # ---------------------------------------------------------------------------
 
@@ -247,15 +299,21 @@ def _cull_gt_points(gt_points, gt_traj_path, cam_params_path, max_depth=10.0,
 # ---------------------------------------------------------------------------
 
 def _sample_and_distances(pred_path, gt_path, n_points=N_POINTS_DEFAULT, align=True,
-                          est_traj=None, gt_traj=None, cam_params=None):
+                          est_traj=None, gt_traj=None, cam_params=None,
+                          return_clouds=False):
     pred_mesh = _load_mesh(pred_path)
     gt_mesh   = _load_mesh(gt_path)
 
-    pred_pc = pred_mesh.sample_points_uniformly(n_points)
-    gt_pc   = gt_mesh.sample_points_uniformly(n_points)
+    pred_mesh.compute_vertex_normals()
+    gt_mesh.compute_vertex_normals()
+    pred_pc = pred_mesh.sample_points_uniformly(n_points, use_triangle_normal=True)
+    gt_pc   = gt_mesh.sample_points_uniformly(n_points, use_triangle_normal=True)
 
     if align:
-        pred_pc, _ = _align(pred_pc, gt_pc, est_traj, gt_traj)
+        pred_pc, T = _align(pred_pc, gt_pc, est_traj, gt_traj)
+        R = T[:3, :3]
+        pred_normals = np.asarray(pred_pc.normals) @ R.T
+        pred_pc.normals = o3d.utility.Vector3dVector(pred_normals)
 
     if gt_traj and cam_params:
         gt_pts = np.asarray(gt_pc.points)
@@ -271,6 +329,8 @@ def _sample_and_distances(pred_path, gt_path, n_points=N_POINTS_DEFAULT, align=T
     d_pred_to_gt = np.asarray(pred_pc.compute_point_cloud_distance(gt_pc))
     d_gt_to_pred = np.asarray(gt_pc.compute_point_cloud_distance(pred_pc))
 
+    if return_clouds:
+        return d_pred_to_gt, d_gt_to_pred, pred_pc, gt_pc
     return d_pred_to_gt, d_gt_to_pred
 
 
@@ -289,13 +349,16 @@ def compute(pred_path, gt_path, n_points=N_POINTS_DEFAULT, align=True,
 def compute_all(pred_path, gt_path, n_points=N_POINTS_DEFAULT, tau=TAU_DEFAULT,
                 align=True, est_traj=None, gt_traj=None, cam_params=None):
     """All standard geometry metrics. Returns dict."""
-    d_pred_to_gt, d_gt_to_pred = _sample_and_distances(
-        pred_path, gt_path, n_points, align, est_traj, gt_traj, cam_params)
+    d_pred_to_gt, d_gt_to_pred, pred_pc, gt_pc = _sample_and_distances(
+        pred_path, gt_path, n_points, align, est_traj, gt_traj, cam_params,
+        return_clouds=True)
 
     accuracy   = float(np.mean(d_pred_to_gt))
     completion = float(np.mean(d_gt_to_pred))
     chamfer_l1 = accuracy + completion
     chamfer_l2 = float(np.mean(d_pred_to_gt ** 2) + np.mean(d_gt_to_pred ** 2))
+
+    hausdorff = float(max(np.max(d_pred_to_gt), np.max(d_gt_to_pred)))
 
     completion_ratio = float(np.mean(d_gt_to_pred < tau)) * 100.0
 
@@ -304,15 +367,26 @@ def compute_all(pred_path, gt_path, n_points=N_POINTS_DEFAULT, tau=TAU_DEFAULT,
     f_score   = 2.0 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
     f_score  *= 100.0
 
+    pred_normals = np.asarray(pred_pc.normals)
+    gt_normals = np.asarray(gt_pc.normals)
+    gt_tree = o3d.geometry.KDTreeFlann(gt_pc)
+    normal_dots = np.zeros(len(pred_normals))
+    for i in range(len(pred_normals)):
+        _, idx, _ = gt_tree.search_knn_vector_3d(pred_pc.points[i], 1)
+        normal_dots[i] = abs(np.dot(pred_normals[i], gt_normals[idx[0]]))
+    normal_consistency = float(np.mean(normal_dots))
+
     return {
         "accuracy_cm":        accuracy * 100.0,
         "completion_cm":      completion * 100.0,
         "chamfer_l1_cm":      chamfer_l1 * 100.0,
         "chamfer_l2":         chamfer_l2,
+        "hausdorff_cm":       hausdorff * 100.0,
         "completion_ratio_%": completion_ratio,
         "precision_%":        precision * 100.0,
         "recall_%":           recall * 100.0,
         "f_score_%":          f_score,
+        "normal_consistency": normal_consistency,
         "tau_m":              tau,
     }
 

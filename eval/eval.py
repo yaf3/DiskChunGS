@@ -11,7 +11,7 @@ import os
 import glob
 import csv
 import argparse
-import chamfer_l2
+import mesh_metrics
 
 
 parser = argparse.ArgumentParser(description="evaluation script")
@@ -175,19 +175,19 @@ for gt_dataset_name in gt_dataset:
                     Rendering_fps = 1000 / np.mean(render_time)
 
                 Chamfer = None
-                mesh_metrics = {}
+                mesh_result = {}
                 if gt_dataset_name == "replica":
                     pred_mesh_matches = glob.glob(os.path.join(result, scene, "*_shutdown", "data", "mesh.off"))
                     gt_mesh   = os.path.join(gt_dataset[gt_dataset_name]["path"], f"{scene}_mesh.ply")
                     pred_mesh = pred_mesh_matches[0] if pred_mesh_matches else None
                     if pred_mesh and os.path.exists(pred_mesh) and os.path.exists(gt_mesh):
                         try:
-                            mesh_metrics = chamfer_l2.compute_all(pred_mesh, gt_mesh)
-                            Chamfer = mesh_metrics["chamfer_l2"]
-                            print(f"  {scene}: Ch-L2={Chamfer:.6f}  Acc={mesh_metrics['accuracy_cm']:.2f}cm  "
-                                  f"Comp={mesh_metrics['completion_cm']:.2f}cm  "
-                                  f"CompR={mesh_metrics['completion_ratio_%']:.1f}%  "
-                                  f"F={mesh_metrics['f_score_%']:.1f}%")
+                            mesh_result = mesh_metrics.compute_all(pred_mesh, gt_mesh)
+                            Chamfer = mesh_result["chamfer_l2"]
+                            print(f"  {scene}: Ch-L2={Chamfer:.6f}  Acc={mesh_result['accuracy_cm']:.2f}cm  "
+                                  f"Comp={mesh_result['completion_cm']:.2f}cm  "
+                                  f"CompR={mesh_result['completion_ratio_%']:.1f}%  "
+                                  f"F={mesh_result['f_score_%']:.1f}%")
                         except Exception as e:
                             print(f"Chamfer failed for {scene}: {e}")
 
@@ -203,9 +203,9 @@ for gt_dataset_name in gt_dataset:
                     Num_Gaussians,
                     vram_usage,
                     Chamfer,
-                    mesh_metrics.get("accuracy_cm"),
-                    mesh_metrics.get("completion_cm"),
-                    mesh_metrics.get("f_score_%"),
+                    mesh_result.get("accuracy_cm"),
+                    mesh_result.get("completion_cm"),
+                    mesh_result.get("f_score_%"),
                 )
                 print(result_str)
                 logs.append(result_str)
