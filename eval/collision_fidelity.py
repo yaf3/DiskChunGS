@@ -1,17 +1,22 @@
 """Collision fidelity evaluation in Isaac Sim.
 
-Loads a predicted mesh, applies different collision approximation modes, and
-measures how much each mode distorts the collision boundary compared to raw
-triangle mesh collision ("none") on the SAME mesh.
+Two evaluation modes:
+  1. Collision approximation: compares collision modes (convexDecomposition,
+     convexHull, meshSimplification) against raw triangles on the SAME mesh.
+  2. Pred vs GT (when --gt_mesh given): drops probes on both pred and GT meshes
+     to measure how SLAM reconstruction distorts collision boundaries.
 
-The mesh is gravity-aligned using camera poses so that physics simulation
-(probe drops) works correctly even when the SLAM frame is tilted.
+Meshes are gravity-aligned using camera poses so that physics simulation
+works correctly even when the SLAM frame is tilted. When GT mesh is provided,
+pred is ICP-aligned onto GT for a fair per-probe comparison.
 
 Usage (inside Isaac Sim container):
     cd /workspace/IsaacLab
     ./isaaclab.sh -p /workspace/repo/eval/collision_fidelity.py \
         --pred_mesh /workspace/repo/results/mesh_test/room0/4108_shutdown/data/mesh.off \
-        --est_traj /workspace/repo/results/mesh_test/room0/CameraTrajectory_TUM.txt
+        --est_traj /workspace/repo/results/mesh_test/room0/CameraTrajectory_TUM.txt \
+        --gt_mesh /workspace/repo/data/Replica/room0_mesh.ply \
+        --gt_traj /workspace/repo/data/Replica/room0/pose_TUM.txt
 """
 
 import argparse
@@ -24,10 +29,16 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(description="Collision fidelity evaluation")
 parser.add_argument("--pred_mesh", type=str, required=True, help="Path to predicted mesh (OFF/PLY/OBJ)")
 parser.add_argument("--est_traj", type=str, required=True, help="Estimated trajectory (TUM format) for gravity alignment")
+parser.add_argument("--gt_mesh", type=str, default=None, help="Path to GT mesh (PLY/OBJ) for pred-vs-GT comparison")
+parser.add_argument("--gt_traj", type=str, default=None, help="GT trajectory (TUM format) for GT mesh gravity alignment")
 parser.add_argument("--num_probes", type=int, default=200, help="Number of probe spheres to drop")
 parser.add_argument("--probe_radius", type=float, default=0.02, help="Probe sphere radius (m)")
 parser.add_argument("--settle_steps", type=int, default=300, help="Physics steps to let probes settle")
 parser.add_argument("--output", type=str, default=None, help="Output file path (default: next to pred_mesh)")
+parser.add_argument("--force_align", action="store_true", help="Re-generate aligned meshes even if cached")
+parser.add_argument("--flip_gt", action="store_true", help="Negate GT gravity direction (use for OpenGL-convention GT trajectories like Replica)")
+parser.add_argument("--gt_only", action="store_true", help="Skip pred-only tests (Parts 1+2), run only GT vs pred comparison")
+parser.add_argument("--pause", action="store_true", help="Wait for Enter before each simulation phase (inspect meshes in viewer first)")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 app_launcher = AppLauncher(args_cli)
@@ -45,67 +56,17 @@ sys.path.insert(0, os.path.dirname(__file__))
 import mesh_metrics
 
 
-def perfect_floor_flattening(mesh_path, output_path):
-    """Finds the dominant floor plane using RANSAC and rotates the mesh so the floor is perfectly flat."""
-    mesh = o3d.io.read_triangle_mesh(mesh_path)
-    
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = mesh.vertices
-    
-    plane_model, inliers = pcd.segment_plane(
-        distance_threshold=0.03, ransac_n=3, num_iterations=1000
-    )
-    [a, b, c, d] = plane_model
-    floor_normal = np.array([a, b, c])
-    
-    if floor_normal[2] < 0:
-        floor_normal = -floor_normal
-        
-    print(f"  Detected floor plane normal: {floor_normal}")
-    
-    world_up = np.array([0.0, 0.0, 1.0])
-    
-    v = np.cross(floor_normal, world_up)
-    cos_theta = np.dot(floor_normal, world_up)
-    
-    if np.linalg.norm(v) < 1e-6:
-        R_flatten = np.eye(3)
-    else:
-        s = np.linalg.norm(v)
-        kmat = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
-        R_flatten = np.eye(3) + kmat + kmat @ kmat * ((1 - cos_theta) / (s ** 2))
-
-    mesh.rotate(R_flatten, center=(0, 0, 0))
-    
-    verts = np.asarray(mesh.vertices)
-    avg_floor_z = np.mean(verts[inliers, 2])
-    mesh.translate([0, 0, -avg_floor_z])
-    
-    o3d.io.write_triangle_mesh(output_path, mesh)
-    print(f"  Floor flattened and snapped to Z=0. Saving to {output_path}")
-    return output_path
-
-
-def gravity_align_mesh(mesh_path, traj_path):
-    """Rotate mesh so SLAM gravity aligns with -Z, then micro-flattens the floor footprint."""
-    aligned_path = mesh_path.rsplit(".", 1)[0] + "_perfectly_aligned.obj"
-    if os.path.exists(aligned_path):
+def gravity_align_mesh(mesh_path, traj_path, force=False):
+    """Rotate mesh so SLAM gravity aligns with -Z, RANSAC-flatten floor, snap to Z=0."""
+    aligned_path = mesh_path.rsplit(".", 1)[0] + "_aligned.obj"
+    if os.path.exists(aligned_path) and not force:
         return aligned_path
 
-    gravity_dir = mesh_metrics.estimate_gravity_direction(traj_path)
-    R = mesh_metrics.compute_gravity_rotation(gravity_dir)
-
     mesh = mesh_metrics._load_mesh(mesh_path)
-    mesh.rotate(R, center=(0, 0, 0))
-    
-    temp_path = mesh_path.rsplit(".", 1)[0] + "_temp.obj"
-    o3d.io.write_triangle_mesh(temp_path, mesh)
+    mesh_metrics.gravity_align(mesh, traj_path)
 
-    perfect_floor_flattening(temp_path, aligned_path)
-    
-    if os.path.exists(temp_path):
-        os.remove(temp_path)
-        
+    o3d.io.write_triangle_mesh(aligned_path, mesh)
+    print(f"  Aligned mesh saved to {aligned_path}")
     return aligned_path
 
 
@@ -151,7 +112,6 @@ def sample_probe_positions(mesh_path, n_points):
 
 def setup_probes(probe_positions, probe_radius):
     """Create probe origins and RigidObject for all probes."""
-    n = len(probe_positions)
     for i, pos in enumerate(probe_positions):
         sim_utils.create_prim(f"/World/Probe{i}", "Xform", translation=tuple(pos.tolist()))
 
@@ -218,7 +178,21 @@ def run_test(sim, probes, probe_positions, settle_steps):
 
 
 def main():
-    aligned_obj = gravity_align_mesh(args_cli.pred_mesh, args_cli.est_traj)
+    force = args_cli.force_align
+    gt_only = args_cli.gt_only
+
+    pred_aligned = None
+    if not gt_only:
+        pred_aligned = gravity_align_mesh(args_cli.pred_mesh, args_cli.est_traj, force=force)
+
+    gt_aligned = None
+    pred_gt_aligned = None
+    if args_cli.gt_mesh:
+        print("\nAligning pred to GT and gravity-aligning both...")
+        pred_gt_aligned, gt_aligned = mesh_metrics.align_pred_to_gt(
+            args_cli.pred_mesh, args_cli.gt_mesh, args_cli.est_traj, args_cli.gt_traj,
+            force=force, flip_gt=args_cli.flip_gt,
+        )
 
     sim_cfg = SimulationCfg(dt=1.0 / 120.0)
     sim = SimulationContext(sim_cfg)
@@ -227,88 +201,169 @@ def main():
     cfg_ground = sim_utils.GroundPlaneCfg()
     cfg_ground.func("/World/ground", cfg_ground, translation=[0, 0, -20])
 
-    np.random.seed(42)
-    probe_positions = sample_probe_positions(aligned_obj, args_cli.num_probes)
+    pred_baseline_settled = None
+    pred_valid_count = 0
+    pred_total_count = 0
+    pred_fallthrough_rate = 0.0
+    approx_results = {}
 
-    import_mesh_to_stage(aligned_obj, "/World/mesh", "none")
+    # Use GT-aligned pred for probe setup when --gt_only
+    probe_mesh_path = pred_gt_aligned if gt_only else pred_aligned
+    np.random.seed(42)
+    probe_positions = sample_probe_positions(probe_mesh_path, args_cli.num_probes)
+
+    import_mesh_to_stage(probe_mesh_path, "/World/mesh", "none")
 
     probes = setup_probes(probe_positions, args_cli.probe_radius)
 
     sim.reset()
 
-    print(f"\n{'='*60}")
-    print("Baseline: collision mode 'none' (raw triangles)")
-    print(f"{'='*60}")
-    baseline_settled = run_test(sim, probes, probe_positions, args_cli.settle_steps)
-
-    initial_z = probe_positions[:, 2].mean()
-    settled_z = baseline_settled[:, 2].mean()
-    print(f"  Initial avg Z={initial_z:.3f}, Settled avg Z={settled_z:.3f}")
-    
-    baseline_valid = baseline_settled[:, 2] > -10
-    baseline_valid_count = int(baseline_valid.sum())
-    baseline_total_count = len(baseline_settled)
-    baseline_fallthrough_rate = float(1.0 - baseline_valid.mean()) * 100.0
-    
-    print(f"  Baseline Valid Probes: {baseline_valid_count}/{baseline_total_count}")
-    print(f"  Baseline Fallthrough Rate: {baseline_fallthrough_rate:.2f}%")
-
-    if abs(initial_z - settled_z) < 0.01:
-        print("  WARNING: Probes did not move! Physics may not be active.")
-        print("  Aborting — fix physics before testing collision modes.")
-        simulation_app.close()
-        return
-
-    test_modes = ["convexDecomposition", "convexHull", "meshSimplification"]
-    results = {}
-
-    for mode in test_modes:
+    if not gt_only:
+        # --- Part 1: Pred mesh baseline (raw triangles) ---
         print(f"\n{'='*60}")
-        print(f"Testing collision mode: {mode}")
+        print("Pred mesh baseline: collision mode 'none' (raw triangles)")
+        print(f"{'='*60}")
+        if args_cli.pause:
+            input(">> Press Enter to drop probes on PRED mesh...")
+        pred_baseline_settled = run_test(sim, probes, probe_positions, args_cli.settle_steps)
+
+        initial_z = probe_positions[:, 2].mean()
+        settled_z = pred_baseline_settled[:, 2].mean()
+        print(f"  Initial avg Z={initial_z:.3f}, Settled avg Z={settled_z:.3f}")
+
+        pred_valid = pred_baseline_settled[:, 2] > -10
+        pred_valid_count = int(pred_valid.sum())
+        pred_total_count = len(pred_baseline_settled)
+        pred_fallthrough_rate = float(1.0 - pred_valid.mean()) * 100.0
+
+        print(f"  Valid Probes: {pred_valid_count}/{pred_total_count}")
+        print(f"  Fallthrough Rate: {pred_fallthrough_rate:.2f}%")
+
+        if abs(initial_z - settled_z) < 0.01:
+            print("  WARNING: Probes did not move! Physics may not be active.")
+            print("  Aborting — fix physics before testing collision modes.")
+            simulation_app.close()
+            return
+
+        # --- Part 2: Collision approximation modes on pred mesh ---
+        test_modes = ["convexDecomposition", "convexHull", "meshSimplification"]
+
+        for mode in test_modes:
+            print(f"\n{'='*60}")
+            print(f"Pred mesh collision mode: {mode}")
+            print(f"{'='*60}")
+
+            try:
+                sim_utils.delete_prim("/World/mesh")
+                import_mesh_to_stage(pred_aligned, "/World/mesh", mode)
+
+                test_settled = run_test(sim, probes, probe_positions, args_cli.settle_steps)
+                metrics = compute_collision_metrics(pred_baseline_settled, test_settled)
+                approx_results[mode] = metrics
+
+                for k, v in metrics.items():
+                    print(f"  {k}: {v}")
+            except Exception as e:
+                print(f"  FAILED: {e}")
+                import traceback
+                traceback.print_exc()
+                approx_results[mode] = {"error": str(e)}
+
+    # --- Part 3: Pred vs GT comparison ---
+    gt_vs_pred = None
+    gt_baseline_settled = None
+    gt_valid_count = 0
+    gt_total_count = 0
+    gt_fallthrough_rate = 0.0
+
+    if gt_aligned:
+        gt_probe_positions = sample_probe_positions(gt_aligned, args_cli.num_probes)
+
+        print(f"\n{'='*60}")
+        print("GT mesh baseline: collision mode 'none' (raw triangles)")
         print(f"{'='*60}")
 
-        try:
-            sim_utils.delete_prim("/World/mesh")
-            import_mesh_to_stage(aligned_obj, "/World/mesh", mode)
+        sim_utils.delete_prim("/World/mesh")
+        import_mesh_to_stage(gt_aligned, "/World/mesh", "none")
 
-            test_settled = run_test(sim, probes, probe_positions, args_cli.settle_steps)
-            metrics = compute_collision_metrics(baseline_settled, test_settled)
-            results[mode] = metrics
+        if args_cli.pause:
+            input(">> Press Enter to drop probes on GT mesh...")
+        gt_baseline_settled = run_test(sim, probes, gt_probe_positions, args_cli.settle_steps)
 
-            for k, v in metrics.items():
-                print(f"  {k}: {v}")
-        except Exception as e:
-            print(f"  FAILED: {e}")
-            import traceback
-            traceback.print_exc()
-            results[mode] = {"error": str(e)}
+        gt_valid = gt_baseline_settled[:, 2] > -10
+        gt_valid_count = int(gt_valid.sum())
+        gt_total_count = len(gt_baseline_settled)
+        gt_fallthrough_rate = float(1.0 - gt_valid.mean()) * 100.0
 
+        print(f"  Valid Probes: {gt_valid_count}/{gt_total_count}")
+        print(f"  Fallthrough Rate: {gt_fallthrough_rate:.2f}%")
+
+        print(f"\n{'='*60}")
+        print("Pred (ICP-aligned) on GT probe positions")
+        print(f"{'='*60}")
+
+        sim_utils.delete_prim("/World/mesh")
+        import_mesh_to_stage(pred_gt_aligned, "/World/mesh", "none")
+
+        if args_cli.pause:
+            input(">> Press Enter to drop probes on PRED (ICP-aligned to GT)...")
+        pred_on_gt_settled = run_test(sim, probes, gt_probe_positions, args_cli.settle_steps)
+
+        gt_vs_pred = compute_collision_metrics(gt_baseline_settled, pred_on_gt_settled)
+        print(f"\n  Pred vs GT deviation:")
+        for k, v in gt_vs_pred.items():
+            print(f"    {k}: {v}")
+
+    # --- Write results ---
     out_path = args_cli.output
     if out_path is None:
         out_path = os.path.join(os.path.dirname(args_cli.pred_mesh), "collision_fidelity.txt")
 
     with open(out_path, "w") as f:
-        f.write("[baseline: none (raw triangles)]\n")
-        f.write(f"valid_probes: {baseline_valid_count}\n")
-        f.write(f"total_probes: {baseline_total_count}\n")
-        f.write(f"fallthrough_rate_%: {baseline_fallthrough_rate:.6f}\n\n")
+        if pred_baseline_settled is not None:
+            f.write("[pred baseline: none (raw triangles)]\n")
+            f.write(f"valid_probes: {pred_valid_count}\n")
+            f.write(f"total_probes: {pred_total_count}\n")
+            f.write(f"fallthrough_rate_%: {pred_fallthrough_rate:.6f}\n\n")
 
-        for mode, metrics in results.items():
-            f.write(f"[{mode} vs none]\n")
-            for k, v in metrics.items():
+            for mode, metrics in approx_results.items():
+                f.write(f"[pred {mode} vs none]\n")
+                for k, v in metrics.items():
+                    f.write(f"{k}: {v}\n")
+                f.write("\n")
+
+        if gt_baseline_settled is not None:
+            f.write("[gt baseline: none (raw triangles)]\n")
+            f.write(f"valid_probes: {gt_valid_count}\n")
+            f.write(f"total_probes: {gt_total_count}\n")
+            f.write(f"fallthrough_rate_%: {gt_fallthrough_rate:.6f}\n\n")
+
+            f.write("[pred vs gt]\n")
+            for k, v in gt_vs_pred.items():
                 f.write(f"{k}: {v}\n")
             f.write("\n")
 
+    # --- Print summary ---
     print(f"\n{'='*60}")
-    print("SUMMARY (deviation from raw triangle collision)")
+    print("SUMMARY")
     print(f"{'='*60}")
-    print(f"\n  [none (Base Mesh)]")
-    print(f"    fallthrough_rate_%: {baseline_fallthrough_rate:.2f}%")
-    print(f"    valid_probes: {baseline_valid_count}/{baseline_total_count}")
-    
-    for mode, metrics in results.items():
-        print(f"\n  [{mode}]")
-        for k, v in metrics.items():
+
+    if pred_baseline_settled is not None:
+        print(f"\n  [pred none (baseline)]")
+        print(f"    fallthrough_rate_%: {pred_fallthrough_rate:.2f}%")
+        print(f"    valid_probes: {pred_valid_count}/{pred_total_count}")
+
+        for mode, metrics in approx_results.items():
+            print(f"\n  [pred {mode} vs none]")
+            for k, v in metrics.items():
+                print(f"    {k}: {v}")
+
+    if gt_vs_pred:
+        print(f"\n  [gt none (baseline)]")
+        print(f"    fallthrough_rate_%: {gt_fallthrough_rate:.2f}%")
+        print(f"    valid_probes: {gt_valid_count}/{gt_total_count}")
+        print(f"\n  [pred vs gt]")
+        for k, v in gt_vs_pred.items():
             print(f"    {k}: {v}")
 
     print(f"\n-> {out_path}")

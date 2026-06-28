@@ -1,22 +1,22 @@
 """Navigation benchmark in Isaac Sim.
 
-Spawns a simple robot in a SLAM-reconstructed mesh environment and navigates
-between waypoints. Measures collision rate, path completion, and safety margins.
+Spawns a simple robot sphere in a SLAM-reconstructed mesh environment and
+navigates between waypoints. Measures collision rate, path completion, and
+path efficiency.
 
 Compares navigation on the predicted mesh vs GT mesh to measure how much the
 reconstruction quality affects downstream robot performance.
 
-The meshes are gravity-aligned using camera poses so that physics simulation
-works correctly even when the SLAM frame is tilted.
+Meshes are gravity-aligned using camera poses, floor-flattened via RANSAC, and
+ICP-aligned so both meshes share the same coordinate frame.
 
 Usage (inside Isaac Sim container):
     cd /workspace/IsaacLab
     ./isaaclab.sh -p /workspace/repo/eval/navigation_benchmark.py \
         --pred_mesh /workspace/repo/results/mesh_test/room0/4108_shutdown/data/mesh.off \
-        --gt_mesh /path/to/Replica/room0_mesh.ply \
+        --gt_mesh /workspace/repo/data/Replica/room0_mesh.ply \
         --est_traj /workspace/repo/results/mesh_test/room0/CameraTrajectory_TUM.txt \
-        --gt_traj /workspace/repo/data/Replica/room0/pose_TUM.txt \
-        --headless
+        --gt_traj /workspace/repo/data/Replica/room0/pose_TUM.txt
 """
 
 import argparse
@@ -38,44 +38,36 @@ parser.add_argument("--robot_speed", type=float, default=0.5, help="Robot moveme
 parser.add_argument("--max_steps_per_wp", type=int, default=500, help="Max physics steps per waypoint")
 parser.add_argument("--waypoint_tolerance", type=float, default=0.2, help="Distance to consider waypoint reached (m)")
 parser.add_argument("--output", type=str, default=None, help="Output file path")
+parser.add_argument("--force_align", action="store_true", help="Re-generate aligned meshes even if cached")
+parser.add_argument("--flip_gt", action="store_true", help="Negate GT gravity direction (use for OpenGL-convention GT trajectories like Replica)")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
+import torch
 import open3d as o3d
 import isaaclab.sim as sim_utils
 from isaaclab.sim import SimulationCfg, SimulationContext
 from isaaclab.sim.converters import MeshConverter, MeshConverterCfg
 from isaaclab.sim.schemas import schemas_cfg
-from pxr import UsdGeom, UsdPhysics, Gf, Sdf
+from isaaclab.assets import RigidObject, RigidObjectCfg
 
 sys.path.insert(0, os.path.dirname(__file__))
 import mesh_metrics
 
 
-def gravity_align_mesh(mesh_path, traj_path):
-    """Rotate mesh so SLAM gravity aligns with -Z. Returns path to aligned OBJ."""
-    aligned_path = mesh_path.rsplit(".", 1)[0] + "_aligned.obj"
-    if os.path.exists(aligned_path):
-        return aligned_path
+# ---------------------------------------------------------------------------
+# Mesh alignment (shared with collision_fidelity.py)
+# ---------------------------------------------------------------------------
 
-    gravity_dir = mesh_metrics.estimate_gravity_direction(traj_path)
-    R = mesh_metrics.compute_gravity_rotation(gravity_dir)
-
-    mesh = mesh_metrics._load_mesh(mesh_path)
-    verts = np.asarray(mesh.vertices)
-    verts_rotated = (R @ verts.T).T
-    mesh.vertices = o3d.utility.Vector3dVector(verts_rotated)
-    o3d.io.write_triangle_mesh(aligned_path, mesh)
-    print(f"Gravity-aligned mesh saved to {aligned_path}")
-    print(f"  Estimated gravity dir: {gravity_dir}")
-    return aligned_path
-
+# ---------------------------------------------------------------------------
+# Isaac Sim helpers
+# ---------------------------------------------------------------------------
 
 def import_mesh_to_stage(obj_path, prim_path):
-    """Import OBJ mesh into USD stage with triangle mesh collision."""
-    usd_dir = obj_path.rsplit(".", 1)[0] + "_usd"
+    """Import OBJ mesh into USD stage with raw triangle collision."""
+    usd_dir = obj_path.rsplit(".", 1)[0] + "_none_usd"
     cfg = MeshConverterCfg(
         asset_path=obj_path,
         usd_dir=usd_dir,
@@ -84,113 +76,175 @@ def import_mesh_to_stage(obj_path, prim_path):
             mesh_approximation_name="none",
         ),
         make_instanceable=False,
+        force_usd_conversion=True,
     )
     converter = MeshConverter(cfg)
     sim_utils.create_prim(prim_path, usd_path=converter.usd_path)
     return converter.usd_path
 
 
-def sample_navigable_points(obj_path, n_points, floor_height_percentile=10):
-    """Sample navigable XY positions on the floor of the aligned mesh."""
+def sample_navigable_points(obj_path, n_points, robot_radius):
+    """Sample navigable positions on the floor of the aligned mesh.
+
+    After flatten_floor, the floor is at Z=0. Robot center goes at Z=robot_radius.
+    Validates candidates with raycasting in 6 directions (up, down, and 4 horizontal)
+    to reject points inside walls, under furniture, or outside the mesh.
+    """
     mesh = mesh_metrics._load_mesh(obj_path)
     verts = np.asarray(mesh.vertices)
 
-    floor_z = np.percentile(verts[:, 2], floor_height_percentile)
-    floor_verts = verts[np.abs(verts[:, 2] - floor_z) < 0.3]
+    # Floor is at Z≈0 after flatten_floor. Pick vertices near it.
+    floor_mask = np.abs(verts[:, 2]) < 0.1
+    floor_verts = verts[floor_mask]
+    if len(floor_verts) < 100:
+        floor_mask = verts[:, 2] < np.percentile(verts[:, 2], 15)
+        floor_verts = verts[floor_mask]
 
-    if len(floor_verts) < n_points:
-        floor_verts = verts
+    t_mesh = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
+    scene = o3d.t.geometry.RaycastingScene()
+    scene.add_triangles(t_mesh)
 
-    bbox_min = floor_verts.min(axis=0)
-    bbox_max = floor_verts.max(axis=0)
-    margin = 0.2 * (bbox_max - bbox_min)
-    bbox_min[:2] += margin[:2]
-    bbox_max[:2] -= margin[:2]
+    robot_z = robot_radius + 0.01
+    n_candidates = n_points * 20
+    candidates = floor_verts[np.random.choice(len(floor_verts), size=n_candidates, replace=True)].copy()
+    candidates[:, 2] = robot_z
 
-    points = np.zeros((n_points, 3))
-    points[:, 0] = np.random.uniform(bbox_min[0], bbox_max[0], n_points)
-    points[:, 1] = np.random.uniform(bbox_min[1], bbox_max[1], n_points)
-    points[:, 2] = floor_z + 0.1
+    def cast(origins, direction):
+        rays = np.zeros((len(origins), 6), dtype=np.float32)
+        rays[:, :3] = origins
+        rays[:, 3:] = direction
+        return scene.cast_rays(o3d.core.Tensor(rays))['t_hit'].numpy()
 
-    return points
+    # Down: floor must be within robot_radius + small margin (robot sits on it)
+    dist_down = cast(candidates, [0, 0, -1])
+    valid = (dist_down > 0.001) & (dist_down < robot_radius + 0.05)
+
+    # Up: need room-height clearance (at least 0.5m above robot center)
+    dist_up = cast(candidates, [0, 0, 1])
+    valid &= dist_up > 0.5
+
+    # Horizontal: 4 cardinal directions, need at least robot_radius clearance
+    for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+        dist_h = cast(candidates, [dx, dy, 0])
+        valid &= dist_h > robot_radius * 1.5
+
+    valid_points = candidates[valid]
+    print(f"  Navigable candidates: {len(valid_points)}/{n_candidates} passed validation")
+
+    if len(valid_points) < n_points:
+        print(f"  WARNING: only {len(valid_points)} navigable points found, need {n_points}")
+        if len(valid_points) == 0:
+            valid_points = candidates[:n_points]
+        else:
+            idx = np.random.choice(len(valid_points), size=n_points, replace=True)
+            valid_points = valid_points[idx]
+    else:
+        # Spread points out: iteratively pick the farthest point from selected set
+        selected = [0]
+        for _ in range(n_points - 1):
+            dists = np.min([np.linalg.norm(valid_points[:, :2] - valid_points[s, :2], axis=1)
+                           for s in selected], axis=0)
+            selected.append(np.argmax(dists))
+        valid_points = valid_points[selected]
+
+    print(f"  Sampled {len(valid_points)} navigable points at Z={valid_points[0, 2]:.3f}")
+    return valid_points
 
 
-def create_robot(prim_path, position, radius):
-    """Create a simple sphere robot with rigid body physics."""
-    prim = sim_utils.create_prim(
-        prim_path,
-        prim_type="Sphere",
-        translation=position.tolist(),
-        attributes={"radius": radius},
+def setup_robot(start_position, robot_radius):
+    """Create robot as a RigidObject sphere for proper PhysX registration."""
+    sim_utils.create_prim("/World/Robot0", "Xform", translation=tuple(start_position.tolist()))
+
+    robot_cfg = RigidObjectCfg(
+        prim_path="/World/Robot.*/sphere",
+        spawn=sim_utils.SphereCfg(
+            radius=robot_radius,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(),
     )
-    UsdPhysics.CollisionAPI.Apply(prim)
-    UsdPhysics.RigidBodyAPI.Apply(prim)
-    mass_api = UsdPhysics.MassAPI.Apply(prim)
-    mass_api.GetMassAttr().Set(1.0)
-    return prim
+    robot = RigidObject(cfg=robot_cfg)
+    return robot
 
 
-def get_prim_position(prim):
-    """Get world position of a prim."""
-    xform = UsdGeom.Xformable(prim)
-    transform = xform.ComputeLocalToWorldTransform(0)
-    pos = transform.ExtractTranslation()
-    return np.array([pos[0], pos[1], pos[2]])
+def teleport_robot(robot, position):
+    """Move robot to a new position with zero velocity."""
+    root_pose = robot.data.default_root_pose.torch.clone()
+    root_pose[0, :3] = torch.tensor(position, dtype=torch.float32, device=robot.device)
+    robot.write_root_pose_to_sim_index(root_pose=root_pose)
+    root_vel = robot.data.default_root_vel.torch.clone()
+    robot.write_root_velocity_to_sim_index(root_velocity=root_vel)
+    robot.reset()
 
 
-def apply_velocity(prim, direction, speed):
-    """Apply velocity to robot toward target."""
-    vel = direction * speed
-    rb = UsdPhysics.RigidBodyAPI(prim)
-    rb.GetVelocityAttr().Set(Gf.Vec3f(float(vel[0]), float(vel[1]), float(vel[2])))
+def set_robot_velocity(robot, direction, speed):
+    """Set robot's linear velocity toward target (XY only, no vertical)."""
+    vel = robot.data.default_root_vel.torch.clone()
+    vel[0, 0] = direction[0] * speed
+    vel[0, 1] = direction[1] * speed
+    vel[0, 2] = 0.0
+    robot.write_root_velocity_to_sim_index(root_velocity=vel)
 
 
-def run_navigation_trial(sim, robot_prim, waypoints, robot_speed,
-                         max_steps_per_wp, waypoint_tolerance, physics_dt):
+def get_robot_position(robot):
+    """Read robot position from PhysX tensor."""
+    return robot.data.root_pos_w.torch[0].cpu().numpy()
+
+
+# ---------------------------------------------------------------------------
+# Navigation logic
+# ---------------------------------------------------------------------------
+
+def run_navigation_trial(sim, robot, waypoints, robot_speed,
+                         max_steps_per_wp, waypoint_tolerance):
     """Run one navigation trial. Returns metrics dict."""
+    sim_dt = sim.get_physics_dt()
     total_collisions = 0
     waypoints_reached = 0
     total_distance = 0.0
     total_steps = 0
 
-    prev_pos = get_prim_position(robot_prim)
+    prev_pos = get_robot_position(robot)
 
     for wp_idx, target in enumerate(waypoints):
-        reached = False
         for step in range(max_steps_per_wp):
-            pos = get_prim_position(robot_prim)
+            pos = get_robot_position(robot)
 
             dist_to_target = np.linalg.norm(pos[:2] - target[:2])
             if dist_to_target < waypoint_tolerance:
-                reached = True
                 waypoints_reached += 1
                 break
 
-            direction = target - pos
-            direction[2] = 0
-            dist = np.linalg.norm(direction)
+            direction = np.zeros(3)
+            direction[:2] = target[:2] - pos[:2]
+            dist = np.linalg.norm(direction[:2])
             if dist > 0:
                 direction /= dist
 
-            apply_velocity(robot_prim, direction, robot_speed)
+            set_robot_velocity(robot, direction, robot_speed)
 
+            robot.write_data_to_sim()
             sim.step()
+            robot.update(sim_dt)
             total_steps += 1
 
-            new_pos = get_prim_position(robot_prim)
+            new_pos = get_robot_position(robot)
             step_dist = np.linalg.norm(new_pos - prev_pos)
             total_distance += step_dist
 
-            vel_magnitude = step_dist / physics_dt if physics_dt > 0 else 0
+            vel_magnitude = step_dist / sim_dt if sim_dt > 0 else 0
             if vel_magnitude < robot_speed * 0.1 and dist_to_target > waypoint_tolerance:
                 total_collisions += 1
 
             prev_pos = new_pos
 
-    path_efficiency = total_distance / max(
-        sum(np.linalg.norm(waypoints[i+1][:2] - waypoints[i][:2])
-            for i in range(len(waypoints)-1)), 1e-6
+    ideal_distance = sum(
+        np.linalg.norm(waypoints[i+1][:2] - waypoints[i][:2])
+        for i in range(len(waypoints) - 1)
     )
+    path_efficiency = total_distance / max(ideal_distance, 1e-6)
 
     return {
         "waypoints_reached": waypoints_reached,
@@ -204,16 +258,13 @@ def run_navigation_trial(sim, robot_prim, waypoints, robot_speed,
     }
 
 
-def run_on_mesh(sim, mesh_obj_path, mesh_prim_path, waypoint_sets,
-                robot_radius, robot_speed, max_steps_per_wp,
-                waypoint_tolerance, physics_dt):
+def run_on_mesh(sim, robot, mesh_obj_path, mesh_prim_path, waypoint_sets,
+                robot_speed, max_steps_per_wp, waypoint_tolerance):
     """Run all navigation trials on one mesh."""
     stage = sim_utils.get_current_stage()
 
     if stage.GetPrimAtPath(mesh_prim_path):
         sim_utils.delete_prim(mesh_prim_path)
-    if stage.GetPrimAtPath("/World/robot"):
-        sim_utils.delete_prim("/World/robot")
 
     import_mesh_to_stage(mesh_obj_path, mesh_prim_path)
 
@@ -222,17 +273,11 @@ def run_on_mesh(sim, mesh_obj_path, mesh_prim_path, waypoint_sets,
     for trial_idx, waypoints in enumerate(waypoint_sets):
         print(f"  Trial {trial_idx + 1}/{len(waypoint_sets)}")
 
-        if stage.GetPrimAtPath("/World/robot"):
-            sim_utils.delete_prim("/World/robot")
-
-        start_pos = waypoints[0].copy()
-        robot_prim = create_robot("/World/robot", start_pos, robot_radius)
-
-        sim.reset()
+        teleport_robot(robot, waypoints[0])
 
         result = run_navigation_trial(
-            sim, robot_prim, waypoints[1:],
-            robot_speed, max_steps_per_wp, waypoint_tolerance, physics_dt
+            sim, robot, waypoints[1:],
+            robot_speed, max_steps_per_wp, waypoint_tolerance
         )
         all_trial_results.append(result)
 
@@ -240,8 +285,6 @@ def run_on_mesh(sim, mesh_obj_path, mesh_prim_path, waypoint_sets,
             print(f"    {k}: {v}")
 
     sim_utils.delete_prim(mesh_prim_path)
-    if stage.GetPrimAtPath("/World/robot"):
-        sim_utils.delete_prim("/World/robot")
 
     return all_trial_results
 
@@ -260,57 +303,77 @@ def aggregate_results(trial_results):
     return agg
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main():
-    # Gravity-align pred mesh using estimated trajectory
-    pred_aligned = gravity_align_mesh(args_cli.pred_mesh, args_cli.est_traj)
+    print("\nPreparing meshes...")
+    pred_aligned, gt_aligned = mesh_metrics.align_pred_to_gt(
+        args_cli.pred_mesh, args_cli.gt_mesh, args_cli.est_traj, args_cli.gt_traj,
+        force=args_cli.force_align, flip_gt=args_cli.flip_gt,
+    )
 
-    # GT mesh: align using GT trajectory if provided, otherwise assume already level
-    if args_cli.gt_traj:
-        gt_aligned = gravity_align_mesh(args_cli.gt_mesh, args_cli.gt_traj)
-    else:
-        gt_obj = args_cli.gt_mesh.rsplit(".", 1)[0] + ".obj"
-        if not os.path.exists(gt_obj):
-            mesh = mesh_metrics._load_mesh(args_cli.gt_mesh)
-            o3d.io.write_triangle_mesh(gt_obj, mesh)
-        gt_aligned = gt_obj
-
-    physics_dt = 1.0 / 120.0
-    sim_cfg = SimulationCfg(dt=physics_dt, use_fabric=False)
+    sim_cfg = SimulationCfg(dt=1.0 / 120.0)
     sim = SimulationContext(sim_cfg)
+    sim.set_camera_view(eye=[3.0, 3.0, 3.0], target=[0.0, 0.0, 0.0])
 
     cfg_ground = sim_utils.GroundPlaneCfg()
     cfg_ground.func("/World/ground", cfg_ground, translation=[0, 0, -20])
-
-    sim.reset()
 
     # Waypoints sampled from GT mesh (fair comparison)
     np.random.seed(42)
     waypoint_sets = []
     for _ in range(args_cli.num_trials):
-        wps = sample_navigable_points(gt_aligned, args_cli.num_waypoints)
+        wps = sample_navigable_points(gt_aligned, args_cli.num_waypoints, args_cli.robot_radius)
         waypoint_sets.append(wps)
 
+    # Import a dummy mesh so the stage isn't empty at reset
+    import_mesh_to_stage(gt_aligned, "/World/env_mesh")
+
+    # Robot starts at the first waypoint of the first trial
+    start_pos = waypoint_sets[0][0].copy()
+    robot = setup_robot(start_pos, args_cli.robot_radius)
+
+    sim.reset()
+
+    # Sanity check: verify robot is alive
+    pos_before = get_robot_position(robot)
+    set_robot_velocity(robot, np.array([1.0, 0.0, 0.0]), 1.0)
+    robot.write_data_to_sim()
+    sim.step()
+    robot.update(sim.get_physics_dt())
+    pos_after = get_robot_position(robot)
+    moved = np.linalg.norm(pos_after - pos_before)
+    print(f"\n  Robot sanity check: moved {moved:.4f}m in one step")
+    if moved < 1e-4:
+        print("  WARNING: Robot did not move! Physics may not be active.")
+        print("  Aborting.")
+        simulation_app.close()
+        return
+
+    # --- Run on predicted mesh ---
     print(f"\n{'='*60}")
     print("Navigation on PREDICTED mesh (your SLAM output)")
     print(f"{'='*60}")
     pred_results = run_on_mesh(
-        sim, pred_aligned, "/World/env_mesh", waypoint_sets,
-        args_cli.robot_radius, args_cli.robot_speed,
-        args_cli.max_steps_per_wp, args_cli.waypoint_tolerance, physics_dt
+        sim, robot, pred_aligned, "/World/env_mesh", waypoint_sets,
+        args_cli.robot_speed, args_cli.max_steps_per_wp, args_cli.waypoint_tolerance
     )
 
+    # --- Run on GT mesh ---
     print(f"\n{'='*60}")
     print("Navigation on GT mesh")
     print(f"{'='*60}")
     gt_results = run_on_mesh(
-        sim, gt_aligned, "/World/env_mesh", waypoint_sets,
-        args_cli.robot_radius, args_cli.robot_speed,
-        args_cli.max_steps_per_wp, args_cli.waypoint_tolerance, physics_dt
+        sim, robot, gt_aligned, "/World/env_mesh", waypoint_sets,
+        args_cli.robot_speed, args_cli.max_steps_per_wp, args_cli.waypoint_tolerance
     )
 
     pred_agg = aggregate_results(pred_results)
     gt_agg = aggregate_results(gt_results)
 
+    # --- Write results ---
     out_path = args_cli.output
     if out_path is None:
         out_path = os.path.join(os.path.dirname(args_cli.pred_mesh), "navigation_benchmark.txt")
@@ -330,6 +393,7 @@ def main():
                 delta = pred_agg[k] - gt_agg[k]
                 f.write(f"{k}: {delta:+.6f}\n")
 
+    # --- Print summary ---
     print(f"\n{'='*60}")
     print("SUMMARY")
     print(f"{'='*60}")
@@ -339,9 +403,13 @@ def main():
     print("\nGT mesh:")
     for k, v in gt_agg.items():
         print(f"  {k}: {v:.4f}")
+    print("\nDelta (pred - gt):")
+    for k in pred_agg:
+        if k in gt_agg:
+            delta = pred_agg[k] - gt_agg[k]
+            print(f"  {k}: {delta:+.4f}")
 
     print(f"\n-> {out_path}")
-
     simulation_app.close()
 
 

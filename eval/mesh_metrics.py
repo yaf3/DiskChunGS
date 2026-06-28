@@ -150,6 +150,36 @@ def _load_tum_trajectory(path):
     return np.array(poses)
 
 
+def _load_tum_trajectory_with_timestamps(path):
+    """Load TUM trajectory returning (timestamps, positions)."""
+    timestamps = []
+    positions = []
+    with open(path) as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            vals = line.strip().split()
+            if len(vals) < 8:
+                continue
+            timestamps.append(float(vals[0]))
+            positions.append([float(v) for v in vals[1:4]])
+    return np.array(timestamps), np.array(positions)
+
+
+def _match_trajectories(est_traj_path, gt_traj_path):
+    """Load two TUM trajectories and return timestamp-matched position pairs."""
+    est_ts, est_pos = _load_tum_trajectory_with_timestamps(est_traj_path)
+    gt_ts, gt_pos = _load_tum_trajectory_with_timestamps(gt_traj_path)
+    matched_est = []
+    matched_gt = []
+    for i, t in enumerate(est_ts):
+        j = np.argmin(np.abs(gt_ts - t))
+        if abs(gt_ts[j] - t) < 2.0:
+            matched_est.append(est_pos[i])
+            matched_gt.append(gt_pos[j])
+    return np.array(matched_est), np.array(matched_gt)
+
+
 def _umeyama_alignment(src, dst):
     """Compute rigid SE(3) alignment (no scale) from src to dst point sets.
     Returns 4x4 transform T such that dst ≈ T @ src."""
@@ -169,6 +199,30 @@ def _umeyama_alignment(src, dst):
     T[:3, :3] = R
     T[:3, 3] = t
     return T
+
+
+def _umeyama_yaw(src, dst):
+    """Umeyama alignment constrained to yaw rotation (Z-axis preserved).
+
+    Computes the 2D rigid alignment directly from XY coordinates rather
+    than extracting from a 3D Umeyama, which can introduce a spurious
+    Z-flip when trajectory positions are nearly coplanar.
+    """
+    src_xy = src[:, :2]
+    dst_xy = dst[:, :2]
+    src_mean = src_xy.mean(axis=0)
+    dst_mean = dst_xy.mean(axis=0)
+    H = (src_xy - src_mean).T @ (dst_xy - dst_mean)
+    U, _, Vt = np.linalg.svd(H)
+    d = np.linalg.det(Vt.T @ U.T)
+    R2d = Vt.T @ np.diag([1.0, d]) @ U.T
+    R_yaw = np.eye(3)
+    R_yaw[:2, :2] = R2d
+    t = dst.mean(axis=0) - R_yaw @ src.mean(axis=0)
+    T_out = np.eye(4)
+    T_out[:3, :3] = R_yaw
+    T_out[:3, 3] = t
+    return T_out
 
 
 def _align(pred_pc, gt_pc, est_traj_path=None, gt_traj_path=None):
@@ -233,15 +287,148 @@ def compute_gravity_rotation(gravity_dir, target_down=None):
         target_down = np.array([0.0, 0.0, -1.0])
     gravity_dir = gravity_dir / np.linalg.norm(gravity_dir)
     target_down = target_down / np.linalg.norm(target_down)
+
     v = np.cross(gravity_dir, target_down)
     c = np.dot(gravity_dir, target_down)
-    if np.linalg.norm(v) < 1e-8:
-        return np.eye(3) if c > 0 else -np.eye(3)
-    vx = np.array([[0, -v[2], v[1]],
-                    [v[2], 0, -v[0]],
-                    [-v[1], v[0], 0]])
-    R = np.eye(3) + vx + vx @ vx / (1.0 + c)
-    return R
+    s = np.linalg.norm(v)
+
+    if s < 1e-8:
+        if c > 0:
+            return np.eye(3)
+        # Anti-parallel: 180° rotation around any perpendicular axis
+        perp = np.array([1., 0., 0.]) if abs(gravity_dir[0]) < 0.9 else np.array([0., 1., 0.])
+        axis = np.cross(gravity_dir, perp)
+        axis /= np.linalg.norm(axis)
+        return 2.0 * np.outer(axis, axis) - np.eye(3)
+
+    angle = np.arctan2(s, c)
+    axis = v / s
+    return Rotation.from_rotvec(angle * axis).as_matrix()
+
+
+# ---------------------------------------------------------------------------
+# Floor flattening + gravity alignment (shared by all eval scripts)
+# ---------------------------------------------------------------------------
+
+def flatten_floor(mesh, R_floor=None, floor_z=None):
+    """RANSAC floor detection + rotation to make floor perfectly flat at Z=0.
+
+    If R_floor and floor_z are provided, applies those instead of detecting.
+    Returns (R_floor, floor_z) so the same transform can be reused.
+    """
+    if R_floor is None:
+        pcd = o3d.geometry.PointCloud(mesh.vertices)
+        plane_model, inliers = pcd.segment_plane(
+            distance_threshold=0.03, ransac_n=3, num_iterations=1000
+        )
+        floor_normal = np.array(plane_model[:3])
+        verts = np.asarray(mesh.vertices)
+        plane_d = plane_model[3]
+        signed_dists = verts @ floor_normal + plane_d
+        if np.sum(signed_dists > 0) < np.sum(signed_dists < 0):
+            floor_normal = -floor_normal
+        print(f"  Floor plane normal: {floor_normal}")
+
+        world_up = np.array([0.0, 0.0, 1.0])
+        v = np.cross(floor_normal, world_up)
+        c = np.dot(floor_normal, world_up)
+        if np.linalg.norm(v) < 1e-6:
+            R_floor = np.eye(3)
+        else:
+            s = np.linalg.norm(v)
+            kmat = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+            R_floor = np.eye(3) + kmat + kmat @ kmat * ((1 - c) / (s ** 2))
+
+        mesh.rotate(R_floor, center=(0, 0, 0))
+        verts = np.asarray(mesh.vertices)
+        floor_z = np.mean(verts[inliers, 2])
+    else:
+        mesh.rotate(R_floor, center=(0, 0, 0))
+
+    mesh.translate([0, 0, -floor_z])
+    return R_floor, floor_z
+
+
+def gravity_align(mesh, traj_path, sign=1):
+    """Gravity-align a mesh using camera poses and RANSAC floor detection.
+
+    sign=1 for OpenCV trajectories (ORB-SLAM), sign=-1 for OpenGL (Replica GT).
+    Returns (R_grav, R_floor, floor_z) so trajectory positions can be
+    transformed through the same alignment.
+    """
+    gravity_dir = sign * estimate_gravity_direction(traj_path)
+    R_grav = compute_gravity_rotation(gravity_dir)
+    mesh.rotate(R_grav, center=(0, 0, 0))
+    R_floor, floor_z = flatten_floor(mesh)
+
+    if (R_floor @ np.array([0.0, 0.0, -1.0]))[2] > 0:
+        print("  flatten_floor found ceiling — keeping tilt, undoing flip")
+        flip_x = np.diag([1.0, -1.0, -1.0])
+        mesh.rotate(flip_x, center=(0, 0, 0))
+        R_floor = flip_x @ R_floor
+        verts = np.asarray(mesh.vertices)
+        floor_z = np.percentile(verts[:, 2], 2)
+        mesh.translate([0, 0, -floor_z])
+
+    return R_grav, R_floor, floor_z
+
+
+def transform_positions(positions, R_grav, R_floor, floor_z):
+    """Transform trajectory positions through the same gravity alignment."""
+    aligned = (R_floor @ R_grav @ positions.T).T
+    aligned[:, 2] -= floor_z
+    return aligned
+
+
+def align_pred_to_gt(pred_mesh_path, gt_mesh_path, est_traj_path, gt_traj_path,
+                     force=False, flip_gt=False):
+    """Independently gravity-align each mesh, then ICP-align pred onto GT.
+
+    Returns (pred_out_path, gt_out_path) of saved aligned meshes.
+    Caches results; pass force=True to regenerate.
+    """
+    pred_out = pred_mesh_path.rsplit(".", 1)[0] + "_gt_aligned.obj"
+    gt_out = gt_mesh_path.rsplit(".", 1)[0] + "_aligned.obj"
+    if os.path.exists(pred_out) and os.path.exists(gt_out) and not force:
+        return pred_out, gt_out
+
+    est_matched, gt_matched = _match_trajectories(est_traj_path, gt_traj_path)
+    print(f"  Matched {len(est_matched)} trajectory poses by timestamp")
+
+    pred_mesh = _load_mesh(pred_mesh_path)
+    R_gp, R_fp, zp = gravity_align(pred_mesh, est_traj_path)
+    est_aligned = transform_positions(est_matched, R_gp, R_fp, zp)
+
+    gt_sign = -1 if flip_gt else 1
+    gt_mesh = _load_mesh(gt_mesh_path)
+    R_gg, R_fg, zg = gravity_align(gt_mesh, gt_traj_path, sign=gt_sign)
+    gt_aligned = transform_positions(gt_matched, R_gg, R_fg, zg)
+
+    T_init = _umeyama_yaw(est_aligned, gt_aligned)
+    pred_pc = o3d.geometry.PointCloud(pred_mesh.vertices).voxel_down_sample(0.1)
+    gt_pc = o3d.geometry.PointCloud(gt_mesh.vertices).voxel_down_sample(0.1)
+    reg = o3d.pipelines.registration.registration_icp(
+        pred_pc, gt_pc, 1.0, T_init,
+        o3d.pipelines.registration.TransformationEstimationPointToPoint(),
+        o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=100),
+    )
+    print(f"  Coarse ICP fitness={reg.fitness:.4f}")
+
+    pred_pc = o3d.geometry.PointCloud(pred_mesh.vertices).voxel_down_sample(0.05)
+    gt_pc = o3d.geometry.PointCloud(gt_mesh.vertices).voxel_down_sample(0.05)
+    reg = o3d.pipelines.registration.registration_icp(
+        pred_pc, gt_pc, 0.2, reg.transformation,
+        o3d.pipelines.registration.TransformationEstimationPointToPoint(),
+        o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=200),
+    )
+    print(f"  Fine ICP fitness={reg.fitness:.4f}, RMSE={reg.inlier_rmse:.4f}")
+    pred_mesh.transform(reg.transformation)
+
+    for mesh, path in [(gt_mesh, gt_out), (pred_mesh, pred_out)]:
+        o3d.io.write_triangle_mesh(path, mesh)
+        print(f"  Saved {path}")
+
+    return pred_out, gt_out
 
 
 # ---------------------------------------------------------------------------
